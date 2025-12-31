@@ -28,7 +28,7 @@ class ActionEditorSheet : BottomSheetDialogFragment() {
     private var allSteps: ArrayList<ActionStep>? = null
     private var availableNamedVariables: List<String>? = null
     var onSave: ((ActionStep) -> Unit)? = null
-    var onMagicVariableRequested: ((inputId: String) -> Unit)? = null
+    var onMagicVariableRequested: ((inputId: String, currentParameters: Map<String, Any?>) -> Unit)? = null
     var onStartActivityForResult: ((Intent, (resultCode: Int, data: Intent?) -> Unit) -> Unit)? = null
     private val inputViews = mutableMapOf<String, View>()
     private var customEditorHolder: CustomEditorViewHolder? = null
@@ -142,7 +142,7 @@ class ActionEditorSheet : BottomSheetDialogFragment() {
                 onParametersChanged = { readParametersFromUi() },
                 onMagicVariableRequested = { inputId ->
                     readParametersFromUi()
-                    this.onMagicVariableRequested?.invoke(inputId)
+                    this.onMagicVariableRequested?.invoke(inputId, currentParameters)
                 },
                 allSteps = allSteps,
                 onStartActivityForResult = onStartActivityForResult
@@ -174,7 +174,7 @@ class ActionEditorSheet : BottomSheetDialogFragment() {
         magicButton.isVisible = inputDef.acceptsMagicVariable || inputDef.acceptsNamedVariable
         magicButton.setOnClickListener {
             readParametersFromUi()
-            onMagicVariableRequested?.invoke(inputDef.id)
+            onMagicVariableRequested?.invoke(inputDef.id, currentParameters)
         }
 
         valueContainer.removeAllViews()
@@ -197,7 +197,7 @@ class ActionEditorSheet : BottomSheetDialogFragment() {
             pillText.text = getDisplayNameForVariableReference(currentValue as String)
             pill.setOnClickListener {
                 readParametersFromUi()
-                onMagicVariableRequested?.invoke(inputDef.id)
+                onMagicVariableRequested?.invoke(inputDef.id, currentParameters)
             }
             valueContainer.addView(pill)
             // 情况三：不支持富文本，且当前值是静态值

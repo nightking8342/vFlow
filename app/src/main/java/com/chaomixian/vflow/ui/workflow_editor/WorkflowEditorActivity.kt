@@ -421,9 +421,9 @@ class WorkflowEditorActivity : BaseActivity() {
             recalculateAndNotify()
         }
 
-        editor.onMagicVariableRequested = { inputId ->
+        editor.onMagicVariableRequested = { inputId, currentParameters ->
             val stepPositionForContext = if (position != -1) position else actionSteps.size
-            showMagicVariablePicker(stepPositionForContext, inputId, module)
+            showMagicVariablePicker(stepPositionForContext, inputId, module, currentParameters)
         }
 
         editor.onStartActivityForResult = { intent, callback ->
@@ -516,7 +516,7 @@ class WorkflowEditorActivity : BaseActivity() {
     }
 
 
-    private fun showMagicVariablePicker(editingStepPosition: Int, targetInputId: String, editingModule: ActionModule) {
+    private fun showMagicVariablePicker(editingStepPosition: Int, targetInputId: String, editingModule: ActionModule, currentParameters: Map<String, Any?>) {
         // 处理嵌套 ID (例如 "extras.myKey")
         // 如果 targetInputId 包含点号，则只取第一部分 (extras) 作为 InputDefinition 的 ID 来查找定义
         val realInputId = if (targetInputId.contains('.')) {
@@ -525,7 +525,9 @@ class WorkflowEditorActivity : BaseActivity() {
             targetInputId
         }
 
-        val targetInputDef = editingModule.getDynamicInputs(actionSteps.getOrNull(editingStepPosition), actionSteps).find { it.id == realInputId }
+        // 根据当前参数创建临时 ActionStep，用于获取动态输入定义
+        val tempStep = ActionStep(editingModule.id, currentParameters.toMutableMap())
+        val targetInputDef = editingModule.getDynamicInputs(tempStep, actionSteps).find { it.id == realInputId }
 
         if (targetInputDef == null) {
             Toast.makeText(this, "无法找到输入定义: $targetInputId", Toast.LENGTH_SHORT).show()
