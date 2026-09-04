@@ -1,0 +1,75 @@
+# Fork 维护说明
+
+本仓库是 [ChaoMixian/vFlow](https://github.com/ChaoMixian/vFlow) 的长期维护 fork：
+
+- `origin`   → https://github.com/nightking8342/vFlow （本 fork，主干 `dev`）
+- `upstream` → https://github.com/ChaoMixian/vFlow （上游）
+
+维护原则：**控制 diff 面积**。能加新文件就不改上游文件，能走新增模块就不动核心代码，让每次上游合并的冲突尽量少。
+
+本项目与 mindfs fork 不同：**以「新增能力」为主**（新增模块、新增 handler、新增工具脚本），而非深改上游核心文件。因此本表的分歧形态大多是「新增文件 / 新增模块」，冲突面天然较小。
+
+---
+
+## 与上游的分歧清单
+
+每一处与上游的故意分歧都记录在这里。合并上游遇到冲突时，按「归属」列决定保留哪边；新增分歧时必须同步更新本清单。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `FORK.md`、`AGENTS.md`、`CLAUDE.md` | fork 独有文件，上游没有 | 我方 |
+| （暂无其他分歧，开发时在此逐条登记） | | |
+
+> **新增分歧时**：必须写清「文件/范围」「分歧内容」「冲突归属」三列。冲突归属一般是：
+> - **我方**：fork 独有的新增文件/新增模块，保留我方。
+> - **上游**：上游改动的文件，取上游版本。
+> - **手动合并**：两边都改了同一文件，需逐块判断（例如 fork 只是在某文件追加了几行，而上游也改了该文件）。
+
+---
+
+## 暂未分歧、但日后改动时须登记的敏感点
+
+以下是上游的核心区。目前 fork **尚未改动**它们；一旦改动（尤其是结构性改动），必须在上表登记，并评估合并成本：
+
+- `app/build.gradle.kts` —— 编译配置、签名、ABI、依赖。上游可能频繁变更，改动时冲突面大。
+- `settings.gradle.kts` —— 模块声明（`:app` `:core`）。
+- `app/src/main/java/com/chaomixian/vflow/core/workflow/module/ModuleRegistry.kt` —— 模块注册表。**新增模块时在 `initialize()` 里按分类追加一行即可，不要重排已有注册**，否则每次上游合并都在这个文件解冲突。
+- `core/src/main` —— vFlow Core 独立进程（Master-Worker）。改动独立，应单独评估、单独 patch。
+- `app/src/main/java/com/chaomixian/vflow/core/execution/WorkflowExecutor.kt` —— 工作流执行器核心循环。改动风险高，须谨慎。
+- `app/src/main/java/com/chaomixian/vflow/api/` —— 远程 API。**新增 handler 时新增文件，不要改既有接口签名**。
+- `app/src/main/java/com/chaomixian/vflow/core/workflow/model/Workflow.kt` / `ActionStep.kt` —— 工作流数据模型。上游改动会波及大量解析/序列化代码。
+
+---
+
+## 上游同步流程
+
+跟着上游的 **release tag** 合并（而不是追每个 commit），因为上游节奏是「低频发版」。步骤：
+
+1. 工作区必须干净（`git status` 无未提交改动）。
+2. `git fetch upstream --tags`
+3. `git checkout master` 并 `git fetch upstream`
+4. `git merge <tag>`（如 `git merge v1.5.2`；merge 而非 rebase，保留独立 merge commit，不 squash）
+5. 解冲突：按上表「冲突归属」处理；表里没有的冲突按常规判断并考虑是否登记。
+6. 门槛检查：`./gradlew test`（app 模块有单元测试）+ `./gradlew assembleDebug` 构建通过。
+   - 注意：Android 项目在 Windows 本地跑 `./gradlew test` 需要 Android SDK + JDK 17 就绪；若环境缺失，以 CI 的构建结果为权威门槛。
+   - 涉及 `core/` 或原生 OCR（ncnn/CMake/JNI）时，还需确认 `:core:buildDex` 与 `externalNativeBuild` 通过。
+7. 回归扫描：`git grep -nE "(chaomixian|vflow)\.(com|net|app)" -- ':!*.md'` 对比合并前后，确认上游没有引入意料之外的硬编码地址；有则评估处理并登记。
+8. 全部通过后 `git checkout dev` 并 `git rebase master`（把 dev 重基于最新上游），再 `git push -u origin dev`。
+   - rebase 时若你的 fork 改动与上游冲突，按「冲突归属」处理；这也是一次检查 diff 面积的机会——冲突越多，说明改动太贴近上游核心，应回头评估是否拆成新增文件。
+
+---
+
+## 提交规范
+
+- **fork 自己的改动**：提交信息加 `fork:` 前缀（如 `fork: 新增 AI 调试生成工作流模块`），方便 `git log` 区分来源。
+- **新增模块 / 新增文件**：`fork:` 前缀 + 说明分类与用途。
+- **上游合并**：保留默认 merge commit 信息（`Merge tag 'v1.5.2' ...`）。
+
+---
+
+## 分支约定
+
+- `master` → 只追踪上游，永远只从上游同步，不改。
+- `dev` → fork 主干，承载所有 fork 改动；上游同步后 rebase 到 master。
+- `feature/*` → 每次开发用的临时分支，完成后合并回 dev。
+- 不建议直接在 `master` 上开发。
