@@ -394,5 +394,57 @@ var functionSignature: FunctionSignature? = null   // null = 普通工作流，�
 | `core/module/ModuleRegistry.kt` | `initialize()` 追加注册 | 改上游 | 低 |
 | `ui/workflow_editor/WorkflowEditorMagicVariableCatalogBuilder.kt` | 加「函数参数」分组 | 改上游 | 低 |
 | `ui/workflow_editor/EditorMoreOptionsSheet.kt` | 加函数状态行 | 改上游 | 低 |
-| 字符串资源 | 新增中英日文案 | 新增 | 低 |
-| 单元测试 | 新增 | 新增 | 低 |
+| 字符串资源 | 新增中英日文案 | 已做 | 低 |
+| 单元测试 | 新增 `FunctionSignatureHelperTest` | 已做 | 低 |
+
+---
+
+## 14. 实现状态 / 交接（截至 2026-09-08）
+
+> 本节为开发交接记录。**新开会话后先读本节**，结合 `git log`/`git status` 即可无缝接管。
+
+### 14.1 当前分支与 commit
+
+- **分支**：`feature/function-workflow`（从 `dev` 派生）
+- **已提交 commit**：
+  - `571f4afc` 需求文档与 UI 原型 + FORK.md 登记
+  - `9b96ffc8` 函数工作流核心功能（14 文件，828 insertions）
+- 工作区当前干净。
+
+### 14.2 已完成（编译通过 + 单元测试通过）
+
+| 项 | 状态 |
+|---|---|
+| 数据模型 `FunctionSignature.kt`（FunctionParam/ReturnKey/FunctionReturn/FunctionSignature） | ✅ |
+| `Workflow.kt` 加 `functionSignature` + `isFunction` | ✅ |
+| `WorkflowExecutor.executeSubWorkflow` 加 `injectedVariables` | ✅ |
+| `FunctionSignatureHelper.kt`（保存时返回值静态推导） | ✅ 单测通过 |
+| `WorkflowManager` 保存时聚合签名 + 解析 `functionSignature` + 返回值推导 | ✅ |
+| `CallFunctionModule` + UIProvider（按参数传参、只返回 result） | ✅ |
+| `DefineFunctionModule` + UIProvider（简化版：仅参数名增删） | ✅ |
+| `ModuleRegistry` 注册两个新模块 | ✅ |
+| 字符串资源（中/英/日） | ✅ |
+
+### 14.3 未完成清单（新会话待办，按优先级）
+
+| # | 待办项 | 对应决策 | 说明 |
+|---|---|---|---|
+| 1 | **魔法变量选择器「函数参数」分组** | 决策 2 | 改 `WorkflowEditorMagicVariableCatalogBuilder`，需要传入 `Workflow` 或从 `actionSteps` 反查（架构约束：`buildNamedVariables` 拿不到 Workflow） |
+| 2 | `EditorMoreOptionsSheet` 函数状态行 | 决策 11.5 | 加只读签名展示 |
+| 3 | **「定义函数」UI 完整化** | 决策 21 | 当前只有参数名输入框；缺：类型下拉、默认值随类型切换、必填开关、返回值配置区、snake_case/去重校验 |
+| 4 | `CallFunctionModule.getDynamicInputs` 渲染真机验证 | 决策 5/13 | 已写代码，但未在编辑器验证动态参数框是否真实渲染 |
+| 5 | 删除「定义函数」卡片清空签名 + 提示 | 决策 23 | 未做 |
+| 6 | 移动「定义函数」卡片需阻止非首位 | 决策 16 | 未做 |
+| 7 | 嵌套调用 / 递归检测专项测试 | 决策 25 | 执行器逻辑已支持，未测试 |
+
+### 14.4 测试时的预期与坑
+
+- **参数引用**：函数工作流内部用 `[[参数名]]` 引用（已注入 namedVariables），但**选择器无「函数参数」分组**，只能手敲，不能点选（当前最大体验缺口）。
+- **返回值展开**：`{{调用步骤.result.code}}` 底层 VDictionary 动态 Key 访问**支持任意深度**，可手动写；但选择器不会自动列出 `result` 的键。
+- **返回值静态推导**：`FunctionSignatureHelper` 只在**保存时**触发。编辑器里看 `returnDef` 可能还是旧的，要保存后才更新。
+- **`CallFunctionModule` 只返回 `result`**：不暴露函数工作流内部命名变量（黑盒语义）。
+
+### 14.5 环境注意
+
+- **单测已通过**：`FunctionSignatureHelperTest`（5 个用例）。
+- **全部单测有 1 个既有失败**：`VObjectPropertyTest > VFile properties from absolute path`——是 `android.net.Uri.parse` not mocked 的环境问题，**与函数工作流改动无关**（事先存在）。
