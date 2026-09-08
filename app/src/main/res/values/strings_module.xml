@@ -1924,6 +1924,21 @@
     <string name="output_vflow_logic_call_workflow_result_name">返回值</string>
     <string name="summary_vflow_logic_call_workflow_prefix">调用工作流</string>
 
+    <!-- vflow.logic.call_function -->
+    <string name="module_vflow_logic_call_function_desc">按函数签名传参调用另一个函数工作流，并取回其返回值</string>
+    <string name="module_vflow_logic_call_function_name">调用函数工作流</string>
+    <string name="param_vflow_logic_call_function_workflow_id_name">函数工作流</string>
+    <string name="output_vflow_logic_call_function_result_name">函数返回值</string>
+    <string name="summary_vflow_logic_call_function_prefix">调用函数工作流</string>
+    <string name="dialog_call_function_select_title">选择函数工作流</string>
+
+    <!-- vflow.logic.define_function -->
+    <string name="module_vflow_logic_define_function_desc">声明本工作流为函数，配置参数与返回值。须作为工作流第一步</string>
+    <string name="module_vflow_logic_define_function_name">定义函数</string>
+    <string name="summary_vflow_logic_define_function_prefix">定义函数</string>
+    <string name="summary_vflow_logic_define_function_no_signature">定义函数（未声明参数）</string>
+    <string name="summary_vflow_logic_define_function_return_prefix">返回</string>
+
     <!-- vflow.logic.foreach_end -->
     <string name="module_vflow_logic_foreach_end_desc">ForEach 循环块的结束点</string>
     <string name="module_vflow_logic_foreach_end_name">结束遍历</string>

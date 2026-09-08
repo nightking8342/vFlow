@@ -1720,6 +1720,22 @@
     <string name="param_vflow_logic_call_workflow_workflow_id_name">ワークフロー</string>
     <string name="output_vflow_logic_call_workflow_result_name">戻り値</string>
     <string name="summary_vflow_logic_call_workflow_prefix">ワークフローを呼び出す</string>
+
+    <!-- vflow.logic.call_function -->
+    <string name="module_vflow_logic_call_function_desc">関数ワークフローをシグネチャに従って呼び出し、引数を渡して戻り値を取得します</string>
+    <string name="module_vflow_logic_call_function_name">関数ワークフロー呼び出し</string>
+    <string name="param_vflow_logic_call_function_workflow_id_name">関数ワークフロー</string>
+    <string name="output_vflow_logic_call_function_result_name">関数の戻り値</string>
+    <string name="summary_vflow_logic_call_function_prefix">関数ワークフローを呼び出す</string>
+    <string name="dialog_call_function_select_title">関数ワークフローを選択</string>
+
+    <!-- vflow.logic.define_function -->
+    <string name="module_vflow_logic_define_function_desc">このワークフローを関数として宣言し、パラメータと戻り値を設定します。先頭ステップにしてください</string>
+    <string name="module_vflow_logic_define_function_name">関数定義</string>
+    <string name="summary_vflow_logic_define_function_prefix">関数を定義</string>
+    <string name="summary_vflow_logic_define_function_no_signature">関数を定義（パラメータ未宣言）</string>
+    <string name="summary_vflow_logic_define_function_return_prefix">戻り値</string>
+
     <string name="module_vflow_logic_foreach_end_desc">ForEach ループブロックの終了位置</string>
     <string name="module_vflow_logic_foreach_end_name">反復終了</string>
     <string name="module_vflow_logic_foreach_start_desc">リスト内の各項目を順に処理します</string>

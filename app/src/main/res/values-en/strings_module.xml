@@ -1905,6 +1905,21 @@
     <string name="output_vflow_logic_call_workflow_result_name">Return Value</string>
     <string name="summary_vflow_logic_call_workflow_prefix">Call workflow</string>
 
+    <!-- vflow.logic.call_function -->
+    <string name="module_vflow_logic_call_function_desc">Call another function workflow by its signature, passing arguments and returning its result</string>
+    <string name="module_vflow_logic_call_function_name">Call Function Workflow</string>
+    <string name="param_vflow_logic_call_function_workflow_id_name">Function Workflow</string>
+    <string name="output_vflow_logic_call_function_result_name">Function Return Value</string>
+    <string name="summary_vflow_logic_call_function_prefix">Call function workflow</string>
+    <string name="dialog_call_function_select_title">Select Function Workflow</string>
+
+    <!-- vflow.logic.define_function -->
+    <string name="module_vflow_logic_define_function_desc">Declare this workflow as a function, configuring parameters and return value. Must be the first step</string>
+    <string name="module_vflow_logic_define_function_name">Define Function</string>
+    <string name="summary_vflow_logic_define_function_prefix">Define function</string>
+    <string name="summary_vflow_logic_define_function_no_signature">Define function (no parameters declared)</string>
+    <string name="summary_vflow_logic_define_function_return_prefix">returns</string>
+
     <!-- vflow.logic.foreach_end -->
     <string name="module_vflow_logic_foreach_end_desc">End point of ForEach loop block</string>
     <string name="module_vflow_logic_foreach_end_name">End For Each</string>

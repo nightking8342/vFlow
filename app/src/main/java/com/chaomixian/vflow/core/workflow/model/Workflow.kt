@@ -29,10 +29,16 @@ data class Workflow(
     var homepage: String = "",
     var tags: List<String> = emptyList(),
     var maxExecutionTime: Int? = null,
-    var reentryBehavior: WorkflowReentryBehavior = WorkflowReentryBehavior.BLOCK_NEW
+    var reentryBehavior: WorkflowReentryBehavior = WorkflowReentryBehavior.BLOCK_NEW,
+    // 新增：函数工作流的签名声明。null = 普通工作流（非函数）。
+    var functionSignature: FunctionSignature? = null
 ) : Parcelable {
     val allSteps: List<ActionStep>
         get() = triggers + steps
+
+    /** 是否为函数工作流（声明了函数签名）。 */
+    val isFunction: Boolean
+        get() = functionSignature != null
 
     fun hasTriggerType(triggerModuleId: String): Boolean {
         return triggers.any { it.moduleId == triggerModuleId }

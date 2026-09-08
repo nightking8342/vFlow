@@ -126,6 +126,8 @@ object ModuleRegistry {
         register(ContinueLoopModule(), context)
         register(StopWorkflowModule(), context)
         register(CallWorkflowModule(), context)
+        register(CallFunctionModule(), context)
+        register(DefineFunctionModule(), context)
         register(StopAndReturnModule(), context)
 
         // 数据

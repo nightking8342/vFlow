@@ -338,19 +338,25 @@ object WorkflowExecutor {
      * 执行一个子工作流并返回结果。
      * @param workflow 要执行的子工作流。
      * @param parentContext 父工作流的执行上下文。
+     * @param injectedVariables 注入到子工作流的函数参数（作为 namedVariables 的初始种子，覆盖同名命名变量）。
      * @return 包含子工作流返回值和所有变量的结果。
      */
-    suspend fun executeSubWorkflow(workflow: Workflow, parentContext: ExecutionContext): SubWorkflowResult {
+    suspend fun executeSubWorkflow(
+        workflow: Workflow,
+        parentContext: ExecutionContext,
+        injectedVariables: Map<String, VObject> = emptyMap()
+    ): SubWorkflowResult {
         DebugLogger.d("WorkflowExecutor", "开始执行子工作流: ${workflow.name}")
 
-        // 创建子工作流的上下文，继承大部分父上下文状态，但使用自己的步骤列表和调用栈
+        // 创建子工作流的上下文，继承大部分父上下文状态，但使用自己的步骤列表和调用栈。
+        // 函数参数通过 injectedVariables 注入：作为 namedVariables 的种子，覆盖同名命名变量。
         val subWorkflowContext = parentContext.copy(
             allSteps = workflow.steps,
             workflowStack = Stack<String>().apply {
                 addAll(parentContext.workflowStack)
                 push(workflow.id)
-            }
-            // 子工作流共享父工作流的 namedVariables，这样命名变量会自动传递
+            },
+            namedVariables = (parentContext.namedVariables + injectedVariables).toMutableMap()
         )
 
         seedTriggerOutputs(workflow, subWorkflowContext, workflow.manualTrigger()?.id)
