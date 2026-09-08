@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>vFlow 函数工作流 UI 原型（可交互）</title>
+<style>
+  :root {
+    --primary: #6750a4;
+    --on-primary: #ffffff;
+    --primary-container: #eaddff;
+    --on-primary-container: #21005d;
+    --surface: #fef7ff;
+    --surface-variant: #e7e0ec;
+    --on-surface: #1c1b1f;
+    --on-surface-variant: #49454f;
+    --outline: #79747e;
+    --error: #b3261e;
+    --card-border: #cac4d0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: 'Roboto', 'Segoe UI', sans-serif;
+    background: #2b2b2b;
+    color: var(--on-surface);
+    margin: 0;
+    padding: 40px 24px;
+    display: flex; flex-direction: column; align-items: center; gap: 48px;
+  }
+  h1.page-title { color: #fff; font-size: 24px; font-weight: 500; margin: 0 0 8px; }
+  h2.section { color: #ddd; font-size: 14px; font-weight: 400; margin: 0 0 -32px; align-self: flex-start; }
+  .device {
+    width: 400px; background: var(--surface); border-radius: 28px;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.4); overflow: hidden; position: relative; min-height: 260px;
+  }
+  .statusbar { height: 24px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; font-size: 13px; font-weight: 500; }
+  .appbar { display: flex; align-items: center; justify-content: space-between; padding: 8px 16px; }
+  .appbar .title { font-size: 22px; font-weight: 500; }
+  .appbar .icon { font-size: 22px; color: var(--on-surface-variant); cursor: pointer; }
+  .card { background: #f3edf7; margin: 8px 16px; border-radius: 16px; padding: 16px; border: 1px solid var(--card-border); }
+  .card-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  .module-icon { width: 40px; height: 40px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 20px; background: var(--primary-container); color: var(--on-primary-container); }
+  .module-title { font-size: 16px; font-weight: 500; flex: 1; }
+  .category-pill { font-size: 11px; padding: 3px 10px; border-radius: 999px; background: var(--surface-variant); color: var(--on-surface-variant); }
+  .section-label { font-size: 12px; color: var(--on-surface-variant); margin: 12px 0 6px; font-weight: 500; }
+  .param-row { display: flex; align-items: center; gap: 8px; background: #fff; border: 1px solid var(--card-border); border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; }
+  .param-name { flex: 1; font-size: 15px; }
+  .param-type { font-size: 11px; color: var(--on-surface-variant); }
+  .pin-required { color: var(--error); font-weight: 700; }
+  .pin-optional { color: var(--on-surface-variant); }
+  .icon-btn { font-size: 18px; color: var(--outline); cursor: pointer; padding: 4px; }
+  .add-btn { display: inline-flex; align-items: center; gap: 6px; color: var(--primary); font-size: 14px; font-weight: 500; cursor: pointer; }
+  .collapse { background: var(--surface-variant); border-radius: 8px; padding: 8px 12px; }
+  .collapse .header { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 500; cursor: pointer; }
+  .return-list { margin-left: 20px; margin-top: 8px; font-size: 13px; color: var(--on-surface-variant); line-height: 1.8; display: none; }
+  .divider { height: 1px; background: var(--card-border); margin: 8px 0; }
+  .fill-btn { background: var(--primary); color: var(--on-primary); border: none; border-radius: 999px; padding: 10px 24px; font-size: 14px; font-weight: 500; cursor: pointer; }
+  .text-btn { background: none; border: none; color: var(--primary); font-size: 14px; font-weight: 500; cursor: pointer; }
+  .sheet { position: absolute; bottom: 0; left: 0; right: 0; background: var(--surface); border-radius: 28px 28px 0 0; box-shadow: 0 -4px 20px rgba(0,0,0,0.3); padding: 16px 20px 24px; max-height: 85%; overflow-y: auto; }
+  .sheet .handle { width: 36px; height: 4px; background: var(--outline); border-radius: 999px; margin: 0 auto 16px; }
+  .sheet .sheet-title { font-size: 18px; font-weight: 500; margin-bottom: 16px; }
+  .field-label { font-size: 12px; color: var(--on-surface-variant); margin-bottom: 4px; }
+  .text-field { border: 1px solid var(--outline); border-radius: 8px; padding: 12px; font-size: 15px; width: 100%; margin-bottom: 16px; background: #fff; }
+  .spinner { border: 1px solid var(--outline); border-radius: 8px; padding: 12px; font-size: 15px; width: 100%; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; background: #fff; cursor: pointer; }
+  .switch-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+  .switch { width: 52px; height: 32px; border-radius: 16px; background: var(--on-surface); position: relative; cursor: pointer; flex-shrink:0; }
+  .switch::after { content:''; position:absolute; top:4px; right:4px; width:24px; height:24px; border-radius:50%; background:#fff; transition:all .2s; }
+  .switch.on { background: var(--primary); }
+  .switch.on::after { right: auto; left: 4px; }
+  .sheet-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+  .picker-option { display: flex; align-items: center; gap: 10px; padding: 12px; border-bottom: 1px solid var(--card-border); cursor: pointer; }
+  .fn-badge { background: var(--primary-container); color: var(--on-primary-container); font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 6px; }
+  .signature-preview { font-size: 12px; color: var(--on-surface-variant); margin-left: 4px; }
+  .vp-group-title { font-size: 13px; color: var(--primary); font-weight: 500; margin: 12px 0 6px; display: flex; gap: 6px; align-items: center; }
+  .vp-item { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background:#fff; border:1px solid var(--card-border); border-radius: 8px; margin-bottom: 6px; font-size:14px; cursor: pointer; }
+  .vp-item:hover { background: var(--primary-container); }
+  .vp-origin { font-size: 11px; color: var(--on-surface-variant); }
+  .fn-group { border: 1px dashed var(--primary); border-radius: 10px; padding: 6px; margin-bottom: 10px; }
+  .mo-header { display:flex; align-items:center; gap:10px; padding:12px 16px; }
+  .mo-title { font-size: 18px; font-weight: 500; flex:1; }
+  .mo-meta { font-size: 12px; color: var(--on-surface-variant); }
+  .mo-signature-box { background:#fff; border:1px solid var(--card-border); border-radius:12px; padding:12px; margin:8px 16px; }
+  .hidden { display: none; }
+  .toast { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); background: #333; color:#fff; border-radius: 8px; padding: 10px 16px; font-size: 13px; opacity:0; transition: opacity .3s; pointer-events:none; }
+  .toast.show { opacity: 1; }
+  .dropdown { position:absolute; background:#fff; border:1px solid var(--card-border); border-radius:12px; box-shadow:0 4px 12px rgba(0,0,0,.2); z-index:20; max-height:200px; overflow-y:auto; width: calc(100% - 40px); }
+  .dropdown div { padding: 12px 16px; font-size:14px; cursor:pointer; border-bottom:1px solid var(--card-border); }
+  .dropdown div:hover { background: var(--primary-container); }
+  .value-box { flex:2; font-size:13px; color:var(--on-surface-variant); border:1px dashed var(--outline); border-radius:8px; padding:8px; min-height:36px; display:flex; align-items:center; }
+</style>
+</head>
+<body>
+
+<h1 class="page-title">vFlow · 函数工作流 UI 原型（交互版）</h1>
+
+<!-- ============ 11.1 定义函数 - 参数列表 ============ -->
+<h2 class="section">11.1 「定义函数」参数列表（点击「加参数」或折叠区可交互）</h2>
+<div class="device" style="padding-bottom:16px">
+  <div class="statusbar"><span>9:41</span><span>▮▮▮</span></div>
+  <div class="appbar"><span class="title">天气查询</span><span class="icon">⋮</span></div>
+  <div class="card">
+    <div class="card-header">
+      <div class="module-icon">ƒ(x)</div>
+      <div class="module-title">定义函数</div>
+      <div class="category-pill">逻辑控制</div>
+    </div>
+    <div class="section-label">函数参数</div>
+    <div id="paramList">
+      <div class="param-row" data-name="url" data-type="文本">
+        <span class="param-name">url</span>
+        <span class="param-type">文本</span>
+        <span class="pin-required">●必填</span>
+        <span class="icon-btn">✎</span><span class="icon-btn">🗑</span>
+      </div>
+      <div class="param-row" data-name="method" data-type="文本">
+        <span class="param-name">method</span>
+        <span class="param-type">文本</span>
+        <span class="pin-optional">○可选</span>
+        <span class="icon-btn">✎</span><span class="icon-btn">🗑</span>
+      </div>
+    </div>
+    <span class="add-btn" id="openParamSheet">＋ 添加参数</span>
+
+    <div class="divider"></div>
+
+    <div class="collapse">
+      <div class="header" id="toggleReturn">▶ 返回值 <span style="color:var(--on-surface-variant);font-weight:400">(自动派生·只读)</span></div>
+      <div class="return-list" id="returnList">
+        <div>类型: <b>字典</b></div>
+        <div>code · 数字</div>
+        <div>msg · 文本</div>
+        <div>data · 列表</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 12.1 参数编辑底部弹窗（默认隐藏，点「添加参数」弹出） ============ -->
+<div class="device" style="position:relative">
+  <div class="statusbar"><span>9:41</span><span>▮▮▮</span></div>
+  <div class="appbar"><span class="title">（点上方「＋ 添加参数」体验）</span></div>
+  <div style="height:160px;display:flex;align-items:center;justify-content:center;color:var(--on-surface-variant);font-size:13px">
+    弹窗会在 11.1 设备上显示
+  </div>
+</div>
+
+<!-- ============ 11.3 调用函数工作流 ============ -->
+<h2 class="section">11.3 「调用函数工作流」（点函数选择器体验下拉）</h2>
+<div class="device" style="padding-bottom:16px;position:relative">
+  <div class="statusbar"><span>9:41</span><span>▮▮▮</span></div>
+  <div class="appbar"><span class="title">工作流编辑器</span><span class="icon">⋮</span></div>
+  <div class="card">
+    <div class="card-header">
+      <div class="module-icon">▶</div>
+      <div class="module-title">调用函数工作流</div>
+      <div class="category-pill">逻辑控制</div>
+    </div>
+    <div class="section-label">函数工作流</div>
+    <div class="spinner" id="fnSelector" style="margin-bottom:6px">
+      <span>天气查询 <span class="fn-badge">函数</span></span><span>▾</span>
+    </div>
+    <div id="fnDropdown" class="dropdown" style="display:none"></div>
+    <div class="signature-preview" id="fnSig">└ 签名: city(文本●必填), days(数字○可选)</div>
+
+    <div class="divider"></div>
+    <div class="section-label">参数赋值</div>
+    <div class="param-row">
+      <span class="param-name">city <span class="pin-required">*</span></span>
+      <div class="value-box" contenteditable="true">{{step1.city}}</div>
+      <span class="icon-btn">🔮</span>
+    </div>
+    <div class="param-row">
+      <span class="param-name">days</span>
+      <div class="value-box" contenteditable="true">3</div>
+      <span class="icon-btn">🔮</span>
+    </div>
+    <div class="divider"></div>
+    <div style="font-size:13px;color:var(--on-surface-variant);padding-left:4px">→ 返回: result</div>
+  </div>
+  <div class="toast" id="fnToast"></div>
+</div>
+
+<!-- ============ 11.4 魔法变量选择器-函数参数分组 ============ -->
+<h2 class="section">11.4 魔法变量选择器（点任一项「插入」）</h2>
+<div class="device" style="padding-bottom:16px;position:relative">
+  <div class="statusbar"><span>9:41</span><span>▮▮▮</span></div>
+  <div class="sheet" style="position:relative;border-radius:0;box-shadow:none;max-height:none">
+    <div class="sheet-title">选择变量</div>
+    <div style="font-size:14px;color:var(--error);margin-bottom:10px;cursor:pointer">清除</div>
+
+    <div class="vp-group-title">▼ 函数参数</div>
+    <div class="fn-group">
+      <div class="vp-item" data-ins="[[url]]"><span>url</span><span class="vp-origin">(文本·必填)</span></div>
+      <div class="vp-item" data-ins="[[method]]"><span>method</span><span class="vp-origin">(文本·可选)</span></div>
+    </div>
+
+    <div class="vp-group-title">▼ 命名变量</div>
+    <div class="vp-item" data-ins="[[my_var]]"><span>my_var</span><span class="vp-origin">(数字)</span></div>
+    <div class="vp-item" data-ins="[[counter]]"><span>counter</span><span class="vp-origin">(数字)</span></div>
+
+    <div class="vp-group-title">▼ #1 查找文本</div>
+    <div class="vp-item" data-ins="{{step1.text}}"><span>{{step1.text}}</span><span class="vp-origin">(文本)</span></div>
+  </div>
+  <div class="toast" id="vpToast"></div>
+</div>
+
+<!-- ============ 11.5 更多选项-函数状态行 ============ -->
+<h2 class="section">11.5 「更多选项」弹窗 · 函数状态行</h2>
+<div class="device" style="padding-bottom:24px">
+  <div class="statusbar"><span>9:41</span><span>▮▮▮</span></div>
+  <div class="mo-header">
+    <span class="mo-title">天气查询</span>
+    <span class="fn-badge" style="font-size:11px">函数</span>
+    <span style="font-size:18px">ƒ(x)</span>
+  </div>
+  <div class="mo-meta" style="padding:0 16px">ID: xxx &nbsp; 修改: 2026-09-08</div>
+  <div class="mo-signature-box">
+    <div style="font-size:12px;color:var(--on-surface-variant);margin-bottom:6px">函数签名 · 只读</div>
+    <div style="font-size:14px">参数: url(文本·必填), method(文本·可选)</div>
+    <div style="font-size:14px;margin-top:4px">返回: {code, msg, data}</div>
+  </div>
+</div>
+
+<script>
+// ===== 11.1 折叠展开 =====
+document.getElementById('toggleReturn').addEventListener('click', function(){
+  var list = document.getElementById('returnList');
+  list.style.display = list.style.display === 'block' ? 'none' : 'block';
+  this.querySelector('.header').textContent = '▶';
+});
+
+// ===== 12.1 参数编辑弹窗（在 11.1 设备上叠加显示） =====
+var paramSheet = null;
+document.getElementById('openParamSheet').addEventListener('click', function(){
+  if (paramSheet) { paramSheet.parentNode.removeChild(paramSheet); paramSheet=null; return; }
+  // 获取 11.1 设备
+  var dev = this.closest('.device');
+  var sheet = document.createElement('div');
+  sheet.className = 'sheet';
+  sheet.style.position='absolute';
+  sheet.innerHTML =
+    '<div class="handle"></div>'+
+    '<div class="sheet-title">添加参数</div>'+
+    '<div class="field-label">参数名</div><div class="text-field" contenteditable="true"></div>'+
+    '<div class="field-label">类型</div><div class="spinner" id="typeSpinner"><span>文本</span><span>▾</span></div>'+
+    '<div class="field-label">默认值 <span style="color:var(--on-surface-variant);font-weight:400">(随类型切换)</span></div>'+
+    '<div id="defaultValBox"><div class="text-field" contenteditable="true">默认值</div></div>'+
+    '<div class="switch-row"><span>是否必填</span><span style="font-size:13px;color:var(--on-surface-variant)">必填</span><div class="switch on" id="reqSwitch"></div></div>'+
+    '<div class="sheet-actions"><button class="text-btn">取消</button><button class="fill-btn">保存</button></div>';
+  dev.appendChild(sheet);
+  paramSheet = sheet;
+
+  // 类型切换 -> 默认值控件实时变化
+  var typeSpinner = sheet.querySelector('#typeSpinner');
+  var types = ['文本','数字','布尔','列表','字典','图片','文件','坐标'];
+  var dropdown = document.createElement('div');
+  dropdown.className = 'dropdown';
+  dropdown.style.display='none';
+  dev.appendChild(dropdown);
+  typeSpinner.addEventListener('click', function(){
+    if (dropdown.style.display==='block'){dropdown.style.display='none';return;}
+    dropdown.innerHTML = types.map(function(t){return '<div>'+t+'</div>';}).join('');
+    dropdown.style.display='block';
+    dropdown.querySelectorAll('div').forEach(function(item, i){
+      item.addEventListener('click', function(){
+        typeSpinner.querySelector('span').textContent = types[i];
+        dropdown.style.display='none';
+        // 更新默认值控件
+        var box = sheet.querySelector('#defaultValBox');
+        var controls = {
+          '文本':'<div class="text-field" contenteditable="true">文本默认值</div>',
+          '数字':'<div class="text-field" contenteditable="true" style="inputmode:decimal">123</div>',
+          '布尔':'<div class="switch-row" style="margin-bottom:0"><span>默认开</span><div class="switch on"></div></div>',
+          '列表':'<div class="text-field" contenteditable="true">["a","b"]</div>',
+          '字典':'<div class="text-field" contenteditable="true">{k: v}</div>',
+          '图片':'<div class="text-field" contenteditable="true">选择图片…</div>',
+          '文件':'<div class="text-field" contenteditable="true">选择文件…</div>',
+          '坐标':'<div class="text-field" contenteditable="true">x, y</div>'
+        };
+        box.innerHTML = controls[types[i]] || controls['文本'];
+      });
+    });
+  });
+
+  var reqSwitch = sheet.querySelector('#reqSwitch');
+  reqSwitch.addEventListener('click', function(){ this.classList.toggle('on'); });
+
+  sheet.querySelector('.fill-btn').addEventListener('click', function(){
+    var name = sheet.querySelector('.text-field contenteditable').textContent.trim();
+    if(name){ toast(dev, '保存参数: '+name); }
+    sheet.parentNode.removeChild(sheet); dropdown.parentNode.removeChild(dropdown); paramSheet=null;
+  });
+  sheet.querySelector('.text-btn').addEventListener('click', function(){
+    sheet.parentNode.removeChild(sheet); dropdown.parentNode.removeChild(dropdown); paramSheet=null;
+  });
+});
+
+// ===== 11.3 函数选择下拉 + 参数赋值 =====
+var fnData = {
+  '天气查询': { sig:'└ 签名: city(文本●必填), days(数字○可选)', params:[
+    {n:'city', req:true, v:'{{step1.city}}', type:'text'},
+    {n:'days', req:false, v:'3', type:'num'}
+  ]},
+  '发送请求': { sig:'└ 签名: url(文本●必填), method(文本●必填)', params:[
+    {n:'url', req:true, v:'{{step2.url}}', type:'text'},
+    {n:'method', req:true, v:'GET', type:'text'}
+  ]},
+  '图片处理': { sig:'└ 签名: img(图片●必填), scale(数字○可选)', params:[
+    {n:'img', req:true, v:'{{step3.img}}', type:'image'},
+    {n:'scale', req:false, v:'1.5', type:'num'}
+  ]}
+};
+var fnSelector = document.getElementById('fnSelector');
+var fnDropdown = document.getElementById('fnDropdown');
+var fnSig = document.getElementById('fnSig');
+var fnCard = fnSelector.closest('.card');
+fnSelector.addEventListener('click', function(){
+  if(fnDropdown.style.display==='block'){fnDropdown.style.display='none';return;}
+  fnDropdown.innerHTML = Object.keys(fnData).map(function(k){
+    return '<div data-k="'+k+'">'+k+' <span class="fn-badge">函数</span></div>';
+  }).join('');
+  fnDropdown.style.display='block';
+  fnDropdown.querySelectorAll('div').forEach(function(item){
+    item.addEventListener('click', function(){
+      var k = item.getAttribute('data-k');
+      fnSelector.querySelector('span').textContent = k + ' ';
+      fnSelector.querySelector('.fn-badge').outerHTML = '<span class="fn-badge">函数</span>';
+      fnSig.textContent = fnData[k].sig;
+      fnDropdown.style.display='none';
+      // 重新渲染参数赋值区
+      var oldRows = fnCard.querySelectorAll('.param-row'); oldRows.forEach(function(r){ r.remove(); });
+      var divider = fnCard.querySelector('.divider');
+      var returnDiv = fnCard.querySelector('.divider:last-of-type');
+      fnData[k].params.forEach(function(p){
+        var row = document.createElement('div'); row.className='param-row';
+        row.innerHTML = '<span class="param-name">'+p.n+(p.req?' <span class="pin-required">*</span>':'')+'</span>'+
+          '<div class="value-box" contenteditable="true">'+p.v+'</div>'+
+          '<span class="icon-btn">🔮</span>';
+        fnCard.insertBefore(row, divider);
+      });
+    });
+  });
+});
+
+// 魔法变量按钮 toast
+document.querySelectorAll('#fnToast').length; // noop
+function showFnToast(msg){
+  var t=document.getElementById('fnToast'); t.textContent=msg; t.classList.add('show');
+  setTimeout(function(){t.classList.remove('show');},1200);
+}
+document.querySelectorAll('.value-box').forEach(function(){ /* 占位 */ });
+
+// ===== 11.4 魔法变量选择器点选 =====
+document.querySelectorAll('.vp-item').forEach(function(item){
+  item.addEventListener('click', function(){
+    var t=document.getElementById('vpToast');
+    t.textContent='已插入: '+item.getAttribute('data-ins');
+    t.classList.add('show');
+    setTimeout(function(){t.classList.remove('show');},1200);
+  });
+});
+
+// ===== 通用 toast =====
+function toast(host, msg){
+  var t=host.querySelector('.toast'); if(!t){t=document.createElement('div');t.className='toast';host.appendChild(t);}
+  t.textContent=msg; t.classList.add('show'); setTimeout(function(){t.classList.remove('show');},1200);
+}
+</script>
+</body>
+</html>
