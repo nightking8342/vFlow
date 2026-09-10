@@ -12,6 +12,12 @@ This file provides guidance to coding agents when working with code in this repo
 
 **核心原则：控制 diff 面积。能加新文件就不改上游文件，能走新增模块就不动核心代码。** 本 fork 以「新增能力」为主（新增模块、新增 handler、新增脚本），不是深改上游核心。
 
+## fork 文档导航
+
+- `docs/fork/surveys/` —— **现状调研文档目录**（改代码前的地图）。索引见 `docs/fork/surveys/README.md`，含写作规范与候选梳理方向。
+  - `docs/fork/surveys/ai-system-overview.md` —— **AI 体系梳理**：三套独立 AI 链路（聊天 Agent / AI 生成工作流 / 工作流内 AI 模块）、系统提示词组装、技能路由、工具清单与 scope 判定、执行与审批流程、能力与现状评估。**改动任何 AI 相关能力前先读这份。**
+- `docs/fork/function-workflow.md` —— 函数工作流功能的需求文档 + 实现状态/交接（含真机测试场景）。
+
 ---
 
 ## 项目定位
