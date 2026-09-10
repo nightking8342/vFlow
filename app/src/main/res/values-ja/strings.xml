@@ -436,6 +436,14 @@
     <string name="editor_toast_module_inserted">挿入されたモジュール: %1$s</string>
     <string name="editor_toast_module_insert_failed">モジュールの挿入に失敗しました</string>
     <string name="editor_group_named_variables">名前付き変数</string>
+    <string name="editor_group_function_params">関数パラメータ</string>
+    <string name="editor_more_options_function_signature_title">関数シグネチャ</string>
+    <string name="editor_more_options_function_params_prefix">パラメータ</string>
+    <string name="editor_more_options_function_return_prefix">戻り値</string>
+    <string name="editor_more_options_function_param_entry">%1$s(%2$s%3$s)</string>
+    <string name="editor_more_options_function_param_required">必須</string>
+    <string name="editor_more_options_function_param_optional">任意</string>
+    <string name="editor_toast_define_function_removed">「関数定義」を削除しました。このワークフローは関数ではなくなりました。参照するワークフローは無効になります</string>
     <string name="variable_type_text">テキスト</string>
     <string name="variable_named_variable">名前付き変数</string>
     <string name="editor_toast_variable_reference_updated">変数 \'%s\' への参照が自動的に更新されます</string>
@@ -983,6 +991,7 @@
     <string name="text_no_favorite_workflows">現在、お気に入りのワークフローはありません</string>
     <string name="desc_details">詳細</string>
     <string name="desc_delete">削除</string>
+    <string name="desc_edit">編集</string>
     <string name="hint_key">キー</string>
     <string name="desc_select_magic_variable">マジック変数を選択</string>
     <string name="desc_delete_item">この項目を削除します</string>

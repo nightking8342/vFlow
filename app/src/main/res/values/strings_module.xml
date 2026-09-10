@@ -1931,6 +1931,9 @@
     <string name="output_vflow_logic_call_function_result_name">函数返回值</string>
     <string name="summary_vflow_logic_call_function_prefix">调用函数工作流</string>
     <string name="dialog_call_function_select_title">选择函数工作流</string>
+    <string name="editor_call_function_params_title">参数赋值</string>
+    <string name="editor_call_function_no_params">（该函数无参数，无需赋值）</string>
+    <string name="editor_call_function_param_required_hint">必填</string>
 
     <!-- vflow.logic.define_function -->
     <string name="module_vflow_logic_define_function_desc">声明本工作流为函数，配置参数与返回值。须作为工作流第一步</string>
@@ -1938,6 +1941,19 @@
     <string name="summary_vflow_logic_define_function_prefix">定义函数</string>
     <string name="summary_vflow_logic_define_function_no_signature">定义函数（未声明参数）</string>
     <string name="summary_vflow_logic_define_function_return_prefix">返回</string>
+    <string name="editor_define_function_section_params">函数参数</string>
+    <string name="editor_define_function_add_param">添加参数</string>
+    <string name="editor_define_function_section_return">返回值</string>
+    <string name="editor_define_function_param_name_hint">参数名</string>
+    <string name="editor_define_function_param_type_hint">类型</string>
+    <string name="editor_define_function_param_default_hint">默认值</string>
+    <string name="editor_define_function_param_required">必填</string>
+    <string name="editor_define_function_param_optional">可选</string>
+    <string name="editor_define_function_return_none">（无返回值，或无法静态推导）</string>
+    <string name="editor_define_function_param_title_add">添加参数</string>
+    <string name="editor_define_function_param_title_edit">编辑参数</string>
+    <string name="editor_define_function_invalid_name">参数名不能为空，且不能包含 . [ ] $ { } 或空格（会干扰变量引用）</string>
+    <string name="editor_define_function_duplicate_name">参数名 \'%s\' 已存在</string>
 
     <!-- vflow.logic.foreach_end -->
     <string name="module_vflow_logic_foreach_end_desc">ForEach 循环块的结束点</string>

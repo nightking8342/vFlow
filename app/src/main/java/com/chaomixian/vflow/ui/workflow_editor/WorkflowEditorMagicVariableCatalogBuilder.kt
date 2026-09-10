@@ -12,9 +12,12 @@ import com.chaomixian.vflow.core.types.parser.VariablePathParser
 import com.chaomixian.vflow.core.workflow.GlobalVariableStore
 import com.chaomixian.vflow.core.workflow.WorkflowManager
 import com.chaomixian.vflow.core.workflow.model.ActionStep
+import com.chaomixian.vflow.core.workflow.model.FunctionParam
 import com.chaomixian.vflow.core.workflow.module.data.CreateVariableModule
 import com.chaomixian.vflow.core.workflow.module.logic.ForEachModule
 import com.chaomixian.vflow.core.workflow.module.logic.LoopModule
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 
 internal data class MagicVariablePickerModel(
     val stepVariables: Map<String, List<MagicVariableItem>>,
@@ -29,6 +32,7 @@ internal class WorkflowEditorMagicVariableCatalogBuilder(
     private val context: Context,
     private val workflowManager: WorkflowManager
 ) {
+    private val gson = Gson()
     fun buildNamedVariables(
         actionSteps: List<ActionStep>,
         upToPosition: Int
@@ -72,6 +76,8 @@ internal class WorkflowEditorMagicVariableCatalogBuilder(
                 }
             }
 
+        val functionParams = buildFunctionParamsGroup(actionSteps, upToPosition)
+
         val globalVariables = GlobalVariableStore.getAll(context)
         if (globalVariables.isNotEmpty()) {
             val globalItems = globalVariables.entries
@@ -85,6 +91,9 @@ internal class WorkflowEditorMagicVariableCatalogBuilder(
                     )
                 }
             return buildMap {
+                if (functionParams.isNotEmpty()) {
+                    put(context.getString(R.string.editor_group_function_params), functionParams)
+                }
                 if (availableNamedVariables.isNotEmpty()) {
                     put(
                         context.getString(R.string.editor_group_named_variables),
@@ -95,10 +104,43 @@ internal class WorkflowEditorMagicVariableCatalogBuilder(
             }
         }
 
-        return if (availableNamedVariables.isNotEmpty()) {
-            mapOf(context.getString(R.string.editor_group_named_variables) to availableNamedVariables.values.toList())
-        } else {
-            emptyMap()
+        return buildMap {
+            if (functionParams.isNotEmpty()) {
+                put(context.getString(R.string.editor_group_function_params), functionParams)
+            }
+            if (availableNamedVariables.isNotEmpty()) {
+                put(context.getString(R.string.editor_group_named_variables), availableNamedVariables.values.toList())
+            }
+        }
+    }
+
+    /**
+     * 扫描「定义函数」卡片（vflow.logic.define_function），从其 functionParams（JSON 字符串）解析
+     * 出函数参数，生成「函数参数」分组（决策 2：独立分组，插入 `[[参数名]]`，底层复用 namedVariables）。
+     */
+    private fun buildFunctionParamsGroup(
+        actionSteps: List<ActionStep>,
+        upToPosition: Int
+    ): List<MagicVariableItem> {
+        val defineStep = actionSteps.take(upToPosition)
+            .firstOrNull { it.moduleId == DEFINE_FUNCTION_MODULE_ID } ?: return emptyList()
+        val rawParams = defineStep.parameters["functionParams"] as? String ?: return emptyList()
+        val params: List<FunctionParam> = try {
+            gson.fromJson(rawParams, object : TypeToken<List<FunctionParam>>() {}.type) ?: emptyList()
+        } catch (e: Exception) {
+            emptyList()
+        }
+        if (params.isEmpty()) return emptyList()
+
+        return params.mapNotNull { param ->
+            if (param.name.isBlank()) return@mapNotNull null
+            val typeId = VariableType.fromStoredValue(param.type)?.typeId ?: VTypeRegistry.ANY.id
+            MagicVariableItem(
+                variableReference = VariablePathParser.buildNamedVariableReference(param.name),
+                variableName = param.name,
+                originDescription = typeDescription(typeId),
+                typeId = typeId
+            )
         }
     }
 
@@ -305,5 +347,6 @@ internal class WorkflowEditorMagicVariableCatalogBuilder(
 
     private companion object {
         const val LOAD_VARIABLES_MODULE_ID = "vflow.variable.load"
+        const val DEFINE_FUNCTION_MODULE_ID = "vflow.logic.define_function"
     }
 }

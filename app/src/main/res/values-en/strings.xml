@@ -461,6 +461,14 @@
     <string name="editor_toast_module_inserted">Inserted module: %1$s</string>
     <string name="editor_toast_module_insert_failed">Failed to insert module</string>
     <string name="editor_group_named_variables">Named Variables</string>
+    <string name="editor_group_function_params">Function Parameters</string>
+    <string name="editor_more_options_function_signature_title">Function Signature</string>
+    <string name="editor_more_options_function_params_prefix">Parameters</string>
+    <string name="editor_more_options_function_return_prefix">Return</string>
+    <string name="editor_more_options_function_param_entry">%1$s(%2$s%3$s)</string>
+    <string name="editor_more_options_function_param_required">required</string>
+    <string name="editor_more_options_function_param_optional">optional</string>
+    <string name="editor_toast_define_function_removed">Removed "Define Function". This workflow is no longer a function. Workflows referencing it will become invalid</string>
     <string name="variable_type_text">Text</string>
     <string name="variable_named_variable">Named Variable</string>
     <string name="editor_toast_variable_reference_updated">Automatically updated references to variable \'%s\'</string>
@@ -1039,6 +1047,7 @@
     <string name="text_no_favorite_workflows">No favorite workflows</string>
     <string name="desc_details">Details</string>
     <string name="desc_delete">Delete</string>
+    <string name="desc_edit">Edit</string>
     <string name="hint_key">Key</string>
     <string name="desc_select_magic_variable">Select Magic Variable</string>
     <string name="desc_delete_item">Delete This Item</string>

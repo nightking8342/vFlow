@@ -1912,6 +1912,9 @@
     <string name="output_vflow_logic_call_function_result_name">Function Return Value</string>
     <string name="summary_vflow_logic_call_function_prefix">Call function workflow</string>
     <string name="dialog_call_function_select_title">Select Function Workflow</string>
+    <string name="editor_call_function_params_title">Parameter Assignment</string>
+    <string name="editor_call_function_no_params">(This function has no parameters, nothing to assign)</string>
+    <string name="editor_call_function_param_required_hint">Required</string>
 
     <!-- vflow.logic.define_function -->
     <string name="module_vflow_logic_define_function_desc">Declare this workflow as a function, configuring parameters and return value. Must be the first step</string>
@@ -1919,6 +1922,19 @@
     <string name="summary_vflow_logic_define_function_prefix">Define function</string>
     <string name="summary_vflow_logic_define_function_no_signature">Define function (no parameters declared)</string>
     <string name="summary_vflow_logic_define_function_return_prefix">returns</string>
+    <string name="editor_define_function_section_params">Function Parameters</string>
+    <string name="editor_define_function_add_param">Add Parameter</string>
+    <string name="editor_define_function_section_return">Return Value</string>
+    <string name="editor_define_function_param_name_hint">Parameter name</string>
+    <string name="editor_define_function_param_type_hint">Type</string>
+    <string name="editor_define_function_param_default_hint">Default value</string>
+    <string name="editor_define_function_param_required">Required</string>
+    <string name="editor_define_function_param_optional">Optional</string>
+    <string name="editor_define_function_return_none">(No return value, or cannot be derived statically)</string>
+    <string name="editor_define_function_param_title_add">Add Parameter</string>
+    <string name="editor_define_function_param_title_edit">Edit Parameter</string>
+    <string name="editor_define_function_invalid_name">Parameter name must not be blank or contain . [ ] $ { } or spaces (would break variable references)</string>
+    <string name="editor_define_function_duplicate_name">Parameter name \'%s\' already exists</string>
 
     <!-- vflow.logic.foreach_end -->
     <string name="module_vflow_logic_foreach_end_desc">End point of ForEach loop block</string>

@@ -666,7 +666,7 @@ class ActionEditorSheet : BottomSheetDialogFragment() {
         // CHIP_GROUP 风格不需要魔法变量按钮，使用简化布局
         if (inputDef.inputStyle == InputStyle.CHIP_GROUP) {
             val row = LayoutInflater.from(requireContext()).inflate(R.layout.row_editor_input, null, false)
-            row.findViewById<TextView>(R.id.input_name).text = inputDef.getLocalizedName(requireContext())
+            row.findViewById<TextView>(R.id.input_name).text = inputDef.getDisplayName(requireContext())
             row.findViewById<ImageButton>(R.id.button_magic_variable).visibility = View.GONE
 
             val valueContainer = row.findViewById<ViewGroup>(R.id.input_value_container)
@@ -696,7 +696,7 @@ class ActionEditorSheet : BottomSheetDialogFragment() {
         // PICKER 类型使用带选择器图标的输入框
         if (inputDef.pickerType != PickerType.NONE && !inputDef.supportsRichText) {
             val row = LayoutInflater.from(requireContext()).inflate(R.layout.row_editor_input, null, false)
-            row.findViewById<TextView>(R.id.input_name).text = inputDef.getLocalizedName(requireContext())
+            row.findViewById<TextView>(R.id.input_name).text = inputDef.getDisplayName(requireContext())
             row.findViewById<ImageButton>(R.id.button_magic_variable).visibility = View.GONE
 
             val valueContainer = row.findViewById<ViewGroup>(R.id.input_value_container)

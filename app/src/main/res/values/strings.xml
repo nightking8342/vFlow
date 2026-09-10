@@ -461,6 +461,14 @@
     <string name="editor_toast_module_inserted">已插入模块：%1$s</string>
     <string name="editor_toast_module_insert_failed">插入模块失败</string>
     <string name="editor_group_named_variables">命名变量</string>
+    <string name="editor_group_function_params">函数参数</string>
+    <string name="editor_more_options_function_signature_title">函数签名</string>
+    <string name="editor_more_options_function_params_prefix">函数参数</string>
+    <string name="editor_more_options_function_return_prefix">返回值</string>
+    <string name="editor_more_options_function_param_entry">%1$s(%2$s%3$s)</string>
+    <string name="editor_more_options_function_param_required">必填</string>
+    <string name="editor_more_options_function_param_optional">可选</string>
+    <string name="editor_toast_define_function_removed">已移除「定义函数」，此工作流不再是函数。引用它的其他工作流将失效</string>
     <string name="variable_type_text">文本</string>
     <string name="variable_named_variable">命名变量</string>
     <string name="editor_toast_variable_reference_updated">已自动更新对变量 \'%s\' 的引用</string>
@@ -1039,6 +1047,7 @@
     <string name="text_no_favorite_workflows">暂无收藏的工作流</string>
     <string name="desc_details">详情</string>
     <string name="desc_delete">删除</string>
+    <string name="desc_edit">编辑</string>
     <string name="hint_key">键</string>
     <string name="desc_select_magic_variable">选择魔法变量</string>
     <string name="desc_delete_item">删除此项目</string>

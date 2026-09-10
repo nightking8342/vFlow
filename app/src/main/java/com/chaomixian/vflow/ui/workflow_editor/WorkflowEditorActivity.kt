@@ -180,6 +180,7 @@ class WorkflowEditorActivity : BaseActivity() {
     companion object {
         const val EXTRA_WORKFLOW_ID = "WORKFLOW_ID"
         private const val MAX_UNDO_STEPS = 50
+        private const val DEFINE_FUNCTION_MODULE_ID = "vflow.logic.define_function"
     }
 
     private data class EditorSnapshot(
@@ -902,20 +903,19 @@ class WorkflowEditorActivity : BaseActivity() {
                 // 在保存后，检查并处理变量重命名
                 handleVariableNameChange(position)
             } else {
-                val startPosition = actionSteps.size
                 val stepsToAdd = module.createSteps()
-                if (targetIndex > 0 && targetIndex < stepsToAdd.size) {
-                    val configuredSteps = stepsToAdd.toMutableList()
-                    configuredSteps[targetIndex] = configuredSteps[targetIndex].copy(parameters = newStepData.parameters)
-                    actionSteps.addAll(configuredSteps)
-                } else {
-                    val configuredFirstStep = stepsToAdd.first().copy(parameters = newStepData.parameters)
-                    actionSteps.add(configuredFirstStep)
-                    if (stepsToAdd.size > 1) {
-                        actionSteps.addAll(stepsToAdd.subList(1, stepsToAdd.size))
+                val targetIndex = module.editorTargetStepIndex
+                val configuredSteps: List<ActionStep> = if (targetIndex > 0 && targetIndex < stepsToAdd.size) {
+                    stepsToAdd.toMutableList().also {
+                        it[targetIndex] = it[targetIndex].copy(parameters = newStepData.parameters)
                     }
-                    syncDynamicBlockAfterSave(module, startPosition)
+                } else {
+                    listOf(stepsToAdd.first().copy(parameters = newStepData.parameters)) +
+                        if (stepsToAdd.size > 1) stepsToAdd.subList(1, stepsToAdd.size) else emptyList()
                 }
+                // 决策 16：新添加「定义函数」时强制放到工作流首位（而不是末尾追加）
+                val actualStart = addStepsWithDefineFunctionRule(configuredSteps)
+                syncDynamicBlockAfterSave(module, actualStart)
             }
             recalculateAndNotify()
         }
@@ -948,6 +948,25 @@ class WorkflowEditorActivity : BaseActivity() {
     private fun syncDynamicBlockAfterSave(module: ActionModule, startPosition: Int) {
         if (module.id == MENU_START_ID) {
             MenuBlockSupport.reconcileBranches(actionSteps, startPosition)
+        }
+    }
+
+    /**
+     * 向 actionSteps 追加（或首位插入）一批步骤。
+     * 决策 16：若这批步骤中包含「定义函数」，强制插入到工作流首位，而不是末尾追加，
+     * 保证「定义函数」始终是函数工作流第一步。
+     * @return 这批步骤实际插入的起始索引。
+     */
+    private fun addStepsWithDefineFunctionRule(steps: List<ActionStep>): Int {
+        if (steps.isEmpty()) return actionSteps.size
+        val containsDefineFunction = steps.any { it.moduleId == DEFINE_FUNCTION_MODULE_ID }
+        if (containsDefineFunction) {
+            actionSteps.addAll(0, steps)
+            return 0
+        } else {
+            val start = actionSteps.size
+            actionSteps.addAll(start, steps)
+            return start
         }
     }
 
@@ -1211,6 +1230,11 @@ class WorkflowEditorActivity : BaseActivity() {
                     if (module.onStepDeleted(actionSteps, position)) {
                         pushUndoSnapshot(undoSnapshot)
                         recalculateAndNotify()
+                        // 决策 23：删除「定义函数」卡片时清空函数签名并提示引用方警告
+                        if (step.moduleId == DEFINE_FUNCTION_MODULE_ID) {
+                            currentWorkflow = currentWorkflow?.copy(functionSignature = null)
+                            toast(R.string.editor_toast_define_function_removed)
+                        }
                     }
                 }
             },
@@ -1426,6 +1450,20 @@ class WorkflowEditorActivity : BaseActivity() {
                     return originalList
                 }
 
+                // 决策 16：「定义函数」卡片必须位于工作流第一步，禁止移动它或将它之后的其他步骤移到它之前。
+                val defineIndex = originalList.indexOfFirst { it.moduleId == DEFINE_FUNCTION_MODULE_ID }
+                if (defineIndex != -1) {
+                    val defineRange = BlockStructureHelper.findBlockRange(originalList, defineIndex)
+                    // 不允许移动「定义函数」卡片本身
+                    if (fromPos in defineRange.first..defineRange.second) {
+                        return originalList
+                    }
+                    // 不允许把其它步骤向上移到「定义函数」之前
+                    if (fromPos > defineRange.second && toPos <= defineRange.first) {
+                        return originalList
+                    }
+                }
+
                 try {
                     // 找到要移动的完整积木块范围
                     val (blockStart, blockEnd) = BlockStructureHelper.findBlockRange(originalList, fromPos)
@@ -1527,7 +1565,13 @@ class WorkflowEditorActivity : BaseActivity() {
                 else -> {}
             }
         }
-        return blockStack.isEmpty()
+        if (!blockStack.isEmpty()) return false
+
+        // 决策 16：「定义函数」卡片必须位于工作流第一步。若存在且不在首位，视为无效移动。
+        val defineIndex = list.indexOfFirst { it.moduleId == DEFINE_FUNCTION_MODULE_ID }
+        if (defineIndex != -1 && defineIndex != 0) return false
+
+        return true
     }
 
     private fun applyWindowInsets() {

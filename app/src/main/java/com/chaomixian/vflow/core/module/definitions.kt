@@ -445,7 +445,9 @@ data class InputDefinition(
     val optionsStringRes: List<Int> = emptyList(),
     val hintStringRes: Int? = null,
     /** 向后兼容映射：旧值 -> 新值 */
-    val legacyValueMap: Map<String, String>? = null
+    val legacyValueMap: Map<String, String>? = null,
+    /** 是否为必填参数（决策 18：调用侧必填参数带 * 标记，运行时校验）。带默认值，向后兼容。 */
+    val isRequired: Boolean = false
 ) {
     val allowsInlineScript: Boolean
         get() = acceptsInlineScript ?: supportsRichText
@@ -457,6 +459,14 @@ data class InputDefinition(
      */
     fun getLocalizedName(context: Context): String {
         return if (nameStringRes != null) context.getString(nameStringRes) else name
+    }
+
+    /**
+     * 获取用于显示的名称，可选地在末尾追加必填标记 *（当 [isRequired] 为 true 时）。
+     */
+    fun getDisplayName(context: Context): String {
+        val base = getLocalizedName(context)
+        return if (isRequired) "$base *" else base
     }
 
     /**

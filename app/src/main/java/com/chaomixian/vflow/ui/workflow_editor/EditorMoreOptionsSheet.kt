@@ -35,6 +35,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.chaomixian.vflow.R
+import com.chaomixian.vflow.core.types.VTypeRegistry
 import com.chaomixian.vflow.core.workflow.WorkflowVisuals
 import com.chaomixian.vflow.core.workflow.model.Workflow
 import com.chaomixian.vflow.core.workflow.model.WorkflowReentryBehavior
@@ -59,6 +60,9 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
     private lateinit var textWorkflowId: TextView
     private lateinit var textWorkflowModified: TextView
     private lateinit var cardWorkflowInfo: MaterialCardView
+    private lateinit var cardFunctionSignature: MaterialCardView
+    private lateinit var textFunctionParamsSummary: TextView
+    private lateinit var textFunctionReturnSummary: TextView
 
     private lateinit var editVersion: com.google.android.material.textfield.TextInputEditText
     private lateinit var editVFlowLevel: com.google.android.material.textfield.TextInputEditText
@@ -129,6 +133,9 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
         textWorkflowId = view.findViewById(R.id.text_workflow_id)
         textWorkflowModified = view.findViewById(R.id.text_workflow_modified)
         cardWorkflowInfo = view.findViewById(R.id.card_workflow_info)
+        cardFunctionSignature = view.findViewById(R.id.card_function_signature)
+        textFunctionParamsSummary = view.findViewById(R.id.text_function_params_summary)
+        textFunctionReturnSummary = view.findViewById(R.id.text_function_return_summary)
 
         // 初始化元数据编辑视图
         editVersion = view.findViewById(R.id.edit_workflow_version)
@@ -179,6 +186,8 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
             cardWorkflowInfo.setOnClickListener {
                 copyToClipboard(wf.id)
             }
+
+            bindFunctionSignature(wf)
 
             // 填充元数据
             editVersion.setText(wf.version)
@@ -261,6 +270,41 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
 
     private fun updateMaxExecutionTimeValue(seconds: Int) {
         textMaxExecutionTimeValue.text = getString(R.string.workflow_max_execution_time_value, seconds)
+    }
+
+    /**
+     * 填充函数签名状态行（只读，决策 11.5）。
+     * 仅当工作流声明了函数签名时显示；否则隐藏整个卡片。
+     */
+    private fun bindFunctionSignature(wf: Workflow) {
+        val signature = wf.functionSignature
+        if (signature == null) {
+            cardFunctionSignature.visibility = View.GONE
+            return
+        }
+        cardFunctionSignature.visibility = View.VISIBLE
+
+        // 参数摘要：url(文本必填), count(数字可选)
+        val paramsSummary = signature.params.joinToString(", ") { param ->
+            val typeLabel = VTypeRegistry.getType(param.type).getLocalizedName(requireContext())
+            val requiredFlag = getString(
+                if (param.isRequired) R.string.editor_more_options_function_param_required
+                else R.string.editor_more_options_function_param_optional
+            )
+            getString(R.string.editor_more_options_function_param_entry, param.name, typeLabel, requiredFlag)
+        }
+        textFunctionParamsSummary.text = getString(
+            R.string.editor_more_options_function_params_prefix
+        ) + ": " + paramsSummary
+
+        // 返回值摘要：只对「返回字典」场景展示键
+        val returnDef = signature.returnDef
+        textFunctionReturnSummary.text = if (returnDef != null && returnDef.keys.isNotEmpty()) {
+            getString(R.string.editor_more_options_function_return_prefix) + ": {" +
+                returnDef.keys.joinToString(", ") { it.name } + "}"
+        } else {
+            getString(R.string.editor_more_options_function_return_prefix) + ": -"
+        }
     }
 
     private fun setupReentryBehaviorSelector() {

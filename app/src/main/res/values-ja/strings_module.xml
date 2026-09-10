@@ -1728,6 +1728,9 @@
     <string name="output_vflow_logic_call_function_result_name">関数の戻り値</string>
     <string name="summary_vflow_logic_call_function_prefix">関数ワークフローを呼び出す</string>
     <string name="dialog_call_function_select_title">関数ワークフローを選択</string>
+    <string name="editor_call_function_params_title">パラメータ代入</string>
+    <string name="editor_call_function_no_params">（この関数はパラメータなし、代入するものはありません）</string>
+    <string name="editor_call_function_param_required_hint">必須</string>
 
     <!-- vflow.logic.define_function -->
     <string name="module_vflow_logic_define_function_desc">このワークフローを関数として宣言し、パラメータと戻り値を設定します。先頭ステップにしてください</string>
@@ -1735,6 +1738,19 @@
     <string name="summary_vflow_logic_define_function_prefix">関数を定義</string>
     <string name="summary_vflow_logic_define_function_no_signature">関数を定義（パラメータ未宣言）</string>
     <string name="summary_vflow_logic_define_function_return_prefix">戻り値</string>
+    <string name="editor_define_function_section_params">関数パラメータ</string>
+    <string name="editor_define_function_add_param">パラメータ追加</string>
+    <string name="editor_define_function_section_return">戻り値</string>
+    <string name="editor_define_function_param_name_hint">パラメータ名</string>
+    <string name="editor_define_function_param_type_hint">型</string>
+    <string name="editor_define_function_param_default_hint">デフォルト値</string>
+    <string name="editor_define_function_param_required">必須</string>
+    <string name="editor_define_function_param_optional">任意</string>
+    <string name="editor_define_function_return_none">（戻り値なし、または静的に導出できません）</string>
+    <string name="editor_define_function_param_title_add">パラメータ追加</string>
+    <string name="editor_define_function_param_title_edit">パラメータ編集</string>
+    <string name="editor_define_function_invalid_name">パラメータ名は空にできず、. [ ] $ { } またはスペースを含めません（変数参照を妨げるため）</string>
+    <string name="editor_define_function_duplicate_name">パラメータ名 \'%s\' は既に存在します</string>
 
     <string name="module_vflow_logic_foreach_end_desc">ForEach ループブロックの終了位置</string>
     <string name="module_vflow_logic_foreach_end_name">反復終了</string>

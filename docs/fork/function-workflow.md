@@ -409,7 +409,8 @@ var functionSignature: FunctionSignature? = null   // null = 普通工作流，�
 - **已提交 commit**：
   - `571f4afc` 需求文档与 UI 原型 + FORK.md 登记
   - `9b96ffc8` 函数工作流核心功能（14 文件，828 insertions）
-- 工作区当前干净。
+  - `（本次）` 函数工作流 UI 完整化 + 实机 bug 修复 + 类型分派 + 动态刷新（详见 §14.6–§14.13）
+- 最终状态见 **§15**。
 
 ### 14.2 已完成（编译通过 + 单元测试通过）
 
@@ -427,15 +428,17 @@ var functionSignature: FunctionSignature? = null   // null = 普通工作流，�
 
 ### 14.3 未完成清单（新会话待办，按优先级）
 
-| # | 待办项 | 对应决策 | 说明 |
+> 更新（2026-09-09）：本会话已完成待办 1/2/3/5/6，并对 7 补充了可单测的校验辅助与测试。剩余以「真机/集成验证」为主。
+
+| # | 待办项 | 对应决策 | 状态 |
 |---|---|---|---|
-| 1 | **魔法变量选择器「函数参数」分组** | 决策 2 | 改 `WorkflowEditorMagicVariableCatalogBuilder`，需要传入 `Workflow` 或从 `actionSteps` 反查（架构约束：`buildNamedVariables` 拿不到 Workflow） |
-| 2 | `EditorMoreOptionsSheet` 函数状态行 | 决策 11.5 | 加只读签名展示 |
-| 3 | **「定义函数」UI 完整化** | 决策 21 | 当前只有参数名输入框；缺：类型下拉、默认值随类型切换、必填开关、返回值配置区、snake_case/去重校验 |
-| 4 | `CallFunctionModule.getDynamicInputs` 渲染真机验证 | 决策 5/13 | 已写代码，但未在编辑器验证动态参数框是否真实渲染 |
-| 5 | 删除「定义函数」卡片清空签名 + 提示 | 决策 23 | 未做 |
-| 6 | 移动「定义函数」卡片需阻止非首位 | 决策 16 | 未做 |
-| 7 | 嵌套调用 / 递归检测专项测试 | 决策 25 | 执行器逻辑已支持，未测试 |
+| 1 | **魔法变量选择器「函数参数」分组** | 决策 2 | ✅ 已完成（`WorkflowEditorMagicVariableCatalogBuilder.buildNamedVariables` 从「定义函数」卡片反查 `functionParams`，插入独立分组） |
+| 2 | `EditorMoreOptionsSheet` 函数状态行 | 决策 11.5 | ✅ 已完成（新增只读签名卡片，非函数时隐藏） |
+| 3 | **「定义函数」UI 完整化** | 决策 21 | ✅ 已完成（参数行可编辑：类型徽标/必填/默认值预览；新增 `DefineFunctionParamEditorSheet` 底部弹窗：参数名/类型下拉/默认值随类型切换/必填开关；返回值只读区；snake_case + 去重校验） |
+| 4 | `CallFunctionModule.getDynamicInputs` 渲染真机验证 | 决策 5/13 | ⏳ 未验证（代码已实现，需真机确认动态参数框渲染） |
+| 5 | 删除「定义函数」卡片清空签名 + 提示 | 决策 23 | ✅ 已完成（`WorkflowEditorActivity.onDeleteClick` 删除时清空 `functionSignature` 并 Toast 提示） |
+| 6 | 移动「定义函数」卡片需阻止非首位 | 决策 16 | ✅ 已完成（`moveBlockInList` + `isBlockStructureValid` 校验「定义函数」必须在首位） |
+| 7 | 嵌套调用 / 递归检测专项测试 | 决策 25 | ⚠️ 部分完成（递归检测执行器逻辑已实现；因无 Robolectric，JVM 单测无法覆盖 `WorkflowExecutor`；补充了 `FunctionParamValidator` 纯逻辑测试；递归/嵌套需真机集成验证） |
 
 ### 14.4 真机测试场景与预期效果
 
@@ -472,21 +475,189 @@ var functionSignature: FunctionSignature? = null   // null = 普通工作流，�
 
 #### B. 预期「缺失/不完整」的场景（不是 bug，是未实现）
 
+> 更新（2026-09-09）：B1/B2/B3/B5 已实现，B4/B6 仍待验证。
+
 | 场景 | 你实际会看到 |
 |---|---|
-| **B1. 变量选择器自动列出函数参数** | ❌ 选择器里**没有**独立「函数参数」分组。只能手敲 `[[url]]`，不能点选 |
-| **B2. 「定义函数」卡片配置完整字段** | ❌ 只有「参数名」输入框 + 添加/删除。**没有**类型下拉、默认值、必填开关、返回值配置区 |
-| **B3. 更多选项弹窗显示函数状态行** | ❌ 工作流「更多选项」里**没有**函数签名状态行 |
-| **B4. 返回值选择器自动展开 `result` 的键** | ❌ 选择器**不会**自动列出 `code`/`msg` 等键，只能手动写 `{{...result.code}}` |
-| **B5. 「定义函数」固定为第一步 / 删除清理签名** | ❌ 卡片可被拖到任意位置、可删除，编辑器不阻止、不清空 `functionSignature` |
-| **B6. 嵌套调用函数工作流** | ⚠️ 执行器逻辑已支持，但未专项测试，不保证 |
+| **B1. 变量选择器自动列出函数参数** | ✅ 已实现：选择器新增「函数参数」分组，可点选 `[[url]]`（从「定义函数」卡片反查 `functionParams`） |
+| **B2. 「定义函数」卡片配置完整字段** | ✅ 已实现：参数行可编辑（类型徽标/必填/默认值预览），点击行或「+ 添加参数」打开编辑弹窗（类型下拉/默认值随类型切换/必填开关），并显示返回值只读区 |
+| **B3. 更多选项弹窗显示函数状态行** | ✅ 已实现：工作流「更多选项」出现函数签名状态卡片（非函数则隐藏） |
+| **B4. 返回值选择器自动展开 `result` 的键** | ⚠️ 未实现：选择器仍不会自动列出 `code`/`msg` 等键，只能手动写 `{{...result.code}}` |
+| **B5. 「定义函数」固定为第一步 / 删除清理签名** | ✅ 已实现：拖拽被阻止使其保持首位；删除卡片会清空 `functionSignature` 并提示引用方警告 |
+| **B6. 嵌套调用函数工作流** | ⚠️ 执行器逻辑已支持，但未专项测试，需真机集成验证 |
 
 #### C. 已知坑（测试时注意）
 
 - **返回值静态推导只在保存时触发**：你编辑 A 时看 `functionSignature.returnDef` 可能是旧的，**保存后**才更新。
-- **参数名校验**：未做 snake_case/去重校验，输入非法参数名不会报错（但 `CallFunctionModule` 生成输入框时仍会生成，只是没校验）。
+- **参数名校验**：已做 snake_case/去重校验（`FunctionParamValidator`），非法/重复参数名会阻止保存并提示。
+- **编辑弹窗宿主限制**：`DefineFunctionParamEditorSheet` 依赖 `FragmentActivity` 作为宿主；如果从非 Activity 的 Context 调用，弹窗无法打开（此时仅 Toast 提示）。
 
 ### 14.5 环境注意
 
-- **单测已通过**：`FunctionSignatureHelperTest`（5 个用例）。
+- **单测已通过**：`FunctionSignatureHelperTest`（5 个用例）+ `FunctionParamValidatorTest`（7 个用例）+ `FunctionParamTypeMapperTest`（5 个用例）。
 - **全部单测有 1 个既有失败**：`VObjectPropertyTest > VFile properties from absolute path`——是 `android.net.Uri.parse` not mocked 的环境问题，**与函数工作流改动无关**（事先存在）。
+- **递归/嵌套调用**：`WorkflowExecutor` 依赖 Android Context/SharedPreferences，无 Robolectric 环境故无法 JVM 单测；需真机集成验证。
+
+### 14.6 本轮实机测试发现的 bug 及修复（2026-09-09）
+
+> 用户实机测试反馈多个问题，其中「致命 bug」已修复。核心根因是**参数类型存储用简写值（"string"）而下游按完整类型 ID（"vflow.type.string"）匹配**，导致类型退化成「任意」、调用侧控件变文本框。
+
+| # | 问题 | 根因 | 修复 |
+|---|---|---|---|
+| 1 | 保存后所有参数类型显示「任意」 | `FunctionParam.type` 存简写值 `"string"`，下游 `VTypeRegistry.getType("string")` 匹配失败回退 ANY | 新增 `FunctionParamTypeMapper`，保存时把简写值转成完整类型 ID |
+| 2 | 必填参数调用时不填也不报错 | 调用侧留空时 `raw` 是空字符串（非 null），跳过必填校验 | `CallFunctionModule.execute` 用 `isBlankValue()` 把空字符串/空列表/空字典视为「未赋值」 |
+| 3 | 调用侧参数框不区分类型（全是文本框），无 `*` 必填标记 | 类型匹配失败全落到 `STRING`；`InputDefinition` 无必填标记 | 类型修复后控件自动分派；`InputDefinition` 追加 `isRequired` + `getDisplayName`（带 `*`） |
+| 4 | 定义函数卡片可在非第一步添加 | 添加步骤时始终追加到末尾，仅移动有约束 | `addStepsWithDefineFunctionRule`：含定义函数时强制插入首位 |
+| 5 | 返回值选择器不能展开 `result` 的键（code/msg）；步骤输出无法手动输入 | `result` 输出为 `ANY` 类型；选择器不展开字典键 | ⚠️ **未修复**（B4 增强功能，需改魔法变量选择器展示 `returnDef.keys`） |
+| 6 | 布尔默认值开关文案错写成「必填」 | `createDefaultEditor` 布尔分支误用「必填」文案 | 改用 `editor_define_function_param_default_hint` 文案 |
+
+**本次修复文件**：
+- `FunctionParamTypeMapper.kt`（新增）
+- `DefineFunctionParamEditorSheet.kt`（类型转完整ID + 布尔文案）
+- `CallFunctionModule.kt`（必填校验 `isBlankValue` + `getDynamicInputs` 标 `isRequired`）
+- `definitions.kt`（`InputDefinition` 加 `isRequired`/`getDisplayName`）
+- `ActionEditorSheet.kt`（`input_name` 用 `getDisplayName` 显示 `*`）
+- `WorkflowEditorActivity.kt`（`addStepsWithDefineFunctionRule` 强制首位）
+
+**仍待验证/待做**：
+- 问题5（返回值键展开）—— B4 增强，需单独实现 + 真机验证
+- 问题3 的 `*` 必填标记真机确认
+- 定义函数强制首位的真机确认
+
+### 14.7 第二轮修复：调用侧参数框类型分派（2026-09-09）
+
+> 根因：`CallFunctionModule.getDynamicInputs` 把所有参数都设 `supportsRichText=true`，
+> 而 `StandardControlFactory.createParameterInputRow` 的 `when` 首个分支命中富文本，
+> 导致数字/布尔等也全部渲染成富文本输入框（用户反馈「一律大编辑框」）。
+
+| 改动 | 说明 |
+|---|---|
+| `CallFunctionModule.getDynamicInputs` | `supportsRichText` 改为仅 `param.type == VTypeRegistry.STRING.id`；数字/布尔走 `createViewForInput` 类型分派（数字键盘/开关） |
+| `DefineFunctionParamEditorSheet.createDefaultEditor` | 列表→`partial_list_editor`（`ListItemAdapter`）、字典→`partial_dictionary_editor`（`DictionaryKVAdapter`）；布尔默认值开关去重文案（`text=""`，避免与「默认值」标题重复） |
+| `DefineFunctionParamEditorSheet.readDefaultValue` | 支持从列表/字典 adapter 读回默认值 |
+
+**关键约束（已向用户确认）**：
+- 原项目引用变量**默认不校验类型**（`enableTypeFilter` 默认 false），所以调用侧任何类型都能通过 🔮 选变量，且选中后 `isVariableReference` 分支渲染成药丸——**与 `supportsRichText` 无关**。
+- 调用侧列表/字典/图片/文件目前仍走 `ParameterType.ANY` → 文本框（因 `ParameterType` 枚举无这些类型）。**用户决定先测这版，暂不做列表/字典专用编辑器的调用侧**。
+
+**单测**：`FunctionParamTypeMapperTest` 新增 5 个用例，全部 410 个通过（仅 1 个既有 VObjectPropertyTest 环境失败）。
+
+### 14.8 第三轮：调用侧参数赋值区由 UIProvider 接管（2026-09-09）
+
+> 背景：调用侧列表/字典/图片/文件无法用专用编辑器，因为 `ParameterType` 枚举只有
+> `STRING/NUMBER/BOOLEAN/ENUM/ANY`（上游基础类型，166 个文件依赖，不可改动）。
+> 项目范式是：复杂类型（列表/字典/图片/文件/坐标）统一声明为 `ParameterType.ANY`，
+> 由模块自己的 `ModuleUIProvider` 接管渲染（参照 `VariableModuleUIProvider`）。
+
+| 改动 | 说明 |
+|---|---|
+| `CallFunctionModuleUIProvider.kt`（重写） | `createEditor` 选中函数后，在参数赋值容器内按 `FunctionParam.type` 分派控件（文本富文本/数字键盘/布尔开关/列表编辑器/字典编辑器）；`readFromEditor` 读回全部参数 |
+| `CallFunctionModule.getDynamicInputs` | 改为只返回 `workflow_id`，**不再为参数生成 InputDefinition**（否则会与 UIProvider 的参数区重复渲染） |
+| `partial_call_function_params.xml`（新增） | 参数赋值区容器 |
+| `partial_call_workflow_editor.xml` | 追加 `<include>` 参数赋值容器 |
+
+**关键架构点（已向用户确认）**：
+- `getHandledInputIds()` 无参，无法动态声明参数名，所以参数渲染全部放在 `createEditor` 内运行时处理。
+- `readParametersFromUi` 先调 `mergeCustomEditorParametersFromUi()`（`uiProvider.readFromEditor`），再遍历通用字段，所以 UIProvider 读回的值会覆盖——参数读取正确。
+- `getDynamicInputs` 不再生成参数字段，避免与 UIProvider 重复渲染；但这也意味着 chat/AI 工具注册等依赖参数 `InputDefinition` 的场景需要评估（README 待补充）。
+
+**待验证**：调用侧参数赋值区（文本/数字/布尔/列表/字典）真实渲染 + 变量药丸 + 读回。
+
+### 14.9 崩溃修复：选择变量后 ClassCastException（2026-09-09）
+
+> 用户实测：调用侧选择变量后页面崩溃。已通过无线 adb 抓到真实堆栈。
+
+**崩溃堆栈**：
+```
+java.lang.ClassCastException: android.widget.LinearLayout cannot be cast to RichTextView
+    at ActionEditorRichTextLocator.findRichTextView(ActionEditorRichTextLocator.kt:27)
+    at ActionEditorSheet.findRichTextView(ActionEditorSheet.kt:924)
+    at ActionEditorSheet.updateInputWithVariable(ActionEditorSheet.kt:960)
+```
+
+**根因**：`CallFunctionModuleUIProvider.createParamRow` 给整行 `row` 设了 `row.tag = param.name`（第158行）。而 `View.findViewWithTag<RichTextView>(inputId)` 做深度优先查找，**先命中根 LinearLayout（row）**而非内部 RichTextView，强转崩溃。
+
+**修复**：删除 `row.tag = param.name`。参数行的富文本控件 tag 由 `createRichTextEditor(tag = param.name)` 正确设置在内部 `rich_text_view` 上，`findViewWithTag` 会命中正确的 RichTextView。
+
+**经验**：在自定义 UIProvider 里用 `findViewWithTag` 定位控件时，**不要给作为容器的根 View 设相同的 tag**，否则深度优先查找会先命中容器导致类型强转崩溃。
+
+### 14.10 修复：列表/布尔/字典引用变量无效 + 数字非药丸（2026-09-09）
+
+> 用户实测：文本/图片/文件/坐标引用变量正常；列表/布尔/字典点了没反应；数字显示为 `{{uuid.属性}}` 纯文本。
+
+**根因**：`updateInputWithVariable` 对非富文本类型（数字/列表/布尔/字典）走 `setPath` 存引用文本，但 `CallFunctionModuleUIProvider.createParamValueEditor` 未处理「值是变量引用」的情况——列表/字典仍渲染 adapter、布尔仍渲染 switch，导致值存了但控件不显示。
+
+**修复**（对齐 `VariableModuleUIProvider`）：
+- `createParamValueEditor` 对**数字/列表/布尔/字典**，若 `currentValue` 是变量引用（`{{..}}`/`[[..]]`），渲染 `magic_variable_pill` 药丸（可点击重选）；未选变量时才显示各自类型控件。
+- 药丸 `tag` 存原始引用，`readParamValue` 读回药丸 tag 作为参数值。
+- 文本/图片/文件/坐标仍走富文本编辑框（不受影响）。
+
+**关键边界**：药丸分支只作用于 `NUMBER/BOOLEAN/LIST/DICTIONARY`。文本走富文本；图片/文件/坐标用户已确认正常，不拦截（否则会从可编辑药丸退化为只读 pill）。
+
+### 14.11 修复：列表/字典**元素**引用变量（2026-09-09）
+
+> 用户实测：列表的**某一个元素**点 🔮 引用变量没反应（整个列表引用正常了，但元素级不行）。
+
+**根因**：列表/字典元素的魔法变量按钮传 `inputId = "items.0"` / `config.key`（子路径），而 `updateInputWithVariable` 走 `setPath` 更新 `currentParameters["items.0"]`，但 `ListItemAdapter`/`DictionaryKVAdapter` 的数据源是 adapter 内部的 `data`，两者不同步 → 值没写进列表元素。
+
+**修复**：
+- `CallFunctionModuleUIProvider.ViewHolder.insertVariable` 覆写：解析子路径（`Index`→列表项、`Key`→字典键），找到对应 adapter，`updateItem(pos, ref)` / `updateValueForKey(key, ref)` 更新。
+- `DictionaryKVAdapter` 新增 `updateValueForKey(key, value)` 方法（新增方法，不改变现有签名）。
+
+**关键**：`insertVariable` 属于 `CustomEditorViewHolder`，须在 `ViewHolder` 类内覆写（而非 UIProvider 类），否则 `overrides nothing`。
+
+### 14.12 UI 打磨 + 校验放宽（2026-09-09）
+
+用户反馈的 UI 打磨项（均已实现）：
+
+| # | 调整 | 实现 |
+|---|---|---|
+| 1 | 调用侧必填标记改红色 | `CallFunctionModuleUIProvider.createParamRow` 用 `ForegroundColorSpan` 把「必填」标红（`R.color.md_theme_light_error`） |
+| 2 | 调用侧参数行加类型 | label 改为 `类型 · 参数名 · 必填` |
+| 3 | 定义侧删默认值徽章 | `DefineFunctionModuleUIProvider` 参数行不再展示默认值预览 |
+| 4 | 定义侧参数列表 UI 重做 | 改用 `item_function_param.xml`（MaterialCardView 卡片）+ `FunctionParamListAdapter`（RecyclerView），每行：参数名+类型+必填(红)+编辑/删除 |
+| 5 | 参数名校验放宽 | `FunctionParamValidator` 去掉 snake_case 强制，改为非空 + 去重 + 排除 `.[]${}空格`（会破坏 `[[参数名]]` 引用） |
+
+**关键说明**：
+- 参数名**不强制 snake_case**（与项目创建变量一致，`CreateVariableModule.validate` 也只查重名）。
+- `FunctionParamValidator.isValidSnakeCase` 已移除，改为 `isValidName`（非空 + 禁止特殊字符）。
+- 新增/更新单测：`FunctionParamValidatorTest`（6 个用例），全部通过；409 个单测仅 1 个既有 VObjectPropertyTest 环境失败。
+
+### 14.13 崩溃修复 + 动态刷新 + UI 统一（2026-09-10）
+
+用户反馈 4 项，均已修复并真机确认：
+
+| # | 问题 | 根因 | 修复 |
+|---|---|---|---|
+| 1 | 打开调用侧编辑器闪退 | `createParamRow` 复用 `row_editor_input` 做 `removeAllViews()` + 重复 `addView` 容器，触发 `IllegalStateException: child already has a parent` | 新建独立布局 `partial_call_function_param.xml`（header + 值区 + 魔法按钮），不再嵌套 addView |
+| 2 | 调用侧参数行布局 | 星号在右边 | 改为 `参数名 · 必填(红星) · 类型`，左对齐点分隔 |
+| 3 | 定义侧新增参数后列表不动态刷新 | 编辑弹窗保存后只调 `onParametersChanged`（更新 session），未刷新 UIProvider 列表 | UIProvider 新增 `onEditorSaved()`：`onParametersChanged()` + `holder.render()` |
+| 4 | 定义函数卡片摘要需保存工作流才更新 | `getSummary` 从保存后才聚合的 `Workflow.functionSignature` 读取 | `getSummary` 改为**直接从 `step.parameters["functionParams"]` 实时解析** |
+| 5 | 定义侧「添加参数」按钮样式不统一 | 代码用 `android.R.attr.borderlessButtonStyle` 拿不到 Material3 TextButton 样式 | 改用 XML 布局 `view_define_function_add_param_button.xml`（`Widget.Material3.Button.TextButton` + `ic_add`） |
+
+**新增文件**：`partial_call_function_param.xml`、`view_define_function_add_param_button.xml`
+**移除**：`DefineFunctionModule.findOwningWorkflowId`（不再需要）+ `WorkflowManager` import
+
+---
+
+## 15. 最终状态（截至 2026-09-10）
+
+### 15.1 已完成并真机验证通过
+- 函数工作流核心闭环：声明函数 → 调用 → 传参 → 返回值 → 递归检测
+- 定义侧参数编辑（卡片列表、类型下拉、默认值、必填、snake_case 放宽校验、动态刷新）
+- 调用侧参数赋值（按类型分派控件、变量药丸、列表/字典元素引用、必填红色星号、动态输入）
+- 魔法变量选择器「函数参数」分组、更多选项函数状态行
+- 定义函数卡片首位约束、删除清空签名提示
+
+### 15.2 已知待办（真机未覆盖 / 未实现）
+| # | 待办 | 说明 |
+|---|---|---|
+| 1 | 返回值选择器自动展开 `result` 的键（决策 6/24，B4） | 目前只能引用 `result` 本身，不能选 `code`/`msg`；底层字典动态 Key 访问已支持，缺选择器键展开 UI |
+| 2 | 调用侧列表/字典/图片/文件的**整体**变量引用 | 元素级已支持；整体引用的控件分派受 `ParameterType` 枚举限制（仅 ANY） |
+| 3 | 参数变更后旧调用方提示「函数参数已变化，请重新映射」 | 未实现 |
+| 4 | 修复 `VObjectPropertyTest`（既有环境问题，非本功能） | `android.net.Uri.parse not mocked` |
+
+### 15.3 测试基线
+- 单测：`./gradlew :app:testDebugUnitTest` → 409 通过，仅 1 个既有环境失败（VObjectPropertyTest）
+- 构建：`./gradlew :app:assembleDebug` 通过
+- 真机：小米 MIX Fold 3（arm64），函数工作流全流程验证通过

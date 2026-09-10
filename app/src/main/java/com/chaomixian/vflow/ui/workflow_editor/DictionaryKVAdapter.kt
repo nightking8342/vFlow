@@ -64,6 +64,18 @@ class DictionaryKVAdapter(
         notifyItemInserted(data.size - 1)
     }
 
+    /** 更新指定键对应的值（用于函数参数字典元素引用变量）。若键不存在则追加。 */
+    fun updateValueForKey(key: String, value: String) {
+        val index = data.indexOfFirst { it.first == key }
+        if (index >= 0) {
+            data[index] = key to value
+            notifyItemChanged(index)
+        } else {
+            data.add(key to value)
+            notifyItemInserted(data.size - 1)
+        }
+    }
+
     /** ViewHolder 定义，缓存视图引用。 */
     class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
         val keyEditText: EditText = view.findViewById(R.id.edit_text_key)

@@ -27,4 +27,11 @@
         android:layout_marginTop="16dp"
         android:text="@string/button_select_workflow" />
 
+    <!-- 参数赋值区：选中函数工作流后动态渲染各参数输入框 -->
+    <include
+        layout="@layout/partial_call_function_params"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:visibility="gone" />
+
 </LinearLayout>

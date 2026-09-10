@@ -48,7 +48,9 @@ class CallFunctionModule : BaseModule() {
         val workflowId = step?.parameters?.get("workflow_id") as? String ?: return base
         val signature = lookupSignature(workflowId) ?: return base
 
-        // 为每个函数参数动态生成一个输入框；控件类型按参数类型映射（决策 5：与定义侧一致，支持绑定变量）。
+        // 为每个函数参数生成 InputDefinition，但标记 isHidden=true：
+        //  - 供 findDynamicInputDefinition / findTargetInputDefinition 查询（变量引用/魔法变量选择器需要按参数名找到定义）
+        //  - 因 isHidden 会被 isVisibleForEditor 过滤，不会进入通用字段渲染区，避免与 UIProvider 的参数赋值区重复渲染。
         signature.params.forEach { param ->
             base += InputDefinition(
                 id = param.name,
@@ -56,7 +58,9 @@ class CallFunctionModule : BaseModule() {
                 staticType = toParameterType(param.type),
                 acceptsMagicVariable = true,
                 acceptsNamedVariable = true,
-                supportsRichText = true
+                supportsRichText = param.type == VTypeRegistry.STRING.id,
+                isRequired = param.isRequired,
+                isHidden = true
             )
         }
         return base
@@ -71,11 +75,24 @@ class CallFunctionModule : BaseModule() {
         return workflow.functionSignature
     }
 
+    /**
+     * 判断一个原始值是否为「空/未赋值」。
+     * 必填参数在调用方留空（空字符串 / 空列表 / 空字典）应视为「未赋值」，从而触发必填校验。
+     */
+    private fun isBlankValue(value: Any?): Boolean {
+        return when (value) {
+            null -> true
+            is String -> value.isBlank()
+            is Collection<*> -> value.isEmpty()
+            is Map<*, *> -> value.isEmpty()
+            else -> false
+        }
+    }
+
     private fun toParameterType(typeId: String): ParameterType {
         return when (typeId) {
             VTypeRegistry.NUMBER.id -> ParameterType.NUMBER
             VTypeRegistry.BOOLEAN.id -> ParameterType.BOOLEAN
-            VTypeRegistry.LIST.id, VTypeRegistry.DICTIONARY.id, VTypeRegistry.IMAGE.id, VTypeRegistry.FILE.id -> ParameterType.ANY
             else -> ParameterType.STRING
         }
     }
@@ -109,8 +126,10 @@ class CallFunctionModule : BaseModule() {
         // 收集调用方传入的实参（决策 18：调用方侧校验必填参数）
         val injectedVariables = mutableMapOf<String, com.chaomixian.vflow.core.types.VObject>()
         for (param in signature.params) {
+            // 必填校验：未传（null）或传了空值（空字符串 / 空列表 / 空字典）都视为「未赋值」。
             val raw = context.getVariableAsRaw(param.name)
-            if (raw != null) {
+            val hasValue = !isBlankValue(raw)
+            if (hasValue) {
                 injectedVariables[param.name] = VObjectFactory.from(raw)
             } else if (param.defaultValue != null) {
                 injectedVariables[param.name] = VObjectFactory.from(param.defaultValue)
