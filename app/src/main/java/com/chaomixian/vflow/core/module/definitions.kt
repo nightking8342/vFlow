@@ -544,6 +544,20 @@ fun List<InputDefinition>.normalizeEnumValueOrNull(
 data class ConditionalOption(val displayName: String, val value: String) : Parcelable
 
 /**
+ * 输出对象上「已声明的键」元数据（fork 新增）。
+ * 用于可静态枚举键的字典型输出（如函数工作流的返回值），
+ * 让魔法变量选择器能直接列出键供用户点选，而不必手动输入。
+ *
+ * @param name 键名。
+ * @param typeName 键值类型 ID（如 [com.chaomixian.vflow.core.types.VTypeRegistry.STRING].id）。
+ */
+@Parcelize
+data class OutputKeyDefinition(
+    val name: String,
+    val typeName: String
+) : Parcelable
+
+/**
  * 模块输出参数的定义。
  * @param id 输出参数的唯一标识符。
  * @param name 输出参数在UI中显示的名称。
@@ -553,6 +567,7 @@ data class ConditionalOption(val displayName: String, val value: String) : Parce
  *                         例如：typeName = "vflow.type.list", listElementType = "vflow.type.screen_element"
  *                         表示输出是 List<VScreenElement>
  * @param nameStringRes 输出参数显示名称的字符串资源ID（用于国际化，可选）
+ * @param dictionaryKeys 该输出为字典时可静态枚举的键（可选，默认空 = 无声明键）。
  */
 data class OutputDefinition(
     val id: String,
@@ -560,7 +575,8 @@ data class OutputDefinition(
     val typeName: String,
     val conditionalOptions: List<ConditionalOption>? = null,
     val listElementType: String? = null,
-    val nameStringRes: Int? = null
+    val nameStringRes: Int? = null,
+    val dictionaryKeys: List<OutputKeyDefinition> = emptyList()
 ) {
     /**
      * 获取本地化的输出名称

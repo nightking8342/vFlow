@@ -184,7 +184,8 @@ internal class WorkflowEditorMagicVariableCatalogBuilder(
                     variableReference = "{{${step.id}.${outputDef.id}}}",
                     variableName = outputDef.getLocalizedName(context),
                     originDescription = outputTypeDescription(outputDef),
-                    typeId = pickerTypeId(outputDef)
+                    typeId = pickerTypeId(outputDef),
+                    dictionaryKeys = outputDef.dictionaryKeys
                 )
             }
             groupedStepOutputs.getOrPut(groupName) { mutableListOf() }.addAll(items)

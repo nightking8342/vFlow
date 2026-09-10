@@ -16,6 +16,7 @@ import androidx.core.view.isVisible
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.chaomixian.vflow.R
+import com.chaomixian.vflow.core.module.OutputKeyDefinition
 import com.chaomixian.vflow.core.types.VTypeRegistry
 import com.chaomixian.vflow.core.types.VPropertyDef
 import com.chaomixian.vflow.core.types.parser.VariablePathParser
@@ -34,13 +35,16 @@ import kotlinx.parcelize.Parcelize
  * 对于命名变量, 格式为 "[[variableName]]"。
  * @param variableName 变量的可读名称。
  * @param originDescription 描述变量来源的文本, 如 "来自: 查找文本" 或 "命名变量 (数字)"。
+ * @param dictionaryKeys 该变量为字典时可静态枚举的键（fork 新增，默认空 = 无声明键）。
+ *        用于函数工作流返回值：进入属性导航页时可直接点选键，而不是手动输入键名。
  */
 @Parcelize
 data class MagicVariableItem(
     val variableReference: String,
     val variableName: String,
     val originDescription: String,
-    val typeId: String = VTypeRegistry.ANY.id
+    val typeId: String = VTypeRegistry.ANY.id,
+    val dictionaryKeys: List<OutputKeyDefinition> = emptyList()
 ) : Parcelable
 
 @Parcelize
@@ -311,8 +315,8 @@ class MagicVariablePickerSheet : BottomSheetDialogFragment() {
             VTypeRegistry.getAcceptedProperties(item.typeId, acceptedTypes)
         }
 
-        if (properties.isEmpty()) {
-            // 如果没有匹配的属性，则直接使用变量本身
+        if (properties.isEmpty() && item.dictionaryKeys.isEmpty()) {
+            // 既没有匹配的属性、也没有声明的键，则直接使用变量本身
             dispatchSelection(item)
         } else {
             openNavigationSheet(
@@ -458,6 +462,33 @@ class MagicVariablePickerSheet : BottomSheetDialogFragment() {
                 nextItem = nextItem,
                 canNavigateDeeper = nextItem.typeId != VTypeRegistry.ANY.id && VTypeRegistry.getType(nextItem.typeId).properties.isNotEmpty()
             )
+        }
+
+        // 已声明的键（fork 新增）：函数工作流的返回值可静态枚举键（如 code/msg），
+        // 直接列出供点选，生成 {{stepId.result.code}}，无需手动输入键名。
+        // 过滤掉与内置属性同名的键：字典 getProperty 优先命中内置属性，此类键无法通过属性访问取到。
+        val declaredKeyRows = item.dictionaryKeys
+            .filter { key -> key.name.isNotBlank() && type.properties.none { it.matches(key.name) } }
+            .map { key ->
+                val keyType = VTypeRegistry.getType(key.typeName)
+                val nextItem = item.copy(
+                    variableReference = VariablePathParser.appendPathSegment(item.variableReference, key.name),
+                    variableName = buildPropertyVariableName(item, key.name),
+                    originDescription = "(${keyType.getLocalizedName(requireContext())})",
+                    typeId = keyType.id,
+                    dictionaryKeys = emptyList()
+                )
+                NavigationListItem.PropertyEntry(
+                    property = VPropertyDef(name = key.name, displayName = key.name, type = keyType),
+                    nextItem = nextItem,
+                    canNavigateDeeper = keyType.id != VTypeRegistry.ANY.id && keyType.properties.isNotEmpty()
+                )
+            }
+        if (declaredKeyRows.isNotEmpty()) {
+            rows += NavigationListItem.Header(
+                title = getString(R.string.magic_variable_section_declared_keys)
+            )
+            rows += declaredKeyRows
         }
 
         val dynamicActions = when (item.typeId) {

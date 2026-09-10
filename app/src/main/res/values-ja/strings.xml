@@ -744,6 +744,7 @@
     <string name="magic_variable_select_property_sheet_title">プロパティの選択</string>
     <string name="magic_variable_navigation_hint">クリックして直接選択します。矢印のある項目はさらに詳しく調べることができます。</string>
     <string name="magic_variable_section_properties">利用可能なプロパティ</string>
+    <string name="magic_variable_section_declared_keys">関数の戻り値</string>
     <string name="magic_variable_section_dynamic">動的値</string>
     <string name="magic_variable_no_more_properties">現在のレイヤーにはこれ以上属性がありません</string>
     <string name="magic_variable_type_any">任意の</string>

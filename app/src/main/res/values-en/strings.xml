@@ -800,6 +800,7 @@
     <string name="magic_variable_select_property_sheet_title">Select Property</string>
     <string name="magic_variable_navigation_hint">Tap to select directly. Items with arrows can drill deeper.</string>
     <string name="magic_variable_section_properties">Available Properties</string>
+    <string name="magic_variable_section_declared_keys">Function Return Values</string>
     <string name="magic_variable_section_dynamic">Dynamic Access</string>
     <string name="magic_variable_no_more_properties">No more properties at this level</string>
     <string name="magic_variable_type_any">Any</string>

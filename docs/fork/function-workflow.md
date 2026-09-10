@@ -638,6 +638,37 @@ java.lang.ClassCastException: android.widget.LinearLayout cannot be cast to Rich
 **新增文件**：`partial_call_function_param.xml`、`view_define_function_add_param_button.xml`
 **移除**：`DefineFunctionModule.findOwningWorkflowId`（不再需要）+ `WorkflowManager` import
 
+### 14.14 返回值键展开（B4 / 决策 6、24）—— 实现（2026-09-10）
+
+> 原待办：调用方引用返回值时，选择器不会列出 `code`/`msg` 等键，只能手动输入 `{{步骤.result.code}}`。
+> 本次打通「签名键 → 输出定义 → 选择器目录 → 导航页点选」全链路。
+
+**改动链路**：
+
+| 层 | 文件 | 改动 |
+|---|---|---|
+| 输出定义模型 | `core/module/definitions.kt` | 新增 `OutputKeyDefinition`（Parcelable）；`OutputDefinition` 追加 `dictionaryKeys`（带默认空列表，向后兼容） |
+| 模块输出 | `CallFunctionModule.getOutputs` | 从被调工作流签名解析：`returnDef != null` 时 `result` 标为 `returnDef.type`（字典）并携带声明的键；无 `returnDef` 回退 `ANY`（基础类型走底层类型引擎） |
+| 选择器数据 | `MagicVariablePickerSheet.MagicVariableItem` | 追加 `dictionaryKeys` 字段（Parcelable，默认空） |
+| 目录构建 | `WorkflowEditorMagicVariableCatalogBuilder.buildPickerModel` | 步骤输出项透传 `outputDef.dictionaryKeys` |
+| 选择器 UI | `MagicVariablePickerSheet.renderNavigationList` | 字典类型下新增「函数返回值」分组，直接列出声明的键；点选生成 `{{步骤.result.code}}`；删除该 item 的键并清空 `dictionaryKeys`（键值非字典时不再展开） |
+| 进入条件 | `MagicVariablePickerSheet.handleVariableSelection` | 无属性但**有声明键**时也进入导航页（而非直接选中变量本身） |
+| 文案 | `strings*.xml`（中/英/日） | 新增 `magic_variable_section_declared_keys` |
+
+**关键设计点**：
+- 键行复用既有 `PropertyEntry` 渲染（`VPropertyDef(name=键名, type=键类型)`），因此**不需要新增布局或 adapter 分支**，与「可用属性」行样式一致。
+- **过滤与内置属性同名的键**（`count`/`keys`/`values`/`availableKeys`）：`VDictionary.getProperty` 优先命中内置属性，此类键无法通过属性访问取到，故不展示。
+- 运行时无需改动：`VariableResolver` 对 `{{stepId.result.code}}` 先查 `stepOutputs[stepId]["result"]` 再走 `traverseProperties` → `VDictionary.getProperty` 动态键查找（决策 24 的底层能力早已支持）。
+- `getOutputs(step)` 现在读取 `appContext`（lateinit，注册时注入）。**模块 Context 未初始化时必须安全回退**：用 `runCatching` 包裹，回退 `ANY`。
+
+**测试**：
+- 新增 `CallFunctionModuleTest`（2 用例）：无 step / Context 未初始化时 `getOutputs` 均返回 `result` + `ANY`、无声明键、不崩溃。
+
+### 14.15 待办状态更新
+
+- §15.2 待办 1（返回值键展开）→ ✅ 已实现（见 §14.14）。
+- 仍需真机验证：进入 `result` 的属性导航页能看到「函数返回值」分组与声明的键，点选后生成 `{{步骤.result.code}}` 且运行取值正确。
+
 ---
 
 ## 15. 最终状态（截至 2026-09-10）
@@ -652,12 +683,12 @@ java.lang.ClassCastException: android.widget.LinearLayout cannot be cast to Rich
 ### 15.2 已知待办（真机未覆盖 / 未实现）
 | # | 待办 | 说明 |
 |---|---|---|
-| 1 | 返回值选择器自动展开 `result` 的键（决策 6/24，B4） | 目前只能引用 `result` 本身，不能选 `code`/`msg`；底层字典动态 Key 访问已支持，缺选择器键展开 UI |
+| 1 | ~~返回值选择器自动展开 `result` 的键（决策 6/24，B4）~~ | ✅ **已实现**（§14.14）：选择器新增「函数返回值」分组，可点选 `code`/`msg` 等声明键；待真机确认 |
 | 2 | 调用侧列表/字典/图片/文件的**整体**变量引用 | 元素级已支持；整体引用的控件分派受 `ParameterType` 枚举限制（仅 ANY） |
 | 3 | 参数变更后旧调用方提示「函数参数已变化，请重新映射」 | 未实现 |
 | 4 | 修复 `VObjectPropertyTest`（既有环境问题，非本功能） | `android.net.Uri.parse not mocked` |
 
 ### 15.3 测试基线
-- 单测：`./gradlew :app:testDebugUnitTest` → 409 通过，仅 1 个既有环境失败（VObjectPropertyTest）
+- 单测：`./gradlew :app:testDebugUnitTest` → 411 通过，仅 1 个既有环境失败（VObjectPropertyTest）
 - 构建：`./gradlew :app:assembleDebug` 通过
-- 真机：小米 MIX Fold 3（arm64），函数工作流全流程验证通过
+- 真机：小米 MIX Fold 3（arm64），函数工作流全流程验证通过（返回值键展开为 2026-09-10 新增，待真机确认）

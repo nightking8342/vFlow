@@ -66,13 +66,33 @@ class CallFunctionModule : BaseModule() {
         return base
     }
 
-    override fun getOutputs(step: ActionStep?): List<OutputDefinition> = listOf(
-        OutputDefinition("result", nameStringRes = R.string.output_vflow_logic_call_function_result_name, name = "函数返回值", typeName = VTypeRegistry.ANY.id)
-    )
+    override fun getOutputs(step: ActionStep?): List<OutputDefinition> {
+        // result 的类型 / 声明的键 从被调工作流的函数签名解析：
+        //  - returnDef != null：result 标为 returnDef.type（通常为「字典」），并携带声明的键，
+        //    供魔法变量选择器直接展开点选（决策 6/24，B4）。
+        //  - 无 returnDef：回退 ANY（基础类型返回值，由底层类型引擎展开属性）。
+        val returnDef = lookupSignature(step)?.returnDef
+        return listOf(
+            OutputDefinition(
+                id = "result",
+                nameStringRes = R.string.output_vflow_logic_call_function_result_name,
+                name = "函数返回值",
+                typeName = returnDef?.type ?: VTypeRegistry.ANY.id,
+                dictionaryKeys = returnDef?.keys.orEmpty().map { OutputKeyDefinition(it.name, it.type) }
+            )
+        )
+    }
+
+    private fun lookupSignature(step: ActionStep?): FunctionSignature? {
+        val workflowId = step?.parameters?.get("workflow_id") as? String ?: return null
+        return lookupSignature(workflowId)
+    }
 
     private fun lookupSignature(workflowId: String): FunctionSignature? {
-        val workflow = WorkflowManager(appContext).getWorkflow(workflowId) ?: return null
-        return workflow.functionSignature
+        // 模块未初始化 Context（如静态元数据查询）时静默回退，不阻断 UI 渲染。
+        return runCatching {
+            WorkflowManager(appContext).getWorkflow(workflowId)?.functionSignature
+        }.getOrNull()
     }
 
     /**
