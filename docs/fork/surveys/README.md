@@ -32,7 +32,8 @@
 
 | 文档 | 覆盖范围 | 状态 |
 |---|---|---|
-| [`ai-system-overview.md`](ai-system-overview.md) | **AI 体系**：三条独立 AI 链路（聊天 Agent / AI 生成工作流 / 工作流内 AI 模块）、提示词组装、技能路由、工具清单、scope 判定、执行与审批流程、能力与现状评估 | v1.2 · 已走查定稿 |
+| [`ai-system-overview.md`](ai-system-overview.md) | **AI 体系（本项目现状）**：三条独立 AI 链路（聊天 Agent / AI 生成工作流 / 工作流内 AI 模块）、提示词组装、技能路由、工具清单、scope 判定、执行与审批流程、模块可发现性与 catalog 截断、Prompt 缓存现状、能力与现状评估 | v1.3 · 已走查定稿 |
+| [`agent-design-comparison.md`](agent-design-comparison.md) | **外部调研**：头部 Agent 项目（Claude Code / Hermes Agent / Codex CLI）的工具暴露、渐进式披露、上下文压缩、缓存做法，及对 vFlow 的启示 | v1.0 · 外部调研 |
 
 ---
 
@@ -55,8 +56,9 @@
 
 ### 命名约定
 
-- 文件名用 `<子领域>-<类型>.md`，类型为 `overview`（体系梳理）或 `survey`（单点调研）。
-- 例：`ai-system-overview.md`、`workflow-engine-overview.md`、`module-system-overview.md`。
+- 文件名用 `<子领域>-<类型>.md`，类型为 `overview`（体系梳理）、`survey`（单点调研）或 `comparison`（外部对照）。
+- 例：`ai-system-overview.md`、`workflow-engine-overview.md`、`agent-design-comparison.md`。
+- **外部调研文档**（非本项目代码走查）须在开头明确标注证据来源与可信度（哪些是官方文档、哪些是社区分析、哪些是源码直读）。
 
 ---
 
@@ -70,5 +72,7 @@
 - **类型系统**：`VObject` 家族、属性访问、魔法变量解析。
 - **远程 API**：本地 Web 服务器 handler 结构、鉴权、既有接口签名。
 - **Core 独立进程**：Master-Worker、Socket 协议、权限提升路径。
+
+> AI 体系（含缓存、模块可发现性）已由 `ai-system-overview.md` 覆盖，不再列为待办。
 
 > 新增梳理文档后，请回到本 README 的「现有文档」表补一行。

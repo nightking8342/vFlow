@@ -15,7 +15,8 @@ This file provides guidance to coding agents when working with code in this repo
 ## fork 文档导航
 
 - `docs/fork/surveys/` —— **现状调研文档目录**（改代码前的地图）。索引见 `docs/fork/surveys/README.md`，含写作规范与候选梳理方向。
-  - `docs/fork/surveys/ai-system-overview.md` —— **AI 体系梳理**：三套独立 AI 链路（聊天 Agent / AI 生成工作流 / 工作流内 AI 模块）、系统提示词组装、技能路由、工具清单与 scope 判定、执行与审批流程、能力与现状评估。**改动任何 AI 相关能力前先读这份。**
+  - `docs/fork/surveys/ai-system-overview.md` —— **AI 体系梳理（本项目现状）**：三套独立 AI 链路（聊天 Agent / AI 生成工作流 / 工作流内 AI 模块）、系统提示词组装、技能路由、工具清单与 scope 判定、执行与审批流程、模块可发现性与 catalog 截断、Prompt 缓存现状、能力与现状评估。**改动任何 AI 相关能力前先读这份。**
+  - `docs/fork/surveys/agent-design-comparison.md` —— **外部调研**：头部 Agent 项目（Claude Code / Hermes Agent / Codex CLI）的工具暴露、渐进式披露、上下文压缩与缓存做法，及对 vFlow 的启示。**做 AI 能力优化时作为外部参照。**
 - `docs/fork/function-workflow.md` —— 函数工作流功能的需求文档 + 实现状态/交接（含真机测试场景）。
 
 ---
