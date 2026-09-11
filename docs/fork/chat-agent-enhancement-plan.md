@@ -11,6 +11,32 @@
 
 ---
 
+## 0.0 当前代码基线（新会话先读这段）
+
+**分支**：`feature/function-workflow`
+
+**已完成并提交的 AI 相关改动**：
+
+| 提交 | 内容 | 影响面 |
+|---|---|---|
+| `cf9ce3d5` | **去除 catalog 截断** + **修正不存在 moduleId 的报错** | `ChatAgentToolRegistry.kt`、`ChatAgentModuleExecutor.kt` |
+| `7639b710` | 上述改动的文档记录 | 文档 |
+
+**具体改了什么**（新会话不必重做）：
+
+1. `buildCompactModuleCatalog` 移除了 `maxModules` 参数与 `.take()` → catalog 现为**全量**（步骤 139 条、触发器 23 条）
+2. 新增 `ChatAgentToolRegistry.isRegisteredModule(moduleId)`（O(1)）
+3. 保存工作流 / 临时工作流两条校验路径改为**「先判存在 → 再判可用」**，报错文案区分"不存在 / 存在但不可用 / 加载失败"
+4. ⚠️ **副作用**：保存工作流工具的 `description` 增至 **~5,779 token**（每次请求随 `tools` 重发）
+
+**已发真机的验证包**：`app-arm64-v8a-debug.apk`（2026-09-12 经小米互传发送）
+
+**验证状态**：`compileDebugKotlin` ✅ / `testDebugUnitTest` 411 通过（1 既有环境失败）
+
+**尚未真机确认的**：§8 的 5 个验证场景（catalog 全量化后 AI 能否正确使用 device/core 类模块、新的报错文案是否有效）
+
+---
+
 ## 0. 总览
 
 四项改造，目标是把 Chat Agent 从「关键词路由 + 硬截断」升级为**「目录常驻 + 详情按需 + 前缀稳定 + 可缓存」**的架构：
@@ -20,7 +46,7 @@
 | **1** | 技能：粗粒度披露 → 目录常驻 + 详情按需 | **可发现性 + 选择权交还模型**（非 token 节省，见 §1.6） | 待实施（需先做 §1.1 三层拆分） |
 | **2** | 开启 Prompt 缓存 | 降低长会话成本 | 待实施（**依赖 1 完成**，见 §3.1） |
 | **3** | catalog：截断 → 全量 + 修正报错文案 | 修复"模块不可见"导致的臆造 id | **✅ 已实施**（§2.2、§2.5，提交 `cf9ce3d5`） |
-| **4** | Chat 悬浮窗 | 用户可边看屏幕边对话 | 待实施 |
+| **4** | Chat 悬浮窗 | 用户可边看屏幕边对话 | **调研完成，待开发**（§4，含最佳模板与必查清单） |
 
 **建议实施顺序：3 → 1 → 2 → 4**（见 §6）。理由：3 收益最直接、风险最低；1 是 2 的前提；4 独立可穿插。
 
@@ -280,43 +306,127 @@ vflow_agent_save_workflow.description          = "...说明..." + triggerCatalog
 
 ## 4. 改造四：Chat 悬浮窗
 
+> **本节于 2026-09-12 重写**：补充实现层关键事实（数据/状态承载、IME、Compose 宿主），供新会话直接开发。原版仅列了复用资产，不足以开工。
+
 ### 4.1 需求
 
 当前调试页面时必须离开 Chat 页，无法边看屏幕边对话。需要一个悬浮窗形态的 Chat。
 
-### 4.2 现有可复用资产（已核实）
+**验证场景**：用户让 AI 操作某个 App（如"帮我把设置里的深色模式打开"），需要**边看 AI 操作、边补充指令**，而不是在 Chat 页和设置页之间来回切。
 
-| 资产 | 状态 |
+### 4.2 核心难点：Chat 状态如何跨 Activity 存活（**先解决这个**）
+
+这是本改造的**真正难点**，不是窗口绘制。
+
+**现状**：
+
+```kotlin
+// ChatScreen.kt:171 —— 通过 Activity 作用域的 ViewModel 取
+chatViewModel: ChatViewModel = viewModel()
+
+// MainComposeShell.kt:199 —— 同上
+val chatViewModel: ChatViewModel = viewModel()
+
+// ChatViewModel 是 AndroidViewModel
+class ChatViewModel(application: Application) : AndroidViewModel(application)
+```
+
+**问题**：`viewModel()` 默认绑定**最近的 `ViewModelStoreOwner`**（即 Activity）。这意味着：
+
+- Chat 状态**随 Activity 存活**，退出 App 就没了
+- 悬浮窗若从 Service 弹出，**拿不到同一个 `ChatViewModel` 实例**
+- 盲目新建一个 VM 会造成**两套会话状态**（悬浮窗里说的话，回到 Chat 页看不到）
+
+**可选方案**（需权衡，新会话决策）：
+
+| 方案 | 做法 | 代价 |
+|---|---|---|
+| **A. Service 托管 VM** | 把 `ChatViewModel` 的宿主提到前台 Service，App 与悬浮窗共用 | 改动大；VM 生命周期需重设计 |
+| **B. 单例/Application 作用域** | 用 `AndroidViewModelFactory` + 自定义 `ViewModelStoreOwner`（挂在 Application 或 Service） | 中等；需处理清理 |
+| **C. 悬浮窗只读 + 转发** | 悬浮窗不持有 VM，通过 `ServiceStateBus` 之类的总线与 App 内 VM 通信 | 最小；但功能受限（详见 §4.5） |
+| **D. 独立 VM + 状态同步** | 悬浮窗持有自己的 VM，与主 VM 通过持久层（`ChatPresetRepository` 的会话存储）同步 | 状态一致性难保证，不推荐 |
+
+> **建议先做 C**：悬浮窗作为「**遥控器**」——发指令、显示最近回复，真正的会话状态仍由 App 内的 VM 持有。这样能最快验证交互价值，且不触碰 VM 架构。
+>
+> 注意：vFlow 已有 `services/ServiceStateBus.kt`，可能可作为通信总线，**需先看它的现有用途**。
+
+### 4.3 可复用资产（已核实，2026-09-12）
+
+**⭐ 最佳参考是 `ui/float/WorkflowsFloatPanelService.kt`（514 行）** —— 一个**功能完备的悬浮窗 Service**，已实现：
+
+| 能力 | 实现 |
 |---|---|
-| `SYSTEM_ALERT_WINDOW` 权限 | ✅ **已在 `AndroidManifest.xml:18` 声明** |
-| `ui/overlay/AgentOverlayManager.kt` | ✅ 已实现窗口管理、`show()`、`updateStatus()`、暂停/取消按钮 |
-| 其它 overlay | `RegionSelectionOverlay`、`ScreenCaptureOverlay`、`ScreenFlashOverlay`、`TouchRecordOverlay` |
-| 工作流悬浮面板 | ✅ 已存在（release note 有"悬浮面板改为长按关闭"），可直接参考 |
+| 窗口创建 | `WindowManager` + `TYPE_APPLICATION_OVERLAY`（O 以下回退 `TYPE_PHONE`） |
+| **折叠/展开** | `floatView` ↔ `collapsedView` 两套布局（`workflows_float_panel.xml` / `..._collapsed.xml`） |
+| **侧边停靠** | `collapseToSidebar()` 吸附左右边缘（`attachToRight` 判断） |
+| **拖动** | `setupDragBehavior()` + `observeViewPosition()` |
+| **自动收起** | `startAutoCollapseTimer()` |
+| **长按关闭** | `setupCloseHoldBehavior()` + 环形进度指示 |
+| 生命周期 | 标准 `Service`，`onDestroy` 清理 |
 
-**`AgentOverlayManager` 是最接近的模板**——它就是给链路 C 视觉 Agent 做的状态悬浮窗。
+**⚠️ 但它有两个关键限制，不能直接照抄**：
 
-### 4.3 关键约束（不可照抄）
+| 限制 | 证据 | 影响 |
+|---|---|---|
+| **不可输入** | `FLAG_NOT_FOCUSABLE`（`:121`、`:293`） | 聊天窗**必须去掉**，且要处理软键盘 |
+| **内容是 XML View** | `LayoutInflater.inflate(R.layout.workflows_float_panel)` + `RecyclerView`（`:110`、`:137`） | 与 Compose 版 `ChatScreen` 不同技术栈 |
 
-| 约束 | 说明 |
+**其它资产**：
+
+| 资产 | 说明 |
 |---|---|
-| **`AgentOverlayManager` 不可交互** | 它用了 `FLAG_NOT_FOCUSABLE`（`:83`、`:183`）——**聊天窗需要输入，不能照抄**。要改 flag 并处理 IME |
-| **会遮挡被调试界面** | 本质矛盾：悬浮窗要能看又不能挡。建议**小尺寸 + 可拖动 + 可折叠** |
-| **Compose 承载** | `ChatScreen` 是 Compose（2,223 行）。悬浮窗承载 Compose 需 `ComposeView` + `ViewTreeLifecycleOwner` + `SavedStateRegistryOwner`（Android 经典坑），或做精简 View 版 |
+| `SYSTEM_ALERT_WINDOW` | ✅ 已声明（`AndroidManifest.xml:18`） |
+| `ui/overlay/AgentOverlayManager.kt`（374 行） | 链路 C 视觉 Agent 的状态浮窗；也是 `FLAG_NOT_FOCUSABLE`（`:83`、`:183`） |
+| `ui/float/DynamicFloatWindowService.kt`（17KB） | 另一个悬浮窗 Service，**待查**（可能支持动态内容） |
+| `services/OverlayUIActivity.kt`（820 行） | 一个 Activity（非 Service），**用途待查** |
 
-### 4.4 建议的最小可用形态
+### 4.4 关键约束
+
+| 约束 | 细节 | 应对 |
+|---|---|---|
+| **必须可输入** | 现有两个浮窗都是 `FLAG_NOT_FOCUSABLE` | 去掉该 flag；**但去掉后悬浮窗会抢焦点**，需权衡是否用「点击才聚焦」策略 |
+| **IME 弹出时位置** | 悬浮窗默认不随软键盘上移 | 监听 `WindowInsets.ime` 手动调整，或用 `adjustResize` |
+| **遮挡被调试界面** | 本质矛盾：要能看又不能挡 | 已有「折叠+侧边吸附+半透明」的现成实现可复用 |
+| **Compose vs View** | `ChatScreen` 是 Compose（2,223 行），浮窗示例都是 XML | 二选一：① `ComposeView` + 手动提供 `ViewTreeLifecycleOwner`/`SavedStateRegistryOwner`；② 做精简 View 版聊天条 |
+| **拖动 vs 点击** | 浮窗需可拖动，内部控件要能点击 | `WorkflowsFloatPanelService` 已有实现可参考 |
+
+### 4.5 建议的最小可用形态（MVP）
 
 **不要一上来做完整聊天窗**。先做「**悬浮状态条 + 快速输入框**」：
 
-- 显示最近一条 AI 消息（窄条）
-- 一个输入框
-- 点击展开完整对话
-- 可拖动、可折叠、半透明
+```
+┌─────────────────────────────────┐
+│ ● AI: 正在观察界面…        ⚙ 展开 │  ← 窄条，显示最近一条消息/状态
+├─────────────────────────────────┤
+│ [ 输入补充指令…           ] [发送] │  ← 输入框
+└─────────────────────────────────┘
+```
 
-这样既不遮挡界面，又满足"边看边问"的核心诉求。
+- **默认折叠**：只显示状态条（不遮挡）—— 直接复用 `WorkflowsFloatPanelService` 的折叠+吸附逻辑
+- **可拖动**：同上，已有实现
+- **点击展开**：展开完整对话（复用 `ChatScreen` 或简化版）
+- **半透明**：进一步减少遮挡
 
-### 4.5 潜在价值（超出原始需求）
+### 4.6 潜在价值（超出原始需求）
 
 如果 Chat 能在悬浮窗运行，它就从「App 内功能」变成「**全系统助手**」——配合现有无障碍能力，可边看任何 App 边操作。这比前三点更接近产品差异化。
+
+### 4.7 开发前必查清单（给新会话）
+
+**先看这几个（按优先级）**：
+
+1. **`ui/float/WorkflowsFloatPanelService.kt`** —— **最佳模板**。重点看 `showFloatWindow()`、`setupDragBehavior()`、`collapseToSidebar()`、`setAutoCollapseTimer()`
+2. **`ui/float/DynamicFloatWindowService.kt`（17KB）** —— 待查，可能支持动态内容（更接近聊天窗需求）
+3. **`ChatScreen.kt:166-190`** —— 现有 Chat 的入参与状态订阅方式（`chatViewModel.uiState.collectAsState()`）
+4. **`MainComposeShell.kt:199`** —— Chat 的 VM 获取与入口
+5. `services/OverlayUIActivity.kt`（820 行）—— 待查用途
+6. `AgentOverlayManager.kt` —— 次级参考（`WindowManager` 用法）
+
+**必做的技术验证**（开工前）：
+
+- [ ] 去掉 `FLAG_NOT_FOCUSABLE` 后，悬浮窗能否正常接收输入、软键盘是否正常弹出
+- [ ] `ComposeView` 在 Service 中能否正常渲染（Lifecycle/SavedStateRegistry 手动提供的坑）
+- [ ] VM 共享方案（§4.2）选定并验证状态一致
 
 ---
 

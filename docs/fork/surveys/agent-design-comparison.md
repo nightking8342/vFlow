@@ -1,10 +1,11 @@
 # 头部 Agent 项目的工具暴露与上下文设计对照（外部调研）
 
-> 版本：v1.1
+> 版本：v1.2
 > 状态：外部调研（非本项目代码走查），2026-09-11
 > 目录：`docs/fork/surveys/`（fork 新增文件，上游无此文件，冲突归属我方；索引见 [`README.md`](README.md)）
 > 用途：给 vFlow 的 AI 能力优化提供**外部参照**——头部 Agent 项目在「让模型知道有什么工具、给多少细节、怎么控制上下文」上是怎么做的。
 > v1.1 修订：§2 补官方 API 机制（`defer_loading`）、技能 vs 工具的加载策略差异、`defer_loading` 与 `cache_control` 的互斥约束、官方"何时该用 tool search"判定标准。**证据从社区抓包升级为官方文档原文。**
+> v1.2 修订（2026-09-12）：新增 §2.2.1「`strict` 与 enum 的强校验：两家供应商差异」——解释为何 OpenAI 未加 strict（vFlow schema 不满足其硬要求），附官方原文与 vFlow 违规点，并标注一处待实测的矛盾。
 
 **证据来源**：Claude Code / Anthropic 官方文档（含 [Tool search tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool)、[Skills](https://code.claude.com/docs/en/skills.md)、[Agent Skills 工程博客](https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills)）+ 社区抓包分析；Hermes Agent（`NousResearch/hermes-agent`）仓库源码；Codex CLI 仓库公开材料。
 **可信度提示**：§1–2 的机制描述已以**官方文档原文**为准（此前依赖社区逆向，v1.1 已校正）；Hermes 部分为直接读源码；Codex 公开材料有限。凡引用均标注来源，未证实处会明说。
@@ -121,6 +122,32 @@ Anthropic API 原生支持这套机制（[Tool search tool](https://platform.cla
 | 单条描述上限 | 1,536 字符 |
 
 > **对 vFlow 的直接启示**：Claude Code 截断时**按"使用频率"降级、且保底保留名称**；而 vFlow 的 catalog 按 **UI 分类顺序**硬切——**切掉的正好是高频的 `device` 类**。这是排序依据的本质差异。
+
+### 2.2.1 `strict` 与 enum 的强校验：两家供应商差异（2026-09-12 补）
+
+**背景**：vFlow 在工作流工具的 schema 里给 `moduleId` 配了 `enum`（162 个合法 id），期望模型不编造。但 `strict: true` **只加在 Anthropic**（`ChatCompletionClient.kt:775`），OpenAI 两套构造器都没加。
+
+**为什么 OpenAl 没加**——不是"OpenAI 不支持"，而是**vFlow 的 schema 不满足 OpenAI strict 的硬性要求**。OpenAI Structured Outputs 官方要求：
+
+| 要求 | 官方原文 |
+|---|---|
+| **所有字段必须 `required`** | "**All fields must be `required`** — To use Structured Outputs, all fields or function parameters must be specified as `required`." |
+| **不支持的关键字会直接报错** | "If you turn on Structured Outputs by supplying `strict: true` and call the API with an **unsupported JSON Schema, you will receive an error**." |
+| **不支持**：`minLength`/`maxLength`/`pattern`/`format`（字符串）、`minimum`/`maximum`/`multipleOf`（数字）、`patternProperties`（对象）、`minItems`/`maxItems`（数组） | 同上 |
+
+**vFlow schema 的违规点**：
+
+- `workflow` 有 **9 个 properties 但只有 2 个 required**（`name`、`steps`）→ 违反要求 1
+- 用了 `minimum`/`maximum`（`maxExecutionTime`）、`maxItems`（`triggers`）、`minItems`/`maxItems`（`steps`）→ 违反要求 2 的"不支持"清单
+
+**结论**：
+
+| 供应商 | `strict` 现状 | 模型能否编造 enum 外的 moduleId |
+|---|---|---|
+| **Anthropic** | ✅ 已加 `strict: true` | 理论上不能（受 schema 约束） |
+| **OpenAI 系** | ❌ 未加 | **能**——enum 只是"软建议"，拦不住 |
+
+> ⚠️ **未解的矛盾（待验证）**：Anthropic 的 `strict` 若也要求"所有字段 required"，vFlow 的 schema 同样应被拒绝——但代码在跑。**两种可能**：(a) Anthropic 的 `strict` 语义比 OpenAI 宽松；(b) 该参数实际未生效。**需用 Anthropic key 实测一次带工具的请求确认**。
 
 ### 2.3 何时该用 tool search（官方判定标准）
 
