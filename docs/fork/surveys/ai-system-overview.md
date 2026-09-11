@@ -1,10 +1,11 @@
 # vFlow 的 AI 体系梳理（fork 参考文档）
 
-> 版本：v1.3
+> 版本：v1.4
 > 状态：代码走查定稿（对应 `feature/function-workflow` 分支，2026-09-11）
 > v1.1 修订：修正 §5.2/§5.3/§6 的 `call_function` 根因（原文写反）、附录 A 三处统计数字、§4 模块 id 与遗漏、§2.6 示例值、§2.1 行号，以及若干措辞/文件归属问题。**本文数字为人工走查所得，非脚本自动生成**（见 §0）。
 > v1.2 修订：重写 §0 定位；新增 §2.10「链路 A 能力与现状评估」、§3.1「链路 B 能力与现状评估」（含 A/B 对比表）、§4.1「链路 C 现状评估」、§7「优化方向汇总」；§1 补阅读指引。
 > v1.3 修订（2026-09-11 补充走查）：新增 §2.4.4「双信息源与 catalog 截断」、§2.10.4「Prompt 缓存现状」、§5.4「AI 臆造 moduleId 实证」；§2.3 补技能路由运行特征；§2.10.3 补两条短板。配套外部调研见 [`agent-design-comparison.md`](agent-design-comparison.md)。
+> v1.4 修订（2026-09-11 补充走查）：新增 §2.3.1「每个技能提供的工具与模块」（含中文名对照）、§2.3.2「兜底技能详解」、§2.4.5「技能与 catalog 的机制区别」；§2.4.4 补「窗口内外分类分布」。
 > 目录：`docs/fork/surveys/`（fork 新增文件，上游无此文件，冲突归属我方；同目录另见 [`README.md`](README.md) 索引）
 > 用途：**梳理当前项目 AI 系统的现状**——三条链路各自是什么、能看到什么、通过什么机制、强在哪、短在哪，**方便后续优化与扩展**。
 
@@ -124,6 +125,56 @@ Active skills:
 | 14 | `generic_device_interaction` | Generic Device Interaction | （兜底）任何操作类请求 | 7 个模块 | 全部 11 个原生 helper |
 
 > 表中「触发关键词」列是**归并后的示意**，非逐字关键词列表。实际匹配项多为组合词或正则（如剪贴板技能里是「复制到剪贴板」而非单独的「复制」；屏幕状态技能是「唤醒屏幕」而非「唤醒」；应用技能是「启动应用/关闭应用」，单独的「启动/关闭」由 `OPERATIONAL_SIGNALS` 正则兜底）。逐字核对请以 `ChatAgentSkillRouter.kt` 为准。
+
+#### 2.3.1 每个技能提供的工具与模块（2026-09-11 实测）
+
+技能提供**两类东西**：`toolNames`（原生 helper 工具）与 `moduleIds`（可当工具直接调用的模块）。
+**14 个技能里只有 4 个提供 `toolNames`**，其余 10 个是纯模块型。
+
+**A. 提供原生工具的技能（4 个）**
+
+| 技能 | `toolNames`（原生 helper） | `moduleIds`（可当工具用） |
+|---|---|---|
+| `temporary_workflow_execution` | `vflow_agent_run_temporary_workflow` | `vflow.agent.temporary_workflow` |
+| `saved_workflow_creation` | `vflow_agent_save_workflow` | `vflow.agent.save_workflow` |
+| `screen_observation` | `vflow_agent_observe_ui`、`vflow_agent_read_page_content`、`vflow_agent_verify_ui` | 获取当前活动、查找控件 |
+| `ui_interaction` | `vflow_agent_tap_screen`、`vflow_agent_long_press_screen`、`vflow_agent_input_text`、`vflow_agent_swipe_screen`、`vflow_agent_press_key`、`vflow_agent_wait` | 点击、屏幕操作×2、输入文本×2、执行全局操作、按键 |
+| `app_lifecycle` | `vflow_agent_lookup_installed_app`、`vflow_agent_launch_app` | 查找本机应用、启动应用、关闭应用、强制停止应用、获取当前活动 |
+| `generic_device_interaction`（兜底） | **全部 11 个** | 获取当前活动、查找控件、点击、输入文本、启动应用、写入剪贴板、**显示Toast** |
+
+**B. 纯模块型技能（8 个，只提供 `moduleIds`）**
+
+| 技能 | 模块（id → 中文名） |
+|---|---|
+| `flashlight_control` | `vflow.device.flashlight` → 手电筒 |
+| `clipboard_and_share` | `system.get_clipboard` 读取剪贴板、`system.set_clipboard` 写入剪贴板、`core.get_clipboard` 读取剪贴板、`core.set_clipboard` 设置剪贴板、`system.share` 分享、`data.quick_view` 快速查看 |
+| `device_settings_control` | `system.wifi` Wi-Fi设置、`core.wifi` WiFi控制、`core.wifi_state` 读取WiFi状态、`system.bluetooth` 蓝牙设置、`core.bluetooth` 蓝牙控制、`core.bluetooth_state` 读取蓝牙状态、`system.brightness` 屏幕亮度、`system.mobile_data` 移动数据、`system.darkmode` 深色模式、`system.do_not_disturb` 免打扰、`core.volume` 音量控制、`core.volume_state` 读取音量 |
+| `screen_state_control` | `system.wake_screen` 唤醒屏幕、`system.wake_and_unlock_screen` 唤醒并解锁、`system.sleep_screen` 息屏、`core.wake_screen` 唤醒屏幕、`core.sleep_screen` 关闭屏幕、`core.screen_status` 读取屏幕状态 |
+| `visual_screen_fallback` | `system.capture_screen` 截屏、`core.capture_screen` 截屏、`interaction.ocr` 文字识别 |
+| `notifications` | `notification.send_notification` 发送通知、`notification.find` 查找通知、`notification.remove` 移除通知 |
+| `device_feedback` | `device.toast` **显示Toast**、`device.vibration` 振动、`device.text_to_speech` 朗读文本、`device.speech_to_text` 识别引擎、`device.play_audio` 播放音频、`device.call_phone` 拨打电话 |
+| `shell_execution` | `shizuku.shell_command` 执行Shell命令、`core.shell_command` 执行Shell命令 |
+
+> **观察**：`moduleIds` 里大量 `system.*` 与 `core.*` 是**同一功能的两套实现**（剪贴板/熄屏/WiFi/蓝牙/音量/截屏均有两份），重复占用白名单名额。
+
+#### 2.3.2 兜底技能 `generic_device_interaction` 详解
+
+**它是路由链条最后一格安全网**，触发条件极窄（`selectExplicitSkillIds` `:170-172`）：
+
+```kotlin
+if (selectedSkillIds.isEmpty() && operationalRequest) {
+    selectedSkillIds += fallbackInteractionSkill.id
+}
+```
+
+**关键实现细节**：它在 `SKILL_CATALOG` 里注册为 `SkillRule(definition = fallbackInteractionSkill)`——**刻意不带 `keywords` 与 `regexes`**（`:741`）。因此：
+
+- 它**永远不会**被第 156-160 行的关键词遍历命中（`keywords.any{}` 对空集合恒为 false）；
+- 它只能由上述 `selectedSkillIds.isEmpty() && operationalRequest` 触发——即**前面 6 步全部落空、且判定为操作类请求**时才启用。
+
+**为什么需要它**：用户说「帮我把屏幕上的东西发给张三」——不含任何技能关键词，但明显是操作请求。没有兜底，模型会拿到 0 个工具。
+
+**它的代价**：一次性暴露 **11 个 helper + 7 个模块**，是**工具面最大**的技能；切到它时对 `tools` 数组的扰动也最大（缓存前缀断裂最严重，见 §2.10.4）。
 
 **路由流程**（`selectExplicitSkillIds` `:140-175`）：
 
@@ -284,6 +335,15 @@ val entries = moduleIds.take(maxModules).mapNotNull { ... }
 
 **这个排序来自编辑器 UI 的分组顺序**（`ModuleCategories`），在 UI 里只是折叠展示的先后，**被复用为 token 截断的优先级**后，导致"最高频的设备操作排在最后被切掉"。
 
+**切掉了什么（2026-09-11 实测，保存工作流步骤目录）**：
+
+| | 分类分布 |
+|---|---|
+| **窗口内（前 48）** | interaction 12、data 23、logic 9、file 4 |
+| **被切掉（后 91）** | **device 39、core 23**、ui 9、network 7、feishu 3、其它 10 |
+
+即 **`device` + `core` 两类共 62 个模块被整体切除**——包括 toast、振动、TTS、打电话、shell、剪贴板、音量、WiFi 等**全部高频操作**。
+
 **推导出的失败模式**（实证见 §5.4）：
 
 1. 模型知道 `vflow.device.toast` 合法，但目录没解释它 → 模型倾向猜一个"看起来更合理"的名字（如 `vflow.ui.toast`）；
@@ -291,6 +351,39 @@ val entries = moduleIds.take(maxModules).mapNotNull { ... }
 3. 拒绝信息 `"...which is not exposed to the chat agent for saved workflows."` **把"未注册/不存在"描述成了"未授权"**，误导用户以为该模块被禁用。
 
 **补充**：截断的动机是控制 token——catalog 拼在工具 `description` 里，**每次请求都要重发**。实测全量（166 条）约 15.5K 字符（≈3.9K token），截断到 48 条约 4K 字符（≈1K token）。动机可理解，但**实现方式**（取前 N + UI 排序 + 与 enum 不对齐）是问题所在。详见 [`agent-design-comparison.md`](agent-design-comparison.md) 对照头部做法。
+
+#### 2.4.5 「技能」与「catalog」是两个不同机制（易混淆）
+
+同一批模块会出现在两处，但**含义完全不同**：
+
+| | 技能路由（§2.3） | catalog（§2.4.4） |
+|---|---|---|
+| **粒度** | 技能（一组工具 + 模块） | 单个模块 |
+| **作用** | 决定**哪些工具可用** | 说明模块**怎么用** |
+| **载体** | `tools` 数组（真正可调用） | 工作流工具的 `description` 文本 |
+| **覆盖** | 技能声明的 `toolNames` + `moduleIds` | 工作流白名单模块的**全部**（但截断） |
+| **何时生效** | 每轮 | 仅当**工作流工具被选中**时 |
+
+**同一模块在两处的不同地位**：
+
+- 出现在**技能**里 = **可以直接调用**（如 `device_feedback` 技能中的 `vflow.device.toast`）；
+- 出现在 **catalog** 里 = **只是说明文档**，供模型生成工作流 JSON 时参考。
+
+**这解释了 toast 的"一可用一不可用"**：
+
+```
+用户："弹个 toast"
+  → 路由命中 device_feedback（关键词含 toast）
+  → 暴露 vflow.device.toast 工具 → ✅ 直接调用可用
+
+用户："保存个工作流，里面弹 toast"
+  → 路由命中 saved_workflow_creation
+  → 暴露 vflow_agent_save_workflow 工具
+  → 模型需查 catalog 获取 toast 的 moduleId 与参数
+  → 但 toast 排第 66，被 48 截断 → ❌ 模型看不到 → 臆造 id 被拒
+```
+
+**同一个能力，走技能路由可用、走 catalog 不可用**——这是当前设计最反直觉之处。
 
 ---
 
