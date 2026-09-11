@@ -1,10 +1,11 @@
 # Chat Agent 能力增强方案（四点改造）
 
-> 版本：v1.1（方案草案）
-> 状态：待评审 · 2026-09-11
+> 版本：v1.2（方案草案，含实施记录）
+> 状态：部分实施 · 2026-09-12
 > 目录：`docs/fork/`（fork 新增文件，上游无此文件，冲突归属我方）
 > 背景依据：[`surveys/ai-system-overview.md`](surveys/ai-system-overview.md)（本项目的 AI 现状走查）、[`surveys/agent-design-comparison.md`](surveys/agent-design-comparison.md)（头部项目外部参照，**证据已升级为官方文档原文**）
-> v1.1 修订：§1 增补「保留技能作为工具分组」的目标形态（厘清技能本质 = 工具分组 + 指令，改造只换选择器）；§1.4 修正原"工具不再按技能过滤"的自相矛盾表述，得出**不需要 tool search** 的结论；§2.1.1 增补「两类模块」区分（catalog 是"仅工作流步骤模块"的唯一入口）；新增 §2.5「拆掉 catalog 寄生结构」；§3.1 修正缓存与技能过滤的关系（任务内稳定 vs 跨轮断裂）。
+> v1.1 修订：§1 增补「保留技能作为工具分组」的目标形态（厘清技能本质 = 工具分组 + 指令，改造只换选择器）；§1.4 修正原"工具不再按技能过滤"的自相矛盾表述，得出**不需要 tool search** 的结论；§2.1.1 增补「两类模块」区分（catalog 是"仅工作流步骤模块"的唯一入口）；§3.1 修正缓存与技能过滤的关系（任务内稳定 vs 跨轮断裂）。
+> v1.2 修订（2026-09-12）：**改造二的「去掉 catalog 截断」与「修正不存在 id 报错」已实施**（提交 `cf9ce3d5`，已发真机验证包）。§2.2–§2.7 重排：补实施状态、实测成本（全量完整 catalog ≈5,779 token）、三档文案对照；原"紧凑清单 + describe_module"降级为 §2.6 待评估项；原"拆寄生结构"改为 §2.7。
 
 **本文是需求/方案文档**——记录「要做什么、为什么、怎么做」。现状描述一律引用上述两份 surveys，不在此重复。
 
@@ -14,12 +15,12 @@
 
 四项改造，目标是把 Chat Agent 从「关键词路由 + 硬截断」升级为**「目录常驻 + 详情按需 + 前缀稳定 + 可缓存」**的架构：
 
-| # | 改造 | 目标 | 依赖 |
+| # | 改造 | 目标 | 状态 |
 |---|---|---|---|
-| **1** | 技能：粗粒度披露 → 目录常驻 + 详情按需 | **可发现性 + 选择权交还模型**（非 token 节省，见 §1.6） | 需先做 §1.1 三层拆分 |
-| **2** | 开启 Prompt 缓存 | 降低长会话成本 | **依赖 1 完成**（见 §3.1 冲突说明） |
-| **3** | catalog：截断 → 全量清单 + 模块查询工具 | 修复"模块不可见"导致的臆造 id | 独立 |
-| **4** | Chat 悬浮窗 | 用户可边看屏幕边对话 | 独立 |
+| **1** | 技能：粗粒度披露 → 目录常驻 + 详情按需 | **可发现性 + 选择权交还模型**（非 token 节省，见 §1.6） | 待实施（需先做 §1.1 三层拆分） |
+| **2** | 开启 Prompt 缓存 | 降低长会话成本 | 待实施（**依赖 1 完成**，见 §3.1） |
+| **3** | catalog：截断 → 全量 + 修正报错文案 | 修复"模块不可见"导致的臆造 id | **✅ 已实施**（§2.2、§2.5，提交 `cf9ce3d5`） |
+| **4** | Chat 悬浮窗 | 用户可边看屏幕边对话 | 待实施 |
 
 **建议实施顺序：3 → 1 → 2 → 4**（见 §6）。理由：3 收益最直接、风险最低；1 是 2 的前提；4 独立可穿插。
 
@@ -122,7 +123,7 @@ tool.name in skill.toolNames || tool.moduleId in skill.moduleIds
 
 ---
 
-## 2. 改造二：catalog 全量化 + 模块查询工具
+## 2. 改造二：catalog 全量化（已实施）+ 报错文案修正（已实施）
 
 ### 2.1 现状问题
 
@@ -149,51 +150,95 @@ tool.name in skill.toolNames || tool.moduleId in skill.moduleIds
 
 ### 2.2 改造方案
 
-**两段式**：
+**分两步走**（第一步已实施，第二步待定）：
 
 ```
-① catalog 改为「全量紧凑清单」——id + 名称（+ 分类），不含描述与参数
-② 新增 vflow_agent_describe_module(moduleId) → 返回该模块的完整信息
-     （描述、输入参数与类型、必填、输出、示例）
+① 去掉截断，catalog 变全量          ← ✅ 已实施（2026-09-12）
+② 新增 vflow_agent_describe_module  ← 待评估（见 §2.6）
 ```
 
-### 2.3 成本实测
+**① 去掉截断**（已实施，提交 `cf9ce3d5`）：
+
+- `buildCompactModuleCatalog` 移除 `maxModules` 参数与 `.take(maxModules)`
+- 三处调用点全改为全量：临时工作流（原 40）、保存·触发器（原 24）、保存·步骤（原 48）
+- 保留单条内部的 `inputs.take(6)` 与 `buildModuleOutputCatalog` 的 `take(8)`——**不同维度的限制**，与模块截断无关
+
+### 2.3 成本实测（含实施后真实值）
 
 | 方案 | 字符 | 估算 token |
 |---|---|---|
-| 现状：截断到 48 条完整 catalog | ~4,000 | ~1,300 |
-| **方案：全量 id+名称紧凑清单（162 个）** | **5,571** | **~1,857** |
-| 全量完整 catalog | 11,079 | ~3,693 |
+| 改前：截断到 48 条 | ~4,000 | ~1,330 |
+| **改后：全量完整 catalog（已实施）** | 步骤 14,989 + 触发器 2,348 | **步骤 ~4,996 + 触发器 ~782 ≈ 5,779** |
+| 备选：全量紧凑清单（id+名称） | 5,571（162 个模块） | ~1,857 |
 
-**关键**：全量紧凑清单（1,857）与现状截断版（1,300）**只差约 550 token**，却从「丢失 91 个模块」变成「全部可见」。性价比极高。
+**关键权衡**：已实施方案（全量完整）比紧凑清单**多约 3,900 token**，但**保留了每条模块的名称、描述、参数键**——即模型不用再调 `describe_module` 就能直接生成工作流。
 
-### 2.4 实现提示
+> **这是有意的取舍**：先以最小改动（纯删除）验证"全量可见"能否解决问题。若 token 成本不可接受，再降级到紧凑清单 + §2.6 的按需详情。
 
-**`describe_module` 的数据源可直接复用 API 层已有能力**——本地 Web 服务已有 `GET /modules/{id}/input-schema` 与 `/modules/{id}`（`api/handler/ModuleHandler.kt`）。**不必重写**，抽出共用服务即可。
+### 2.4 实现提示：`describe_module` 的数据源
 
-### 2.5 附带改造：拆掉 catalog 的「寄生」结构（建议）
+**可直接复用 API 层已有能力**——本地 Web 服务已有 `GET /modules/{id}/input-schema` 与 `/modules/{id}`（`api/handler/ModuleHandler.kt`）。**不必重写**，抽出共用服务即可。
+
+### 2.5 配套修正（已实施）：修正「不存在的模块 ID」报错（2026-09-12）
+
+**问题**：模型编造 moduleId（如 `vflow.ui.toast`）时，报错为
+
+```
+Saved workflow step 1 uses module `vflow.ui.toast`, which is not exposed to the chat agent for saved workflows.
+```
+
+**这会让模型误以为模块存在、只是未授权**，从而反复重试同一个无效 id。
+
+**根因不只是文案**——`isSavedWorkflowModuleAllowed` 用白名单集合查询，**不存在的 id 同样返回 false**，导致"不存在"永远走"未暴露"分支，其后的 `unregistered` 分支**根本不可达**。
+
+**修法**（提交 `cf9ce3d5`）：
+
+1. 新增 `ChatAgentToolRegistry.isRegisteredModule()`（O(1)，委托 `ModuleRegistry.getModule()`）
+2. 两条路径（保存工作流 / 临时工作流）均改为**「先判存在 → 再判可用」**
+3. 文案区分三种情况：
+
+| 情况 | 新提示 |
+|---|---|
+| **不存在** | ``...does not exist. No such module is registered in vFlow. Do not retry this id; pick a real module id from the enum in the tool schema.`` |
+| 存在但不可用 | ``...exists but is not available for saved workflows. Pick a different module id from the enum...`` |
+| 存在但加载失败 | ``...could not be loaded. Pick a different module id...`` |
+
+**设计要点**：明确告知"不存在"+"不要重试这个 id"+"从 enum 里另选"——把错误的**可操作性**给模型。
+
+### 2.6 待评估：是否是 `describe_module` 与「紧凑清单」
+
+若 §2.3 的全量完整 catalog（~5,779 token）成本偏高，可降级为：
+
+- **紧凑清单**（id + 名称，~1,857 token）常驻
+- 新增 `vflow_agent_describe_module(moduleId)` 按需取详情（描述、参数、必填、输出）
+
+**待定**：先用真机验证"全量可见"是否已解决问题，再决定是否需要这一步。
+
+### 2.7 建议：拆掉 catalog 的「寄生」结构
 
 **现状**：catalog 不是独立机制，而是**拼在两个工作流工具的 `description` 字符串里**（surveys §2.4.1）：
 
 ```
-vflow_agent_run_temporary_workflow.description = "...说明..." + stepCatalog(40条)
-vflow_agent_save_workflow.description          = "...说明..." + triggerCatalog(24) + stepCatalog(48)
+vflow_agent_run_temporary_workflow.description = "...说明..." + stepCatalog(100条)
+vflow_agent_save_workflow.description          = "...说明..." + triggerCatalog(23) + stepCatalog(139)
 ```
 
-**这带来三个问题**：
+**三个问题**：
 
 | 问题 | 说明 |
 |---|---|
 | **粒度错配** | "有哪些模块"是**全局知识**，却被绑在**特定工具**上 |
 | **可见性依赖** | 只有这两个工具被技能选中时，模块清单才可见 |
-| **改造牵动全局** | 截断参数（`maxModules`）是工具构造函数的参数，改截断要动工具定义 |
+| **改造牵动全局** | catalog 的体积直接撑大工具 `description`，且随模块数增长 |
 
 **建议**：把模块目录**独立出来**，不再寄生。可选：
 
-- **方案 A（推荐）**：模块清单**常驻系统提示**（全量 id+名称，~1,857 token），`describe_module` 按需取详情。好处：无论走哪条路径，模型都完整知道有哪些模块。
+- **方案 A（推荐）**：模块清单**常驻系统提示**，`describe_module` 按需取详情。好处：无论走哪条路径，模型都完整知道有哪些模块。
 - **方案 B**：完全按需，用 `search_modules` / `describe_module` 取。更省 token，但多一轮往返。
 
 > **对照头部做法**：Anthropic 官方对**技能**是"name+description 全量预载 + 正文按需"（见 [`surveys/agent-design-comparison.md`](surveys/agent-design-comparison.md) §2.2）。vFlow 的模块可类比技能——**轻量清单常驻，重量详情按需**。
+>
+> ⚠️ 但注意：全量完整 catalog 现在让保存工作流工具的 `description` 达到 ~5,779 token，**每次请求都要重发**（工具描述随 `tools` 数组下发）。若后续要控制成本，§2.6/§2.7 是主要方向。
 
 ---
 
@@ -316,10 +361,27 @@ vflow_agent_save_workflow.description          = "...说明..." + triggerCatalog
 | 4 | **已加载内容的生命周期** | 加载过的技能/模块详情是否跨轮保持？如何计入上下文预算？需定义 |
 | 5 | **悬浮窗的 Compose 承载** | 见 §4.3，是已知的 Android 实现难点 |
 | 6 | **与现有 API 的关系** | `describe_module` 应复用 API 层能力（§2.4），避免"API 与 Agent 各写各的"重演（surveys §2.10 已记录该浪费） |
+| 7 | **全量 catalog 的 token 成本**（v1.2 新增） | 已实施的全量完整 catalog ≈ **5,779 token**（步骤 4,996 + 触发器 782），比改前多约 4,449 token，且随 `tools` 数组**每次请求重发**。若成本不可接受，降级方案见 §2.6 |
 
 ---
 
-## 8. 相关文档
+## 8. 已实施改动的真机验证清单（2026-09-12）
+
+**提交 `cf9ce3d5`** 对应的验证点（构建 `app-arm64-v8a-debug.apk` 已发真机）：
+
+| # | 验证场景 | 预期 |
+|---|---|---|
+| 1 | 让 AI「建个工作流，里面弹个 toast」 | catalog 现含 `vflow.device.toast`（原排第 66 被切）→ 应能正确识别并使用，不再臆造 `vflow.ui.toast` |
+| 2 | 观察 AI 若仍臆造 id 时的错误提示 | 应显示 ``does not exist. No such module is registered in vFlow. Do not retry this id; pick a real module id from the enum...`` 而非原来的 "not exposed" |
+| 3 | 检查 AI 收到错误后能否自我纠正 | 期望下一轮改用 enum 中的合法 id，而非重复同一个无效 id |
+| 4 | 让 AI 建含**高频设备操作**的工作流（振动、打电话、shell） | 这些原本全被切掉（device 39 + core 23），现应可见 |
+| 5 | 长对话（多轮）观察 token/成本 | 全量 catalog 使工具描述变大，需确认是否带来可感知的成本或超限问题 |
+
+> **注**：debug 包与 release 包签名可能不同，安装前可能需卸载旧版（会清空数据，建议先备份工作流）。
+
+---
+
+## 9. 相关文档
 
 | 文档 | 关系 |
 |---|---|

@@ -1,12 +1,13 @@
 # vFlow 的 AI 体系梳理（fork 参考文档）
 
-> 版本：v1.5
+> 版本：v1.6
 > 状态：代码走查定稿（对应 `feature/function-workflow` 分支，2026-09-11）
 > v1.1 修订：修正 §5.2/§5.3/§6 的 `call_function` 根因（原文写反）、附录 A 三处统计数字、§4 模块 id 与遗漏、§2.6 示例值、§2.1 行号，以及若干措辞/文件归属问题。**本文数字为人工走查所得，非脚本自动生成**（见 §0）。
 > v1.2 修订：重写 §0 定位；新增 §2.10「链路 A 能力与现状评估」、§3.1「链路 B 能力与现状评估」（含 A/B 对比表）、§4.1「链路 C 现状评估」、§7「优化方向汇总」；§1 补阅读指引。
 > v1.3 修订（2026-09-11 补充走查）：新增「双信息源与 catalog 截断」、「Prompt 缓存现状」、§5.4「AI 臆造 moduleId 实证」；§2.3 补技能路由运行特征；§2.10.3 补两条短板。配套外部调研见 [`agent-design-comparison.md`](agent-design-comparison.md)。
 > v1.4 修订（2026-09-11 补充走查）：新增 §2.3.1「每个技能提供的工具与模块」（含中文名对照）、§2.3.2「兜底技能详解」、「技能与 catalog 的机制区别」；补「窗口内外分类分布」。
 > v1.5 修订（2026-09-11 补充走查）：新增 §2.4.1「工具的加载链路（两阶段）」、§2.4.2「四条处理路径与两类模块」；§2.4.6 补「窗口内 48 个的具体清单」与「能力被系统性扭曲」的结论；§2.4.x 编号顺延。
+> v1.6 修订（2026-09-12）：**catalog 截断已修复**（§2.4.6 加状态标注）；§2.10.3 短板 8 标注已解决；§7 优化方向对应项标注已部分实施。方案与实施记录见 [`../chat-agent-enhancement-plan.md`](../chat-agent-enhancement-plan.md)。
 > 目录：`docs/fork/surveys/`（fork 新增文件，上游无此文件，冲突归属我方；同目录另见 [`README.md`](README.md) 索引）
 > 用途：**梳理当前项目 AI 系统的现状**——三条链路各自是什么、能看到什么、通过什么机制、强在哪、短在哪，**方便后续优化与扩展**。
 
@@ -361,12 +362,14 @@ JSON Schema（`buildToolSchema` `:556-585`）：
 
 #### 2.4.6 工作流工具的「双信息源」与 catalog 截断（2026-09-11 补充）
 
+> ⚠️ **状态更新（2026-09-12）**：本节描述的 **catalog 截断已修复**——`maxModules` 参数与 `.take()` 已移除，catalog 现为全量（步骤 139 条、触发器 23 条）。以下"截断"描述保留作为**改动前的问题记录**。详见 [`../chat-agent-enhancement-plan.md`](../chat-agent-enhancement-plan.md) §2.2。
+
 临时/保存工作流这两个工具给模型提供模块信息的机制，**由两套独立、不完全对齐的信息源组成**：
 
 | 信息源 | 载体 | 内容 | 是否全量 |
 |---|---|---|---|
 | **合法 moduleId 枚举** | `inputSchema` 里 `moduleId` 字段的 `enum`（`buildWorkflowStepItemSchema`） | 全部合法 id | ✅ **全量** |
-| **可读目录 catalog** | 工具 `description` 里拼接的文本（`buildCompactModuleCatalog`） | `id(名称: 描述; inputs: 参数键)` | ❌ **截断** |
+| **可读目录 catalog** | 工具 `description` 里拼接的文本（`buildCompactModuleCatalog`） | `id(名称: 描述; inputs: 参数键)` | ~~❌ 截断~~ → ✅ **已改全量** |
 
 关键代码（`ChatAgentToolRegistry.kt`）：
 
@@ -707,7 +710,7 @@ else → Ready(..., missingPermissions = module.getRequiredPermissions(step)
 5. **能力视图碎片化**：链路 A 用 `aiMetadata` + `getDynamicInputs`，链路 B 用 `metadata.description` + `getInputs`，同一批模块两套描述；且 `aiMetadata` 本身只覆盖 188 个模块中的 103 个。
 6. **配置割裂**：链路 A 用 `ChatProviderConfig`，链路 B 用 SharedPreferences `ai_config`，同一 API key 要填两遍。
 7. **无多模态、无流式**：不能给模型发图片（截图只能转文本）；`stream=false`，长回复整段等待。
-8. **模块目录截断且与 enum 错配**（2026-09-11 补充，§2.4.6）：保存工作流 139 个步骤模块只解释前 48 个，高频的 `device` 类被切在最后；模型"知道 id 合法、不知道它是什么"，于是臆造 id 被拒。
+8. ~~**模块目录截断且与 enum 错配**~~（2026-09-11 补充，§2.4.6）：保存工作流 139 个步骤模块只解释前 48 个，高频的 `device` 类被切在最后；模型"知道 id 合法、不知道它是什么"，于是臆造 id 被拒。**→ ✅ 已于 2026-09-12 修复（去除截断）**，代价是 catalog 增至 ~5,779 token。
 9. **无未启用 Prompt 缓存**（2026-09-11 补充，§2.10.4）：全仓库无 `cache_control`/`prompt_cache`，Anthropic 链路 100% 冷启动；技能切换又会让 OpenAI 系前缀从 `tools` 处断裂。
 
 #### 2.10.4 Prompt 缓存现状（2026-09-11 补充）
@@ -1045,7 +1048,7 @@ val inputs = module.getDynamicInputs(baseStep, listOf(baseStep)).filterNot { it.
 |---|---|---|---|
 | **P0** | **让失败可见**：`buildParameters` 遇未知键不再静默丢弃，改为回传模型错误；`validationErrors` 随 tool result 回传让模型自纠；区分"未注册"与"未授权"的错误文案 | A | 改动小、直接决定 Agent 可信度。§5.4 的臆造 id 案例正是"拒绝了但模型不知道" |
 | **P0** | **上下文预算管理**：按 token 计数裁剪/摘要历史，替代全量 `forEach` | A | 长会话最先崩的地方；Agent 单次节点树 dump 就很大。头部项目（Claude Code/Codex/Hermes）均有 compaction |
-| **P1** | **补「模块目录」中间层**（§2.4.6）：给全量模块一份轻量摘要（id + 一句说明），替代当前"enum 全量 / catalog 截断到 48"的错配；或至少改排序让 `device`/`core` 等高频类优先 | A | 直接修掉 §5.4 的臆造 id 问题——模型需要"知道有什么" |
+| ~~P1~~ | ~~**补「模块目录」中间层**（§2.4.6）~~ **→ 已部分实施（2026-09-12）**：catalog 截断已去除、报错文案已修正；**剩余待评估**：全量完整 catalog 约 5,779 token，是否降级为"紧凑清单 + `describe_module`" | A | 已修掉 §5.4 的臆造 id 问题；token 成本待权衡（见方案 §2.6） |
 | **P1** | **加按需获取模块详情的工具**（如 `describe_modules`） | A | 让被省掉的参数信息**可获取**，才是真正的渐进式披露；参照 Claude Code `ToolSearch` |
 | **P1** | **启用 Prompt 缓存**：给 Anthropic 的 `system`/`tools` 块加 `cache_control: ephemeral`（§2.10.4） | A | 当前完全未开，Anthropic 链路 100% 冷启动，改动一行级别 |
 | **P1** | **资产目录注入层**：统一的「工作流清单 + 函数签名」目录，供 `call_workflow`/`call_function` 共用 | A（B 亦可复用） | 一次投入修掉两个模块，也是「让 AI 知道有什么」的地基 |
