@@ -474,11 +474,22 @@ internal class ChatAgentModuleExecutor(
                     name = chatToolNameFromModuleId(stepSpec.moduleId),
                     argumentsJson = stepSpec.parameters.toString(),
                 )
+                // 同保存工作流路径：先判存在性，避免"不存在"被报成"未暴露"。
+                if (!toolRegistry.isRegisteredModule(stepSpec.moduleId)) {
+                    validationErrors += buildTemporaryWorkflowValidationError(
+                        toolCall = preparedToolCall,
+                        summary = definition.title,
+                        outputText = "Temporary workflow step ${index + 1} uses module `${stepSpec.moduleId}`, which does not exist. " +
+                            "No such module is registered in vFlow. Do not retry this id; pick a real module id from the enum in the tool schema.",
+                    )
+                    return@forEachIndexed
+                }
                 if (!toolRegistry.isTemporaryWorkflowModuleAllowed(stepSpec.moduleId)) {
                     validationErrors += buildTemporaryWorkflowValidationError(
                         toolCall = preparedToolCall,
                         summary = definition.title,
-                        outputText = "Temporary workflow step ${index + 1} uses module `${stepSpec.moduleId}`, which is not exposed to the chat agent.",
+                        outputText = "Temporary workflow step ${index + 1} uses module `${stepSpec.moduleId}`, which exists but cannot be used in a temporary workflow. " +
+                            "Pick a different module id from the enum in the tool schema.",
                     )
                     return@forEachIndexed
                 }
@@ -487,7 +498,8 @@ internal class ChatAgentModuleExecutor(
                     validationErrors += buildTemporaryWorkflowValidationError(
                         toolCall = preparedToolCall,
                         summary = definition.title,
-                        outputText = "Temporary workflow step ${index + 1} uses unregistered module `${stepSpec.moduleId}`.",
+                        outputText = "Temporary workflow step ${index + 1} uses module `${stepSpec.moduleId}`, which could not be loaded. " +
+                            "Pick a different module id from the enum in the tool schema.",
                     )
                     return@forEachIndexed
                 }
@@ -663,11 +675,24 @@ internal class ChatAgentModuleExecutor(
     ): List<SavedWorkflowStepCandidate> {
         return stepSpecs.mapIndexedNotNull { index, stepSpec ->
             val sourceLabel = if (expectTrigger) "trigger ${index + 1}" else "step ${index + 1}"
+            // 先判「模块是否存在」，再判「是否允许用于保存工作流」。
+            // 顺序很重要：不存在 moduleId 时若先走白名单检查，会被报成「未暴露给 Agent」，
+            // 让模型误以为模块存在、只是权限问题，从而反复重试同一个无效 id。
+            if (!toolRegistry.isRegisteredModule(stepSpec.moduleId)) {
+                validationErrors += buildSaveWorkflowValidationError(
+                    toolCall = toolCall,
+                    summary = definition.title,
+                    outputText = "Saved workflow $sourceLabel uses module `${stepSpec.moduleId}`, which does not exist. " +
+                        "No such module is registered in vFlow. Do not retry this id; pick a real module id from the enum in the tool schema.",
+                )
+                return@mapIndexedNotNull null
+            }
             if (!toolRegistry.isSavedWorkflowModuleAllowed(stepSpec.moduleId)) {
                 validationErrors += buildSaveWorkflowValidationError(
                     toolCall = toolCall,
                     summary = definition.title,
-                    outputText = "Saved workflow $sourceLabel uses module `${stepSpec.moduleId}`, which is not exposed to the chat agent for saved workflows.",
+                    outputText = "Saved workflow $sourceLabel uses module `${stepSpec.moduleId}`, which exists but is not available for saved workflows. " +
+                        "Pick a different module id from the enum in the tool schema.",
                 )
                 return@mapIndexedNotNull null
             }
@@ -676,7 +701,8 @@ internal class ChatAgentModuleExecutor(
                 validationErrors += buildSaveWorkflowValidationError(
                     toolCall = toolCall,
                     summary = definition.title,
-                    outputText = "Saved workflow $sourceLabel uses unregistered module `${stepSpec.moduleId}`.",
+                    outputText = "Saved workflow $sourceLabel uses module `${stepSpec.moduleId}`, which could not be loaded. " +
+                        "Pick a different module id from the enum in the tool schema.",
                 )
                 return@mapIndexedNotNull null
             }

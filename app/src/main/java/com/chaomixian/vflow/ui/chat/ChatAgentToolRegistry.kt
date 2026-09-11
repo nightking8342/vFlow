@@ -73,6 +73,19 @@ internal class ChatAgentToolRegistry(context: Context) {
 
     fun getRiskLevelForModuleId(moduleId: String): ChatAgentToolRiskLevel = riskLevelForModuleId(moduleId)
 
+    /**
+     * 该 moduleId 是否注册在 vFlow 中。
+     *
+     * 与 [isTemporaryWorkflowModuleAllowed] / [isSavedWorkflowModuleAllowed] 的区别：
+     * 后两者是「白名单集合查询」，未注册的 id 同样返回 false，无法区分
+     * 「模块不存在」与「模块存在但不允许用于该场景」。
+     * 校验路径应先用本方法判存在性，再用白名单判可用性，否则模型会看到
+     * 误导性的「not exposed」提示，误以为模块存在、只是权限问题。
+     */
+    fun isRegisteredModule(moduleId: String): Boolean {
+        return ModuleRegistry.getModule(moduleId) != null
+    }
+
     fun isTemporaryWorkflowModuleAllowed(moduleId: String): Boolean {
         return moduleId in temporaryWorkflowModuleIds
     }
@@ -116,7 +129,6 @@ internal class ChatAgentToolRegistry(context: Context) {
     private fun buildTemporaryWorkflowToolDefinition(): ChatAgentToolDefinition {
         val stepCatalog = buildCompactModuleCatalog(
             temporaryWorkflowModuleIds.filterNot(::isTriggerModule),
-            maxModules = 40,
             preferWorkflowDescriptions = true,
         )
         return ChatAgentToolDefinition(
@@ -148,12 +160,10 @@ internal class ChatAgentToolRegistry(context: Context) {
     private fun buildSaveWorkflowToolDefinition(): ChatAgentToolDefinition {
         val triggerCatalog = buildCompactModuleCatalog(
             savedWorkflowModuleIds.filter(::isTriggerModule),
-            maxModules = 24,
             preferWorkflowDescriptions = false,
         )
         val stepCatalog = buildCompactModuleCatalog(
             savedWorkflowModuleIds.filterNot(::isTriggerModule),
-            maxModules = 48,
             preferWorkflowDescriptions = true,
         )
         return ChatAgentToolDefinition(
@@ -715,11 +725,9 @@ internal class ChatAgentToolRegistry(context: Context) {
 
     private fun buildCompactModuleCatalog(
         moduleIds: List<String>,
-        maxModules: Int,
         preferWorkflowDescriptions: Boolean,
     ): String {
         val entries = moduleIds
-            .take(maxModules)
             .mapNotNull { moduleId ->
                 val module = ModuleRegistry.getModule(moduleId) ?: return@mapNotNull null
                 val defaultStep = module.createSteps().firstOrNull() ?: ActionStep(module.id, emptyMap())
