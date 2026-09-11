@@ -1,11 +1,12 @@
 # vFlow 的 AI 体系梳理（fork 参考文档）
 
-> 版本：v1.4
+> 版本：v1.5
 > 状态：代码走查定稿（对应 `feature/function-workflow` 分支，2026-09-11）
 > v1.1 修订：修正 §5.2/§5.3/§6 的 `call_function` 根因（原文写反）、附录 A 三处统计数字、§4 模块 id 与遗漏、§2.6 示例值、§2.1 行号，以及若干措辞/文件归属问题。**本文数字为人工走查所得，非脚本自动生成**（见 §0）。
 > v1.2 修订：重写 §0 定位；新增 §2.10「链路 A 能力与现状评估」、§3.1「链路 B 能力与现状评估」（含 A/B 对比表）、§4.1「链路 C 现状评估」、§7「优化方向汇总」；§1 补阅读指引。
-> v1.3 修订（2026-09-11 补充走查）：新增 §2.4.4「双信息源与 catalog 截断」、§2.10.4「Prompt 缓存现状」、§5.4「AI 臆造 moduleId 实证」；§2.3 补技能路由运行特征；§2.10.3 补两条短板。配套外部调研见 [`agent-design-comparison.md`](agent-design-comparison.md)。
-> v1.4 修订（2026-09-11 补充走查）：新增 §2.3.1「每个技能提供的工具与模块」（含中文名对照）、§2.3.2「兜底技能详解」、§2.4.5「技能与 catalog 的机制区别」；§2.4.4 补「窗口内外分类分布」。
+> v1.3 修订（2026-09-11 补充走查）：新增「双信息源与 catalog 截断」、「Prompt 缓存现状」、§5.4「AI 臆造 moduleId 实证」；§2.3 补技能路由运行特征；§2.10.3 补两条短板。配套外部调研见 [`agent-design-comparison.md`](agent-design-comparison.md)。
+> v1.4 修订（2026-09-11 补充走查）：新增 §2.3.1「每个技能提供的工具与模块」（含中文名对照）、§2.3.2「兜底技能详解」、「技能与 catalog 的机制区别」；补「窗口内外分类分布」。
+> v1.5 修订（2026-09-11 补充走查）：新增 §2.4.1「工具的加载链路（两阶段）」、§2.4.2「四条处理路径与两类模块」；§2.4.6 补「窗口内 48 个的具体清单」与「能力被系统性扭曲」的结论；§2.4.x 编号顺延。
 > 目录：`docs/fork/surveys/`（fork 新增文件，上游无此文件，冲突归属我方；同目录另见 [`README.md`](README.md) 索引）
 > 用途：**梳理当前项目 AI 系统的现状**——三条链路各自是什么、能看到什么、通过什么机制、强在哪、短在哪，**方便后续优化与扩展**。
 
@@ -220,7 +221,69 @@ toolsByName = (
 
 工具名由 `chatToolNameFromModuleId()` 生成（`:40-46`）：小写、非 `[a-z0-9_]` 替换为 `_`、`trim('_')` 去首尾下划线、加 `vflow_` 前缀（若已以 `vflow_` 开头则不重复加）。
 
-#### 2.4.1 原生 helper 工具（11 个，直连无障碍服务）
+#### 2.4.1 工具的加载链路：构建 vs 暴露（两阶段，2026-09-11 补充）
+
+工具的"构建"与"暴露"是**两个独立阶段**，容易混淆：
+
+**阶段一：全量构建（一次性）** —— `ChatAgentToolRegistry.init`（`:60-63`）
+
+```kotlin
+toolsByName = (
+    listOf(buildTemporaryWorkflowToolDefinition(), buildSaveWorkflowToolDefinition())  // 2 个复合
+    + ChatAgentNativeToolExecutor.buildDefinitions(appContext)                          // 11 个 helper
+    + buildDirectToolDefinitions()                                                      // 59 个直接工具
+).associateBy { it.name }                                                               // = 72
+```
+
+**72 个工具的完整定义（含 JSON Schema）在 ViewModel 创建时构建一次**，之后常驻内存、不再重建。
+
+**阶段二：每轮筛选（技能路由）** —— `selectSkills`（`ChatAgentSkillRouter.kt:56-70`）
+
+```kotlin
+val selectedTools = (
+    alwaysExposedTools                                    // 11 个原生 helper，无条件常驻
+    + availableTools.filter { tool ->
+        selectedSkills.any { skill -> skill.matchesTool(tool) }   // 技能匹配
+      }
+).distinctBy { it.name }
+```
+
+**匹配规则**（`:304-309`，核心）：
+
+```kotlin
+return toolName in toolNames || (moduleId != null && moduleId in moduleIds)
+```
+
+即：工具的名字在技能 `toolNames` 里，**或**其 `moduleId` 在技能 `moduleIds` 里 → 本轮暴露。
+
+> **结论**：技能路由的本质是**「用关键词匹配技能 → 技能声明 moduleIds → 匹配到对应工具」**。`tool.moduleId in skill.moduleIds` 这个映射，是技能机制存在的全部理由。
+
+#### 2.4.2 四条处理路径与两类模块（2026-09-11 补充）
+
+Chat Agent 处理请求有四条路径，**各路径依赖的信息源不同**——这解释了为什么 catalog 只需服务其中两条：
+
+| # | 路径 | 触发 | 用的信息源 | 需要 catalog？ |
+|---|---|---|---|---|
+| **1** | 直接工具 | "弹个 toast" | 技能的 `moduleIds`（匹配到直接工具）→ 工具 schema 自带参数说明 | ❌ |
+| **2** | 原生 helper | "打开微信看看消息" | 11 个常驻 helper | ❌ |
+| **3** | 临时工作流 | "重复调音量 5 次" | **catalog**（要生成 `{moduleId, parameters}`） | ✅ |
+| **4** | 保存工作流 | "建个工作流每天早上提醒" | **catalog**（同上） | ✅ |
+
+**路径 1、2 不需要 catalog**：它们拿的是**工具 schema**，参数说明已包含在内。
+**路径 3、4 需要 catalog**：要生成工作流 JSON，必须知道合法 `moduleId` 与参数键。
+
+**两类模块的区分**（这是关键）：
+
+| 类别 | 数量 | 能否直接调 | 唯一入口 |
+|---|---|---|---|
+| **直接工具** | **59** | ✅ 可（有 `directToolMetadata`） | 路径 1（技能匹配） |
+| **仅工作流步骤** | 其余（白名单内） | ❌ 不可 | **路径 3/4（catalog）** |
+
+**实测验证**：技能引用的 52 个模块中，**51 个本身已是"直接工具"**——即技能暴露的模块，模型本就能直接调用。
+
+**推论**：catalog 是**「仅工作流步骤模块」的唯一入口**。这类模块（如 `vflow.data.aes`、`vflow.logic.loop.start`）无 `directToolMetadata`，**只能写进工作流**，因此一旦 catalog 截断，它们就**彻底不可见**——没有别的路径能发现它们。
+
+#### 2.4.3 原生 helper 工具（11 个，直连无障碍服务）
 
 全部 `backend = NATIVE_HELPER`，不走模块引擎（`ChatAgentNativeTooling.kt:2260-2421`）：
 
@@ -240,14 +303,14 @@ toolsByName = (
 
 对应枚举 `ChatAgentNativeHelperId`（`ChatAgentNativeTooling.kt:41-53`），名称常量 `:55-65`。
 
-#### 2.4.2 内置复合工具（2 个）
+#### 2.4.4 内置复合工具（2 个）
 
 | 工具名 | moduleId | backend | 风险 | 说明 |
 |---|---|---|---|---|
 | `vflow_agent_run_temporary_workflow` | `vflow.agent.temporary_workflow` | TEMPORARY_WORKFLOW | 动态（各步最大值） | 一次审批跑短时多步工作流，≤80 步 |
 | `vflow_agent_save_workflow` | `vflow.agent.save_workflow` | SAVED_WORKFLOW | HIGH | 保存可复用工作流到列表 |
 
-#### 2.4.3 直接工具（59 个，从模块自动生成）
+#### 2.4.5 直接工具（59 个，从模块自动生成）
 
 判定式（`:673-678`）：
 
@@ -296,7 +359,7 @@ JSON Schema（`buildToolSchema` `:556-585`）：
 - `isHidden` 的输入被过滤掉
 - `required` 数组来自 `aiMetadata.requiredInputIds`（`:560-583`）
 
-#### 2.4.4 工作流工具的「双信息源」与 catalog 截断（2026-09-11 补充）
+#### 2.4.6 工作流工具的「双信息源」与 catalog 截断（2026-09-11 补充）
 
 临时/保存工作流这两个工具给模型提供模块信息的机制，**由两套独立、不完全对齐的信息源组成**：
 
@@ -344,6 +407,24 @@ val entries = moduleIds.take(maxModules).mapNotNull { ... }
 
 即 **`device` + `core` 两类共 62 个模块被整体切除**——包括 toast、振动、TTS、打电话、shell、剪贴板、音量、WiFi 等**全部高频操作**。
 
+**窗口内的 48 个具体是什么**（2026-09-11 实测）：
+
+| 分类 | 个数 | 内容 |
+|---|---|---|
+| `interaction` | 12 | 点击、查找文本、执行全局操作、查找控件、查找图片、查找直到出现、获取当前活动、输入文本、OCR、屏幕操作、UI选择器、截屏 |
+| `logic` | 9 | 跳出/继续循环、调用函数工作流、调用工作流、定义函数、跳转步骤、从列表中选取、停止并返回、停止工作流 |
+| `data` | 23 | AES/base64/DES/RC4/SM4、计算、注释、文件操作、获取当前时间、Hash、数学表达式、解析JSON/XML、提取/处理/替换/分割文本、URL编解码、变量 create/get/load/modify/random |
+| `file` | 4 | 调整图像、应用蒙版、导入图片、旋转图片（**第 48 名，截断线**）|
+
+**这不是「信息不全」，是「能力被系统性扭曲」**：
+
+```
+窗口内：interaction 全 12、logic 全 9、data 全 23、file 4
+窗口外：device 39（全切）、core 23（全切）、ui 9、network 7…
+```
+
+模型拿到的工作流能力是——**能算 AES、能解析 XML、能修改变量，但不能弹 toast、不能振动、不能 shell**。它会以为 vFlow 是个数据处理工具，因为窗口里几乎全是数据处理模块。
+
 **推导出的失败模式**（实证见 §5.4）：
 
 1. 模型知道 `vflow.device.toast` 合法，但目录没解释它 → 模型倾向猜一个"看起来更合理"的名字（如 `vflow.ui.toast`）；
@@ -352,11 +433,11 @@ val entries = moduleIds.take(maxModules).mapNotNull { ... }
 
 **补充**：截断的动机是控制 token——catalog 拼在工具 `description` 里，**每次请求都要重发**。实测全量（166 条）约 15.5K 字符（≈3.9K token），截断到 48 条约 4K 字符（≈1K token）。动机可理解，但**实现方式**（取前 N + UI 排序 + 与 enum 不对齐）是问题所在。详见 [`agent-design-comparison.md`](agent-design-comparison.md) 对照头部做法。
 
-#### 2.4.5 「技能」与「catalog」是两个不同机制（易混淆）
+#### 2.4.7 「技能」与「catalog」是两个不同机制（易混淆）
 
 同一批模块会出现在两处，但**含义完全不同**：
 
-| | 技能路由（§2.3） | catalog（§2.4.4） |
+| | 技能路由（§2.3） | catalog（§2.4.6） |
 |---|---|---|
 | **粒度** | 技能（一组工具 + 模块） | 单个模块 |
 | **作用** | 决定**哪些工具可用** | 说明模块**怎么用** |
@@ -626,7 +707,7 @@ else → Ready(..., missingPermissions = module.getRequiredPermissions(step)
 5. **能力视图碎片化**：链路 A 用 `aiMetadata` + `getDynamicInputs`，链路 B 用 `metadata.description` + `getInputs`，同一批模块两套描述；且 `aiMetadata` 本身只覆盖 188 个模块中的 103 个。
 6. **配置割裂**：链路 A 用 `ChatProviderConfig`，链路 B 用 SharedPreferences `ai_config`，同一 API key 要填两遍。
 7. **无多模态、无流式**：不能给模型发图片（截图只能转文本）；`stream=false`，长回复整段等待。
-8. **模块目录截断且与 enum 错配**（2026-09-11 补充，§2.4.4）：保存工作流 139 个步骤模块只解释前 48 个，高频的 `device` 类被切在最后；模型"知道 id 合法、不知道它是什么"，于是臆造 id 被拒。
+8. **模块目录截断且与 enum 错配**（2026-09-11 补充，§2.4.6）：保存工作流 139 个步骤模块只解释前 48 个，高频的 `device` 类被切在最后；模型"知道 id 合法、不知道它是什么"，于是臆造 id 被拒。
 9. **无未启用 Prompt 缓存**（2026-09-11 补充，§2.10.4）：全仓库无 `cache_control`/`prompt_cache`，Anthropic 链路 100% 冷启动；技能切换又会让 OpenAI 系前缀从 `tools` 处断裂。
 
 #### 2.10.4 Prompt 缓存现状（2026-09-11 补充）
@@ -902,7 +983,7 @@ val inputs = module.getDynamicInputs(baseStep, listOf(baseStep)).filterNot { it.
 
 **排查结论**：这两个 id **都不存在**，是模型臆造的。正确 id 是 `vflow.device.toast`（在 system 目录、device 命名空间）。
 
-**这不是"UI 模块被禁止"，根因在 §2.4.4 的目录截断**：
+**这不是"UI 模块被禁止"，根因在 §2.4.6 的目录截断**：
 
 ```
 1. enum 里有 vflow.device.toast（合法，全量下发）
@@ -915,7 +996,7 @@ val inputs = module.getDynamicInputs(baseStep, listOf(baseStep)).filterNot { it.
 
 | 短板 | 在本案例中的体现 |
 |---|---|
-| 目录截断（§2.4.4） | 高频模块 `device` 类被排到 48 名之外 |
+| 目录截断（§2.4.6） | 高频模块 `device` 类被排到 48 名之外 |
 | 失败不回传模型（§2.10.3-2） | 拒绝信息只给用户看，`validationErrors` 未作为 tool result 喂回让模型自纠 |
 | 错误文案误导 | 报错 `"not exposed to the chat agent for saved workflows"` 听起来像"权限不足"，实际是"id 不存在" |
 
@@ -964,7 +1045,7 @@ val inputs = module.getDynamicInputs(baseStep, listOf(baseStep)).filterNot { it.
 |---|---|---|---|
 | **P0** | **让失败可见**：`buildParameters` 遇未知键不再静默丢弃，改为回传模型错误；`validationErrors` 随 tool result 回传让模型自纠；区分"未注册"与"未授权"的错误文案 | A | 改动小、直接决定 Agent 可信度。§5.4 的臆造 id 案例正是"拒绝了但模型不知道" |
 | **P0** | **上下文预算管理**：按 token 计数裁剪/摘要历史，替代全量 `forEach` | A | 长会话最先崩的地方；Agent 单次节点树 dump 就很大。头部项目（Claude Code/Codex/Hermes）均有 compaction |
-| **P1** | **补「模块目录」中间层**（§2.4.4）：给全量模块一份轻量摘要（id + 一句说明），替代当前"enum 全量 / catalog 截断到 48"的错配；或至少改排序让 `device`/`core` 等高频类优先 | A | 直接修掉 §5.4 的臆造 id 问题——模型需要"知道有什么" |
+| **P1** | **补「模块目录」中间层**（§2.4.6）：给全量模块一份轻量摘要（id + 一句说明），替代当前"enum 全量 / catalog 截断到 48"的错配；或至少改排序让 `device`/`core` 等高频类优先 | A | 直接修掉 §5.4 的臆造 id 问题——模型需要"知道有什么" |
 | **P1** | **加按需获取模块详情的工具**（如 `describe_modules`） | A | 让被省掉的参数信息**可获取**，才是真正的渐进式披露；参照 Claude Code `ToolSearch` |
 | **P1** | **启用 Prompt 缓存**：给 Anthropic 的 `system`/`tools` 块加 `cache_control: ephemeral`（§2.10.4） | A | 当前完全未开，Anthropic 链路 100% 冷启动，改动一行级别 |
 | **P1** | **资产目录注入层**：统一的「工作流清单 + 函数签名」目录，供 `call_workflow`/`call_function` 共用 | A（B 亦可复用） | 一次投入修掉两个模块，也是「让 AI 知道有什么」的地基 |

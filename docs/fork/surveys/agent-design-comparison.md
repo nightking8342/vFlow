@@ -1,12 +1,13 @@
 # 头部 Agent 项目的工具暴露与上下文设计对照（外部调研）
 
-> 版本：v1.0
+> 版本：v1.1
 > 状态：外部调研（非本项目代码走查），2026-09-11
 > 目录：`docs/fork/surveys/`（fork 新增文件，上游无此文件，冲突归属我方；索引见 [`README.md`](README.md)）
 > 用途：给 vFlow 的 AI 能力优化提供**外部参照**——头部 Agent 项目在「让模型知道有什么工具、给多少细节、怎么控制上下文」上是怎么做的。
+> v1.1 修订：§2 补官方 API 机制（`defer_loading`）、技能 vs 工具的加载策略差异、`defer_loading` 与 `cache_control` 的互斥约束、官方"何时该用 tool search"判定标准。**证据从社区抓包升级为官方文档原文。**
 
-**证据来源**：Claude Code 官方文档 + 社区抓包分析；Hermes Agent（`NousResearch/hermes-agent`）仓库源码；Codex CLI 仓库公开材料。
-**可信度提示**：Claude Code 部分含社区逆向结论（原文自述为「结构性观察」）；Hermes 部分为直接读源码；Codex 公开材料有限。凡引用均标注来源，未证实处会明说。
+**证据来源**：Claude Code / Anthropic 官方文档（含 [Tool search tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool)、[Skills](https://code.claude.com/docs/en/skills.md)、[Agent Skills 工程博客](https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills)）+ 社区抓包分析；Hermes Agent（`NousResearch/hermes-agent`）仓库源码；Codex CLI 仓库公开材料。
+**可信度提示**：§1–2 的机制描述已以**官方文档原文**为准（此前依赖社区逆向，v1.1 已校正）；Hermes 部分为直接读源码；Codex 公开材料有限。凡引用均标注来源，未证实处会明说。
 
 ---
 
@@ -54,9 +55,96 @@ Claude Code 官方文档把问题讲得最直白（[Scale to many tools with too
 
 官方文章给的对比：50+ MCP 工具场景下，全量加载约 **77K token** → 按需约 **8.7K token**（ToolSearch 自身 ~500 + 按需 3-5 个工具 ~3K），**降低 85%+**。
 
-### 与 vFlow 的差异（关键）
+### 2.1 底层 API 机制：`defer_loading`（2026-09-11 补，官方文档原文）
 
-社区抓包分析指出一个有意思的细节：Claude Code **没有用** Anthropic 官方的服务端 tool search（`defer_loading: true`），而是**自己在编排层实现**——候选 schema 不进初始 `tools` 数组，由编排层在 `ToolSearch` 返回后注入下一轮。这个「编排层负责展开」的模式，对 vFlow 这种自建请求层的项目更有参考价值。
+Anthropic API 原生支持这套机制（[Tool search tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool)）。工作流程：
+
+```
+1. 在 tools 数组里放一个搜索工具（tool_search_tool_regex 或 _bm25）
+2. 所有工具定义照常发送，把不该立即加载的标 defer_loading: true
+   （至少一个工具必须非延迟，通常就是搜索工具自己）
+3. 初始上下文只含「搜索工具 + 非延迟工具」
+4. 模型需要更多工具时，用搜索工具检索
+5. API 执行搜索，返回匹配工具（默认最多 5 个）作为 tool_reference 块
+6. API 自动把引用展开成完整工具定义
+```
+
+**关键设计点**：
+
+| 点 | 说明 |
+|---|---|
+| **`defer_loading` 控制"进不进上下文"，不是"发不发"** | 每轮请求仍要把**全部**工具定义发给 API（服务端需要它们来搜索和展开）；省的是**上下文 token**，不是传输 |
+| **保留 3–5 个热门工具非延迟** | 避免高频操作每次都多一轮检索 |
+| **两种检索变体** | `regex`（模型构造正则）/ `bm25`（自然语言查询） |
+| **上限** | 延迟工具最多 **10,000 个**；单次搜索默认 5、可设 1–10,000 |
+
+**官方优化建议**（可直接借鉴）：
+
+- 保留 3–5 个最常用工具非延迟
+- 写清晰、可检索的工具名与描述
+- **统一命名空间前缀**（如 `github_`、`slack_`），让一次搜索命中整组
+- 描述里用**用户会说的关键词**
+- **在系统提示里加一段工具类别说明**："You can search for tools to interact with Slack, GitHub, and Jira."
+- 监控模型实际发现了哪些工具，据此改进描述
+
+**⚠️ 与 Prompt 缓存的冲突**（对 vFlow 方案有直接约束）：
+
+> "A tool with `defer_loading: true` **can't also carry `cache_control`**: the API returns a 400. Put the cache breakpoint on a non-deferred tool."
+
+即**延迟工具不能打缓存断点**，断点要放在非延迟工具上。
+
+### 2.2 技能（Skills）与工具（Tools）是两套不同的加载策略
+
+**这是最容易混淆、但对 vFlow 最有用的一点**：
+
+| | 工具（Tools） | 技能（Skills） |
+|---|---|---|
+| **常驻内容** | 完整 JSON Schema（**重**） | 仅 `name` + `description`（**轻**） |
+| **加载方式** | **按需**（tool search / defer_loading） | **全量预载** |
+| **阈值问题** | ✅ 超 30-50 个准确率下降 | ❌ 无此问题 |
+| **官方表述** | "Claude's ability to pick the right tool degrades once you exceed **30–50 available tools**" | "At startup, the agent **pre-loads the `name` and `description` of every installed skill** into its system prompt." |
+
+**技能的渐进式披露**（Anthropic 官方工程博客）：
+
+> "This metadata is the **first level** of progressive disclosure... The actual body of this file is the **second level** of detail. If Claude thinks the skill is relevant, it will load the skill by reading its full `SKILL.md` into context."
+
+> 比喻：**像一本组织良好的手册——先目录，再章节，最后详细附录。**
+
+**Claude Code 的额外实现细节**（[官方文档](https://code.claude.com/docs/en/skills.md)）——**技能多时也会截断，但策略不同**：
+
+| 机制 | 值 |
+|---|---|
+| 列表预算 | **模型上下文窗口的 1%** |
+| 技能**名** | **永远全量保留**（不截断） |
+| 技能**描述** | 预算不足时**缩短** |
+| 溢出时优先丢谁 | **最不常调用的技能**（保护高频技能完整） |
+| 单条描述上限 | 1,536 字符 |
+
+> **对 vFlow 的直接启示**：Claude Code 截断时**按"使用频率"降级、且保底保留名称**；而 vFlow 的 catalog 按 **UI 分类顺序**硬切——**切掉的正好是高频的 `device` 类**。这是排序依据的本质差异。
+
+### 2.3 何时该用 tool search（官方判定标准）
+
+**用**：工具 ≥10 个 / 定义 >10k token / 工具变多后准确率下降 / 聚合 200+ MCP 工具。
+
+**不用**：**少于 10 个工具** / 每个工具每次必用 / 定义总计 <100 token。
+
+**两种实现路径**：
+
+| 路径 | 谁做搜索 | 适用 |
+|---|---|---|
+| **服务端内置** | API | 只用 Anthropic 官方 API 时 |
+| **客户端自定义** | 自己实现 | 返回标准 `tool_result` 内含 `tool_reference` 块；可做 embedding 语义检索。**vFlow 要兼容多家供应商，只能走这条** |
+
+### 2.4 与 vFlow 的差异（关键）
+
+**两点**：
+
+1. **Claude Code 用的是自建实现，不是官方服务端机制**。社区抓包分析指出：它**没有用** `defer_loading`，而是**自己在编排层实现**——候选 schema 不进初始 `tools` 数组，由编排层在 `ToolSearch` 返回后注入下一轮。这个「编排层负责展开」的模式，对 vFlow 这种自建请求层的项目更有参考价值。
+
+2. **vFlow 当前不需要 tool search**（详见 [`chat-agent-enhancement-plan.md`](../chat-agent-enhancement-plan.md) §1.4）：
+   - vFlow 的**技能机制本身就是节流器**（技能 → `moduleIds` → 工具分组），单轮可见工具 ≤24
+   - 官方判定"**少于 10 个工具时全量更快**"、10+ 个才考虑——vFlow 处于中间地带，但**已有分组节流**
+   - 真正需要"目录 + 按需"的是 **catalog 的 162 个模块**（轻量文本，不是重 schema），用 §2.2 的"技能式"策略（清单常驻 + 详情按需）即可，**比 tool search 轻得多**
 
 ---
 

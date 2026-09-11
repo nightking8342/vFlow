@@ -1,9 +1,10 @@
 # Chat Agent 能力增强方案（四点改造）
 
-> 版本：v1.0（方案草案）
+> 版本：v1.1（方案草案）
 > 状态：待评审 · 2026-09-11
 > 目录：`docs/fork/`（fork 新增文件，上游无此文件，冲突归属我方）
-> 背景依据：[`surveys/ai-system-overview.md`](surveys/ai-system-overview.md)（本项目的 AI 现状走查）、[`surveys/agent-design-comparison.md`](surveys/agent-design-comparison.md)（头部项目外部参照）
+> 背景依据：[`surveys/ai-system-overview.md`](surveys/ai-system-overview.md)（本项目的 AI 现状走查）、[`surveys/agent-design-comparison.md`](surveys/agent-design-comparison.md)（头部项目外部参照，**证据已升级为官方文档原文**）
+> v1.1 修订：§1 增补「保留技能作为工具分组」的目标形态（厘清技能本质 = 工具分组 + 指令，改造只换选择器）；§1.4 修正原"工具不再按技能过滤"的自相矛盾表述，得出**不需要 tool search** 的结论；§2.1.1 增补「两类模块」区分（catalog 是"仅工作流步骤模块"的唯一入口）；新增 §2.5「拆掉 catalog 寄生结构」；§3.1 修正缓存与技能过滤的关系（任务内稳定 vs 跨轮断裂）。
 
 **本文是需求/方案文档**——记录「要做什么、为什么、怎么做」。现状描述一律引用上述两份 surveys，不在此重复。
 
@@ -15,8 +16,8 @@
 
 | # | 改造 | 目标 | 依赖 |
 |---|---|---|---|
-| **1** | 技能：粗粒度披露 → 目录常驻 + 详情按需 | 减少常驻 token，交还选择权给模型 | 需先做 §1.1 三层拆分 |
-| **2** | 开启 Prompt 缓存 | 降低长会话成本 | **依赖 1 完成**（见 §3 冲突说明） |
+| **1** | 技能：粗粒度披露 → 目录常驻 + 详情按需 | **可发现性 + 选择权交还模型**（非 token 节省，见 §1.6） | 需先做 §1.1 三层拆分 |
+| **2** | 开启 Prompt 缓存 | 降低长会话成本 | **依赖 1 完成**（见 §3.1 冲突说明） |
 | **3** | catalog：截断 → 全量清单 + 模块查询工具 | 修复"模块不可见"导致的臆造 id | 独立 |
 | **4** | Chat 悬浮窗 | 用户可边看屏幕边对话 | 独立 |
 
@@ -73,20 +74,51 @@ load_skill(skillId) → 返回该技能的 instructions
 |---|---|---|
 | `vflow_agent_load_skill` | `skillId: string`（枚举为 14 个技能 id） | 该技能的完整 `instructions` |
 
-**硬性要求**：必须有这个工具，否则 L3 就是"永久不可获取"——重演 catalog 截断的老问题（surveys §2.4.4）。
+**硬性要求**：必须有这个工具，否则 L3 就是"永久不可获取"——重演 catalog 截断的老问题（surveys §2.4.6）。
 
-### 1.4 待决问题
+### 1.4 目标形态：保留技能作为「工具分组」，只把选择权交给模型
 
-- **技能目录是否带"何时使用"提示**？头部做法（Claude Code）会在系统提示里给"工具类别说明"帮模型检索。建议 L2 的 description 写清适用场景。
-- **已加载的技能是否跨轮保持**？建议保持（避免重复加载），但需计入上下文预算。
-- **技能路由是否还按技能过滤工具**？改造后技能描述常驻，若工具仍按技能过滤会与"模型自选"矛盾。**建议：工具不再按技能过滤**（这也让 `tools` 数组稳定，是第 2 点的前提）。但这会让 `tools` 从 72 个变成全量常驻——需评估 token 与选择准确率（surveys §2.4 提到：头部经验是工具超 30-50 个后准确率下降）。
+**先厘清技能路由的本质**（surveys §2.4.1）：
 
-### 1.5 预期收益
+```kotlin
+// 技能匹配工具的唯一规则
+tool.name in skill.toolNames || tool.moduleId in skill.moduleIds
+```
+
+即**技能 = 一组工具的命名分组 + 一段专属指令**。`moduleId → 工具` 的映射是技能机制存在的全部理由。
+
+**因此改造的定位是「换选择器」，不是「废除技能」**：
+
+| | 现状 | 改造后 |
+|---|---|---|
+| 技能目录 | 不常驻（未选中的技能不可见） | **常驻**（全部 14 个的 title+description） |
+| 谁选技能 | **代码**（关键词/正则匹配） | **模型**（读目录后主动 `load_skill`） |
+| 技能→工具的映射 | 保留 | **保留**（映射结构不变） |
+| 工具暴露 | 按选中技能过滤 | **仍按选中技能过滤** |
+| 单轮可见工具数 | ≤24 | **≤24（不变）** |
+
+> **关键结论：工具仍然按技能分批暴露，单轮可见数 ≪ 阈值。因此本改造 `不需要` 引入 tool search。**
+>
+> Claude Code 需要 tool search，是因为它的 MCP 工具可挂数百个**且无分组节流**；vFlow 的技能机制**本身就是节流器**，改造只是把"谁来选"从代码换成模型。
+
+**这也让改造二（缓存）成立**：技能→工具的映射保留，但"技能目录常驻"使 system prompt 稳定；若工具集也随模型选择稳定（一次任务内通常只加载 1–2 个技能），则 `tools` 数组亦稳定 → 前缀可命中。
+
+### 1.5 待决问题
+
+- **技能目录是否带"何时使用"提示**？头部做法（见 [`surveys/agent-design-comparison.md`](surveys/agent-design-comparison.md) §2.2）：技能列表只放 `name`+`description`，描述需写清**何时使用**（Claude Code 单条描述上限 1,536 字符、超出时按"使用频率"降级）。建议 L2 的 description 写清适用场景。
+- **已加载的技能是否跨轮保持**？建议保持（避免重复加载），但需计入上下文预算。Claude Code 的做法是 compaction 后**重新附加最近调用的技能**（每个保留前 5,000 token，共享 25,000 token 预算）。
+- **技能数量增长后怎么办**？vFlow 现 14 个，title+description 仅 413 token，可无条件全量。若将来增长，可参考 Claude Code 的**"预算 + 按使用频率降级 + 保底名称"**策略（而非按位置硬切）。
+
+### 1.6 预期收益
 
 | 项 | 现状 | 改造后 |
 |---|---|---|
 | 常驻技能相关 | 24 准则(845) + 选中技能 instructions(399~798) | L1(去重后估 ~600) + L2(413) |
 | 按需 | — | L3（仅模型主动加载的） |
+| **可发现性** | 未选中的技能模型不可见 | **全部 14 个可见** |
+| **选择权** | 代码关键词匹配 | **模型自主** |
+
+> **收益的准确定位**：主要收益是**可发现性 + 模型自主权**，不是 token 节省（实测选中 3 个技能的 instructions 仅 ~400 token）。改造的正当理由是"关键词没命中时，模型无从补救"（surveys §5.4 的 toast 案例即此类失败）。
 
 ---
 
@@ -94,7 +126,26 @@ load_skill(skillId) → 返回该技能的 instructions
 
 ### 2.1 现状问题
 
-`catalog` 把 139 个步骤模块**硬截断到 48**（surveys §2.4.4），被切掉的 91 个中 **device 39 + core 23** 整体消失——包括 toast、振动、shell、剪贴板、音量等高频操作。后果：模型知道 id 合法（在 `enum` 里）却看不到说明，遂臆造 id 被拒（surveys §5.4 实证）。
+`catalog` 把 **139 个步骤模块硬截断到 48**（surveys §2.4.6），被切掉的 91 个中 **device 39 + core 23** 整体消失——包括 toast、振动、shell、剪贴板、音量等高频操作。
+
+**更严重的是「能力被系统性扭曲」**：窗口内 48 个是 interaction 全 12、logic 全 9、data 全 23、file 4；窗口外是 device/core/ui/network 全切。模型看到的 vFlow 是一个「能算 AES 能解析 XML、但不能弹 toast 不能 shell」的数据处理工具。
+
+后果：模型知道 id 合法（在 `enum` 里）却看不到说明，遂臆造 id 被拒（surveys §5.4 实证）。
+
+### 2.1.1 关键前提：catalog 是「仅工作流步骤模块」的唯一入口
+
+模块分两类（surveys §2.4.2）：
+
+| 类别 | 数量 | 能否直接调 | 唯一入口 |
+|---|---|---|---|
+| **直接工具** | **59** | ✅ 可（有 `directToolMetadata`） | 路径 1（技能匹配到工具，**自带 schema**） |
+| **仅工作流步骤** | 白名单内其余 | ❌ 不可 | **路径 3/4（catalog）** |
+
+**实测**：技能引用的 52 个模块中，51 个本身已是"直接工具"——即技能暴露的模块模型本就能直接调。
+
+**所以**：`vflow.data.aes`、`vflow.logic.loop.start` 这类模块**没有别的路径可发现**。catalog 一旦截断，它们就**彻底不可见**。这是 §2 的必要性所在。
+
+> 另注：catalog 只在**路径 3/4（工作流工具被技能选中）**时才发送；路径 1/2 拿到的是工具 schema，不需要 catalog。catalog 的"寄生"结构（挂在两个工作流工具的 `description` 里）本身也是待拆重点——详见 §2.5。
 
 ### 2.2 改造方案
 
@@ -120,6 +171,30 @@ load_skill(skillId) → 返回该技能的 instructions
 
 **`describe_module` 的数据源可直接复用 API 层已有能力**——本地 Web 服务已有 `GET /modules/{id}/input-schema` 与 `/modules/{id}`（`api/handler/ModuleHandler.kt`）。**不必重写**，抽出共用服务即可。
 
+### 2.5 附带改造：拆掉 catalog 的「寄生」结构（建议）
+
+**现状**：catalog 不是独立机制，而是**拼在两个工作流工具的 `description` 字符串里**（surveys §2.4.1）：
+
+```
+vflow_agent_run_temporary_workflow.description = "...说明..." + stepCatalog(40条)
+vflow_agent_save_workflow.description          = "...说明..." + triggerCatalog(24) + stepCatalog(48)
+```
+
+**这带来三个问题**：
+
+| 问题 | 说明 |
+|---|---|
+| **粒度错配** | "有哪些模块"是**全局知识**，却被绑在**特定工具**上 |
+| **可见性依赖** | 只有这两个工具被技能选中时，模块清单才可见 |
+| **改造牵动全局** | 截断参数（`maxModules`）是工具构造函数的参数，改截断要动工具定义 |
+
+**建议**：把模块目录**独立出来**，不再寄生。可选：
+
+- **方案 A（推荐）**：模块清单**常驻系统提示**（全量 id+名称，~1,857 token），`describe_module` 按需取详情。好处：无论走哪条路径，模型都完整知道有哪些模块。
+- **方案 B**：完全按需，用 `search_modules` / `describe_module` 取。更省 token，但多一轮往返。
+
+> **对照头部做法**：Anthropic 官方对**技能**是"name+description 全量预载 + 正文按需"（见 [`surveys/agent-design-comparison.md`](surveys/agent-design-comparison.md) §2.2）。vFlow 的模块可类比技能——**轻量清单常驻，重量详情按需**。
+
 ---
 
 ## 3. 改造三：开启 Prompt 缓存
@@ -128,17 +203,18 @@ load_skill(skillId) → 返回该技能的 instructions
 
 ```
 缓存命中 = 前缀字节稳定
-技能路由 = 每轮切换 tools 数组 → 前缀断裂
+技能路由 = 可能每轮切换 tools 数组 → 前缀断裂
 ```
 
-**当前实现下缓存命中率低是结构性的**：用户每发一句新消息，技能可能切换 → `tools` 变化 → 前缀从 `tools` 处断裂（OpenAI 系请求体中 `tools` 位于 `messages` 之前，见 surveys §2.10.4）。
+**当前实现下缓存命中率低是结构性的**：用户每发一句新消息，可能命中不同技能 → `tools` 变化 → 前缀从 `tools` 处断裂（OpenAI 系请求体中 `tools` 位于 `messages` 之前，见 surveys §2.10.4）。
 
-**改造一完成后情况改变**：
-- L1/L2 常驻 → system prompt 的技能段**不再随轮次变化**
-- 工具不再按技能过滤（§1.4）→ `tools` 数组稳定
-- **前缀彻底稳定 → 缓存才真正生效**
+**改造一完成后情况改变**（注意 §1.4：**工具仍按技能过滤**，只是选择权交给模型）：
 
-> ⚠️ **所以改造二是改造一的下游**。只做改造二不做改造一，收益有限。
+- L1/L2 常驻 → system prompt 的技能段**不再随轮次变化** ✅
+- 一次任务内通常只加载 1–2 个技能 → `tools` 数组**在任务内稳定** ✅
+- 但**跨"用户新消息"仍可能切换技能** → 跨轮仍会断裂
+
+> ⚠️ **所以改造二是改造一的下游**：改造一让**任务内**前缀稳定（这是主要收益），但**跨轮**的断裂是"技能分组"这一设计的固有代价——除非将来取消技能分组、让工具全量常驻（但那样会撞 30-50 阈值，见 §1.4 讨论）。
 
 ### 3.2 具体动作
 
@@ -147,6 +223,9 @@ load_skill(skillId) → 返回该技能的 instructions
 | **Anthropic** | **必须显式加 `cache_control: {type: "ephemeral"}`**——当前全仓库零命中（surveys §2.10.4），这是最大的一块白扔。建议标记 `system` 与 `tools` 两个块 |
 | OpenAI Chat Completions / Responses | 自动前缀缓存，无需显式标记；但需保证前缀稳定（依赖改造一） |
 | 其它（DeepSeek/Ollama 等） | 视各家支持情况，多数兼容 OpenAI 自动前缀缓存 |
+
+> ⚠️ **若将来引入"按需加载工具 schema"**（类似 tool search），注意官方约束：**`defer_loading: true` 的工具不能同时带 `cache_control`**（API 返回 400）。缓存断点要放在**非延迟**工具上（见 [`surveys/agent-design-comparison.md`](surveys/agent-design-comparison.md) §2.1）。
+> 本方案 §1.4 已论证**暂不需要 tool search**，故当前无此冲突；但若后续技能数量或工具数增长到需要，需一并考虑。
 
 ### 3.3 验证方式
 
@@ -244,6 +323,6 @@ load_skill(skillId) → 返回该技能的 instructions
 
 | 文档 | 关系 |
 |---|---|
-| [`surveys/ai-system-overview.md`](surveys/ai-system-overview.md) | **本项目 AI 现状**——本方案的事实依据（§2.3 技能、§2.4.4 catalog 截断、§2.10.3 短板、§2.10.4 缓存） |
+| [`surveys/ai-system-overview.md`](surveys/ai-system-overview.md) | **本项目 AI 现状**——本方案的事实依据（§2.3 技能、§2.4.6 catalog 截断、§2.10.3 短板、§2.10.4 缓存） |
 | [`surveys/agent-design-comparison.md`](surveys/agent-design-comparison.md) | **外部参照**——头部项目的工具暴露/渐进披露/缓存做法 |
 | [`function-workflow.md`](function-workflow.md) | 函数工作流（已完成，非本方案范围） |
