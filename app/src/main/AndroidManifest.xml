@@ -197,6 +197,25 @@
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.vFlow" />
 
+        <!-- ===== P0 技术验证（临时，验证完成后删除）===== -->
+        <activity
+            android:name=".ui.chat.ChatFloatP0Activity"
+            android:exported="true"
+            android:label="P0 悬浮窗验证"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.vFlow">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".ui.chat.ChatFloatP0Service"
+            android:exported="false"
+            android:foregroundServiceType="specialUse" />
+        <!-- ===== P0 技术验证结束 ===== -->
+
         <service
             android:name=".services.TriggerService"
             android:exported="true" android:permission="android.permission.FOREGROUND_SERVICE"
