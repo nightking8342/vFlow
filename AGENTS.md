@@ -18,6 +18,8 @@ This file provides guidance to coding agents when working with code in this repo
   - `docs/fork/surveys/ai-system-overview.md` —— **AI 体系梳理（本项目现状）**：三套独立 AI 链路（聊天 Agent / AI 生成工作流 / 工作流内 AI 模块）、系统提示词组装、技能路由、工具清单与 scope 判定、执行与审批流程、模块可发现性与 catalog 截断、Prompt 缓存现状、能力与现状评估。**改动任何 AI 相关能力前先读这份。**
   - `docs/fork/surveys/agent-design-comparison.md` —— **外部调研**：头部 Agent 项目（Claude Code / Hermes Agent / Codex CLI）的工具暴露、渐进式披露、上下文压缩与缓存做法，及对 vFlow 的启示。**做 AI 能力优化时作为外部参照。**
 - `docs/fork/chat-agent-enhancement-plan.md` —— **Chat Agent 四点改造方案**（技能目录化 / Prompt 缓存 / catalog 全量化 + 模块查询工具 / 悬浮窗）。**做 AI 增强前先读这份**，它含实施顺序与依赖关系。
+- `docs/fork/chat-float-window-design.md` —— **Chat 悬浮窗需求设计**（方案文档 §4 的展开）：折叠/展开双形态、Application 作用域共享 `ChatViewModel`、窗内审批 + 透明中转 Activity、`ComposeView` 在 Service 中的承载。**做悬浮窗功能前先读这份。**
+- `docs/fork/chat-float-window-ui.html` —— Chat 悬浮窗**可交互 UI 原型**（浏览器打开）：折叠/展开/审批/输入/状态一致性五组演示，配套上文的交互对齐稿。
 - `docs/fork/function-workflow.md` —— 函数工作流功能的需求文档 + 实现状态/交接（含真机测试场景）。
 
 ---

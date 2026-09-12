@@ -20,6 +20,11 @@
 | `FORK.md`、`AGENTS.md`、`CLAUDE.md` | fork 独有文件，上游没有 | 我方 |
 | `docs/fork/function-workflow.md`、`docs/fork/function-workflow-ui.html` | fork 独有：函数工作流需求文档 + 可交互 UI 原型（上游无此文件） | 我方 |
 | `docs/fork/chat-agent-enhancement-plan.md` | fork 独有：Chat Agent 四点改造方案（技能目录化/Prompt 缓存/catalog 全量化+模块查询工具/悬浮窗），上游无此文件 | 我方 |
+| `docs/fork/chat-float-window-design.md` | fork 独有：Chat 悬浮窗需求设计（折叠/展开双形态、Application 作用域共享 VM、窗内审批 + 透明中转 Activity），上游无此文件 | 我方 |
+| `docs/fork/chat-float-window-ui.html` | fork 独有：Chat 悬浮窗可交互 UI 原型（折叠/展开/审批/输入/状态一致性五组演示），上游无此文件 | 我方 |
+| `ui/chat/ChatViewModelHolder.kt`（新增） | Chat 悬浮窗：Application 作用域唯一 `ChatViewModel` 持有者（App 与悬浮窗 Service 共用同一实例，避免会话分裂） | 我方 |
+| `ui/chat/ChatFloatP0Activity.kt`、`ChatFloatP0Service.kt`、`ChatFloatP0Probe.kt`（新增，**P0 临时**） | Chat 悬浮窗 P0 技术验证脚手架（真机验证 VM 共享 / ComposeView in Service / IME / 前台服务 / screencap）。**P1 开工时删除** | 我方 |
+| `AndroidManifest.xml` | 追加 `ChatFloatP0Activity`（launcher）与 `ChatFloatP0Service`（specialUse）声明（**P0 临时**，随验证脚手架一并删除） | 手动合并（追加声明） |
 | `docs/fork/surveys/`（`README.md` + `ai-system-overview.md` + `agent-design-comparison.md`） | fork 独有：**现状调研文档目录**（改代码前的地图）。`README.md` 为索引+写作规范；`ai-system-overview.md` 为 AI 体系梳理（三套链路/提示词/工具/技能/执行流程/模块可发现性/缓存 + 能力评估）；`agent-design-comparison.md` 为头部 Agent 项目外部对照调研。上游均无此文件 | 我方 |
 | `core/workflow/model/Workflow.kt` | 新增 `functionSignature` 字段（Parcelable，带默认值 null，向后兼容） | 手动合并（fork 追加字段，若上游也改需逐块判断） |
 | `core/workflow/model/FunctionSignature.kt`（新增） | 新增 `FunctionParam`/`ReturnKey`/`FunctionReturn`/`FunctionSignature` 数据类 | 我方 |

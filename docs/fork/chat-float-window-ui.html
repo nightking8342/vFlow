@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>vFlow Chat 悬浮窗 UI 原型（可交互）</title>
+<style>
+  :root {
+    --primary: #6750a4;
+    --on-primary: #ffffff;
+    --primary-container: #eaddff;
+    --on-primary-container: #21005d;
+    --surface: #fef7ff;
+    --surface-container: #f3edf7;
+    --surface-variant: #e7e0ec;
+    --on-surface: #1c1b1f;
+    --on-surface-variant: #49454f;
+    --outline: #79747e;
+    --outline-variant: #cac4d0;
+    --error: #b3261e;
+    --error-container: #f9dedc;
+    --tertiary: #7d5260;
+    --tertiary-container: #ffd8e4;
+    --success: #2e6b4f;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    font-family: 'Roboto', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: #23222b;
+    color: var(--on-surface);
+    margin: 0; padding: 40px 24px 80px;
+    display: flex; flex-direction: column; align-items: center; gap: 20px;
+  }
+  h1.page-title { color: #fff; font-size: 24px; font-weight: 500; margin: 0; text-align: center; }
+  p.page-sub { color: #b9b4c4; font-size: 13.5px; margin: 0 0 20px; max-width: 780px; text-align: center; line-height: 1.7; }
+  p.page-sub b { color: #e6e0f0; font-weight: 500; }
+  h2.section {
+    color: #fff; font-size: 16px; font-weight: 500; margin: 44px 0 2px;
+    align-self: flex-start; max-width: 780px; width: 100%;
+    border-left: 3px solid var(--primary); padding-left: 12px;
+  }
+  h2.section span { display: block; font-size: 12.5px; font-weight: 400; color: #a9a3b8; margin-top: 6px; line-height: 1.6; }
+  .stage { display: flex; gap: 40px; flex-wrap: wrap; justify-content: center; align-items: flex-start; }
+
+  /* ============ 手机外框 ============ */
+  .phone {
+    width: 380px; height: 720px; border-radius: 34px; position: relative;
+    background: #111; box-shadow: 0 10px 40px rgba(0,0,0,.55), 0 0 0 8px #3a3a42, 0 0 0 9px #55545e;
+    overflow: hidden; flex-shrink: 0;
+  }
+  .screen { position: absolute; inset: 0; border-radius: 26px; overflow: hidden; background: #fff; }
+  .statusbar {
+    height: 30px; display: flex; align-items: center; justify-content: space-between;
+    padding: 0 20px; font-size: 12px; font-weight: 500; color: #fff;
+    position: relative; z-index: 5;
+  }
+  .notch { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); width: 76px; height: 20px; background: #111; border-radius: 999px; z-index: 40; }
+
+  /* ============ 背景：目标 App（系统设置） ============ */
+  .bg-app { position: absolute; inset: 0; background: #f6f5fa; color: #1c1b1f; }
+  .bg-app .appbar-bg { padding: 4px 20px 14px; }
+  .bg-app .appbar-bg .t { font-size: 26px; font-weight: 600; letter-spacing: -.3px; }
+  .search {
+    margin: 6px 16px 14px; background: #e9e7f0; border-radius: 999px;
+    padding: 11px 16px; color: #6b6875; font-size: 14px; display: flex; align-items: center; gap: 8px;
+  }
+  .set-item {
+    display: flex; align-items: center; gap: 14px; padding: 13px 20px;
+    border-bottom: 1px solid #eae8f0; font-size: 15px; background: #fff;
+  }
+  .set-item .si-icon {
+    width: 34px; height: 34px; border-radius: 50%; background: #e3e1ea;
+    display: flex; align-items: center; justify-content: center; font-size: 17px; flex-shrink: 0;
+  }
+  .set-item .si-txt { flex: 1; }
+  .set-item .si-sub { font-size: 12px; color: #7a7783; margin-top: 2px; }
+  .set-item .chev { color: #b3b0bb; font-size: 15px; }
+  .set-item.active { background: #efe9fb; }
+  .set-item.active .si-txt { color: #4f3d8a; font-weight: 500; }
+
+  /* 深色模式的开关 */
+  .mini-switch { width: 40px; height: 24px; border-radius: 12px; background: #c9c6d2; position: relative; flex-shrink: 0; }
+  .mini-switch::after { content: ''; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: all .25s; }
+  .mini-switch.on { background: var(--primary); }
+  .mini-switch.on::after { left: 19px; }
+
+  /* ============ 悬浮窗 ============ */
+  .float {
+    position: absolute; z-index: 30;
+    background: rgba(252, 250, 255, .95);
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    border: 1px solid rgba(103, 80, 164, .30);
+    box-shadow: 0 6px 24px rgba(38, 20, 70, .28);
+    color: #1c1b1f; overflow: hidden;
+    transition: width .22s cubic-bezier(.2,0,0,1), height .22s cubic-bezier(.2,0,0,1), border-radius .22s, left .18s, top .18s;
+  }
+  /* 折叠态 */
+  .float.collapsed {
+    width: 292px; height: 50px; border-radius: 25px; cursor: grab;
+    display: flex; align-items: center; gap: 10px; padding: 0 8px 0 14px;
+  }
+  .float.collapsed:active { cursor: grabbing; }
+  /* 展开态 */
+  .float.expanded {
+    width: 344px; height: 500px; border-radius: 24px; cursor: default;
+    display: flex; flex-direction: column;
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--primary); flex-shrink: 0; }
+  .dot.pulse { animation: pulse 1.4s ease-in-out infinite; }
+  .dot.warn { background: #c77700; }
+  @keyframes pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.78); } }
+  .float-said {
+    flex: 1; font-size: 13.5px; line-height: 1.35; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; color: #221f28;
+  }
+  .float-said b { font-weight: 500; color: #4f3d8a; }
+  .badge-approval {
+    background: #ffe9cc; color: #8a4b00; font-size: 10.5px; font-weight: 700;
+    padding: 3px 7px; border-radius: 7px; flex-shrink: 0; letter-spacing: .2px;
+  }
+  .btn-expand {
+    width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--primary); font-size: 16px; cursor: pointer;
+  }
+  .btn-expand:hover { background: rgba(103,80,164,.12); }
+  .drag-grip { color: #b3aec2; font-size: 13px; letter-spacing: -2px; cursor: grab; padding: 0 2px; }
+
+  /* 展开态头部 */
+  .f-head { display: flex; align-items: center; gap: 10px; padding: 12px 10px 10px 14px; border-bottom: 1px solid #e7e3ef; flex-shrink: 0; }
+  .f-head .f-title { font-size: 15px; font-weight: 600; flex: 1; }
+  .f-head .f-preset { font-size: 11px; color: #7a7783; font-weight: 400; margin-left: 6px; }
+  .f-head .f-icon { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #5c5868; font-size: 15px; cursor: pointer; }
+  .f-head .f-icon:hover { background: #eeebf4; }
+  .f-head .f-icon.close:hover { background: var(--error-container); color: var(--error); }
+
+  /* 消息区 */
+  .f-msgs { flex: 1; overflow-y: auto; padding: 12px 12px 4px; display: flex; flex-direction: column; gap: 9px; }
+  .f-msgs::-webkit-scrollbar { width: 0; }
+  .m { max-width: 88%; font-size: 13px; line-height: 1.5; }
+  .m.user { align-self: flex-end; background: var(--primary); color: #fff; padding: 9px 13px; border-radius: 16px 16px 4px 16px; }
+  .m.ai { align-self: flex-start; color: #2a2731; padding: 2px 4px; }
+  .m.ai .m-who { font-size: 10.5px; color: #8a8695; margin-bottom: 3px; letter-spacing: .3px; }
+  .m.tool {
+    align-self: flex-start; background: #f0eef6; border-radius: 10px; padding: 7px 11px;
+    font-size: 11.5px; color: #4d4958; display: flex; align-items: center; gap: 7px; max-width: 94%;
+  }
+  .m.tool .tk { font-family: 'SF Mono','Consolas',monospace; font-size: 10.5px; color: #4f3d8a; }
+  .m.tool .ok { color: var(--success); }
+  .m.pending { align-self: flex-start; color: #8a8695; font-size: 12.5px; display: flex; gap: 7px; align-items: center; padding: 2px 4px; }
+  .typing span { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: #a9a3b8; margin-right: 3px; animation: typing 1.2s infinite; }
+  .typing span:nth-child(2) { animation-delay: .18s; } .typing span:nth-child(3) { animation-delay: .36s; }
+  @keyframes typing { 0%,60%,100% { transform: translateY(0); opacity: .45; } 30% { transform: translateY(-3px); opacity: 1; } }
+
+  /* 审批卡片 */
+  .approval-card {
+    border: 1.5px solid #f0c680; background: #fffaf2; border-radius: 14px;
+    padding: 11px 12px; align-self: stretch; margin-top: 2px;
+  }
+  .approval-card .ac-top { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .approval-card .ac-name { font-family: 'SF Mono','Consolas',monospace; font-size: 12px; color: #221f28; flex: 1; }
+  .risk { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 6px; letter-spacing: .3px; }
+  .risk.std { background: #ffe9cc; color: #8a4b00; }
+  .risk.high { background: var(--error-container); color: var(--error); }
+  .ac-args { font-family: 'SF Mono','Consolas',monospace; font-size: 11px; color: #5f5b6b; background: #fff; border: 1px solid #eee3d0; border-radius: 8px; padding: 7px 9px; margin-bottom: 9px; white-space: pre-wrap; }
+  .ac-btns { display: flex; gap: 8px; }
+  .ac-btns button { flex: 1; border: none; border-radius: 999px; padding: 9px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; }
+  .btn-allow { background: var(--primary); color: #fff; }
+  .btn-allow:active { background: #57407f; }
+  .btn-deny { background: #eeebf4; color: #4d4958; }
+  .btn-deny:active { background: #e0dcea; }
+  .ac-done { font-size: 12px; color: var(--success); display: flex; align-items: center; gap: 6px; font-weight: 500; }
+  .ac-done.denied { color: var(--error); }
+
+  /* 输入区 */
+  .f-composer { flex-shrink: 0; padding: 8px 10px 11px; }
+  .f-input {
+    display: flex; align-items: center; gap: 8px; background: #f0eef6;
+    border: 1px solid #e2dfeb; border-radius: 22px; padding: 7px 7px 7px 15px;
+  }
+  .f-input .ph { flex: 1; font-size: 13px; color: #8a8695; padding: 5px 0; }
+  .f-send { width: 32px; height: 32px; border-radius: 50%; background: var(--primary); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 15px; flex-shrink: 0; cursor: pointer; }
+  .f-send.stop { background: var(--error); }
+  .f-hint { font-size: 10.5px; color: #9a96a6; margin: 6px 2px 0; display: flex; justify-content: space-between; }
+  .queued { color: #8a4b00; background: #fff3e0; border-radius: 6px; padding: 1px 6px; font-weight: 600; }
+
+  /* ============ 模拟键盘 ============ */
+  .kb {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 236px; z-index: 50;
+    background: #d6d3de; padding: 8px 4px 10px;
+    transform: translateY(100%); transition: transform .25s cubic-bezier(.2,0,0,1);
+  }
+  .kb.show { transform: translateY(0); }
+  .kb .kb-bar { display: flex; gap: 5px; justify-content: center; margin-bottom: 8px; }
+  .kb .kb-bar div {
+    background: #fff; border-radius: 6px; padding: 7px 11px; font-size: 12px;
+    min-width: 26px; text-align: center; box-shadow: 0 1px 1px rgba(0,0,0,.12);
+  }
+  .kb .kb-row { display: flex; gap: 5px; justify-content: center; margin-bottom: 6px; }
+  .kb .kb-row div {
+    background: #fff; border-radius: 6px; padding: 10px 0; font-size: 14px;
+    width: 31px; text-align: center; box-shadow: 0 1px 1px rgba(0,0,0,.12); cursor: pointer;
+  }
+  .kb .kb-row div.wide { width: 48px; background: #b6b2c0; }
+  .kb .kb-row div.space { width: 160px; }
+  .kb .kb-row div.on { background: #b6b2c0; }
+
+  /* ============ 标注 / 图例 ============ */
+  .note {
+    max-width: 380px; font-size: 12.5px; color: #a9a3b8; line-height: 1.75;
+    background: rgba(255,255,255,.045); border: 1px solid rgba(255,255,255,.08);
+    border-radius: 14px; padding: 16px 18px; align-self: flex-start;
+  }
+  .note h4 { color: #e6e0f0; font-size: 13px; font-weight: 600; margin: 0 0 9px; letter-spacing: .3px; }
+  .note ul { margin: 0; padding-left: 17px; }
+  .note li { margin-bottom: 6px; }
+  .note li:last-child { margin-bottom: 0; }
+  .note b { color: #d9d3e6; font-weight: 600; }
+  .kbd {
+    font-family: 'SF Mono','Consolas',monospace; font-size: 11px; background: rgba(103,80,164,.28);
+    color: #d3c9ec; padding: 1.5px 6px; border-radius: 5px;
+  }
+  .legend-row { display: flex; gap: 20px; flex-wrap: wrap; justify-content: center; max-width: 800px; }
+  .legend {
+    font-size: 12.5px; color: #b9b4c4; display: flex; align-items: center; gap: 8px;
+    background: rgba(255,255,255,.05); padding: 8px 14px; border-radius: 999px;
+  }
+  .legend .sw { width: 14px; height: 14px; border-radius: 5px; flex-shrink: 0; }
+  .step-hint { font-size: 12.5px; color: #8f8a9e; margin-top: 12px; text-align: center; }
+  .step-hint b { color: #c9c3d8; }
+
+  .pick { display: flex; gap: 6px; justify-content: center; margin-top: 14px; }
+  .pick button {
+    font-family: inherit; font-size: 12.5px; padding: 7px 15px; border-radius: 999px; cursor: pointer;
+    background: rgba(255,255,255,.08); color: #c9c3d8; border: 1px solid rgba(255,255,255,.12);
+  }
+  .pick button.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+</style>
+</head>
+<body>
+
+<h1 class="page-title">vFlow · Chat 悬浮窗 UI 原型（可交互）</h1>
+<p class="page-sub">
+  核心场景：AI 通过无障碍在<b>目标 App</b> 里操作，操作本身你看得见；但它「在说什么」原本留在 Chat 页里。<br>
+  悬浮窗要做的事，就是<b>把 AI 说的话随身带走</b>——你跟着 AI 走到哪，都还听得到它。
+</p>
+
+<div class="legend-row">
+  <div class="legend"><span class="sw" style="background:linear-gradient(135deg,#6750a4,#9a82d4)"></span>悬浮窗（可拖动 / 吸附）</div>
+  <div class="legend"><span class="sw" style="background:#f6f5fa;border:1px solid #cac4d0"></span>目标 App（AI 正在操作）</div>
+  <div class="legend"><span class="sw" style="background:#fffaf2;border:1px solid #f0c680"></span>待审批操作</div>
+</div>
+
+<!-- ==================================================================== -->
+<h2 class="section">① 折叠态 —— 常驻一行，跟着 AI 走
+  <span>这是本需求的核心：窄条上显示的是 <b>AI 最新一句实际说的话</b>，不是一个「运行中」的状态灯。点它展开；按住可拖动、松手吸附边缘。</span>
+</h2>
+<div class="stage">
+
+  <div class="phone">
+    <div class="notch"></div>
+    <div class="screen">
+      <!-- 背景 = 目标 App -->
+      <div class="bg-app">
+        <div class="statusbar"><span>9:41</span><span>▮▮▮ 5G</span></div>
+        <div class="appbar-bg"><div class="t">设置</div></div>
+        <div class="search">🔍 搜索设置</div>
+        <div class="set-item"><div class="si-icon">📶</div><div class="si-txt">WLAN<div class="si-sub">已连接 Home-5G</div></div><span class="chev">›</span></div>
+        <div class="set-item"><div class="si-icon">🔵</div><div class="si-txt">蓝牙<div class="si-sub">已开启</div></div><span class="chev">›</span></div>
+        <div class="set-item"><div class="si-icon">📱</div><div class="si-txt">个人热点</div><span class="chev">›</span></div>
+        <div class="set-item active"><div class="si-icon">🔆</div><div class="si-txt">显示<div class="si-sub">亮度、深色模式、字体</div></div><span class="chev">›</span></div>
+        <div class="set-item"><div class="si-icon">🔊</div><div class="si-txt">声音与振动</div><span class="chev">›</span></div>
+        <div class="set-item"><div class="si-icon">🔋</div><div class="si-txt">电池</div><span class="chev">›</span></div>
+      </div>
+
+      <!-- 悬浮窗：折叠态 -->
+      <div class="float collapsed" id="f1" style="left:44px; top:520px;">
+        <span class="dot pulse"></span>
+        <span class="float-said" id="f1-said">没找到深色模式，我去「显示」里找</span>
+        <span class="badge-approval" id="f1-badge" style="display:none">待审批</span>
+        <span class="btn-expand" id="f1-expand">⌃</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="note">
+    <h4>折叠态要点</h4>
+    <ul>
+      <li><b>显示 AI 说的话</b>：<span class="kbd">没找到深色模式，我去「显示」里找</span> 这类过程说明，是用户跟着 AI 离开 Chat 页后最容易丢的信息。</li>
+      <li><b>无助手文本时才退化</b>为动词状态（如「正在观察…」），而不是反过来。</li>
+      <li><b>待审批徽标</b>：有 PENDING 操作时窄条出现橙色标记，避免折叠时漏掉。</li>
+      <li><b>可拖动 + 吸附</b>：拖到屏幕右/左边缘松手会贴边，把操作区域让出来。</li>
+      <li><b>半透明</b>：约 0.92 alpha + 高斯模糊，减少遮挡感。</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ==================================================================== -->
+<h2 class="section">② 展开态 —— 完整对话面板
+  <span>点折叠条展开。消息列表 + 输入框；输入框最多 6 行；Agent 运行中发送键变「停止」。</span>
+</h2>
+<div class="stage">
+
+  <div class="phone">
+    <div class="notch"></div>
+    <div class="screen">
+      <div class="bg-app" style="filter:brightness(.72)">
+        <div class="statusbar"><span>9:41</span><span>▮▮▮ 5G</span></div>
+        <div class="appbar-bg"><div class="t">设置</div></div>
+        <div class="search">🔍 搜索设置</div>
+        <div class="set-item"><div class="si-icon">📶</div><div class="si-txt">WLAN</div><span class="chev">›</span></div>
+        <div class="set-item active"><div class="si-icon">🔆</div><div class="si-txt">显示</div><span class="chev">›</span></div>
+      </div>
+
+      <!-- 悬浮窗：展开态 -->
+      <div class="float expanded" id="f2" style="left:18px; top:170px;">
+        <div class="f-head">
+          <span class="dot pulse"></span>
+          <span class="f-title">AI 对话<span class="f-preset">Claude · sonnet-4.6</span></span>
+          <span class="f-icon" title="收起">⌄</span>
+          <span class="f-icon close" title="关闭">✕</span>
+        </div>
+        <div class="f-msgs" id="f2-msgs">
+          <div class="m user">帮我把设置里的深色模式打开</div>
+          <div class="m ai"><div class="m-who">AI</div>好的，我先看一下当前页面有什么。</div>
+          <div class="m tool"><span>👁</span><span>读取屏幕</span><span class="tk">observe_screen</span><span class="ok">✓</span></div>
+          <div class="m ai"><div class="m-who">AI</div>当前在设置首页，没直接看到深色模式。我去「显示」里找。</div>
+          <div class="m tool"><span>👆</span><span>点击「显示」</span><span class="tk">click</span><span class="ok">✓</span></div>
+          <div class="m pending typing"><span></span><span></span><span></span> 正在观察界面…</div>
+        </div>
+        <div class="f-composer">
+          <div class="f-input" id="f2-input">
+            <span class="ph" id="f2-ph">补充指令…</span>
+            <span class="f-send stop" id="f2-send">■</span>
+          </div>
+          <div class="f-hint"><span>Agent 运行中 · 发送将排队</span><span></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="note">
+    <h4>展开态要点</h4>
+    <ul>
+      <li><b>消息与 App 内完全同源</b>：同一个 <span class="kbd">ChatViewModel</span> 实例，这里发的回到 App 里照样看得到。</li>
+      <li><b>工具调用可见</b>：<span class="kbd">observe_screen</span> / <span class="kbd">click</span> 以轻量卡片呈现，不展开完整参数。</li>
+      <li><b>运行中发送 = 排队</b>：不打断当前任务，显示「已排队 N 条」。</li>
+      <li><b>头部不提供</b>会话切换、历史、预设切换（非目标，避免把完整 Chat 页塞进小窗）。</li>
+      <li>尺寸约 <span class="kbd">344×500</span>，内容超出滚动，不固定撑满。</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ==================================================================== -->
+<h2 class="section">③ 审批 —— 不切 App，窗内直接点
+  <span>AI 要执行有风险的操作时，窗内出现审批卡。点「允许/拒绝」试试（点击后会变成结果态）。</span>
+</h2>
+<div class="stage">
+
+  <div class="phone">
+    <div class="notch"></div>
+    <div class="screen">
+      <div class="bg-app" style="filter:brightness(.72)">
+        <div class="statusbar"><span>9:41</span><span>▮▮▮ 5G</span></div>
+        <div class="appbar-bg"><div class="t">设置 › 显示</div></div>
+        <div class="set-item"><div class="si-icon">🌙</div><div class="si-txt">深色模式<div class="si-sub">跟随系统</div></div><div class="mini-switch" id="sw1"></div></div>
+        <div class="set-item"><div class="si-icon">☀️</div><div class="si-txt">亮度</div><span class="chev">›</span></div>
+        <div class="set-item"><div class="si-icon">🔤</div><div class="si-txt">字体大小</div><span class="chev">›</span></div>
+      </div>
+
+      <!-- 悬浮窗：审批态 -->
+      <div class="float expanded" id="f3" style="left:18px; top:150px;">
+        <div class="f-head">
+          <span class="dot warn"></span>
+          <span class="f-title">AI 对话<span class="f-preset">Claude · sonnet-4.6</span></span>
+          <span class="f-icon close" title="关闭">✕</span>
+        </div>
+        <div class="f-msgs">
+          <div class="m user">打开深色模式</div>
+          <div class="m ai"><div class="m-who">AI</div>找到了开关，我来打开它。</div>
+
+          <div class="approval-card" id="f3-card">
+            <div class="ac-top">
+              <span style="font-size:15px">👆</span>
+              <span class="ac-name">vflow.interaction.click</span>
+              <span class="risk std">STANDARD</span>
+            </div>
+            <div class="ac-args">{ "target": "深色模式开关", "action": "click" }</div>
+            <div class="ac-btns" id="f3-btns">
+              <button class="btn-deny" id="f3-deny">拒绝</button>
+              <button class="btn-allow" id="f3-allow">允许</button>
+            </div>
+          </div>
+        </div>
+        <div class="f-composer">
+          <div class="f-input"><span class="ph">补充指令…</span><span class="f-send" style="background:#d8d5e0">↑</span></div>
+          <div class="f-hint"><span>等待授权…</span><span class="queued">已排队 1 条</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="note">
+    <h4>审批要点</h4>
+    <ul>
+      <li><b>窗内直接审批</b>，不跳回 App —— 这是「边看边操作」的关键，否则一切回 App 就前功尽弃。</li>
+      <li>卡片显示 <b>工具 id + 风险等级 + 参数摘要</b>；高风险（HIGH）用红色标记。</li>
+      <li><b>缺系统权限时</b>（如截图需 MediaProjection）会拉起一个透明中转页请求授权，返回后自动继续，用户无感。</li>
+      <li><b>只弹一次</b>：悬浮窗与 App 内 Chat 页会同时观察审批请求，需有归属仲裁（设计文档 §5.3.3），否则会重复弹窗。</li>
+      <li>Agent 运行中审批按钮应禁用，与 App 内的约束对齐。</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ==================================================================== -->
+<h2 class="section">④ 输入 —— 点输入框弹键盘，窗口上移
+  <span>点一下下面的输入框。窗口在聚焦时会脱离「不可聚焦」状态以接收输入，并整体上移避免被键盘遮挡。</span>
+</h2>
+<div class="stage">
+
+  <div class="phone">
+    <div class="notch"></div>
+    <div class="screen">
+      <div class="bg-app" style="filter:brightness(.72)">
+        <div class="statusbar"><span>9:41</span><span>▮▮▮ 5G</span></div>
+        <div class="appbar-bg"><div class="t">设置 › 显示</div></div>
+        <div class="set-item active"><div class="si-icon">🌙</div><div class="si-txt">深色模式</div><div class="mini-switch on"></div></div>
+        <div class="set-item"><div class="si-icon">☀️</div><div class="si-txt">亮度</div><span class="chev">›</span></div>
+      </div>
+
+      <div class="float expanded" id="f4" style="left:18px; top:96px;">
+        <div class="f-head">
+          <span class="dot"></span>
+          <span class="f-title">AI 对话<span class="f-preset">Claude · sonnet-4.6</span></span>
+          <span class="f-icon close">✕</span>
+        </div>
+        <div class="f-msgs" style="gap:8px">
+          <div class="m ai"><div class="m-who">AI</div>深色模式已经打开了。</div>
+          <div class="m user">顺便把字体调大一点</div>
+          <div class="m ai"><div class="m-who">AI</div>好，正在找字体大小设置。</div>
+        </div>
+        <div class="f-composer">
+          <div class="f-input" id="f4-input" style="border-color:#6750a4; box-shadow:0 0 0 2px rgba(103,80,164,.16)">
+            <span class="ph" id="f4-ph" style="color:#1c1b1f">不是这里，先点最上面的搜索</span>
+            <span class="f-send" id="f4-send">↑</span>
+          </div>
+          <div class="f-hint"><span>Enter 发送 · Shift+Enter 换行</span><span></span></div>
+        </div>
+      </div>
+
+      <!-- 模拟键盘 -->
+      <div class="kb" id="kb4">
+        <div class="kb-bar"><div>↑</div><div>不是这里，先点…</div><div>⚙</div></div>
+        <div class="kb-row"><div>q</div><div>w</div><div>e</div><div>r</div><div>t</div><div>y</div><div>u</div><div>i</div><div>o</div><div>p</div></div>
+        <div class="kb-row" style="padding-left:8px"><div>a</div><div>s</div><div>d</div><div>f</div><div>g</div><div>h</div><div>j</div><div>k</div><div>l</div></div>
+        <div class="kb-row"><div class="wide">⇧</div><div>z</div><div>x</div><div>c</div><div>v</div><div>b</div><div>n</div><div>m</div><div class="wide">⌫</div></div>
+        <div class="kb-row"><div class="wide">?123</div><div class="space">中文</div><div class="wide">⏎</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="note">
+    <h4>输入与键盘要点</h4>
+    <ul>
+      <li><b>焦点是难点</b>：overlay 窗口默认 <span class="kbd">FLAG_NOT_FOCUSABLE</span>，收不到输入。点输入框时要去掉该 flag，且 Compose 侧需<b>重新发起一次焦点请求</b>，否则会「点了没反应」。</li>
+      <li><b>键盘避让</b>：overlay 不在标准 inset 分发链上，<span class="kbd">imePadding()</span> 不可靠。计划监听 IME inset 手动上移窗口（本原型演示的就是上移效果）。</li>
+      <li><b>失焦恢复</b>：收起键盘后窗口恢复不可聚焦，避免长期抢占焦点影响被调试的 App。</li>
+      <li>这两项都<b>未经真机验证</b>，已列入 P0 技术门槛。</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ==================================================================== -->
+<h2 class="section">⑤ 状态一致性 —— 关掉悬浮窗，回 App 里看
+  <span>悬浮窗不是第二套会话。它和 App 内 Chat 页共用同一个状态：窗里说的、批的，回到 App 里一模一样。</span>
+</h2>
+<div class="stage">
+
+  <div class="phone">
+    <div class="notch"></div>
+    <div class="screen">
+      <div class="statusbar" style="background:#fef7ff; color:#1c1b1f"><span>9:41</span><span>▮▮▮ 5G</span></div>
+      <div style="background:#fef7ff; height:calc(100% - 30px); display:flex; flex-direction:column;">
+        <!-- App 顶栏 -->
+        <div style="display:flex; align-items:center; padding:8px 16px 12px;">
+          <span style="font-size:22px; font-weight:600; flex:1;">Claude · sonnet-4.6</span>
+          <span style="font-size:19px; color:#5c5868; margin-left:12px;">＋</span>
+          <span style="font-size:19px; color:#5c5868; margin-left:14px;">🕘</span>
+          <span style="font-size:19px; color:#6750a4; margin-left:14px;" title="悬浮窗入口">⧉</span>
+        </div>
+        <!-- 消息 -->
+        <div style="flex:1; overflow-y:auto; padding:4px 16px; display:flex; flex-direction:column; gap:14px;">
+          <div style="align-self:flex-end; background:#6750a4; color:#fff; padding:11px 15px; border-radius:18px 18px 5px 18px; font-size:13.5px; max-width:80%;">帮我把设置里的深色模式打开</div>
+          <div style="font-size:13.5px; line-height:1.55; color:#2a2731;">好的，我先看一下当前页面有什么。</div>
+          <div style="background:#f0eef6; border-radius:12px; padding:9px 13px; font-size:11.5px; color:#4d4958; display:flex; gap:8px; align-items:center;">
+            <span>👁</span><span>读取屏幕</span><span style="font-family:monospace; font-size:10.5px; color:#4f3d8a;">observe_screen</span><span style="color:#2e6b4f">✓</span>
+          </div>
+          <div style="font-size:13.5px; line-height:1.55; color:#2a2731;">当前在设置首页，没直接看到深色模式。我去「显示」里找。</div>
+          <div style="background:#f0eef6; border-radius:12px; padding:9px 13px; font-size:11.5px; color:#4d4958; display:flex; gap:8px; align-items:center;">
+            <span>👆</span><span>点击「显示」</span><span style="font-family:monospace; font-size:10.5px; color:#4f3d8a;">click</span><span style="color:#2e6b4f">✓</span>
+          </div>
+          <div style="align-self:flex-end; background:#6750a4; color:#fff; padding:11px 15px; border-radius:18px 18px 5px 18px; font-size:13.5px; max-width:80%;">不是这里，先点最上面的搜索</div>
+          <div style="font-size:13.5px; line-height:1.55; color:#2a2731;">明白，改用搜索定位。</div>
+        </div>
+        <!-- 输入框 -->
+        <div style="padding:10px 16px 18px;">
+          <div style="display:flex; align-items:center; gap:10px; background:#f0eef6; border-radius:26px; padding:9px 9px 9px 18px;">
+            <span style="flex:1; font-size:13.5px; color:#8a8695;">发消息…</span>
+            <span style="width:34px; height:34px; border-radius:50%; background:#d8d5e0; color:#fff; display:flex; align-items:center; justify-content:center;">↑</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="note">
+    <h4>为什么必须共用同一个 ViewModel</h4>
+    <ul>
+      <li>若悬浮窗另建一个 <span class="kbd">ChatViewModel</span>，就会变成<b>两套会话</b>：窗里说的话回到 App 看不到，反之亦然。</li>
+      <li>方案是把它提到 <b>Application 作用域</b>（<span class="kbd">ChatViewModelHolder</span>），App 与 Service 取到同一个实例。</li>
+      <li>代价：VM 与进程同寿，<span class="kbd">onCleared()</span> 不再触发，监听器不注销。这是<b>有意为之</b>，已在设计文档登记。</li>
+      <li>顶栏的 <span style="color:#6750a4">⧉</span> 是新增的悬浮窗入口，与「新对话」「历史」并列。</li>
+    </ul>
+  </div>
+</div>
+
+<div class="step-hint">
+  <b>交互提示：</b>① 点折叠条可展开 ② ③ 的「允许/拒绝」可点 ④ 点输入框会弹键盘并上移 ⑤<br>
+  <span style="opacity:.65">本原型仅表达交互与信息层级，颜色/间距以最终实现为准。</span>
+</div>
+
+<script>
+// ============ ① 折叠态：点击展开（演示态）、拖动 ============
+(function () {
+  var el = document.getElementById('f1');
+  var screen = el.parentElement;
+  var dragging = false, moved = false, sx = 0, sy = 0, ox = 0, oy = 0;
+
+  function onDown(e) {
+    if (e.target.id === 'f1-expand') return;
+    dragging = true; moved = false;
+    var p = e.touches ? e.touches[0] : e;
+    sx = p.clientX; sy = p.clientY;
+    ox = parseInt(el.style.left, 10); oy = parseInt(el.style.top, 10);
+    el.style.transition = 'none';
+    e.preventDefault();
+  }
+  function onMove(e) {
+    if (!dragging) return;
+    var p = e.touches ? e.touches[0] : e;
+    var dx = p.clientX - sx, dy = p.clientY - sy;
+    if (Math.abs(dx) > 4 || Math.abs(dy) > 4) moved = true;
+    var w = 292, sw = screen.clientWidth;
+    el.style.left = Math.max(0, Math.min(sw - w, ox + dx)) + 'px';
+    el.style.top = Math.max(0, Math.min(screen.clientHeight - 50, oy + dy)) + 'px';
+    e.preventDefault();
+  }
+  function onUp() {
+    if (!dragging) return;
+    dragging = false;
+    el.style.transition = '';
+    if (!moved) { el.style.left = '44px'; el.style.top = '520px'; return; }
+    // 吸附左右边缘
+    var sw = screen.clientWidth, x = parseInt(el.style.left, 10);
+    el.style.left = (x + 292 / 2 < sw / 2 ? 0 : sw - 292) + 'px';
+  }
+  el.addEventListener('mousedown', onDown);
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+  el.addEventListener('touchstart', onDown, { passive: false });
+  document.addEventListener('touchmove', onMove, { passive: false });
+  document.addEventListener('touchend', onUp);
+
+  // 折叠条上的展开按钮：切换文案，演示「待审批徽标」
+  document.getElementById('f1-expand').addEventListener('click', function (e) {
+    e.stopPropagation();
+    var said = document.getElementById('f1-said');
+    var badge = document.getElementById('f1-badge');
+    var dot = el.querySelector('.dot');
+    if (badge.style.display === 'none') {
+      said.textContent = '找到开关了，准备点击';
+      badge.style.display = '';
+      dot.classList.remove('pulse'); dot.classList.add('warn');
+    } else {
+      said.textContent = '深色模式已打开，还要改别的吗？';
+      badge.style.display = 'none';
+      dot.classList.remove('pulse', 'warn');
+    }
+    el.style.left = '44px'; el.style.top = '520px';
+  });
+})();
+
+// ============ ③ 审批：允许 / 拒绝 ============
+(function () {
+  var allowed = false, denied = false;
+  document.getElementById('f3-allow').addEventListener('click', function () {
+    if (allowed || denied) return;
+    allowed = true;
+    document.getElementById('f3-btns').outerHTML =
+      '<div class="ac-done" id="f3-btns">✓ 已允许，正在执行…</div>';
+    document.getElementById('sw1').classList.add('on');
+    var d = document.querySelector('#f3 .dot'); d.classList.remove('warn'); d.classList.add('pulse');
+  });
+  document.getElementById('f3-deny').addEventListener('click', function () {
+    if (allowed || denied) return;
+    denied = true;
+    document.getElementById('f3-btns').outerHTML =
+      '<div class="ac-done denied" id="f3-btns">✕ 已拒绝，AI 将收到拒绝结果</div>';
+  });
+})();
+
+// ============ ④ 输入框：点一下弹键盘、窗口上移 ============
+(function () {
+  var input = document.getElementById('f4-input');
+  var kb = document.getElementById('kb4');
+  var win = document.getElementById('f4');
+  var open = false;
+  input.addEventListener('click', function () {
+    open = !open;
+    kb.classList.toggle('show', open);
+    // 键盘弹出时窗口上移，收起时落回
+    win.style.top = open ? '96px' : '220px';
+  });
+})();
+
+// ============ ⑤ 顶栏入口提示 ============
+document.addEventListener('DOMContentLoaded', function () {
+  var entry = document.querySelector('[title="悬浮窗入口"]');
+  if (entry) entry.style.cursor = 'pointer';
+});
+</script>
+</body>
+</html>
