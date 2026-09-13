@@ -10,6 +10,19 @@
     <string name="title_repository">リポジトリ</string>
     <string name="title_settings">設定</string>
     <string name="chat_placeholder_message">AI会話機能も近々追加される予定だ。</string>
+    <!-- Chat フローティングウィンドウ -->
+    <string name="chat_float_channel_name">AI チャットオーバーレイ</string>
+    <string name="chat_float_notification_title">AI チャットオーバーレイ実行中</string>
+    <string name="chat_float_notification_text">タップして vFlow に戻り会話全体を表示</string>
+    <string name="chat_float_status_running">観察中…</string>
+    <string name="chat_float_status_idle">準備完了</string>
+    <string name="chat_float_header_title">AI チャット</string>
+    <string name="chat_float_badge_approval">承認待ち</string>
+    <string name="chat_float_expanded_hint">会話パネル全体は今後のバージョンで実装予定です</string>
+    <string name="chat_float_open">オーバーレイ</string>
+    <string name="chat_float_need_overlay_permission">先に「他のアプリの上に重ねて表示」権限を許可してください</string>
+    <string name="chat_float_start_failed">オーバーレイの起動に失敗しました: %1$s</string>
+
     <string name="chat_prompt_hint">質問を入力してください</string>
     <string name="chat_more">さらなるアクション</string>
     <string name="chat_send">送信</string>
@@ -63,6 +76,9 @@
     <string name="chat_side_sheet_title">会話</string>
     <string name="chat_side_sheet_subtitle">過去の会話をすばやく切り替えるか、クリーンなコンテキストで新しい会話を開きます。</string>
     <string name="chat_side_sheet_empty_preview">まだニュースはありません</string>
+    <string name="chat_export_conversation">会話をエクスポート</string>
+    <string name="chat_export_share_title">会話 JSON をエクスポート</string>
+    <string name="chat_export_failed">会話のエクスポートに失敗しました：%1$s</string>
     <string name="chat_delete_conversation_message">会話「%s」を削除してもよろしいですか?この操作は元に戻すことができません。</string>
     <string name="chat_role_you">あなた</string>
     <string name="chat_role_assistant">アシスタント</string>

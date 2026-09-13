@@ -1,13 +1,16 @@
 # vFlow 的 AI 体系梳理（fork 参考文档）
 
-> 版本：v1.6
-> 状态：代码走查定稿（对应 `feature/function-workflow` 分支，2026-09-11）
+> 版本：v1.7
+> 状态：代码走查定稿（对应 `feature/chat-float-window` 分支，2026-09-13）
 > v1.1 修订：修正 §5.2/§5.3/§6 的 `call_function` 根因（原文写反）、附录 A 三处统计数字、§4 模块 id 与遗漏、§2.6 示例值、§2.1 行号，以及若干措辞/文件归属问题。**本文数字为人工走查所得，非脚本自动生成**（见 §0）。
 > v1.2 修订：重写 §0 定位；新增 §2.10「链路 A 能力与现状评估」、§3.1「链路 B 能力与现状评估」（含 A/B 对比表）、§4.1「链路 C 现状评估」、§7「优化方向汇总」；§1 补阅读指引。
 > v1.3 修订（2026-09-11 补充走查）：新增「双信息源与 catalog 截断」、「Prompt 缓存现状」、§5.4「AI 臆造 moduleId 实证」；§2.3 补技能路由运行特征；§2.10.3 补两条短板。配套外部调研见 [`agent-design-comparison.md`](agent-design-comparison.md)。
 > v1.4 修订（2026-09-11 补充走查）：新增 §2.3.1「每个技能提供的工具与模块」（含中文名对照）、§2.3.2「兜底技能详解」、「技能与 catalog 的机制区别」；补「窗口内外分类分布」。
 > v1.5 修订（2026-09-11 补充走查）：新增 §2.4.1「工具的加载链路（两阶段）」、§2.4.2「四条处理路径与两类模块」；§2.4.6 补「窗口内 48 个的具体清单」与「能力被系统性扭曲」的结论；§2.4.x 编号顺延。
 > v1.6 修订（2026-09-12）：**catalog 截断已修复**（§2.4.6 加状态标注）；§2.10.3 短板 8 标注已解决；§7 优化方向对应项标注已部分实施。方案与实施记录见 [`../chat-agent-enhancement-plan.md`](../chat-agent-enhancement-plan.md)。
+> v1.7 修订（2026-09-13，基于一次真实会话导出走查）：新增 §2.4.8「动态输入在 AI 链路上的退化」（catalog 与执行路径双双用空白 step 调 `getDynamicInputs`，导致 `value1`/`value2` 这类条件字段缺失、AI 填的键被静默丢弃）；新增 §2.3.3「技能跨轮存续的实际边界」（`CONTINUATION_SIGNALS` 短语表是唯一入口，技能会随话题切换掉出上下文）；§2.10.3 补短板 10/11；§1 补「三套并行工具体系」提示。证据来自一次 24 条消息的真实会话导出（`vflow-chat-actions-*.json`）。
+
+
 > 目录：`docs/fork/surveys/`（fork 新增文件，上游无此文件，冲突归属我方；同目录另见 [`README.md`](README.md) 索引）
 > 用途：**梳理当前项目 AI 系统的现状**——三条链路各自是什么、能看到什么、通过什么机制、强在哪、短在哪，**方便后续优化与扩展**。
 
@@ -46,6 +49,16 @@
 | **C** | 工作流内 AI 模块 | `core/workflow/module/{network,interaction,integration}/*.kt` | 工作流执行时调 LLM（或外部 AI 助手） | 文本问答、视觉 Agent 操作手机、调用外部 AI 助手（Operit） |
 
 **关键区别**：链路 A 和 B 完全不同 —— A 用 `aiMetadata`（模块自声明），B 用 `metadata.description`（遍历全模块）。给 A 加能力**不会**自动让 B 看到，反之亦然。
+
+**另一重容易忽略的割裂：链路 A 内部还有三套并行的工具体系**（2026-09-13 补充，详见 §2.4）：
+
+| 体系 | 数量 | 可见性 | 是模块吗 | 能进工作流吗 |
+|---|---|---|---|---|
+| 原生 helper（`NATIVE_HELPER`） | 11 | **无条件常驻**（§2.3） | ❌ **否** | ❌ **否** |
+| 模块工具（`MODULE`） | ~59 | 需技能 `moduleIds` 认领 | ✅ 是 | ✅ 是 |
+| 工作流工具（`TEMPORARY_` / `SAVED_WORKFLOW`） | 2 | 需技能认领 | 虚拟模块 | 不适用 |
+
+**三者的 `moduleId`、执行路径、可见性规则互不相同，唯一共性是都叫 "tool"。** 模型看不出区别（system prompt 未说明），但它们在"能否写进工作流"上截然不同——这是理解 §2.3.3 与 §2.4.8 的前提。
 
 > **阅读指引**：§2 逐节描述链路 A 的机制（事实），§2.10 是其**能力与现状评估**（主观判断）；§3 描述链路 B，§3.1 是其评估与 A/B 对比；§4 是链路 C。
 
@@ -199,6 +212,34 @@ if (selectedSkillIds.isEmpty() && operationalRequest) {
 1. **每轮都重算**：`selectSkills` 在 `ChatViewModel.requestAssistantReply`（`:851-854`）里调用，而 `requestAssistantReply` 是**每一轮**的入口（用户发消息、以及每次工具结果回灌后 `appendToolResultsAndContinue` 都会触发）。因此每轮都会重新算技能、重拼 system prompt、重发工具定义子集。
 2. **只看「最新一条 USER 消息」**：`selectSkills` 内部取 `history.lastOrNull { it.role == USER }`（`:35-37`）。在工具循环中新增的是 ASSISTANT/TOOL 消息，没有新 USER 消息 → **技能选择在多轮工具调用期间保持不变**，但系统仍每轮重算一次（结果相同）。
 3. **对缓存的影响**：技能的**切换只发生在用户发新消息时**。由于每次请求都要重发 `tools`，而 `tools` 在 OpenAI 系请求体中**位于 `messages` 之前**（最前缀位置），一旦技能切换，**前缀缓存从 `tools` 处断裂，后续全部历史无法命中**。Anthropic 请求体中 `system` 在 `tools` 之前、顺序略优，但本项目**未启用任何显式 `cache_control`**（全仓库零命中），实际无缓存可用。详见 §2.10.4。
+
+#### 2.3.3 技能跨轮存续的实际边界（2026-09-13 补充）
+
+> **一次真实会话暴露的行为**：用户第 10 轮说「你新建一个工作流试试」命中了 `saved_workflow_creation`（catalog 随之下发）；第 14 轮起用户改为追问「变量怎么没填」，**技能随即掉出上下文，catalog 消失**；直到第 22 轮用户**手动复述**「我都让你新建工作流了」，技能才被重新带入。中间 4 轮里，模型在反复声明"我手里没有模块清单"——**它说的是实话**。
+
+**机制边界**（对照 §2.3 路由流程第 9 步）：
+
+| 情况 | 结果 |
+|---|---|
+| 用户新消息命中技能关键词 | ✅ 切换/激活 |
+| 用户新消息**未命中**任何技能，但含 `CONTINUATION_SIGNALS` | ✅ 沿用历史中**最后一次 toolCall** 所属技能（`findContinuationSkillIds` `:220-237`） |
+| 用户新消息未命中，且**不含延续信号** | ❌ **技能清空**，仅剩 11 个常驻 helper |
+
+`CONTINUATION_SIGNALS`（`:749`）是一张**硬编码中文短语表**：
+
+```
+继续 / 再来 / 刚才 / 上一步 / 那个 / 这次 / 改成 / 换成 / 同样 / 继续刚才 / 继续上一个 / 继续那个 / 接着做
+```
+
+**因此"技能是否存续"不取决于对话在进行什么，而取决于用户这句话里有没有恰好出现上述词。** 追问「变量怎么没填」「你都不清楚 schema 吗」都不在表里 → 技能丢失。
+
+**三点值得记的推论**：
+
+1. **它是纯函数式的**：`selectSkills(history, tools)` 只看最新一条 USER 消息（`:35-37`），**没有任何"当前激活技能"的持久状态**。技能不是"被激活后保持"，而是"每轮重新判定"。这与 §2.3.2 所述"每轮重算"是同一机制的两面。
+2. **旧消息里的证据不参与判定**：模型上下文里躺着它自己刚生成的 61 步工作流 JSON（一字不差，历史全量重发，见 §2.10.3 短板 1），但解释这些 JSON 的模块清单已经不在——**它看得见自己写了什么，查不到写得对不对**。
+3. **用户被迫承担路由职责**：要让技能回来，用户必须在对话里复述关键词。这是 §2.3 关键词匹配机制的直接后果。
+
+> **对照**：头部 Agent（Claude Code / dsh）把"用过的技能"记为**会话状态**并跨轮重注入，不存在这个症状。详见 [`agent-design-comparison.md`](agent-design-comparison.md)。
 
 ### 2.4 工具清单（四类，共 72 个）
 
@@ -469,6 +510,71 @@ val entries = moduleIds.take(maxModules).mapNotNull { ... }
 
 **同一个能力，走技能路由可用、走 catalog 不可用**——这是当前设计最反直觉之处。
 
+#### 2.4.8 动态输入在 AI 链路上的退化（2026-09-13 新发现）
+
+> **这是 §2.7「静默失败」的一个具体成因，也是"catalog 说是 A、编辑器显示是 B"的根因。**
+
+vFlow 有一类模块（**13 个**）重写了 `getDynamicInputs(step, allSteps)`——它的返回值是**当前 step 参数的函数**：喂进不同的 `parameters`，吐出不同的 `InputDefinition` 列表。
+
+**典型是 `IfModule`（`IfModule.kt:165-208`），它有两根轴：**
+
+| 轴 | 输入 | 输出变化 |
+|---|---|---|
+| ① `operator` | 枚举值 | `equals`/`number_gt` 等 11 个算子 → **追加 `value1`**；`number_between` → **追加 `value1` + `value2`，且 `value1` 的 `staticType` 就地改成 NUMBER**（`:196-205`）；`exists`/`is_true` 等 → 两者都不加 |
+| ② `input1` 的已连接类型 | 上游变量类型（需 `allSteps` 解析） | `operator` 的**可选项被裁剪**（`:177-182`，走 `OPERATORS_FOR_NUMBER` / `OPERATORS_FOR_TEXT` 等表，`:119-123`） |
+
+注意算子分组：`OP_EXISTS` **不在** `OPERATORS_REQUIRING_ONE_INPUT`（`:112-116`）里，而在 `OPERATORS_FOR_ANY`（`:119`）。因此**空白 step 走 `?: OP_EXISTS`（`:193`）时，`value1`/`value2` 一个都不会被追加**。
+
+**问题在于 AI 链路的两处调用都传了空白 step：**
+
+| 位置 | 代码 | 后果 |
+|---|---|---|
+| catalog 生成 | `ChatAgentToolRegistry.kt:733-734`：`defaultStep = module.createSteps().firstOrNull()` → `getDynamicInputs(defaultStep, listOf(defaultStep))` | catalog 只输出 `inputs: input1, operator=...`，**`value1`/`value2` 不在清单里** |
+| list 生成（单模块工具） | `ChatAgentToolRegistry.kt:104-105`，同样用 `createSteps()` | 同上 |
+| **执行时参数校验** | `ChatAgentModuleExecutor.kt:1266`：`getDynamicInputs(baseStep, listOf(baseStep))` | **决定参数能否活下来**，见下 |
+
+**执行路径的后果最严重**（`ChatAgentModuleExecutor.kt:1269-1272`）：
+
+```kotlin
+val inputs = module.getDynamicInputs(baseStep, listOf(baseStep))
+arguments.forEach { (key, value) ->
+    val input = inputs.firstOrNull { it.id == key } ?: return@forEach   // ← 静默丢弃，无日志
+    defaults[key] = coerceInputValue(input, value, artifactStore)
+}
+```
+
+**不在退化清单里的键，直接丢弃且不报错。** 模型若按习惯写 `input2: "0"`（真实字段名是 `value2`），值被吞掉 → 编辑器里那栏空白 → 用户以为模型"漏填"。
+
+**同时失效的还有类型强制**：如 `HttpRequestModule.kt:115-126`，`body` 字段的类型约束随 `body_type` 变化（选 file 只收图片）。在空白 step 下 `body_type` 恒为默认 `NONE`，**这道约束在 AI 路径上从不生效**。
+
+**因此产生一个反直觉对比**：
+
+| 信息源 | 用的方法 | 字段完整性 |
+|---|---|---|
+| **远程 API**（`ModuleHandler.kt:172`） | `module.getInputs()` —— **静态全量** | ✅ 含 `value1`/`value2` |
+| **AI 链路** | `module.getDynamicInputs(空白 step, ...)` | ❌ 条件字段缺失 |
+
+> **即：vFlow 自己的 HTTP API 拿到的模块字段，比它自己的 AI 拿到的更完整。**
+
+**影响范围**：重写 `getDynamicInputs` 的模块共 **13 个**，其中 **8 个是条件分支式**（返回值随 step 参数变化）：
+
+| 类型 | 模块 | 是否会丢字段 |
+|---|---|---|
+| **条件分支式**（8 个） | `IfModule`、`WhileModule`、`DoWhileModule`、`HttpRequestModule`、`FlashlightModule`、`BluetoothTriggerModule`、`KeyEventTriggerModule`、`WifiTriggerModule` | ⚠️ **会**——分支未激活则字段不出现 |
+| 全量返回式（5 个） | `FindElementModule`、`OCRModule`、`CallFunctionModule`、`PlayAudioModule`、`VibrationModule` | 不因空白 step 丢字段（但仍受 `createSteps()` 无默认值参数的影响，见 §5.2 的 `call_function` 案例） |
+
+条件与循环（`If` / `While` / `DoWhile`）恰是工作流最核心的两类模块，因此该退化命中面很广。
+
+> 统计口径：`grep -rl "override fun getDynamicInputs"` 得 13 个文件；再对每个实现体内的 `if`/`else` 分支做判定（人工走查，2026-09-13）。
+
+> ⚠️ **并非所有"条件分支式"都同样严重**。分支的作用有两类：
+> - **增删字段**（如 `IfModule:196-205` —— 决定 `value1`/`value2` 是否出现）：**字段会丢失**，最严重；
+> - **改 `isHidden` / `hint`**（如 `FlashlightModule` —— `strengthPercent` 恒在列表里，只是按 `mode` 与 Android 版本决定显隐）：字段仍在，但 catalog 侧还有 `.filterNot { it.isHidden }`（`ChatAgentToolRegistry.kt:735`）会按**空白 step 下的 isHidden** 剔除 → **同样会丢**。
+>
+> 两类最终都会导致字段缺失，但排查时值得区分：前者是"字段没被加进列表"，后者是"加进去了又被过滤掉"。
+
+**§2.4.6 的 catalog 截断已修复，但本节的字段残缺没有**——它们是两回事：前者是"模块被切掉"，后者是"模块在，但字段少了"。
+
 ---
 
 ### 2.5 三个 usageScope 的判定规则（**判定方式各不相同**）
@@ -712,6 +818,8 @@ else → Ready(..., missingPermissions = module.getRequiredPermissions(step)
 7. **无多模态、无流式**：不能给模型发图片（截图只能转文本）；`stream=false`，长回复整段等待。
 8. ~~**模块目录截断且与 enum 错配**~~（2026-09-11 补充，§2.4.6）：保存工作流 139 个步骤模块只解释前 48 个，高频的 `device` 类被切在最后；模型"知道 id 合法、不知道它是什么"，于是臆造 id 被拒。**→ ✅ 已于 2026-09-12 修复（去除截断）**，代价是 catalog 增至 ~5,779 token。
 9. **无未启用 Prompt 缓存**（2026-09-11 补充，§2.10.4）：全仓库无 `cache_control`/`prompt_cache`，Anthropic 链路 100% 冷启动；技能切换又会让 OpenAI 系前缀从 `tools` 处断裂。
+10. **动态输入在 AI 链路全面退化**（2026-09-13 补充，§2.4.8）：catalog 生成（`ChatAgentToolRegistry.kt:733-734`）与执行校验（`ChatAgentModuleExecutor.kt:1266`）**都传空白 step** 调 `getDynamicInputs`，而后者的返回值依赖 step 参数。后果：`If`/`While` 等的 `value1`/`value2` **不进清单**，模型填的键被 `?: return@forEach`（`:1270`）**静默丢弃**，编辑器表现为"参数空白"。**与短板 2 同源，但这是可定位到具体字段的成因。** 另有反直觉对比：远程 API（`ModuleHandler.kt:172`）用静态全量的 `getInputs()`，**字段反而比 AI 完整**。
+11. **技能无会话状态，跨轮存续靠关键词表**（2026-09-13 补充，§2.3.3）：`selectSkills` 每轮按最新一条 USER 消息重算，不保持"已激活技能"。跨轮延续仅认 `CONTINUATION_SIGNALS` 硬编码短语表（`:749`），不含则技能清空。实测会出现「刚建完工作流 → 下一轮追问细节 → 模块清单消失 → 模型自述'我没有清单'」。
 
 #### 2.10.4 Prompt 缓存现状（2026-09-11 补充）
 
@@ -1054,6 +1162,8 @@ val inputs = module.getDynamicInputs(baseStep, listOf(baseStep)).filterNot { it.
 | **P1** | **资产目录注入层**：统一的「工作流清单 + 函数签名」目录，供 `call_workflow`/`call_function` 共用 | A（B 亦可复用） | 一次投入修掉两个模块，也是「让 AI 知道有什么」的地基 |
 | **P1** | **生产轮数上限**：给聊天路径加可配置的最大工具轮数（对齐基准的 24） | A | 当前生产零限制，安全默认反了 |
 | **P1** | **schema 生成与 `createSteps()` 解耦**：动态参数模块提供专门的 AI 视图输入 | A | 根治 `call_function` 类「动态键进不了 schema」 |
+| **P1** | **修动态输入的空白 step 退化**（§2.4.8，2026-09-13 新增）：catalog 生成（`ChatAgentToolRegistry.kt:734`）与执行校验（`ChatAgentModuleExecutor.kt:1266`）**都改用非退化求值**；至少让 `value1`/`value2` 进入清单 | A | 命中 8 个条件分支式模块（含 `If`/`While`/`DoWhile`）。**执行路径的修复优先级最高**——它决定参数是否被 `?: return@forEach` 静默吞掉 |
+| **P1** | **技能状态会话内持久化**（§2.3.3，2026-09-13 新增）：把"已激活技能"记为会话状态，跨轮保持，而非每轮按最新一句重算 | A | 根治「刚建完工作流、下一轮追问就丢清单」。与上一条同源（都是"该有状态的地方用了无状态函数"） |
 | **P2** | **链路 B 补反馈闭环**：生成结果接 `WorkflowValidator` + dry-run，带报错回炉 | B | 比给 B 加工具调用更贴合其「配置生成器」定位 |
 | **P2** | **统一能力视图**：让 B 复用 A 的 `aiMetadata` + `getDynamicInputs` | A/B | 消除「同一模块两套描述、加能力改两处」 |
 | **P2** | **统一密钥/Provider 配置**：链路 B 的 `ai_config` 与链路 C 的硬编码模型接入 `ChatProviderConfig` | A/B/C | 同一 API key 用户填三遍 |

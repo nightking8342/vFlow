@@ -1,7 +1,7 @@
 # Chat 悬浮窗 —— 需求设计
 
-> 版本：v1.2（P0 真机验证后修订 · 2026-09-12）
-> 状态：P0 已通过 · 可进入 P1 开发
+> 版本：v1.3（P1 折叠态实现完成 · 2026-09-13）
+> 状态：**P1 折叠态已实现并可运行**（真机验证过：拖动、展开/收起、边界吸附、长按关闭）；展开态内容、审批、动画待后续
 > 目录：`docs/fork/`（fork 新增文件，上游无此文件，冲突归属**我方**）
 > 上游方案来源：[`chat-agent-enhancement-plan.md`](chat-agent-enhancement-plan.md) §4（改造四）
 > 现状依据：[`surveys/ai-system-overview.md`](surveys/ai-system-overview.md)
@@ -11,11 +11,13 @@
 > **配套原型**：[`chat-float-window-ui.html`](chat-float-window-ui.html) —— 可交互 UI 原型（折叠 / 展开 / 审批 / 输入 / 状态一致性五组），用于对齐交互与信息层级，不作为视觉定稿。
 >
 > **P0 实测结论**：见 **§9.1**（七项真机验证结果，含 2 处必须修正的实现细节）。
+> **P1 实现状态**：见 **§9.2**（当前可用实现、动画尝试的失败结论）。
 
 ## 修订记录
 
 | 版本 | 日期 | 内容 |
 |---|---|---|
+| v1.3 | 2026-09-13 | **P1 折叠态实现完成**。新增 §9.2 记录实现状态与关键结论：① P1 已实现（窗口/拖动/吸附/长按关闭/折叠态文案）；② **动画尝试失败**——overlay 窗口逐帧同时改「位置+尺寸」会掉帧产生错配帧（实测闪烁），故当前为**瞬时切换、无动画**；③ 记录 `gravity=BOTTOM` 方案实现错误导致功能损坏的原因。 |
 | v1.2 | 2026-09-12 | **P0 真机验证后修订**（Xiaomi MIX Fold 3 · Android 17 / API 37 · HyperOS V816）。§9 新增 §9.1 实测结果：**P1/P2/P3/P6 四项通过**，P4/P5 待 P3 阶段，P7 确认截图会拍进悬浮窗。五处修正：① `ViewTreeLifecycleOwner` 必须挂**父容器**（否则实测崩溃）；② IME 必须「创建即可聚焦 + Compose `requestFocus()` + 对 `findFocus()` 调 `showSoftInput`」；③ **`FrameLayout.addView` 默认 MATCH_PARENT 的拖动把手会盖住 Compose、吞掉全部触摸**（本轮最难找的 bug，与 flag 无关）；④ 窗口 flags 采用 `LAYOUT_IN_SCREEN \| NOT_TOUCH_MODAL`——官方推荐的 `NOT_FOCUSABLE\|ALT_FOCUSABLE_IM` 在 HyperOS 上 IME 失效；⑤ remove→add 会重建 composition。另：§10 新增 HyperOS 拦截 overlay 显示在设置页（影响主场景）。 |
 | v1.1 | 2026-09-12 | **评审后修订**。① 修正 §1.1 的因果错误（不是看不到 AI 在做什么，而是看不到 AI 在说什么）；② **§5.3 重写**：发现并解决「审批双观察者竞态」（`beyondViewportPageCount` 使 ChatScreen 常驻），Proxy 改用 `registerForActivityResult` 且去掉 `noHistory`；③ §5.4 Owner 改按需（`ViewModelStoreOwner` 不需要）；④ §5.5 删除对死代码 `InsetAwareComposeContainer` 的错误引用；⑤ §5.6.1 修正"双栈切换已验证"的说法并给备选；⑥ §8.2 **diff 面积重估**（MainComposeShell 4 处 + ChatScreen + ChatViewModel，v1.0 低估）；⑦ 补 §10 遗漏风险（截图拍进悬浮窗、划掉 App 后 Agent 仍操作屏幕、旋转坐标错乱）；⑧ §11 验收从 14 项扩到 21 项；⑨ §9 P0 从 3 项扩到 7 项。 |
 | v1.0 | 2026-09-12 | 初稿。 |
@@ -128,6 +130,9 @@ AI 需要截图（`MediaProjection`）→ 悬浮窗点「允许」后发现缺�
 | 工具审批卡 | 助手消息 `toolApprovalState == PENDING` 时，在气泡内显示工具名、风险等级、参数摘要 + 「允许」「拒绝」按钮 |
 | 尺寸 | `320dp` 宽 × 最高 `480dp`（可配置），内容超出滚动 |
 | 停止 | Agent 运行中，发送键变为「停止」，调用 `ChatViewModel.stopAgent()` |
+| **展开方向** | **按窄条位置决定，并保持所贴的那条边不动**（用户明确要求）：<br>· 窄条在屏幕**下方** → **向上展开**（底边固定，面板向上生长）<br>· 窄条在屏幕**上方** → **向下展开**（顶边固定）<br>· 折叠回窄条时仍停在原位（因为锚定边本就固定） |
+| **标题栏位置** | **贴近窄条**（用户选定）：向上展开时标题栏放面板**底部**（用户视线所在处不动，内容向上延伸）；向下展开时放面板**顶部**。 |
+| **过渡动画** | ⚠️ 当前为**瞬时切换、无动画**。原因见 §9.2：overlay 窗口逐帧同时改「位置+尺寸」会掉帧产生错配帧（闪烁）。**恢复动画的前置条件见 §9.2。** |
 
 ### FR4 状态展示与同步
 
@@ -749,6 +754,58 @@ container.addView(
 - `screencap` 需带 `-d <display-id>`，折叠屏有**两个 display**（本机 `4630947024259405956` 与 `...955`）。
 - MSYS(Git Bash) 会把 `/sdcard/...` 改写成 Windows 路径，需 `MSYS_NO_PATHCONV=1`。
 - `adb shell am start` 对已存在任务栈的 Activity **不会重跑 `onCreate`**，需 `-f 0x10000000`（NEW_TASK）。
+
+---
+
+### 9.2 P1 实现状态与交接（2026-09-13）
+
+#### 当前实现：折叠态可用
+
+**分支**：`feature/chat-float-window`（未提交，工作区包含全部改动）。
+
+| 文件 | 状态 | 说明 |
+|---|---|---|
+| `ui/chat/ChatFloatWindowService.kt` | 新增 | 悬浮窗前台服务：窗口、拖动、边缘吸附、展开/折叠、长按关闭 |
+| `ui/chat/ChatFloatPanelContent.kt` | 新增 | 折叠态 Compose UI（状态点 + AI 一行文本 + 展开按钮 + 待审批徽标） |
+| `ui/chat/ChatFloatSummary.kt` | 新增 | 折叠态文案推导（纯函数） |
+| `ui/chat/ChatViewModelHolder.kt` | 新增 | Application 作用域共享 VM（**P0 阶段验证通过**） |
+| `ui/chat/ChatFloatWindowLauncher.kt` | 新增 | 权限校验 + 启动封装 |
+| `ui/chat/ChatFloatGeometry.kt` | 新增 | 锚定边计算（展开时保持底边/顶边不动） |
+| `ui/main/MainComposeShell.kt` | **改上游** | 顶栏加悬浮窗按钮；VM 改用 `ChatViewModelHolder`（4 处） |
+| `AndroidManifest.xml` | **改上游** | 注册 `ChatFloatWindowService`（`foregroundServiceType="specialUse"`） |
+| 3 个 `strings*.xml` | **改上游** | 悬浮窗文案（中/英/日） |
+| 2 个测试文件 | 新增 | `ChatFloatSummaryTest`(9) + `ChatFloatGeometryTest`(16)，均通过 |
+
+**已真机验证可用**：显示/拖动（自由到任意位置）/左右边缘吸附/展开收起/长按关闭/折叠态显示 AI 文本。
+
+#### ⚠️ 关键结论：展开动画在 overlay 窗口上不可靠
+
+**这是本阶段的主要技术结论。**
+
+实测数据（逐帧日志 + 录屏分析，向上展开）：
+
+| 帧 | 窗口 y | 窗口 height | bottom |
+|---|---|---|---|
+| t=0.00 | 1339 | 110 | 1449 |
+| t=0.29 | 1067 | 382 | 1449 |
+| t=0.53 | 841 | 608 | 1449 |
+| t=0.72 | 660 | 789 | 1449 |
+
+**我们下发的几何完全正确**（`bottom` 全程恒为 1449），但**画面上出现错配帧**。
+
+**原因**：向上展开要锚定底边，意味着**每帧必须同时修改窗口原点 `y` 和高度 `height`**（`y` 减小多少、`height` 就得增大多少）。overlay 窗口的 `updateViewLayout` 是**异步重排**，两个属性每帧同时变化时渲染管线跟不上，就会画出「旧位置 + 新尺寸」或「新位置 + 旧尺寸」的中间态 —— 表现为**闪烁**。
+
+**对比：向下展开只改 `height`（原点不动），所以从不闪烁。**
+
+**因此当前实现选择「瞬时切换，无动画」**：一次 `updateViewLayout` 到位，没有中间帧就没有错配帧。代价是没有过渡感（"啪"地一下到位）。
+
+#### 曾尝试并失败的三条路（勿重走）
+
+| 尝试 | 结果 | 原因 |
+|---|---|---|
+| 逐帧动画（独立插值 top 与 height） | ❌ 闪烁 | 锚定边 = `top + height`，两个非线性插值相加 ≠ 线性，底边来回抖（实测 1879→1694→1790→1874） |
+| 逐帧动画（只插值尺寸，位置用几何重算） | ❌ 闪烁 | 见上方结论：**每帧仍要改两个属性**，异步重排掉帧 |
+| 改用 `gravity=BOTTOM` 让系统钉住底边 | ❌ **功能损坏** | `gravity=BOTTOM` 时 `p.y` 语义变为「距底部距离」，而拖动/展开代码仍按「距顶部」处理 → 拖动不跟手、展开错位。**方向本身正确**（可让两种方向都只改 height），但需**把整个文件里 `y` 的语义改彻底**，当时急于验证导致改坏 |
 
 ---
 

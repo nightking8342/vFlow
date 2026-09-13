@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.SharedPreferences
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.chaomixian.vflow.R
 import com.chaomixian.vflow.core.logging.DebugLogger
 import com.chaomixian.vflow.core.workflow.WorkflowManager
 import com.chaomixian.vflow.permissions.Permission
@@ -260,6 +261,23 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }.getOrElse { throwable ->
             _events.tryEmit(
                 throwable.message?.trim().orEmpty().ifBlank { "Benchmark 日志导出失败。" }
+            )
+            null
+        }
+    }
+
+    /** 导出指定会话的完整 JSON，返回可交给系统分享的 Intent；失败时经 events 提示并返回 null。 */
+    fun exportConversation(conversationId: String): Intent? {
+        val conversation = _uiState.value.conversations.firstOrNull { it.id == conversationId }
+            ?: return null
+        return runCatching {
+            ChatConversationExportManager.buildShareIntent(getApplication(), conversation)
+        }.getOrElse { throwable ->
+            _events.tryEmit(
+                getApplication<Application>().getString(
+                    R.string.chat_export_failed,
+                    throwable.message?.trim().orEmpty().ifBlank { "unknown error" },
+                )
             )
             null
         }

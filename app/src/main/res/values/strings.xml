@@ -11,6 +11,19 @@
     <string name="title_repository">仓库</string>
     <string name="title_settings">设置</string>
     <string name="chat_placeholder_message">AI 对话功能即将加入。</string>
+    <!-- Chat 悬浮窗 -->
+    <string name="chat_float_channel_name">AI 对话悬浮窗</string>
+    <string name="chat_float_notification_title">AI 对话悬浮窗运行中</string>
+    <string name="chat_float_notification_text">点按返回 vFlow 查看完整对话</string>
+    <string name="chat_float_status_running">正在观察…</string>
+    <string name="chat_float_status_idle">准备就绪</string>
+    <string name="chat_float_header_title">AI 对话</string>
+    <string name="chat_float_badge_approval">待审批</string>
+    <string name="chat_float_expanded_hint">完整对话面板将在后续版本实现</string>
+    <string name="chat_float_open">悬浮窗</string>
+    <string name="chat_float_need_overlay_permission">请先授予「显示在其他应用上层」权限</string>
+    <string name="chat_float_start_failed">悬浮窗启动失败：%1$s</string>
+
     <string name="chat_prompt_hint">输入你的问题</string>
     <string name="chat_more">更多操作</string>
     <string name="chat_send">发送</string>
@@ -64,6 +77,9 @@
     <string name="chat_side_sheet_title">会话</string>
     <string name="chat_side_sheet_subtitle">快速切换历史对话，或者新开一条干净的上下文。</string>
     <string name="chat_side_sheet_empty_preview">还没有消息</string>
+    <string name="chat_export_conversation">导出会话</string>
+    <string name="chat_export_share_title">导出会话 JSON</string>
+    <string name="chat_export_failed">会话导出失败：%1$s</string>
     <string name="chat_delete_conversation_message">确定要删除会话「%s」吗？此操作无法撤销。</string>
     <string name="chat_role_you">你</string>
     <string name="chat_role_assistant">助手</string>

@@ -80,10 +80,12 @@ import androidx.navigation3.runtime.rememberSaveableStateHolderNavEntryDecorator
 import androidx.navigation3.ui.NavDisplay
 import com.chaomixian.vflow.R
 import com.chaomixian.vflow.ui.chat.ChatConversation
+import com.chaomixian.vflow.ui.chat.ChatFloatWindowLauncher
 import com.chaomixian.vflow.ui.chat.ChatProvider
 import com.chaomixian.vflow.ui.chat.ChatScreen
 import com.chaomixian.vflow.ui.chat.ChatUiState
 import com.chaomixian.vflow.ui.chat.ChatViewModel
+import com.chaomixian.vflow.ui.chat.ChatViewModelHolder
 import com.chaomixian.vflow.ui.common.ThemeUtils
 import com.chaomixian.vflow.ui.home.HomeScreen
 import com.chaomixian.vflow.ui.main.glass.LiquidGlassBottomBar
@@ -144,6 +146,7 @@ enum class WorkflowLayoutMode {
 enum class ChatTopBarAction {
     NewConversation,
     ToggleSideSheet,
+    ShowFloatWindow,
 }
 
 @androidx.compose.material3.ExperimentalMaterial3Api
@@ -196,7 +199,12 @@ private fun MainScreen(
     val mainPagerState = rememberMainPagerState(pagerState)
     val selectedTab = MainTopLevelTab.entries[mainPagerState.selectedPage]
     val loadedPages = remember(initialTab) { mutableStateListOf(initialTab.ordinal) }
-    val chatViewModel: ChatViewModel = viewModel()
+    // 经 ChatViewModelHolder 取 VM（Application 作用域），使 Chat 悬浮窗 Service
+    // 能拿到**同一实例**、共享会话状态（见 docs/fork/chat-float-window-design.md §5.1）
+    val appContext = LocalContext.current.applicationContext as android.app.Application
+    val chatViewModel: ChatViewModel = remember(appContext) {
+        ChatViewModelHolder.get(appContext)
+    }
     val chatUiState by chatViewModel.uiState.collectAsState()
     val surfaceColor = MaterialTheme.colorScheme.surface
     var workflowSortMode by rememberSaveable { mutableStateOf(initialWorkflowSortMode) }
@@ -305,6 +313,21 @@ private fun MainScreen(
                                                 ChatTopBarAction.ToggleSideSheet -> {
                                                     chatSideSheetVisible = !chatSideSheetVisible
                                                 }
+
+                                                ChatTopBarAction.ShowFloatWindow -> {
+                                                    ChatFloatWindowLauncher.showOrRequestPermission(
+                                                        context = activity,
+                                                        onPermissionMissing = {
+                                                            android.widget.Toast.makeText(
+                                                                activity,
+                                                                R.string.chat_float_need_overlay_permission,
+                                                                android.widget.Toast.LENGTH_LONG,
+                                                            ).show()
+                                                            ChatFloatWindowLauncher
+                                                                .openOverlaySettings(activity)
+                                                        },
+                                                    )
+                                                }
                                             }
                                         }
                                     )
@@ -375,6 +398,9 @@ private fun MainScreen(
                                 chatViewModel.deleteConversation(conversationId)
                             }
                             .show()
+                    },
+                    onExportConversation = { conversationId ->
+                        chatViewModel.exportConversation(conversationId)?.let(context::startActivity)
                     },
                 )
             }
@@ -549,6 +575,14 @@ private fun ChatTopBarActions(
             contentDescription = stringResource(R.string.chat_topbar_toggle_side_sheet)
         )
     }
+
+    // Chat 悬浮窗入口（边看屏幕边对话）
+    IconButton(onClick = { onAction(ChatTopBarAction.ShowFloatWindow) }) {
+        Icon(
+            painter = painterResource(R.drawable.rounded_branding_watermark_24),
+            contentDescription = stringResource(R.string.chat_float_open)
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
@@ -685,6 +719,7 @@ private fun ChatHistorySideSheet(
     onNewConversation: () -> Unit,
     onSelectConversation: (String) -> Unit,
     onDeleteConversation: (String) -> Unit,
+    onExportConversation: (String) -> Unit,
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
         AnimatedVisibility(
@@ -757,6 +792,7 @@ private fun ChatHistorySideSheet(
                                 selected = conversation.id == uiState.activeConversationId,
                                 presetName = uiState.presets.firstOrNull { it.id == conversation.presetId }?.name,
                                 onClick = { onSelectConversation(conversation.id) },
+                                onExport = { onExportConversation(conversation.id) },
                                 onDelete = { onDeleteConversation(conversation.id) },
                             )
                         }
@@ -773,6 +809,7 @@ private fun ChatHistorySideSheetItem(
     selected: Boolean,
     presetName: String?,
     onClick: () -> Unit,
+    onExport: () -> Unit,
     onDelete: () -> Unit,
 ) {
     Surface(
@@ -802,6 +839,19 @@ private fun ChatHistorySideSheetItem(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
+                IconButton(
+                    onClick = onExport,
+                    modifier = Modifier.size(28.dp),
+                    colors = IconButtonDefaults.iconButtonColors(
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    ),
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.rounded_file_json_24),
+                        contentDescription = stringResource(R.string.chat_export_conversation),
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
                 IconButton(
                     onClick = onDelete,
                     modifier = Modifier.size(28.dp),
