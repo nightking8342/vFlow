@@ -1,14 +1,20 @@
 # Chat Agent 架构重构设计（基于 CCB / dsh / OpenCode / Pi 四家对照分析）
 
-> 版本：v1.5.2（2026-09-14）
-> 状态：**第一批（P0）已实施**，待真机验证；第二批（P1）待开工。§4 起为执行契约，不再含"论辩过程"。
+> 版本：v1.5.3（2026-09-14）
+> 状态：**P0 / P1 / P2 已全部实施**，部分验收项待真机（见 §4.2.1 / §4.3 验收表）。§4 起为执行契约。
 > 分支：`feature/chat-agent-rearchitecture`（从 `dev` 出）
 > 目录：`docs/fork/`（fork 新增文件，上游无此文件，冲突归属**我方**）
 >
 > **v1.5 是决策定稿版**：经历一轮 19 问拷问后，推翻了三处结构性假设（详见文末修订史）。
 > 正文只讲**当前结论**；「谁推翻了谁」的演进过程收在文末，供将来避免重蹈。
-> **v1.5.1 / v1.5.2 为 P0 实施期修正**：求值口径改为并集两轮求值（`CallFunctionModule` 反例）；
-> 并新增 §6.2 开放问题 5。
+>
+> **实施期修正**：
+> - v1.5.1：求值口径改为**并集两轮求值**（`CallFunctionModule` 反例）
+> - v1.5.2：`load_skill` 必须显式**纳入常驻**（否则被工具路由过滤）
+> - v1.5.3：**第二批完成**；技能从「瘦身到 3–4 个」改为**清空**（核对后 70 行正文仅 6 行独有）；
+>   `ChatAgentSkillRouter.kt` 847 → 193 行；工具数 72 → 16
+>
+> **已完成真机验证**：§4.2.1（P0 三项全部通过）。**待真机**：§4.3 验收表第 1/2/3/8 项。
 
 ---
 
@@ -184,7 +190,7 @@
 | 现在（一个概念干三件事） | 目标（三个概念各司其职） |
 |---|---|
 | **技能** = 工具可见性分组 + 任务指令 + 关键词触发 | **① 工具可见性**——由按需发现机制接管，不再需要手工分组 |
-| | **② 任务指令**——保留，但只在**真正有指令**的场景存在（约 3–4 个，不是 14 个） |
+| | **② 任务指令**——保留，但只在**真正有指令**的场景存在（设计时估约 3–4 个，不是 14 个；<br>**实施后实测为 0**——见 §4.3.1） |
 | | **③ 触发**——由模型判断，不由关键词表猜测 |
 
 **③ 的载体选择 —— 四家的分歧与共同底线**（详见 §2.1）：
@@ -197,7 +203,7 @@
 | | 载体 | 理由 |
 |---|---|---|
 | 正文 | **tool result**（新增 `load_skill(name)` 工具） | 与 OpenCode 同构；实现最简单，且天然进历史、可留存；无需 `isMeta` 之类的新标记机制 |
-| 清单 | **system prompt**（`<available_skills>` XML） | 与 OpenCode / Pi 同构；vFlow 技能只有 3–4 个，重建成本可忽略；且解决"技能消失"靠的是**正文在历史里**，而非清单 |
+| 清单 | **system prompt**（`<available_skills>` XML） | 与 OpenCode / Pi 同构；清单很轻，重建成本可忽略；且解决"技能消失"靠的是**正文在历史里**，而非清单。<br>**实施后技能清空，此段不再输出**（见 §4.3.1） |
 
 > **为什么正文选 tool result 而不是 user message**：CCB / dsh 用 user message 是因为它们需要注入"不是用户说的"这类**指令性内容**，故要 `isMeta` 标记。vFlow 的技能是**按需加载的参考资料**（与 OpenCode 的定位一致），走 tool result 更自然，也避免了"user 消息里混入非用户内容"的语义污染。
 
@@ -614,16 +620,51 @@ data class ImmediateResult(
 
 #### 第一批验收
 
-| # | 验收项 |
-|---|---|
-| 1 | **病症 B 复现**：让 AI 给 `If` 填 `value1`/`value2`，执行不静默丢弃；catalog 里有这两个字段 |
-| 2 | **`load_skill` 正文完整返回**，不被 1600 截断 |
-| 3 | **`load_skill` 不触发审批** |
-| 4 | `ChatAgentToolingTest` 除上述 3 处外**全绿** |
-| 5 | **新增单测**：`load_skill` 的 tool result 路径（纯函数，成本极低）+ `IfModule` 非退化求值断言 |
-| 6 | `./gradlew test` 全绿 |
+| # | 验收项 | 结果 |
+|---|---|---|
+| 1 | **病症 B 复现**：让 AI 给 `If` 填 `value1`/`value2`，执行不静默丢弃；catalog 里有这两个字段 | ✅ 单测 `ModuleInputDefinitionsTest` 证实（`If` 默认算子下仍暴露 `value1`/`value2`） |
+| 2 | **`load_skill` 正文完整返回**，不被 1600 截断 | ✅ **真机证实**（见 §4.2.1） |
+| 3 | **`load_skill` 不触发审批** | ✅ **真机证实**（见 §4.2.1） |
+| 4 | `ChatAgentToolingTest` 除 3 处外**全绿** | ✅ 实际只 1 处需改（预估偏差见 §P0-2 ⑤） |
+| 5 | **新增单测**：`load_skill` tool result 路径 + `IfModule` 非退化求值 | ✅ 新增 5 例 |
+| 6 | `./gradlew test` 全绿 | ⚠️ 除 `VObjectPropertyTest` 的**上游预存失败**（与本批次无关，见 §4.2.1） |
 
 > **明确不验收**："工具不消失"——见 §3.3 限定框，这是 P1-1c 的职责。
+
+#### 4.2.1 真机验证结论（2026-09-14，MIX Fold 3）
+
+打包 `91546ecb`（P0-2 完成态）装机后，与模型进行了一次真实会话
+（**该会话本身由本 fork 的会话导出功能导出**，见 [`../../FORK.md`](../../FORK.md)）。
+
+**P0-2 三项设计全部通过**：
+
+| 验证项 | 真机表现 |
+|---|---|
+| 模型**会主动调 `load_skill`** | ✅ 用户说"创建一个含 if 的工作流"，模型自行调用 `vflow_agent_load_skill {"skill_id":"saved_workflow_creation"}`——**这是 P0-2 最核心的未知数，得到证实** |
+| **不触发审批** | ✅ 全程无审批弹窗（`riskLevel = READ_ONLY` 生效） |
+| **正文完整不截断** | ✅ 4 句正文原样返回（`truncatable = false` 生效） |
+| 模型理解机制 | ✅ 模型自述"我主动加载的技能正文"，说明它正确理解了清单→加载的两段式 |
+
+**同时该会话实锤了病症 A/C，且比原证据更干净**：
+
+| 轮次 | 现象 | 成因 |
+|---|---|---|
+| [0] | 问"你有几个工具" → 答"12 个"（真实 72 个） | 59 个模块工具因关键词未命中未下发 |
+| [2]→[5] | "创建工作流" → 技能命中 → `save_workflow` 下发（**含 184 个模块的 catalog**）→ 成功创建 | — |
+| [8] | 追问"`if.start` 的参数定义是什么" → 模型答**"我看不到"** | 该轮无关键词命中 → `save_workflow` **不再下发** → catalog 随之消失 |
+| [14] | 问"编写工作流时有多少模块可用" → 答**"我没有任何模块清单"** | "编写" 不在 `WORKFLOW_CREATE_VERBS`（只有保存/创建/生成/新建）→ 同样未命中 |
+
+> **这是比原 §1 证据更锐利的复现**：原证据是 24 条消息后技能丢失，
+> 这里**两轮之内**（[5]→[8]）工具就消失了。
+>
+> 且损害比"答不出"更深：**[15] 模型自述"我能说出名字的模块全都是我凭命名习惯猜的"**——
+> 但 [5] 时它手上确有 catalog。**工具消失导致模型无法解释自己做过什么。**
+> catalog 一旦经 tool description 下发，就受关键词路由支配；路由一变，知识随之中断。
+
+> ⚠️ **注意**：P0 版**只修了 catalog 的字段完整性（P0-1），没改它的下发条件**。
+> catalog 当时仍在工作流工具的 description 里、仍受 `selectSkills` 过滤——
+> 这正是 §3.3 限定框与 §Q11 描述的断点。P1-1 把 schema 查询改为常驻工具，P1-1c 撤掉关键词路由，
+> 两处合起来才根治。
 
 ---
 
@@ -734,24 +775,14 @@ private fun buildDirectToolDefinitions(): List<ChatAgentToolDefinition> {
 
 ---
 
-#### P1-3B：技能瘦身 14 → 3–4 个
+#### P1-3B：技能清空 14 → 0（v1.5.3 修正，原为「瘦身 14 → 3–4」）
 
-| 保留 | 理由（有实质 instructions） |
-|---|---|
-| `saved_workflow_creation` | 4 条实质生成规则（触发器放哪、步骤放哪、何时省略 trigger、不许存 `artifact://`） |
-| `temporary_workflow_execution` | 4 条实质约束 |
-| `generic_device_interaction` | 10 条兜底行为规范 |
-| `screen_observation`（可选） | 有观察策略 |
-
-**移除**：其余 ~10 个纯分组技能（`flashlight_control`、`clipboard_and_share`、`notifications`…）——它们的 `instructions` 只有防呆语句，**没有可复用的任务知识**（病症 C）。功能已由 P1-3A + `query_module_schema` 接管。
-
-> ⚠️ **正文必须改写（v1.5 新增交付物）**：保留技能的**正文内容本身在讲旧工具名**。
-> P1-1c 后工具表里已经没有 `vflow_device_flashlight` 这类名字，**正文不改写就是在教模型用不存在的工具**。
+> ⚠️ **原文的「保留 3–4 个」前提不成立**。实施时逐行核对后发现：
+> 文档点名的 4 个"有实质 instructions"的技能，**正文同样几乎全是重复的**——
+> `saved_workflow_creation` / `temporary_workflow_execution` 与工作流工具的
+> description **逐字重复**，`generic_device_interaction` 10 行里 9 行与 prompt 重复。
 >
-> **判定标准**：正文里出现 `vflow_<module>_<action>` 形式的工具名 → 必须改写成
-> 「用 `query_module_schema` 查 X 模块，再用 `call_module` 调」。
-
-**同时清理**：技能里的 `moduleIds` 字段退役；`toolNames` 里的冗余声明一并删除（见 P3-1）。
+> 详见 §4.3.1 的核对结果。**定案：技能清空，6 条独有内容上提 prompt，机制保留。**
 
 **改动量**：小（删代码），但**必须等 A 档**，否则工具会发不出去。
 
@@ -764,8 +795,12 @@ private fun buildDirectToolDefinitions(): List<ChatAgentToolDefinition> {
 **参照 Pi 的三个落点**（`pi/packages/ai/src/api/anthropic-messages.ts:1071/1430-1459/1373-1397`）：system prompt 文本块、**tools 数组最后一个工具**、最后一条 user 消息的最后一个 block。且**压缩/摘要请求本身应显式关闭缓存**（Pi 用 `cacheRetention: "none"`）。
 
 > ⚠️ **必须晚于 P1-1c**：缓存收益受**前缀稳定性**影响。
-> P1-1c 之后 `tools` 数组固定 16 个不变、技能清单固定 3–4 个不变——**这才是缓存真正能命中的状态**。
-> 提前做等于白做。
+> P1-1c 之后 `tools` 数组固定 16 个不变、技能目录已清空（`<available_skills>` 段不再输出）
+> ——**这才是缓存真正能命中的状态**。提前做等于白做。
+>
+> **实施时的取舍**：只在 `system` 末尾与 `tools` 最后一个工具打两个断点，
+> **不在 messages 上打**——Anthropic 上限 4 个断点，而 messages 每轮都变、基本不会命中，
+> 标了只会挤占额度。（Pi 标记最后一条 user 消息是出于多轮工具调用的场景，vFlow 暂不需要。）
 
 ---
 
@@ -784,15 +819,81 @@ private fun buildDirectToolDefinitions(): List<ChatAgentToolDefinition> {
 
 #### 第二批验收
 
-| # | 验收项 |
+| # | 验收项 | 状态 |
+|---|---|---|
+| 1 | **病症 A 复现**：建工作流后切话题，追问细节**不再需要用户复述** | ⬜ 待真机 |
+| 2 | **病症 C**：工具数 **72 → 16**；且"关不掉手电筒"场景**不再复现** | ⬜ 待真机 |
+| 3 | `call_module` 的**审批按目标模块风险等级**，不一律放行 | ⬜ 待真机 |
+| 4 | **`selectSkills` 已删除**；四套关键词机制全部消失 | ✅ 已达成（`1afc0a8b`） |
+| 5 | 保留的技能**正文已改写**，不再引用旧工具名 | ✅ **改为清空**（`07f5ee86`，理由见 §P1-3B） |
+| 6 | **`ChatAgentToolingTest.kt` 按新架构改写完毕** | ✅ 已达成 |
+| 7 | `./gradlew test` 全绿 | ⚠️ 除 `VObjectPropertyTest` 的上游预存失败 |
+| 8 | **Anthropic 缓存命中**（读 `usage.cache_read_input_tokens`） | ⬜ 待真机 |
+
+> ⚠️ **第 1、2、3、8 项均需真机**，且 `ChatAgentModuleExecutor` 需要真 `Context`，
+> **从未被单测覆盖**（既有盲区）——`query_module_schema` 的返回内容、`call_module`
+> 的审批判定，目前只有编译与单测层面的间接保证，**没有实证**。
+>
+> **P1-1c 是全篇唯一会让模型短期变笨的改动**（从"59 个工具任选"变成"必须先查后调"），
+> 它最需要真机验证。
+
+---
+
+#### 4.3.1 P1-3B 的实际结论：技能**清空**而非瘦身（2026-09-14）
+
+原计划「14 → 3–4 个」。实施时逐行核对后发现前提不成立。
+
+**14 个技能正文共 70 行 / 6,683 字符，对照 system prompt 与工具 description 后，
+仅 6 行是独有的**：
+
+| 独有内容 | 原属技能 |
 |---|---|
-| 1 | **病症 A 复现**：24 条消息的会话，建工作流后切话题，第 14 轮追问细节**不再需要用户复述** |
-| 2 | **病症 C**：工具数 **72 → 16**；且"关不掉手电筒"场景**不再复现** |
-| 3 | `call_module` 的**审批按目标模块风险等级**，不一律放行 |
-| 4 | **`selectSkills` 已删除**；`CONTINUATION_SIGNALS` / `KNOWLEDGE_QUESTION_SIGNALS` / `OPERATIONAL_SIGNALS` / `expandSkillIds` / 手写 `moduleIds` 全部消失 |
-| 5 | 保留的 3–4 个技能**正文已改写**，不再引用旧工具名 |
-| 6 | **`ChatAgentToolingTest.kt` 按新架构改写完毕**（大量 `availableTools` 断言会反转，见 §6） |
-| 7 | `./gradlew test` 全绿 |
+| input-text 输入到焦点字段，必要时先建立焦点 | `ui_interaction` |
+| 用 installed-app lookup 解析应用显示名/品牌后再启动或关闭 | `app_lifecycle` |
+| shell 是最后手段、命令范围要窄、别看结果前假设成功 | `shell_execution` |
+| DND 请求直接调工具传 on/off/toggle，别开 Settings | `device_settings_control` |
+| 反馈类请求（toast/震动/TTS/音频/电话）选对输出模态 | `device_feedback` |
+| 偏好无障碍/find_element，OCR 仅作兜底 | `screen_observation` |
+
+其余 64 行与 prompt 或工具 description 重复，部分**逐字相同**。典型：
+
+- `saved_workflow_creation` 的 4 条规则与 `save_workflow` 工具 description **逐字重复**
+- `temporary_workflow_execution` 的 4 条同理
+- `device_settings_control` 的 4 条与 prompt 第 5 行**列举了完全相同的模块**
+- `generic_device_interaction` 10 行里 9 行与 prompt 重复
+
+**"什么时候用哪个工作流工具"的判别规则也不在技能里**，而在工具 description 第一句
+（`Use this only when the user asks to create, generate, or save for later reuse` /
+`Do not use this for a single clear action`）——**这是正确的分工**：工具的使用时机本该写在工具自己的描述里。
+
+**结论**：6 条独有内容上提到 `buildSystemPrompt` 的规则段，`SKILL_CATALOG` 置空。
+**机制完整保留**（清单段 / `load_skill` / 两个访问器 / 数据类），后续可继续添加技能；
+`SKILL_CATALOG` 处加注自检问题：「这条内容是否已在 system prompt 或工具 description 里？」
+
+#### 4.3.2 上游为什么这么写（2026-09-14 追查）
+
+拉取上游完整历史（703 commits）后的发现：
+
+| 时间 | 事件 |
+|---|---|
+| 2026-04-25 | `13c38fae feat(ChatAgent): 提供完整的屏幕操作能力`——**一举引入 `ChatAgentSkillRouter.kt` 789 行**（14 个技能 + 4 套关键词机制），同批引入 `ChatAgentNativeTooling.kt`（2,682 行） |
+| 2026-05-23 | `d56365c8 feat(勿扰模式)`——只**加了一个技能**（DND） |
+| 2026-09-14 | fork 开始改造 |
+
+**关键事实：SkillRouter 从诞生就是 789 行，5 个月里只被改过 1 次，且只是加技能。
+没有重构、没有删减、没有修正。**
+
+**它不是"先开发后弃用"，而是"职责被架空后没人清理"**：
+
+1. 诞生时（2026-04）agent 只有 11 个屏幕 helper，**没有模块工具**。
+   "技能"的原始职责是**把模块能力按场景分组暴露给 agent**。
+2. 后来 `ChatAgentToolRegistry` 改成**自动扫描 `usageScopes` 生成工具**（`buildDirectToolDefinitions`），
+   **分组职责被自动扫描接管**——但技能没删。
+3. 于是技能只剩「从自动生成的结果里再筛一遍」这个二次过滤，加上一批顺带写的防呆话。
+4. P1-1c 撤走模块工具后，连二次过滤也失去意义。
+
+**对我们决策的意义**：删技能不是删功能，而是**把一个功能从错误的载体迁到正确的载体**
+（模块暴露改由 `query_module_schema` + `call_module` 承担）。
 
 ---
 
@@ -811,7 +912,7 @@ P1-1  catalog 分层 + query_module_schema      ← 依赖 P0-1 + P0-3
 P1-1b call_module                             ← 依赖 P0-1 + P1-1
 P1-1c 撤出 59 个模块工具 + 删除 selectSkills   ← 依赖 P1-1b
 P1-3A 可见性数据驱动（拆手写 moduleIds）       ← 小
-P1-3B 技能瘦身（14 → 3–4）+ 正文改写           ← 依赖 P1-3A
+P1-3B 技能清空（14 → 0）+ 独有内容上提 prompt  ← 依赖 P1-3A
 P2-2  Prompt 缓存                             ← 必须晚于 P1-1c（前缀稳定）
 P3-1  清理遗留                                ← 并入 P1-1c
 ═══════════════════════════════════════════════════
@@ -827,7 +928,7 @@ P0-1 ──→ P1-1b        （call_module 需要参数校验）
 P1-1 ──→ P1-1b        （call_module 需要 schema 源）
 P1-1b ──→ P1-1c       （撤工具前必须先有替代调用路径）
 P0-3 ──→ P0-2 / P1-1  （两个新工具的输出都必须免于 1600 截断）
-P1-3A ──→ P1-3B       （瘦身前提：可见性已数据驱动，否则工具发不出去）
+P1-3A ──→ P1-3B       （清空前提：可见性已数据驱动，否则工具发不出去）
 P1-1c ──→ P2-2        （缓存需要前缀稳定）
 ```
 
@@ -931,12 +1032,12 @@ P1-1c ──→ P2-2        （缓存需要前缀稳定）
 | 8 | `getDynamicInputs` **零改动**，只改调用点；求值抽为 `resolveModuleInputDefinitions` 供 catalog 与执行共用 | P0-1 |
 | 8b | **`CallFunctionModule` 的函数参数对 schema 发现机制不可见**——P1-1 必须解决（§6.2 开放问题 5） | P0-1 发现 |
 | 9 | `ImmediateResult` 加 `riskLevel` 字段（默认 HIGH），不新建 item 类型 | P0-2 |
-| 10 | P0-2 保留 14 个技能，瘦身留给 P1-3B | P0-2 |
+| 10 | P0-2 保留 14 个技能，瘦身留给 P1-3B（**该决策后被推翻，见条目 24**） | P0-2 |
 | 11 | **P0 不建新包**，`ui/chat/agent/` 推迟到 P1-1c | §4.1 |
 | 12 | 接管范围收窄：SkillRouter + ToolRegistry 搬入，其余留原地 | §5.1 |
 | 13 | **两批切分**，批次=提交边界，不设暂停点、不加 feature flag | §4 |
 | 14 | `selectSkills` 的死亡点是 **P1-1c**，随撤工具一并删除 | §1.1 / P1-1c |
-| 15 | 技能正文**必须改写**，是 P1-1c 的交付物 | P1-3B |
+| 15 | ~~技能正文必须改写~~ → **改为：技能全部清空**，独有内容上提 prompt（见条目 24） | P1-3B |
 | 16 | 保留技能**正文层不限长**，实现时打点记录长度 | P0-3 |
 | 17 | 截断告知**推迟到 P2-1** | P0-3 |
 | 18 | 新包 `AgentSessionContext.kt` **删除**（无内容可放） | §5.1 |
@@ -945,15 +1046,40 @@ P1-1c ──→ P2-2        （缓存需要前缀稳定）
 | 21 | 排除：远程 MCP 路线、`ChatAgentNativeTooling` 模块化 | §4.5 |
 | 22 | **旧会话不做迁移**——不考虑已落盘会话的兼容 | — |
 | 23 | fail 归因规则：错误可见化→改用例；逻辑退化→改代码；不明→停下问 | §4.1 |
+| 24 | **技能清空（14 → 0）而非瘦身**——核对后 70 行正文仅 6 行独有，上提 prompt；**机制保留**供后续添加 | §4.3.1 |
+| 25 | **技能机制保留**：清单段 / `load_skill` / 两个访问器 / 数据类都不删，后续可继续加技能 | §4.3.1 |
 
 ### 6.2 仍开放
 
 | # | 问题 | 何时定 |
 |---|---|---|
-| 1 | `call_module` 的**审批粒度**——按目标模块风险逐次判定，还是按"调用 `call_module`"这一动作统一判定 | P1-1b 实现时。前者更安全但审批时机在参数解析之后，实现更复杂 |
-| 2 | `query_module_schema` 的 **`operator` 参数是否必要**——若 `If` 类的 `value1`/`value2` 已在 P0-1 的非退化求值中完整列出（附带"哪些算子需要我"），则可能冗余 | P0-1 实现后验证 |
-| 3 | **技能清单的字节稳定化**（排序固定、无时间戳）是否需要额外做工以配合 P2-2 的 `cache_control` | P2-2 实现时 |
-| 4 | `load_skill` 的工具名、参数格式；`truncatable` 查表落点；新包名 | 动手时定（不影响架构） |
+| 1 | `call_module` 的**审批粒度** | ✅ **已定案**：按目标模块风险等级逐次判定——`prepareCallModule` 用 `getRiskLevelForModuleId(moduleId)` 构造 `definition`，`riskLevelOf` 对 `Ready` 取 `definition.riskLevel`。工具定义里声明的 `riskLevel` 是占位值，不参与审批 |
+| 2 | `query_module_schema` 的 **`operator` 参数是否必要** | ✅ **已保留**：实现时保留了该可选参数（传则返回该算子精确字段集），待真机验证其实际价值 |
+| 3 | 技能清单的字节稳定化 | ✅ **已消失**：技能目录已清空，`<available_skills>` 段不再输出 |
+| 4 | 缓存是否真命中 | ⬜ **待真机**：读 Anthropic 响应的 `usage.cache_read_input_tokens` |
+| 5 | `CallFunctionModule` 的函数参数对 schema 发现机制不可见 | ⬜ **P1-1 未解决**（见下方详解）。`prepareQueryModuleSchema` 用单次求值 + 可选 `operator`，**仍拿不到依赖 `workflow_id` 才生成的函数参数** |
+
+#### 开放问题 5 的现状（P1-1 实施后仍未闭合）
+
+`prepareQueryModuleSchema` 的实现是：
+
+```kotlin
+val step = ActionStep(moduleId, defaultParameters + operator?)
+val inputs = resolveModuleInputDefinitions(module, step)   // 单次求值
+```
+
+对 `CallFunctionModule`：默认 parameters 里没有 `workflow_id` → `getDynamicInputs` 提前
+`return base` → **函数参数不会出现在查询结果里**。
+
+**模型因此不知道某个函数工作流需要哪些参数**，也就无法用 `call_module` 正确调用它。
+这与 `call_module` 在 `buildParameters` 里的**两轮求值**能力不匹配——
+执行时能收下函数参数，但查询时看不到它们。
+
+**可能的解法**（待定）：
+- 查询工具接受 `partialParams`，做与执行侧相同的两轮求值
+- 或返回时附带提示「此模块的可用参数取决于 `workflow_id`，请先确定它」
+
+**影响范围**：仅 fork 自己的函数工作流功能（FORK.md 已登记），不影响上游模块。
 | 5 | **`CallFunctionModule` 与 schema 发现机制的根本冲突**（P0-1 实现时发现） | P1-1 实现时必须解决 |
 
 #### 开放问题 5 详解：`CallFunctionModule` 的 schema 不可发现
@@ -1094,3 +1220,53 @@ P1-1c ──→ P2-2        （缓存需要前缀稳定）
 **第一批状态**：P0-3 / P0-1 / P0-2 全部实施并提交，`./gradlew test` 452 通过 / 1 失败
 （失败为上游预存问题，与本批次无关）。**待真机验证**：`load_skill` 是否真被模型调用、
 审批是否确实不弹。
+
+### v1.5.3（2026-09-14）—— **第二批完成**，含三处定案修正
+
+**P1 / P2 全部实施并提交**：
+
+| 提交 | 内容 |
+|---|---|
+| `579c097a` | P1-1 catalog 分层 + `query_module_schema` |
+| `c7778500` | P1-1b `call_module` |
+| `1afc0a8b` | P1-1c 撤 59 个模块工具 + 删 `selectSkills` |
+| `07f5ee86` | P1-3B 技能清空（14 → 0） |
+| `a278cbe6` | P2-2 Anthropic prompt 缓存 |
+
+`./gradlew test`：441 通过 / 1 失败（`VObjectPropertyTest`，上游预存问题）。
+
+**成果**：工具数 72 → 16；`ChatAgentSkillRouter.kt` 847 → 193 行；技能 14 → 0（机制保留）。
+
+#### 修正 1：P1-3B 从「瘦身到 3–4 个」改为「清空」
+
+原表点名保留 4 个"有实质 instructions"的技能。逐行核对后发现**它们同样是重复的**：
+`saved_workflow_creation` / `temporary_workflow_execution` 的 8 条规则与工作流工具
+description **逐字重复**，`generic_device_interaction` 10 行里 9 行与 prompt 重复。
+14 个技能共 70 行正文，**仅 6 行独有**。详见 §4.3.1。
+
+#### 修正 2：P1-1c 原本只写「拆手写白名单」，实际要**整体删除 `selectSkills`**
+
+§1.1 的实测（`selectSkills` 全部作用 = 从 52 个模块工具里挑几个发出去）决定了：
+59 个工具撤走后它失去全部语义。删除时连带清掉四套关键词机制共约 600 行。
+
+#### 修正 3：P0 真机验证完成，三项设计全部通过
+
+`load_skill` **被模型主动调用**、**不弹审批**、**正文完整**——P0-2 最核心的未知数得到证实。
+同一次会话还实锤了病症 A/C：**两轮之内**（成功创建工作流 → 追问模块 schema）工具就消失，
+模型自述"我能说出名字的模块全都是我凭命名习惯猜的"。详见 §4.2.1。
+
+#### 另记：上游设计意图的追查结论
+
+拉取上游完整历史后发现，`ChatAgentSkillRouter.kt` **从 2026-04-25 诞生就是 789 行**，
+5 个月里只被改过 1 次（加 DND 技能）。**不是"先开发后弃用"，而是"职责被架空后没人清理"**——
+「按场景分组暴露模块」的职责先被 `ToolRegistry` 的自动扫描接管，P1-1c 后连二次过滤也失去意义。
+详见 §4.3.2。
+
+#### 仍未闭合
+
+**§6.2 开放问题 5**：`CallFunctionModule` 的函数参数在 `query_module_schema` 里仍不可见
+（单次求值拿不到依赖 `workflow_id` 才生成的参数）。影响 fork 自己的函数工作流功能，待定解法。
+
+**真机待验**：病症 A 复现、工具数 16、"关不掉手电筒"、`call_module` 审批、
+Anthropic 缓存命中——这五项都需要真机，且 `ChatAgentModuleExecutor` 需要真 `Context`，
+**从未被单测覆盖**（既有盲区）。
