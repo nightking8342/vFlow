@@ -499,7 +499,27 @@ internal class ChatCompletionClient(
                 put("model", request.preset.model)
                 put("max_tokens", 4096)
                 put("temperature", request.preset.temperature)
-                put("system", buildSystemPrompt(request))
+                // Anthropic 的 prompt 缓存是「前缀缓存」：给某个块打上 cache_control，
+                // 该块及其之前的全部内容（system + tools 前缀）都会被缓存复用。
+                //
+                // 打两个断点（参照 Pi 的做法）：
+                //   1. system 段末尾——覆盖系统提示词
+                //   2. tools 数组最后一个工具——覆盖「system + 全部工具定义」
+                // 这两段在会话内是稳定的（P1-1c 后工具固定 16 个、技能目录为空），
+                // 故每轮都能命中；而 messages 每轮都变，缓存价值低且会挤占断点额度
+                // （Anthropic 上限 4 个），故不予标记。
+                put(
+                    "system",
+                    buildJsonArray {
+                        add(
+                            buildJsonObject {
+                                put("type", "text")
+                                put("text", buildSystemPrompt(request))
+                                put("cache_control", ephemeralCacheControl())
+                            }
+                        )
+                    }
+                )
                 if (request.skillSelection.availableTools.isNotEmpty()) {
                     put(
                         "tools",
@@ -789,15 +809,28 @@ internal class ChatCompletionClient(
         }
     }
 
+    /**
+     * Anthropic 的短时缓存标记。打在段末尾，表示「到此为止的内容可缓存」。
+     * 默认 TTL 5 分钟，会话内连续对话通常都能命中。
+     */
+    private fun ephemeralCacheControl(): JsonObject = buildJsonObject {
+        put("type", "ephemeral")
+    }
+
     private fun buildAnthropicToolDefinitions(
         tools: List<ChatAgentToolDefinition>,
     ): List<JsonObject> {
-        return tools.map { tool ->
+        return tools.mapIndexed { index, tool ->
             buildJsonObject {
                 put("name", tool.name)
                 put("description", tool.description)
                 put("input_schema", tool.inputSchema)
                 put("strict", true)
+                // 只在最后一个工具上打断点：缓存是前缀式的，标记末尾即覆盖整个 tools 数组
+                // （连同其前面的 system）。逐个标记会浪费断点额度（上限 4 个）且无额外收益。
+                if (index == tools.lastIndex) {
+                    put("cache_control", ephemeralCacheControl())
+                }
             }
         }
     }
