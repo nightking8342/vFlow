@@ -99,6 +99,15 @@ internal class ChatAgentToolRegistry(context: Context) {
         ModuleRegistry.initialize(appContext)
         temporaryWorkflowModuleIds = buildTemporaryWorkflowModuleIds()
         savedWorkflowModuleIds = buildSavedWorkflowModuleIds()
+        // 常驻工具表 = 2 个工作流工具 + 3 个按需入口 + 11 个屏幕 helper。
+        //
+        // **59 个模块工具已撤出**（P1-1c）：它们不再进 `tools` 数组，
+        // 改用 `query_module_schema` 查字段 + `call_module` 执行。
+        // 撤出的原因是这批工具性质上是「扩展工具」（由 ModuleRegistry 自动生成、
+        // 数量随模块增长），全量下发会随模块数持续膨胀；参照 CCB 对 MCP 的按需处理。
+        //
+        // 模块工具的定义构造（`buildDirectToolDefinitions` / `buildToolDefinition`）
+        // **仍然保留**——它们是 `query_module_schema` 与 `call_module` 的数据源。
         toolsByName = (
             listOf(
                 buildTemporaryWorkflowToolDefinition(),
@@ -107,8 +116,7 @@ internal class ChatAgentToolRegistry(context: Context) {
                 buildQueryModuleSchemaToolDefinition(),
                 buildCallModuleToolDefinition(),
             ) +
-                ChatAgentNativeToolExecutor.buildDefinitions(appContext) +
-                buildDirectToolDefinitions()
+                ChatAgentNativeToolExecutor.buildDefinitions(appContext)
             ).associateBy { it.name }
     }
 
@@ -116,6 +124,13 @@ internal class ChatAgentToolRegistry(context: Context) {
 
     fun getTool(name: String): ChatAgentToolDefinition? = toolsByName[name]
 
+    /**
+     * 按 moduleId 取工具定义。
+     *
+     * P1-1c 之后模块工具已不在常驻表里，故这里**总是走 `buildToolDefinition`**——
+     * 它与 `query_module_schema` / `call_module` 用的是同一份定义。
+     * 保留 `toolsByName` 查询是为了将来若某些模块工具重新常驻时无需改动。
+     */
     fun getToolForModuleId(moduleId: String): ChatAgentToolDefinition? {
         return toolsByName[chatToolNameFromModuleId(moduleId)] ?: buildToolDefinition(moduleId)
     }

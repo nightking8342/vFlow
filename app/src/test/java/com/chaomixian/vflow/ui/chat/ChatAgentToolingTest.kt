@@ -64,243 +64,8 @@ class ChatAgentToolingTest {
     }
 
     @Test
-    fun skillRouter_plainChatDoesNotAttachSkillsOrTools() {
-        val selected = ChatAgentSkillRouter.selectSkills(
-            history = listOf(userMessage("解释一下 Koog 的设计思路")),
-            availableTools = sampleTools(),
-        )
-
-        assertTrue(selected.skills.isEmpty())
-        assertEquals(alwaysExposedToolNames(), selected.availableTools.map { it.name })
-    }
-
-    @Test
-    fun skillRouter_directActionActivatesFlashlightSkill() {
-        val selected = ChatAgentSkillRouter.selectSkills(
-            history = listOf(userMessage("打开手电筒")),
-            availableTools = sampleTools(),
-        )
-
-        assertEquals(listOf("flashlight_control"), selected.skills.map { it.id })
-        assertEquals(expectedToolNames("vflow_device_flashlight"), selected.availableTools.map { it.name })
-    }
-
-    @Test
-    fun skillRouter_screenObservationRequestUsesObserveUiHelper() {
-        val selected = ChatAgentSkillRouter.selectSkills(
-            history = listOf(userMessage("当前页面有什么控件")),
-            availableTools = sampleTools(),
-        )
-
-        assertEquals(listOf("screen_observation"), selected.skills.map { it.id })
-        assertEquals(
-            expectedToolNames(
-                "vflow_interaction_get_current_activity",
-                "vflow_interaction_find_element",
-            ),
-            selected.availableTools.map { it.name }
-        )
-    }
-
-    @Test
-    fun skillRouter_lightModeRequestUsesDirectDarkModeTool() {
-        val selected = ChatAgentSkillRouter.selectSkills(
-            history = listOf(userMessage("切换到浅色模式")),
-            availableTools = sampleTools(),
-        )
-
-        assertEquals(listOf("device_settings_control"), selected.skills.map { it.id })
-        assertEquals(expectedToolNames("vflow_system_darkmode"), selected.availableTools.map { it.name })
-    }
-
-    @Test
-    fun skillRouter_openAppRequestIncludesInstalledAppLookupTool() {
-        val selected = ChatAgentSkillRouter.selectSkills(
-            history = listOf(userMessage("打开IT之家看看最新的新闻")),
-            availableTools = sampleTools(),
-        )
-
-        assertTrue(selected.skills.map { it.id }.contains("app_lifecycle"))
-        assertTrue(selected.skills.map { it.id }.contains("screen_observation"))
-        assertTrue(selected.availableTools.map { it.name }.contains(CHAT_AGENT_LOOKUP_APP_TOOL_NAME))
-        assertTrue(selected.availableTools.map { it.name }.contains(CHAT_AGENT_LAUNCH_APP_TOOL_NAME))
-        assertTrue(selected.availableTools.map { it.name }.contains(CHAT_AGENT_OBSERVE_UI_TOOL_NAME))
-        assertTrue(selected.availableTools.map { it.name }.contains(CHAT_AGENT_READ_PAGE_CONTENT_TOOL_NAME))
-        assertTrue(selected.availableTools.map { it.name }.contains("vflow_system_find_installed_app"))
-        assertTrue(selected.availableTools.map { it.name }.contains("vflow_system_launch_app"))
-        assertTrue(selected.availableTools.map { it.name }.contains("vflow_interaction_find_element"))
-        assertTrue(!selected.availableTools.map { it.name }.contains("vflow_interaction_ocr"))
-        assertTrue(!selected.availableTools.map { it.name }.contains("vflow_system_capture_screen"))
-    }
-
-    @Test
-    fun skillRouter_metadataMatchedDirectToolActivatesOwningSkill() {
-        val selected = ChatAgentSkillRouter.selectSkills(
-            history = listOf(userMessage("打开照明")),
-            availableTools = sampleTools().map { tool ->
-                if (tool.name == "vflow_device_flashlight") {
-                    tool.copy(routingHints = setOf("照明"))
-                } else {
-                    tool
-                }
-            },
-        )
-
-        assertEquals(listOf("flashlight_control"), selected.skills.map { it.id })
-        assertEquals(expectedToolNames("vflow_device_flashlight"), selected.availableTools.map { it.name })
-    }
-
-    @Test
-    fun skillRouter_temporaryWorkflowActivatesWorkflowSkillOnly() {
-        val selected = ChatAgentSkillRouter.selectSkills(
-            history = listOf(userMessage("把手电筒重复打开关闭三次")),
-            availableTools = sampleTools(),
-        )
-
-        assertEquals(listOf("temporary_workflow_execution"), selected.skills.map { it.id })
-        assertEquals(expectedToolNames(CHAT_TEMPORARY_WORKFLOW_TOOL_NAME), selected.availableTools.map { it.name })
-    }
-
-    @Test
-    fun skillRouter_savedWorkflowActivatesSaveSkillOnly() {
-        val selected = ChatAgentSkillRouter.selectSkills(
-            history = listOf(userMessage("创建一个每天 8 点打开手电筒的工作流")),
-            availableTools = sampleTools(),
-        )
-
-        assertEquals(listOf("saved_workflow_creation"), selected.skills.map { it.id })
-        assertEquals(expectedToolNames(CHAT_SAVE_WORKFLOW_TOOL_NAME), selected.availableTools.map { it.name })
-    }
-
-    @Test
-    fun skillRouter_continuationKeepsPriorSkillForExplicitFollowUp() {
-        val selected = ChatAgentSkillRouter.selectSkills(
-            history = listOf(
-                userMessage("打开手电筒"),
-                ChatMessage(
-                    role = ChatMessageRole.ASSISTANT,
-                    content = "",
-                    timestampMillis = 2L,
-                    toolCalls = listOf(
-                        ChatToolCall(
-                            id = "call_1",
-                            name = "vflow_device_flashlight",
-                            argumentsJson = "{}",
-                        )
-                    ),
-                ),
-                ChatMessage(
-                    role = ChatMessageRole.TOOL,
-                    content = "Tool completed.",
-                    timestampMillis = 3L,
-                    toolResult = ChatToolResult(
-                        callId = "call_1",
-                        name = "vflow_device_flashlight",
-                        status = ChatToolResultStatus.SUCCESS,
-                        summary = "Flashlight",
-                        outputText = "Tool completed.",
-                    ),
-                ),
-                userMessage("再来一次"),
-            ),
-            availableTools = sampleTools(),
-        )
-
-        assertEquals(listOf("flashlight_control"), selected.skills.map { it.id })
-        assertEquals(expectedToolNames("vflow_device_flashlight"), selected.availableTools.map { it.name })
-    }
-
-    @Test
-    fun skillRouter_uiInteractionAlsoEnablesObservationSkill() {
-        val selected = ChatAgentSkillRouter.selectSkills(
-            history = listOf(userMessage("点击登录按钮")),
-            availableTools = sampleTools(),
-        )
-
-        assertEquals(
-            listOf("ui_interaction", "screen_observation"),
-            selected.skills.map { it.id }
-        )
-        assertEquals(
-            expectedToolNames(
-                "vflow_interaction_get_current_activity",
-                "vflow_interaction_find_element",
-                "vflow_device_click",
-                "vflow_interaction_input_text",
-                "vflow_interaction_screen_operation",
-            ),
-            selected.availableTools.map { it.name }
-        )
-    }
-
-    @Test
-    fun skillRouter_explicitScreenshotRequestActivatesVisualFallbackSkill() {
-        val selected = ChatAgentSkillRouter.selectSkills(
-            history = listOf(userMessage("截个图然后 OCR 一下当前页面")),
-            availableTools = sampleTools(),
-        )
-
-        assertTrue(selected.skills.map { it.id }.contains("visual_screen_fallback"))
-        assertTrue(selected.availableTools.map { it.name }.contains("vflow_system_capture_screen"))
-        assertTrue(selected.availableTools.map { it.name }.contains("vflow_interaction_ocr"))
-        assertTrue(selected.availableTools.map { it.name }.contains(CHAT_AGENT_OBSERVE_UI_TOOL_NAME))
-    }
-
-    @Test
-    fun skillRouter_unrelatedFollowUpDoesNotLeakPriorSkill() {
-        val selected = ChatAgentSkillRouter.selectSkills(
-            history = listOf(
-                userMessage("打开手电筒"),
-                assistantToolCallMessage("vflow_device_flashlight"),
-                toolResultMessage("call_1", "vflow_device_flashlight"),
-                userMessage("workflow 是什么意思"),
-            ),
-            availableTools = sampleTools(),
-        )
-
-        assertTrue(selected.skills.isEmpty())
-        assertEquals(alwaysExposedToolNames(), selected.availableTools.map { it.name })
-    }
-
-    @Test
-    fun skillRouter_conceptualWorkflowQuestionDoesNotActivateWorkflowSkills() {
-        val selected = ChatAgentSkillRouter.selectSkills(
-            history = listOf(userMessage("workflow 是什么意思")),
-            availableTools = sampleTools(),
-        )
-
-        assertTrue(selected.skills.isEmpty())
-        assertEquals(alwaysExposedToolNames(), selected.availableTools.map { it.name })
-    }
-
-    @Test
-    fun skillRouter_genericTransitionQuestionDoesNotActivateTemporaryWorkflow() {
-        val selected = ChatAgentSkillRouter.selectSkills(
-            history = listOf(userMessage("然后为什么会这样")),
-            availableTools = sampleTools(),
-        )
-
-        assertTrue(selected.skills.isEmpty())
-        assertEquals(alwaysExposedToolNames(), selected.availableTools.map { it.name })
-    }
-
-    @Test
-    fun skillRouter_alwaysExposesCoreNativeHelpers() {
-        val selected = ChatAgentSkillRouter.selectSkills(
-            history = listOf(userMessage("你好")),
-            availableTools = sampleTools(),
-        )
-
-        assertTrue(selected.skills.isEmpty())
-        assertEquals(alwaysExposedToolNames(), selected.availableTools.map { it.name })
-    }
-
-    @Test
     fun skillRouter_promptIncludesAlwaysAvailableHelpersWithoutActiveSkills() {
-        val selection = ChatAgentSkillRouter.selectSkills(
-            history = listOf(userMessage("你好")),
-            availableTools = sampleTools(),
-        )
+        val selection = ChatAgentSkillRouter.availableTools(sampleTools())
 
         val prompt = ChatAgentSkillRouter.buildSystemPrompt(
             basePrompt = "Base prompt",
@@ -450,35 +215,16 @@ class ChatAgentToolingTest {
     fun loadSkillToolIsAlwaysExposedRegardlessOfKeywords() {
         // load_skill 是「按需入口」：<available_skills> 清单常驻并指示模型调用它，
         // 若工具表里没有它，清单就是在教模型调一个不存在的工具。
-        val listingTools = { text: String ->
-            ChatAgentSkillRouter.selectSkills(
-                history = listOf(userMessage(text)),
-                availableTools = sampleTools(),
-            ).availableTools.map { it.name }
-        }
+        val exposed = ChatAgentSkillRouter.availableTools(sampleTools()).availableTools.map { it.name }
 
-        assertTrue(
-            "纯闲聊轮也必须暴露 load_skill",
-            listingTools("解释一下 Koog 的设计思路").contains(CHAT_LOAD_SKILL_TOOL_NAME),
-        )
-        assertTrue(
-            "操作轮也必须暴露 load_skill",
-            listingTools("打开手电筒").contains(CHAT_LOAD_SKILL_TOOL_NAME),
-        )
-        assertTrue(
-            "空输入轮也必须暴露 load_skill",
-            listingTools("").contains(CHAT_LOAD_SKILL_TOOL_NAME),
-        )
+        assertTrue(exposed.contains(CHAT_LOAD_SKILL_TOOL_NAME))
     }
 
     @Test
     fun callModuleIsAlwaysExposedAndReadOnlyQueryIsToo() {
         // call_module / query_module_schema 是「万能入口 + 查询入口」，
         // 撤走 59 个模块工具后它们就是模型唯一能触达模块的通道。
-        val exposed = ChatAgentSkillRouter.selectSkills(
-            history = listOf(userMessage("解释一下 Koog 的设计思路")),
-            availableTools = sampleTools(),
-        ).availableTools.map { it.name }
+        val exposed = ChatAgentSkillRouter.availableTools(sampleTools()).availableTools.map { it.name }
 
         assertTrue(exposed.contains(CHAT_CALL_MODULE_TOOL_NAME))
         assertTrue(exposed.contains(CHAT_QUERY_MODULE_SCHEMA_TOOL_NAME))
@@ -501,30 +247,40 @@ class ChatAgentToolingTest {
             CHAT_QUERY_MODULE_SCHEMA_TOOL_NAME,
             CHAT_CALL_MODULE_TOOL_NAME,
         )
-        // 覆盖各种路由结果：闲聊（无技能）、单技能命中、工作流技能命中
-        val inputs = listOf("", "解释一下 Koog 的设计思路", "打开手电筒", "创建一个每天 8 点开灯的工作流")
+        val exposed = ChatAgentSkillRouter.availableTools(sampleTools()).availableTools.map { it.name }
 
-        inputs.forEach { text ->
-            val exposed = ChatAgentSkillRouter.selectSkills(
-                history = listOf(userMessage(text)),
-                availableTools = sampleTools(),
-            ).availableTools.map { it.name }
-
-            entryPoints.forEach { entry ->
-                assertTrue(
-                    "输入「$text」下 $entry 未常驻——模型将无法使用按需机制",
-                    exposed.contains(entry),
-                )
-            }
+        entryPoints.forEach { entry ->
+            assertTrue(
+                "$entry 未常驻——模型将无法使用按需机制",
+                exposed.contains(entry),
+            )
         }
     }
 
     @Test
+    fun availableToolsPassesThroughEverythingWithoutKeywordFiltering() {
+        // P1-1c 的核心契约：不再有「按关键词选工具」。
+        // 传入什么就得到什么——这正是 selectSkills 被删除的原因。
+        val tools = sampleTools()
+        val selection = ChatAgentSkillRouter.availableTools(tools)
+
+        assertEquals(tools.map { it.name }, selection.availableTools.map { it.name })
+    }
+
+    @Test
+    fun skillRouter_noLongerExposesModuleTools() {
+        // 撤走 59 个模块工具后，模块工具不应出现在常驻表里——
+        // 它们是「扩展工具」（随模块数增长），改由 query_module_schema + call_module 按需触达。
+        // 这里用 sampleTools() 模拟：其中 vflow_device_flashlight 等模块工具若传入仍会下发，
+        // 但真实 registry 已不再把它们放进 toolsByName（见 ChatAgentToolRegistry.init）。
+        // 本测试锁定的是「路由层不做任何过滤」这一行为，真实撤出由 registry 保证。
+        val selection = ChatAgentSkillRouter.availableTools(sampleTools())
+        assertTrue(selection.availableTools.isNotEmpty())
+    }
+
+    @Test
     fun systemPromptListsSkillsWithoutEmbeddingInstructions() {
-        val selection = ChatAgentSkillRouter.selectSkills(
-            history = listOf(userMessage("打开手电筒")),
-            availableTools = sampleTools(),
-        )
+        val selection = ChatAgentSkillRouter.availableTools(sampleTools())
 
         val prompt = ChatAgentSkillRouter.buildSystemPrompt(
             basePrompt = "Base prompt",
@@ -560,10 +316,7 @@ class ChatAgentToolingTest {
 
     @Test
     fun skillRouter_promptInstructsObservationAndVerification() {
-        val selection = ChatAgentSkillRouter.selectSkills(
-            history = listOf(userMessage("点击登录按钮")),
-            availableTools = sampleTools(),
-        )
+        val selection = ChatAgentSkillRouter.availableTools(sampleTools())
 
         val prompt = ChatAgentSkillRouter.buildSystemPrompt(
             basePrompt = "Base prompt",
@@ -639,10 +392,7 @@ class ChatAgentToolingTest {
 
     @Test
     fun skillRouter_promptDescribesReadPageContentAsReadOnly() {
-        val selection = ChatAgentSkillRouter.selectSkills(
-            history = listOf(userMessage("点击登录按钮")),
-            availableTools = sampleTools(),
-        )
+        val selection = ChatAgentSkillRouter.availableTools(sampleTools())
         val prompt = ChatAgentSkillRouter.buildSystemPrompt(
             basePrompt = "Base prompt",
             skillSelection = selection,
@@ -869,45 +619,6 @@ class ChatAgentToolingTest {
                 moduleId = "vflow.interaction.screen_operation",
             ),
         )
-    }
-
-    private fun alwaysExposedNativeToolNames(): List<String> {
-        return listOf(
-            CHAT_AGENT_OBSERVE_UI_TOOL_NAME,
-            CHAT_AGENT_READ_PAGE_CONTENT_TOOL_NAME,
-            CHAT_AGENT_VERIFY_UI_TOOL_NAME,
-            CHAT_AGENT_TAP_TOOL_NAME,
-            CHAT_AGENT_LONG_PRESS_TOOL_NAME,
-            CHAT_AGENT_INPUT_TEXT_TOOL_NAME,
-            CHAT_AGENT_SWIPE_TOOL_NAME,
-            CHAT_AGENT_PRESS_KEY_TOOL_NAME,
-            CHAT_AGENT_WAIT_TOOL_NAME,
-            CHAT_AGENT_LOOKUP_APP_TOOL_NAME,
-            CHAT_AGENT_LAUNCH_APP_TOOL_NAME,
-        )
-    }
-
-    /**
-     * 预期工具表 = 常驻 helper + 常驻的按需入口（`load_skill`）+ 本轮命中的模块工具。
-     *
-     * `load_skill` 恒在：`<available_skills>` 清单常驻并指示模型调用它，
-     * 工具表里没有它就是在教模型调一个不存在的工具。
-     */
-    /**
-     * 完整常驻工具表 = 按需入口 + 屏幕 helper。
-     *
-     * 顺序必须与 [sampleTools] 里的排列一致——`selectSkills` 保持输入顺序。
-     */
-    private fun alwaysExposedToolNames(): List<String> {
-        return listOf(
-            CHAT_LOAD_SKILL_TOOL_NAME,
-            CHAT_QUERY_MODULE_SCHEMA_TOOL_NAME,
-            CHAT_CALL_MODULE_TOOL_NAME,
-        ) + alwaysExposedNativeToolNames()
-    }
-
-    private fun expectedToolNames(vararg extra: String): List<String> {
-        return alwaysExposedToolNames() + extra.toList()
     }
 
     private fun helperTool(

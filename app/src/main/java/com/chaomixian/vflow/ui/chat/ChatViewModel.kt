@@ -866,13 +866,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         currentAgentConversationId = updatedConversation.id
         currentAgentJob = viewModelScope.launch {
             try {
-                val skillSelection = ChatAgentSkillRouter.selectSkills(
-                    history = historyForRequest,
-                    availableTools = _uiState.value.availableTools,
+                val skillSelection = ChatAgentSkillRouter.availableTools(
+                    _uiState.value.availableTools,
                 )
                 DebugLogger.i(
                     LOG_TAG,
-                    "Skill selection conversation=${updatedConversation.id} skills=${skillSelection.skills.joinToString { it.id }} tools=${skillSelection.availableTools.joinToString { it.name }}"
+                    "Tools conversation=${updatedConversation.id} tools=${skillSelection.availableTools.joinToString { it.name }}"
                 )
                 val result = chatClient.generateReply(
                     preset = preset,

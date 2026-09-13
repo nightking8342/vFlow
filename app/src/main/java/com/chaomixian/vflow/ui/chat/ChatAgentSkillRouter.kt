@@ -1,26 +1,37 @@
 package com.chaomixian.vflow.ui.chat
 
-import java.util.Locale
-
+/**
+ * 一项技能的**定义**。
+ *
+ * P1-1c 之后它只剩「按需加载的参考资料」一个职责：
+ * - 清单条目（[id] / [title] / [description]）常驻 system prompt，供模型判断要不要加载
+ * - [instructions] 正文经 `load_skill` 按需返回，作为 tool result 进入历史后永久留存
+ *
+ * 原先的 `toolNames` / `moduleIds` 字段已退役——它们服务的是「按关键词决定下发哪些工具」
+ * 那套机制，模块工具撤出后该机制整体删除（见 [ChatAgentSkillRouter.availableTools]）。
+ */
 internal data class ChatAgentSkillDefinition(
     val id: String,
     val title: String,
     val description: String,
     val instructions: String,
-    val relatedSkillIds: Set<String> = emptySet(),
-    val toolNames: Set<String> = emptySet(),
-    val moduleIds: Set<String> = emptySet(),
 )
 
+/**
+ * 本轮对话可用的工具集。
+ *
+ * **P1-1c 之后语义已变**：不再是「按关键词选出的技能所声明的工具」，
+ * 而是**全部常驻工具**（2 个工作流工具 + 3 个按需入口 + 11 个屏幕 helper）。
+ * 模块工具已撤出，改由 `query_module_schema` + `call_module` 按需触达。
+ *
+ * 保留这个类型是为了让 provider 适配层（`ChatCompletionClient`）无需改动——
+ * 它只关心「有哪些工具要下发」。
+ */
 internal data class ChatAgentSkillSelection(
-    val skills: List<ChatAgentSkillDefinition>,
     val availableTools: List<ChatAgentToolDefinition>,
 ) {
     companion object {
-        val EMPTY = ChatAgentSkillSelection(
-            skills = emptyList(),
-            availableTools = emptyList(),
-        )
+        val EMPTY = ChatAgentSkillSelection(availableTools = emptyList())
     }
 }
 
@@ -29,59 +40,32 @@ internal object ChatAgentSkillRouter {
      * 全部技能的**清单条目**（id / title / description），供 `<available_skills>` 常驻段使用。
      * 不含正文——正文经 [skillInstructions] 按需加载。
      */
-    fun skillListing(): List<ChatAgentSkillDefinition> = SKILL_CATALOG.map { it.definition }
+    fun skillListing(): List<ChatAgentSkillDefinition> = SKILL_CATALOG
 
     /**
      * 按 id 取技能**正文**，供 `load_skill` 工具返回。
      * 找不到时返回 null（调用方据此回错误给模型，而不是静默返回空）。
      */
     fun skillInstructions(skillId: String): ChatAgentSkillDefinition? =
-        SKILL_CATALOG.firstOrNull { it.definition.id == skillId }?.definition
+        SKILL_CATALOG.firstOrNull { it.id == skillId }
 
-    fun selectSkills(
-        history: List<ChatMessage>,
-        availableTools: List<ChatAgentToolDefinition>,
-    ): ChatAgentSkillSelection {
-        if (availableTools.isEmpty()) return ChatAgentSkillSelection.EMPTY
-        val alwaysExposedTools = availableTools.filter(::isAlwaysExposedTool)
-
-        val latestUserText = history.lastOrNull { it.role == ChatMessageRole.USER }
-            ?.content
-            .orEmpty()
-        val normalizedText = latestUserText.normalizeForSkillRouting()
-        if (normalizedText.isBlank()) {
-            return ChatAgentSkillSelection(
-                skills = emptyList(),
-                availableTools = alwaysExposedTools,
-            )
-        }
-
-        val selectedSkillIds = linkedSetOf<String>()
-        selectedSkillIds += selectExplicitSkillIds(
-            text = normalizedText,
-            availableTools = availableTools,
-        )
-
-        if (selectedSkillIds.isEmpty() && shouldContinuePriorSkills(normalizedText)) {
-            selectedSkillIds += findContinuationSkillIds(history, availableTools)
-        }
-
-        val expandedSkillIds = expandSkillIds(selectedSkillIds)
-        val skillsById = SKILL_CATALOG
-            .map { it.definition }
-            .associateBy { it.id }
-        val selectedSkills = expandedSkillIds.mapNotNull(skillsById::get)
-        val selectedTools = (
-            alwaysExposedTools +
-                availableTools.filter { tool ->
-                    selectedSkills.any { skill -> skill.matchesTool(tool) }
-                }
-            ).distinctBy { it.name }
-
-        return ChatAgentSkillSelection(
-            skills = selectedSkills,
-            availableTools = selectedTools,
-        )
+    /**
+     * 构造本轮的常驻工具集。
+     *
+     * **P1-1c 之后不再有「选择」**：模块工具已撤出 `tools` 数组，剩下的
+     * （2 个工作流工具 + 3 个按需入口 + 11 个 screen helper）**全部常驻**——
+     * 它们不随关键词变化，按关键词过滤恒等于不过滤。
+     *
+     * 这正是改造前 `selectSkills` 的归宿：它唯一的作用是「从 59 个模块工具里
+     * 挑几个发出去」（见文档 §1.1 实测），那个集合消失后它就失去全部语义，
+     * 故整体删除——连同它依赖的 `CONTINUATION_SIGNALS` /
+     * `KNOWLEDGE_QUESTION_SIGNALS` / `OPERATIONAL_SIGNALS` / `moduleIds` 白名单。
+     *
+     * 模块能力改由 `query_module_schema`（查字段）+ `call_module`（执行）按需触达。
+     */
+    fun availableTools(allTools: List<ChatAgentToolDefinition>): ChatAgentSkillSelection {
+        if (allTools.isEmpty()) return ChatAgentSkillSelection.EMPTY
+        return ChatAgentSkillSelection(availableTools = allTools)
     }
 
     fun buildSystemPrompt(
@@ -89,7 +73,7 @@ internal object ChatAgentSkillRouter {
         skillSelection: ChatAgentSkillSelection,
     ): String {
         val trimmedBasePrompt = basePrompt.trim()
-        if (skillSelection.skills.isEmpty() && skillSelection.availableTools.isEmpty()) return trimmedBasePrompt
+        if (skillSelection.availableTools.isEmpty()) return trimmedBasePrompt
 
         val skillPrompt = buildString {
             appendLine("You are the vFlow chat agent inside an Android automation app.")
@@ -171,7 +155,8 @@ internal object ChatAgentSkillRouter {
      * 常驻的「按需入口」工具名。
      *
      * 它们不在任何技能的 `toolNames` / `moduleIds` 里，若不加进常驻就会被
-     * [selectSkills] 过滤掉——模型看不到入口，也就用不上按需机制。
+     * 工具路由过滤掉——模型看不到入口，也就用不上按需机制。
+     * （P1-1c 之前是 `selectSkills` 在做过滤，它已随模块工具撤出一并删除。）
      *
      * ⚠️ 新增按需入口（如 P1-1b 的 `call_module`）时**必须**登记到这里。
      * 尤其 P1-1c 撤走 59 个模块工具后，漏登记会让模型既没有模块工具、
@@ -189,188 +174,7 @@ internal object ChatAgentSkillRouter {
             tool.nativeHelperId in ALWAYS_EXPOSED_NATIVE_HELPERS
     }
 
-    private fun selectExplicitSkillIds(
-        text: String,
-        availableTools: List<ChatAgentToolDefinition>,
-    ): LinkedHashSet<String> {
-        val selectedSkillIds = linkedSetOf<String>()
-        val operationalRequest = looksLikeOperationalRequest(text)
 
-        if (needsSavedWorkflowSkill(text)) {
-            selectedSkillIds += savedWorkflowSkill.id
-        }
-        if (needsTemporaryWorkflowSkill(text)) {
-            selectedSkillIds += temporaryWorkflowSkill.id
-        }
-
-        if (selectedSkillIds.isNotEmpty()) return selectedSkillIds
-
-        SKILL_CATALOG.forEach { skill ->
-            if (skill.matches(text, operationalRequest)) {
-                selectedSkillIds += skill.definition.id
-            }
-        }
-
-        if (selectedSkillIds.isEmpty() && operationalRequest) {
-            selectedSkillIds += selectSkillIdsFromToolMetadata(text, availableTools)
-        }
-
-        if (selectedSkillIds.isEmpty() && operationalRequest && looksLikeAppLifecycleRequest(text)) {
-            selectedSkillIds += appLifecycleSkill.definition.id
-        }
-
-        if (selectedSkillIds.isEmpty() && operationalRequest) {
-            selectedSkillIds += fallbackInteractionSkill.id
-        }
-
-        return selectedSkillIds
-    }
-
-    private fun selectSkillIdsFromToolMetadata(
-        text: String,
-        availableTools: List<ChatAgentToolDefinition>,
-    ): LinkedHashSet<String> {
-        val selectedSkillIds = linkedSetOf<String>()
-        val candidateTools = availableTools.filter { tool ->
-            tool.usageScopes.contains(ChatAgentToolUsageScope.DIRECT_TOOL) &&
-                tool.routingHints.any { hint -> hint.isNotBlank() && text.contains(hint) }
-        }
-        if (candidateTools.isEmpty()) return selectedSkillIds
-
-        candidateTools.forEach { tool ->
-            SKILL_CATALOG.forEach { skill ->
-                if (skill.definition.id != fallbackInteractionSkill.id && skill.definition.matchesTool(tool)) {
-                    selectedSkillIds += skill.definition.id
-                }
-            }
-        }
-        return selectedSkillIds
-    }
-
-    private fun expandSkillIds(seedSkillIds: LinkedHashSet<String>): LinkedHashSet<String> {
-        if (seedSkillIds.isEmpty()) return linkedSetOf()
-
-        val expanded = LinkedHashSet(seedSkillIds)
-        var changed = true
-        while (changed) {
-            changed = false
-            expanded.toList().forEach { skillId ->
-                val related = SKILL_CATALOG.firstOrNull { it.definition.id == skillId }
-                    ?.definition
-                    ?.relatedSkillIds
-                    .orEmpty()
-                related.forEach { relatedId ->
-                    if (expanded.add(relatedId)) {
-                        changed = true
-                    }
-                }
-            }
-        }
-        return expanded
-    }
-
-    private fun findContinuationSkillIds(
-        history: List<ChatMessage>,
-        availableTools: List<ChatAgentToolDefinition>,
-    ): LinkedHashSet<String> {
-        val lastToolCallMessage = history.asReversed()
-            .firstOrNull { it.role == ChatMessageRole.ASSISTANT && it.toolCalls.isNotEmpty() }
-            ?: return linkedSetOf()
-        val toolsByName = availableTools.associateBy { it.name }
-        return lastToolCallMessage.toolCalls.fold(linkedSetOf()) { selectedSkillIds, toolCall ->
-            val moduleId = toolsByName[toolCall.name]?.moduleId
-            SKILL_CATALOG.forEach { skill ->
-                if (skill.definition.matchesTool(toolName = toolCall.name, moduleId = moduleId)) {
-                    selectedSkillIds += skill.definition.id
-                }
-            }
-            selectedSkillIds
-        }
-    }
-
-    private fun needsSavedWorkflowSkill(text: String): Boolean {
-        if (text.isBlank()) return false
-        val hasWorkflowNoun = WORKFLOW_NOUNS.any { it in text }
-        val hasCreateVerb = WORKFLOW_CREATE_VERBS.any { it in text } ||
-            Regex("""\b(create|save|build|generate)\b.*\b(workflow|automation)\b""")
-                .containsMatchIn(text)
-        val hasAutoTrigger = WORKFLOW_TRIGGER_SIGNALS.any { it in text }
-        return (hasWorkflowNoun && hasCreateVerb) || (hasAutoTrigger && looksLikeOperationalRequest(text))
-    }
-
-    private fun needsTemporaryWorkflowSkill(text: String): Boolean {
-        if (text.isBlank() || needsSavedWorkflowSkill(text)) return false
-        val explicitWorkflowRequest = TEMPORARY_WORKFLOW_KEYWORDS.any { it in text }
-        val repeatedOrStrongSequence = TEMPORARY_SEQUENCE_SIGNALS.any { it in text } ||
-            Regex("""\b\d+\s*(次|遍|times)\b""").containsMatchIn(text)
-        val connectiveSequence = Regex(
-            """(打开|关闭|点击|长按|输入|滑动|等待|返回|启动|停止|复制|粘贴|设置|read|open|close|tap|click|type|input|swipe|wait|launch|stop).*(然后|接着|then|and then).*(打开|关闭|点击|长按|输入|滑动|等待|返回|启动|停止|复制|粘贴|设置|read|open|close|tap|click|type|input|swipe|wait|launch|stop)"""
-        ).containsMatchIn(text)
-        return explicitWorkflowRequest || ((repeatedOrStrongSequence || connectiveSequence) && looksLikeOperationalRequest(text))
-    }
-
-    private fun shouldContinuePriorSkills(text: String): Boolean {
-        if (text.isBlank()) return false
-        if (looksLikeKnowledgeQuestion(text)) return false
-        return CONTINUATION_SIGNALS.any { it in text } ||
-            Regex("""\b(again|continue|same|instead|change|update|retry|that one|that workflow)\b""")
-                .containsMatchIn(text)
-    }
-
-    private fun looksLikeKnowledgeQuestion(text: String): Boolean {
-        return KNOWLEDGE_QUESTION_SIGNALS.any { it in text } ||
-            Regex("""\b(what is|why|how does|design|architecture|difference|explain)\b""")
-                .containsMatchIn(text)
-    }
-
-    private fun looksLikeOperationalRequest(text: String): Boolean {
-        if (text.isBlank()) return false
-        return OPERATIONAL_SIGNALS.any { it in text } ||
-            Regex("""截.{0,4}图""").containsMatchIn(text) ||
-            Regex("""\b(ocr|screenshot|screen shot)\b""").containsMatchIn(text) ||
-            Regex("""(当前|这个)?(页面|界面|屏幕).*(控件|元素|内容|状态)""").containsMatchIn(text) ||
-            Regex("""\b(current|this)\s+(page|screen|ui).*(controls|elements|content|state)\b""")
-                .containsMatchIn(text) ||
-            Regex(
-                """\b(open|close|turn on|turn off|set|read|get|send|find|tap|click|type|launch|save|create|run|capture|scan|play|call|share|copy|paste|toggle|transcribe)\b"""
-            ).containsMatchIn(text)
-    }
-
-    private fun looksLikeAppLifecycleRequest(text: String): Boolean {
-        if (text.isBlank()) return false
-        return Regex("""^(打开|启动|关闭|停止)[^，。！？,.]{1,32}""").containsMatchIn(text) ||
-            Regex("""\b(open|launch|close|stop)\b\s+.{1,40}""").containsMatchIn(text)
-    }
-
-    private fun String.normalizeForSkillRouting(): String {
-        return lowercase(Locale.ROOT)
-            .replace("wi-fi", "wifi")
-            .replace("蓝芽", "蓝牙")
-            .trim()
-    }
-
-    private fun ChatAgentSkillDefinition.matchesTool(tool: ChatAgentToolDefinition): Boolean {
-        return matchesTool(toolName = tool.name, moduleId = tool.moduleId)
-    }
-
-    private fun ChatAgentSkillDefinition.matchesTool(
-        toolName: String,
-        moduleId: String?,
-    ): Boolean {
-        return toolName in toolNames || (moduleId != null && moduleId in moduleIds)
-    }
-
-    private data class SkillRule(
-        val definition: ChatAgentSkillDefinition,
-        val keywords: List<String> = emptyList(),
-        val regexes: List<Regex> = emptyList(),
-        val requiresOperationalIntent: Boolean = true,
-    ) {
-        fun matches(text: String, operationalRequest: Boolean): Boolean {
-            if (requiresOperationalIntent && !operationalRequest) return false
-            return keywords.any { it in text } || regexes.any { it.containsMatchIn(text) }
-        }
-    }
 
     private val temporaryWorkflowSkill = ChatAgentSkillDefinition(
         id = "temporary_workflow_execution",
@@ -383,8 +187,6 @@ internal object ChatAgentSkillRouter {
             Prefer loop modules for repeated sequences instead of duplicating many steps.
             If a single direct tool can finish the request safely, prefer that direct tool instead.
         """.trimIndent(),
-        toolNames = setOf(CHAT_TEMPORARY_WORKFLOW_TOOL_NAME),
-        moduleIds = setOf(CHAT_TEMPORARY_WORKFLOW_MODULE_ID),
     )
 
     private val savedWorkflowSkill = ChatAgentSkillDefinition(
@@ -397,12 +199,9 @@ internal object ChatAgentSkillRouter {
             If the user did not request a trigger, omit `workflow.triggers` and let the app add a manual trigger.
             Never persist artifact:// handles inside saved workflows because chat artifacts are temporary.
         """.trimIndent(),
-        toolNames = setOf(CHAT_SAVE_WORKFLOW_TOOL_NAME),
-        moduleIds = setOf(CHAT_SAVE_WORKFLOW_MODULE_ID),
     )
 
-    private val flashlightSkill = SkillRule(
-        definition = ChatAgentSkillDefinition(
+    private val flashlightSkill = ChatAgentSkillDefinition(
             id = "flashlight_control",
             title = "Flashlight Control",
             description = "Operate the flashlight directly without UI automation.",
@@ -410,13 +209,9 @@ internal object ChatAgentSkillRouter {
                 Use the direct flashlight tool for on/off/toggle requests.
                 Do not open system UI, take screenshots, or search the screen for flashlight requests.
             """.trimIndent(),
-            moduleIds = setOf("vflow.device.flashlight"),
-        ),
-        keywords = listOf("手电", "flashlight", "torch"),
     )
 
-    private val clipboardSkill = SkillRule(
-        definition = ChatAgentSkillDefinition(
+    private val clipboardSkill = ChatAgentSkillDefinition(
             id = "clipboard_and_share",
             title = "Clipboard And Share",
             description = "Read, write, and share clipboard-oriented content directly.",
@@ -424,20 +219,9 @@ internal object ChatAgentSkillRouter {
                 Use clipboard or share tools for copy, paste, share, and quick-view tasks.
                 Prefer direct clipboard tools instead of UI automation unless the user explicitly asks to interact inside an app screen.
             """.trimIndent(),
-            moduleIds = setOf(
-                "vflow.system.get_clipboard",
-                "vflow.system.set_clipboard",
-                "vflow.core.get_clipboard",
-                "vflow.core.set_clipboard",
-                "vflow.system.share",
-                "vflow.data.quick_view",
-            ),
-        ),
-        keywords = listOf("剪贴板", "clipboard", "复制到剪贴板", "读取剪贴板", "设置剪贴板", "粘贴", "分享", "share", "预览", "quick view", "quickview"),
     )
 
-    private val connectivitySkill = SkillRule(
-        definition = ChatAgentSkillDefinition(
+    private val connectivitySkill = ChatAgentSkillDefinition(
             id = "device_settings_control",
             title = "Device Settings Control",
             description = "Toggle or adjust direct device settings without navigating system UI.",
@@ -447,48 +231,9 @@ internal object ChatAgentSkillRouter {
                 For Do Not Disturb requests, call the direct Do Not Disturb tool with on, off, or toggle instead of opening Settings.
                 Avoid opening Settings or Quick Settings when a direct tool can perform the change safely.
             """.trimIndent(),
-            moduleIds = setOf(
-                "vflow.system.wifi",
-                "vflow.core.wifi",
-                "vflow.core.wifi_state",
-                "vflow.system.bluetooth",
-                "vflow.core.bluetooth",
-                "vflow.core.bluetooth_state",
-                "vflow.system.brightness",
-                "vflow.system.mobile_data",
-                "vflow.system.darkmode",
-                "vflow.system.do_not_disturb",
-                "vflow.core.volume",
-                "vflow.core.volume_state",
-            ),
-        ),
-        keywords = listOf(
-            "wifi",
-            "无线网络",
-            "无线局域网",
-            "蓝牙",
-            "bluetooth",
-            "亮度",
-            "brightness",
-            "移动数据",
-            "蜂窝数据",
-            "mobile data",
-            "cellular",
-            "深色模式",
-            "夜间模式",
-            "暗色模式",
-            "dark mode",
-            "免打扰",
-            "勿扰",
-            "do not disturb",
-            "dnd",
-            "音量",
-            "volume",
-        ),
     )
 
-    private val screenStateSkill = SkillRule(
-        definition = ChatAgentSkillDefinition(
+    private val screenStateSkill = ChatAgentSkillDefinition(
             id = "screen_state_control",
             title = "Screen State Control",
             description = "Wake, sleep, lock, or unlock the screen directly.",
@@ -496,20 +241,9 @@ internal object ChatAgentSkillRouter {
                 Use the direct screen state tools for wake, sleep, lock, and unlock requests.
                 Do not build a workflow unless the user asks for repetition or a sequence involving multiple actions.
             """.trimIndent(),
-            moduleIds = setOf(
-                "vflow.system.wake_screen",
-                "vflow.system.wake_and_unlock_screen",
-                "vflow.system.sleep_screen",
-                "vflow.core.wake_screen",
-                "vflow.core.sleep_screen",
-                "vflow.core.screen_status",
-            ),
-        ),
-        keywords = listOf("亮屏", "熄屏", "锁屏", "解锁", "唤醒屏幕", "sleep screen", "wake screen", "unlock"),
     )
 
-    private val observationSkill = SkillRule(
-        definition = ChatAgentSkillDefinition(
+    private val observationSkill = ChatAgentSkillDefinition(
             id = "screen_observation",
             title = "Screen Observation",
             description = "Observe the current screen, activity, or visible text when state is unknown.",
@@ -526,37 +260,9 @@ internal object ChatAgentSkillRouter {
                 Use current-activity tools only when the foreground app or activity must be confirmed before acting.
                 Prefer direct action tools when they can complete the request without observation.
             """.trimIndent(),
-            toolNames = setOf(
-                CHAT_AGENT_OBSERVE_UI_TOOL_NAME,
-                CHAT_AGENT_READ_PAGE_CONTENT_TOOL_NAME,
-                CHAT_AGENT_VERIFY_UI_TOOL_NAME,
-            ),
-            moduleIds = setOf(
-                "vflow.interaction.get_current_activity",
-                "vflow.interaction.find_element",
-            ),
-        ),
-        keywords = listOf(
-            "截图",
-            "屏幕截图",
-            "当前页面",
-            "当前界面",
-            "有什么控件",
-            "哪些控件",
-            "当前activity",
-            "current activity",
-            "screenshot",
-            "ocr",
-            "识别文字",
-            "屏幕文字",
-            "找文字",
-            "查找文字",
-            "screen controls",
-        ),
     )
 
-    private val visualFallbackSkill = SkillRule(
-        definition = ChatAgentSkillDefinition(
+    private val visualFallbackSkill = ChatAgentSkillDefinition(
             id = "visual_screen_fallback",
             title = "Visual Screen Fallback",
             description = "Capture screenshots or use OCR only when the user explicitly asks for visual inspection or when non-visual node-tree tools are insufficient.",
@@ -565,29 +271,9 @@ internal object ChatAgentSkillRouter {
                 Prefer the accessibility/node-tree helper tools first.
                 Use screenshot capture or OCR only when the user explicitly requests screenshot/OCR behavior, or when a future multimodal model needs visual evidence for a UI surface the node tree cannot expose.
             """.trimIndent(),
-            relatedSkillIds = setOf("screen_observation"),
-            moduleIds = setOf(
-                "vflow.system.capture_screen",
-                "vflow.core.capture_screen",
-                "vflow.interaction.ocr",
-            ),
-        ),
-        keywords = listOf(
-            "ocr",
-            "截图",
-            "屏幕截图",
-            "截屏",
-            "识别图片",
-            "识图",
-            "screen shot",
-            "screenshot",
-            "visual inspect",
-            "read image",
-        ),
     )
 
-    private val uiInteractionSkill = SkillRule(
-        definition = ChatAgentSkillDefinition(
+    private val uiInteractionSkill = ChatAgentSkillDefinition(
             id = "ui_interaction",
             title = "UI Interaction",
             description = "Tap, swipe, type, or press keys inside app UI when direct tools are not enough.",
@@ -602,30 +288,9 @@ internal object ChatAgentSkillRouter {
                 Re-observe after meaningful screen changes and perform a final verification check before declaring the task complete.
                 Input-text tools type into the focused field, so establish focus before typing when necessary.
             """.trimIndent(),
-            relatedSkillIds = setOf("screen_observation"),
-            toolNames = setOf(
-                CHAT_AGENT_TAP_TOOL_NAME,
-                CHAT_AGENT_LONG_PRESS_TOOL_NAME,
-                CHAT_AGENT_INPUT_TEXT_TOOL_NAME,
-                CHAT_AGENT_SWIPE_TOOL_NAME,
-                CHAT_AGENT_PRESS_KEY_TOOL_NAME,
-                CHAT_AGENT_WAIT_TOOL_NAME,
-            ),
-            moduleIds = setOf(
-                "vflow.device.click",
-                "vflow.interaction.screen_operation",
-                "vflow.core.screen_operation",
-                "vflow.interaction.input_text",
-                "vflow.core.input_text",
-                "vflow.device.send_key_event",
-                "vflow.core.press_key",
-            ),
-        ),
-        keywords = listOf("点击", "长按", "滑动", "坐标", "按钮", "tap", "click", "swipe", "输入", "打字", "文本框", "type ", "input text", "enter text", "按键", "返回键", "home键", "音量键", "key event", "press key", "back button"),
     )
 
-    private val appLifecycleSkill = SkillRule(
-        definition = ChatAgentSkillDefinition(
+    private val appLifecycleSkill = ChatAgentSkillDefinition(
             id = "app_lifecycle",
             title = "App Lifecycle",
             description = "Launch, stop, or inspect app state directly.",
@@ -635,28 +300,9 @@ internal object ChatAgentSkillRouter {
                 After launching an app for inspection, use read-only observation tools to confirm the foreground app or visible content when needed.
                 Use current activity only when the active app or screen must be confirmed before acting.
             """.trimIndent(),
-            relatedSkillIds = setOf("screen_observation"),
-            toolNames = setOf(
-                CHAT_AGENT_LOOKUP_APP_TOOL_NAME,
-                CHAT_AGENT_LAUNCH_APP_TOOL_NAME,
-            ),
-            moduleIds = setOf(
-                "vflow.system.find_installed_app",
-                "vflow.system.launch_app",
-                "vflow.system.close_app",
-                "vflow.core.force_stop_app",
-                "vflow.interaction.get_current_activity",
-            ),
-        ),
-        keywords = listOf("打开应用", "启动应用", "关闭应用", "停止应用", "launch app", "open app", "close app", "force stop"),
-        regexes = listOf(
-            Regex("""(打开|启动|关闭|停止).*(应用|app|软件)"""),
-            Regex("""\b(open|launch|close|stop)\b.*\b(app|application)\b"""),
-        ),
     )
 
-    private val notificationSkill = SkillRule(
-        definition = ChatAgentSkillDefinition(
+    private val notificationSkill = ChatAgentSkillDefinition(
             id = "notifications",
             title = "Notifications",
             description = "Send or manage local notifications.",
@@ -664,17 +310,9 @@ internal object ChatAgentSkillRouter {
                 Use notification tools for creating, finding, or removing Android notifications.
                 Do not route notification requests through UI automation unless the user explicitly asks to interact with another app.
             """.trimIndent(),
-            moduleIds = setOf(
-                "vflow.notification.send_notification",
-                "vflow.notification.find",
-                "vflow.notification.remove",
-            ),
-        ),
-        keywords = listOf("通知", "notification"),
     )
 
-    private val feedbackSkill = SkillRule(
-        definition = ChatAgentSkillDefinition(
+    private val feedbackSkill = ChatAgentSkillDefinition(
             id = "device_feedback",
             title = "Device Feedback",
             description = "Produce device feedback such as toast, vibration, speech, audio, or calls.",
@@ -682,46 +320,9 @@ internal object ChatAgentSkillRouter {
                 Use direct feedback tools for toast, vibration, TTS, speech-to-text, audio playback, and phone calls.
                 Prefer the direct tool that matches the user's requested output modality.
             """.trimIndent(),
-            moduleIds = setOf(
-                "vflow.device.toast",
-                "vflow.device.vibration",
-                "vflow.device.text_to_speech",
-                "vflow.device.speech_to_text",
-                "vflow.device.play_audio",
-                "vflow.device.call_phone",
-            ),
-        ),
-        keywords = listOf(
-            "toast",
-            "轻提示",
-            "弹个提示",
-            "振动",
-            "震动",
-            "vibrate",
-            "vibration",
-            "朗读",
-            "播报",
-            "语音合成",
-            "文字转语音",
-            "text to speech",
-            "tts",
-            "语音转文字",
-            "语音识别",
-            "speech to text",
-            "stt",
-            "transcribe",
-            "播放音频",
-            "播放音乐",
-            "play audio",
-            "打电话",
-            "拨号",
-            "call phone",
-            "phone call",
-        ),
     )
 
-    private val shellSkill = SkillRule(
-        definition = ChatAgentSkillDefinition(
+    private val shellSkill = ChatAgentSkillDefinition(
             id = "shell_execution",
             title = "Shell Execution",
             description = "Run shell-like commands only when no safer vFlow tool can complete the task.",
@@ -730,9 +331,6 @@ internal object ChatAgentSkillRouter {
                 Use them only when no safer direct vFlow module can observe or complete the task.
                 Keep shell commands narrowly scoped and never assume they succeeded before reading the result.
             """.trimIndent(),
-            moduleIds = setOf("vflow.shizuku.shell_command", "vflow.core.shell_command"),
-        ),
-        keywords = listOf("shell", "终端命令", "命令行", "adb", "shizuku命令"),
     )
 
     private val fallbackInteractionSkill = ChatAgentSkillDefinition(
@@ -751,34 +349,11 @@ internal object ChatAgentSkillRouter {
             If the task requires multiple screen actions, start with a fresh control snapshot and end with a verification step instead of guessing that the task is done.
             Keep the plan short and avoid escalating to shell or workflows unless the user explicitly needs them.
         """.trimIndent(),
-        relatedSkillIds = setOf("screen_observation"),
-        toolNames = setOf(
-            CHAT_AGENT_OBSERVE_UI_TOOL_NAME,
-            CHAT_AGENT_READ_PAGE_CONTENT_TOOL_NAME,
-            CHAT_AGENT_VERIFY_UI_TOOL_NAME,
-            CHAT_AGENT_TAP_TOOL_NAME,
-            CHAT_AGENT_LONG_PRESS_TOOL_NAME,
-            CHAT_AGENT_INPUT_TEXT_TOOL_NAME,
-            CHAT_AGENT_SWIPE_TOOL_NAME,
-            CHAT_AGENT_PRESS_KEY_TOOL_NAME,
-            CHAT_AGENT_WAIT_TOOL_NAME,
-            CHAT_AGENT_LOOKUP_APP_TOOL_NAME,
-            CHAT_AGENT_LAUNCH_APP_TOOL_NAME,
-        ),
-        moduleIds = setOf(
-            "vflow.interaction.get_current_activity",
-            "vflow.interaction.find_element",
-            "vflow.device.click",
-            "vflow.interaction.input_text",
-            "vflow.system.launch_app",
-            "vflow.system.set_clipboard",
-            "vflow.device.toast",
-        ),
     )
 
     private val SKILL_CATALOG = listOf(
-        SkillRule(definition = temporaryWorkflowSkill, requiresOperationalIntent = false),
-        SkillRule(definition = savedWorkflowSkill, requiresOperationalIntent = false),
+        temporaryWorkflowSkill,
+        savedWorkflowSkill,
         flashlightSkill,
         clipboardSkill,
         connectivitySkill,
@@ -790,16 +365,9 @@ internal object ChatAgentSkillRouter {
         notificationSkill,
         feedbackSkill,
         shellSkill,
-        SkillRule(definition = fallbackInteractionSkill),
+        fallbackInteractionSkill,
     )
 
-    private val WORKFLOW_NOUNS = listOf("工作流", "自动化", "automation", "workflow")
-    private val WORKFLOW_CREATE_VERBS = listOf("保存", "创建", "生成", "新建", "save", "create", "build", "generate")
-    private val WORKFLOW_TRIGGER_SIGNALS = listOf("定时", "触发", "每天", "每周", "每月", "闹钟", "schedule", "scheduled", "trigger")
-    private val TEMPORARY_WORKFLOW_KEYWORDS = listOf("临时工作流", "执行工作流", "temporary workflow", "run workflow")
-    private val TEMPORARY_SEQUENCE_SIGNALS = listOf("多步", "一系列", "依次", "重复", "循环", "多次", "每隔", "repeat", "loop")
-    private val CONTINUATION_SIGNALS = listOf("继续", "再来", "刚才", "上一步", "那个", "这次", "改成", "换成", "同样", "继续刚才", "继续上一个", "继续那个", "接着做")
-    private val KNOWLEDGE_QUESTION_SIGNALS = listOf("什么是", "是什么意思", "解释", "为什么", "原理", "设计", "思路", "区别", "介绍")
     private val ALWAYS_EXPOSED_NATIVE_HELPERS = setOf(
         ChatAgentNativeHelperId.OBSERVE_UI,
         ChatAgentNativeHelperId.READ_PAGE_CONTENT,
@@ -812,36 +380,5 @@ internal object ChatAgentSkillRouter {
         ChatAgentNativeHelperId.VERIFY_UI,
         ChatAgentNativeHelperId.LOOKUP_APP,
         ChatAgentNativeHelperId.LAUNCH_APP,
-    )
-    private val OPERATIONAL_SIGNALS = listOf(
-        "打开",
-        "关闭",
-        "设置",
-        "读取",
-        "获取",
-        "发送",
-        "查找",
-        "点击",
-        "输入",
-        "复制",
-        "粘贴",
-        "启动",
-        "停止",
-        "执行",
-        "保存",
-        "创建",
-        "生成",
-        "截图",
-        "识别",
-        "朗读",
-        "播报",
-        "播放",
-        "拨号",
-        "分享",
-        "切换",
-        "调高",
-        "调低",
-        "打开应用",
-        "关闭应用",
     )
 }

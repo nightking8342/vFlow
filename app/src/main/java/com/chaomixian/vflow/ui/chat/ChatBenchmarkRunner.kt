@@ -348,10 +348,7 @@ internal class ChatBenchmarkRunner(
                 break
             }
 
-            val skillSelection = ChatAgentSkillRouter.selectSkills(
-                history = messages,
-                availableTools = tools,
-            )
+            val skillSelection = ChatAgentSkillRouter.availableTools(tools)
             val result = chatClient.generateReply(
                 preset = preset,
                 history = messages,
