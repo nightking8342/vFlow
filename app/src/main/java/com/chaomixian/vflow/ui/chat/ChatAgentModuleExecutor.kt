@@ -228,10 +228,18 @@ internal class ChatAgentModuleExecutor(
             spec.steps.forEach { stepSpec ->
                 if (!toolRegistry.isTemporaryWorkflowModuleAllowed(stepSpec.moduleId)) return null
                 val module = ModuleRegistry.getModule(stepSpec.moduleId) ?: return null
-                val parameters = buildParameters(module, stepSpec.parameters.toString(), ChatAgentArtifactStore())
+                val built = buildParameters(module, stepSpec.parameters.toString(), ChatAgentArtifactStore())
+                if (built.rejectedKeys.isNotEmpty()) {
+                    DebugLogger.w(
+                        LOG_TAG,
+                        "Temporary workflow step `${stepSpec.moduleId}` has unknown parameters: " +
+                            built.rejectedKeys.joinToString(", ")
+                    )
+                    return null
+                }
                 readySteps += ActionStep(
                     moduleId = module.id,
-                    parameters = parameters,
+                    parameters = built.parameters,
                     indentationLevel = stepSpec.indentationLevel,
                     id = stepSpec.id,
                 )
@@ -403,10 +411,22 @@ internal class ChatAgentModuleExecutor(
         indentationLevel: Int = 0,
     ): ChatPreparedToolItem {
         return try {
-            val parameters = buildParameters(module, rawArgumentsJson, artifactStore)
+            val built = buildParameters(module, rawArgumentsJson, artifactStore)
+            if (built.rejectedKeys.isNotEmpty()) {
+                return ChatPreparedToolItem.ImmediateResult(
+                    toolCall = toolCall,
+                    result = ChatToolResult(
+                        callId = toolCall.id,
+                        name = toolCall.name,
+                        status = ChatToolResultStatus.ERROR,
+                        summary = definition.title,
+                        outputText = buildRejectedKeysMessage(module, definition, built),
+                    )
+                )
+            }
             val step = ActionStep(
                 moduleId = module.id,
-                parameters = parameters,
+                parameters = built.parameters,
                 indentationLevel = indentationLevel,
                 id = stepId,
             )
@@ -733,12 +753,22 @@ internal class ChatAgentModuleExecutor(
             }
 
             try {
-                val parameters = buildParameters(module, stepSpec.parameters.toString(), artifactStore)
+                val built = buildParameters(module, stepSpec.parameters.toString(), artifactStore)
+                if (built.rejectedKeys.isNotEmpty()) {
+                    validationErrors += buildSaveWorkflowValidationError(
+                        toolCall = toolCall,
+                        summary = definition.title,
+                        outputText = "Saved workflow $sourceLabel step `${stepSpec.moduleId}` has unknown parameter(s): " +
+                            "${built.rejectedKeys.joinToString(", ")}. " +
+                            "Available parameters: ${built.availableKeys.joinToString(", ").ifBlank { "none" }}.",
+                    )
+                    return@mapIndexedNotNull null
+                }
                 SavedWorkflowStepCandidate(
                     module = module,
                     step = ActionStep(
                         moduleId = module.id,
-                        parameters = parameters,
+                        parameters = built.parameters,
                         indentationLevel = stepSpec.indentationLevel,
                         id = stepSpec.id,
                     ),
@@ -1260,19 +1290,77 @@ internal class ChatAgentModuleExecutor(
         module: ActionModule,
         rawArgumentsJson: String,
         artifactStore: ChatAgentArtifactStore,
-    ): Map<String, Any?> {
+    ): ChatParameterBuildResult {
         val defaults = module.createSteps().firstOrNull()?.parameters?.toMutableMap() ?: mutableMapOf()
-        val baseStep = ActionStep(moduleId = module.id, parameters = defaults)
-        val inputs = module.getDynamicInputs(baseStep, listOf(baseStep))
         val arguments = parseArguments(rawArgumentsJson)
 
+        // 两轮求值：第一轮用默认值 step 拿到基础定义表，第二轮带上已被接受的参数——
+        // 让 CallFunctionModule 这类「依据 step 里已有值生成新字段」的模块也能吐出参数。
+        val step0 = ActionStep(moduleId = module.id, parameters = defaults)
+        val firstPass = resolveInputDefinitions(module, step0)
+
+        val premerged = defaults.toMutableMap()
         arguments.forEach { (key, value) ->
-            val input = inputs.firstOrNull { it.id == key } ?: return@forEach
-            defaults[key] = coerceInputValue(input, value, artifactStore)
+            firstPass.firstOrNull { it.id == key }?.let { premerged[key] = value }
+        }
+        val step1 = ActionStep(moduleId = module.id, parameters = premerged)
+        val secondPass = resolveInputDefinitions(module, step1)
+
+        // 最终定义表 = 两轮并集（同 id 时后一轮的类型覆盖前一轮）。
+        // 用并集而非纯静态全集：并集只会「多收」不会「少收」，不可能丢掉原本能通过的参数。
+        val definitionsById = (firstPass + secondPass).associateBy { it.id }
+
+        val accepted = linkedMapOf<String, Any?>()
+        val rejected = mutableListOf<String>()
+        arguments.forEach { (key, value) ->
+            val input = definitionsById[key]
+            if (input == null) {
+                rejected += key
+            } else {
+                accepted[key] = coerceInputValue(input, value, artifactStore)
+            }
         }
 
-        return defaults
+        return ChatParameterBuildResult(
+            parameters = defaults + accepted,
+            rejectedKeys = rejected,
+            availableKeys = definitionsById.keys.toList(),
+        )
     }
+
+    /**
+     * 把「模型给了模块不认识的参数」变成**显式错误**。
+     *
+     * 改造前这里是 `?: return@forEach` 静默丢弃——模型以为参数生效了，
+     * 编辑器里却显示为空（病症 B）。改成报错并附上可用键，让模型能自愈。
+     */
+    private fun buildRejectedKeysMessage(
+        module: ActionModule,
+        definition: ChatAgentToolDefinition,
+        built: ChatParameterBuildResult,
+    ): String {
+        return buildString {
+            append("Unknown parameter(s) for `${definition.title}` ")
+            append("(module `${module.id}`): ")
+            append(built.rejectedKeys.joinToString(", "))
+            append(". ")
+            if (built.availableKeys.isEmpty()) {
+                append("This module accepts no parameters.")
+            } else {
+                append("Available parameters: ")
+                append(built.availableKeys.joinToString(", "))
+                append(".")
+            }
+        }
+    }
+
+    /**
+     * 求一次模块的可用输入定义：**静态全集 ∪ 动态结果**。见 [resolveModuleInputDefinitions]。
+     */
+    private fun resolveInputDefinitions(
+        module: ActionModule,
+        step: ActionStep,
+    ): List<InputDefinition> = resolveModuleInputDefinitions(module, step)
 
     private fun ChatPreparedToolItem.describeForLog(): String {
         return when (this) {
@@ -1588,3 +1676,49 @@ internal class ChatAgentModuleExecutor(
         const val MAX_WORKFLOW_INDENTATION_LEVEL = 12
     }
 }
+
+/**
+ * 求一次模块的可用输入定义：**静态全集（[ActionModule.getInputs]）∪ 动态结果
+ * （[ActionModule.getDynamicInputs]）**。
+ *
+ * 之所以不只是 `getDynamicInputs`：它是为「编辑器里用户下一步该填哪格」服务的，
+ * 会按当前算子/类型裁剪，天然是子集。拿它当参数合法性白名单，模型填的合法参数
+ * （如 `If` 的 `value1`/`value2`）会被静默裁掉——病症 B 的根因。
+ *
+ * 之所以不只是 `getInputs`：它有例外——`CallFunctionModule` 的 `getInputs()` 只声明
+ * `workflow_id`，各函数参数由 `getDynamicInputs` 依据选中工作流的签名凭空生成。
+ *
+ * 并集的性质是**只会「多收」不会「少收」**：它不可能丢掉纯静态方案能通过的参数。
+ * 同 id 时保留后者（动态结果），以便拿到算子相关的类型改写（如 `If` 把 `value1`
+ * 从 `ANY` 改成 `NUMBER`）。
+ *
+ * 动态求值异常时回退静态全集，绝不因求值出错而丢参数。
+ *
+ * 模块 catalog（[ChatAgentToolRegistry]）与执行校验（[ChatAgentModuleExecutor]）共用此函数，
+ * 保证「模型看得见的字段」与「执行时收下的字段」口径一致。
+ */
+internal fun resolveModuleInputDefinitions(
+    module: ActionModule,
+    step: ActionStep,
+): List<InputDefinition> {
+    val staticInputs = module.getInputs()
+    val dynamicInputs = runCatching {
+        module.getDynamicInputs(step, listOf(step))
+    }.getOrDefault(emptyList())
+    // 动态结果放后面：同 id 时它覆盖静态定义，保留算子相关的类型/选项改写。
+    return (staticInputs + dynamicInputs).distinctBy { it.id }
+}
+
+/**
+ * [ChatAgentModuleExecutor.buildParameters] 的产物。
+ *
+ * @property parameters 模块的完整参数表（模块默认值 + 被接受的模型入参）
+ * @property rejectedKeys 模型给了、但模块定义里找不到的键。**不静默丢弃**——
+ *   调用方须把它变成显式错误回传给模型，否则它会以为参数已生效。
+ * @property availableKeys 本次求值得到的全部合法键（用于错误提示里给出可用项）
+ */
+internal data class ChatParameterBuildResult(
+    val parameters: Map<String, Any?>,
+    val rejectedKeys: List<String> = emptyList(),
+    val availableKeys: List<String> = emptyList(),
+)

@@ -1,12 +1,14 @@
 # Chat Agent 架构重构设计（基于 CCB / dsh / OpenCode / Pi 四家对照分析）
 
-> 版本：v1.5（2026-09-13）
+> 版本：v1.5.1（2026-09-14）
 > 状态：**设计定案，待开工**。§4 起为执行契约，不再含"论辩过程"。
 > 分支：`feature/chat-agent-rearchitecture`（从 `dev` 出）
 > 目录：`docs/fork/`（fork 新增文件，上游无此文件，冲突归属**我方**）
 >
 > **v1.5 是决策定稿版**：经历一轮 19 问拷问后，推翻了三处结构性假设（详见文末修订史）。
 > 正文只讲**当前结论**；「谁推翻了谁」的演进过程收在文末，供将来避免重蹈。
+> **v1.5.1 为 P0 实施期修正**：求值口径改为并集两轮求值（`CallFunctionModule` 反例），
+> 并新增 §6.2 开放问题 5。
 
 ---
 
@@ -463,19 +465,36 @@ query_module_schema      → truncatable = false
 > 落进 `OPERATORS_REQUIRING_ONE_INPUT` 之外 → **`value1`/`value2` 都不加** → 全被丢。
 > 痛点在于 `IfModule.kt:165-208` 的**分支裁剪**，不是"没输入"。
 
-**方案（定案：两段式）**：
+**方案（定案：并集两轮求值）**：
 
 ```
-1. 接受性看【静态全集】
-   模型给的键只要在 getInputs() 里 → 无条件收下        ← 修病症 B：value1/value2 活下来
-2. coerce 精度看【动态定义】
-   用合并后的 step 调一次 getDynamicInputs()
-   动态里有该键 → 用动态的 staticType；没有 → 回退静态   ← 保住 IfModule.kt:191-196 的 ANY→NUMBER 改写
-3. 兜底
-   getDynamicInputs() 抛异常 → 整条回退静态全集，绝不因动态求值出错而丢参数
+一次性求值 = getInputs() ∪ getDynamicInputs(step)      ← 「只多不少」
+    ↓
+第一轮：step0 = 默认值 step → d0
+预合并：模型给的、且 d0 认得的键（如 workflow_id）放进 step
+第二轮：step1 = 合并后的 step → d1
+    ↓
+最终定义表 = d0 ∪ d1（同 id 时后一轮覆盖前一轮，保留算子相关的类型改写）
+    ↓
+判定：arguments 的键 ∈ 最终定义表 → 收下并 coerce；否则 → 显式报错
 ```
 
-**为什么不用纯 `getInputs()`**：`IfModule.kt:191-196` 当 operator 是数值比较时，把 `value1` 的 `staticType` 从 `ANY` 改写成 `NUMBER`。丢掉这个，数值比较会按字符串比较。
+**三个要点**：
+
+1. **为什么用并集而不是纯静态全集**：`CallFunctionModule` 的 `getInputs()` 只声明 `workflow_id`，
+   各函数参数由 `getDynamicInputs` 依据签名**凭空生成**。纯静态全集会让它的函数参数全丢。
+   并集的性质是**只会「多收」不会「少收」**，不可能丢掉纯静态方案能通过的参数。
+2. **为什么需要两轮**：`CallFunctionModule` 的参数依赖 `step` 里已有的 `workflow_id`，
+   一次求值看不到。
+3. **为什么不是纯 `getInputs()`**：`IfModule.kt:191-196` 当 operator 是数值比较时，把 `value1`
+   的 `staticType` 从 `ANY` 改写成 `NUMBER`。丢掉这个，数值比较会按字符串比较。
+   并集把动态结果排在后面，同 id 时它覆盖静态定义，故类型改写得以保留。
+
+**兜底**：`getDynamicInputs()` 抛异常 → 该轮回退静态全集，绝不因动态求值出错而丢参数。
+
+**实现落点**：抽取为顶层函数 `resolveModuleInputDefinitions(module, step)`，
+**catalog 生成（`ChatAgentToolRegistry`）与执行校验（`ChatAgentModuleExecutor`）共用**，
+保证「模型看得见的字段」与「执行时收下的字段」口径一致。
 
 **`getDynamicInputs` 本身零改动**——它是 `ActionModule.kt:78` 的核心接口方法，编辑器 UI 依赖它。
 **不新增重载、不包装、不往 `ActionModule` 上加方法**（那是往上游接口上加东西，正是 FORK.md 要防的）。
@@ -875,8 +894,9 @@ P1-1c ──→ P2-2        （缓存需要前缀稳定）
 | 4 | 查询域（184）≠ 调用域（59），结果带 `callable` 标记（设计 B） | §3.4 |
 | 5 | helper 与模块工具**非冗余**，缺口是"分工边界没说清" | §3.5 |
 | 6 | 输出截断按**性质声明**：`truncatable` 显式标志，默认 `true` | P0-3 |
-| 7 | 非退化求值**两段式**：接受性看静态全集，coerce 精度动态优先 | P0-1 |
-| 8 | `getDynamicInputs` **零改动**，只改两个调用点 | P0-1 |
+| 7 | 非退化求值=**并集两轮求值**：`getInputs() ∪ getDynamicInputs`，两轮让 `CallFunctionModule` 也能吐参数 | P0-1 |
+| 8 | `getDynamicInputs` **零改动**，只改调用点；求值抽为 `resolveModuleInputDefinitions` 供 catalog 与执行共用 | P0-1 |
+| 8b | **`CallFunctionModule` 的函数参数对 schema 发现机制不可见**——P1-1 必须解决（§6.2 开放问题 5） | P0-1 发现 |
 | 9 | `ImmediateResult` 加 `riskLevel` 字段（默认 HIGH），不新建 item 类型 | P0-2 |
 | 10 | P0-2 保留 14 个技能，瘦身留给 P1-3B | P0-2 |
 | 11 | **P0 不建新包**，`ui/chat/agent/` 推迟到 P1-1c | §4.1 |
@@ -901,6 +921,33 @@ P1-1c ──→ P2-2        （缓存需要前缀稳定）
 | 2 | `query_module_schema` 的 **`operator` 参数是否必要**——若 `If` 类的 `value1`/`value2` 已在 P0-1 的非退化求值中完整列出（附带"哪些算子需要我"），则可能冗余 | P0-1 实现后验证 |
 | 3 | **技能清单的字节稳定化**（排序固定、无时间戳）是否需要额外做工以配合 P2-2 的 `cache_control` | P2-2 实现时 |
 | 4 | `load_skill` 的工具名、参数格式；`truncatable` 查表落点；新包名 | 动手时定（不影响架构） |
+| 5 | **`CallFunctionModule` 与 schema 发现机制的根本冲突**（P0-1 实现时发现） | P1-1 实现时必须解决 |
+
+#### 开放问题 5 详解：`CallFunctionModule` 的 schema 不可发现
+
+**问题**：`CallFunctionModule.getInputs()` **只声明 `workflow_id` 一个键**（源码注释原文：
+「各参数输入框由 `getDynamicInputs` 依据选中函数工作流的签名动态生成」）。
+各函数参数由 `getDynamicInputs` 在**知道 `workflow_id` 之后**凭空生成 `InputDefinition`。
+
+它是 14 个重写 `getDynamicInputs` 的模块里**唯一会新增键**的——其余（`If`/`While`/`DoWhile`/
+`HttpRequest`/`Flashlight`/`PlayAudio`/`Vibration`/`Bluetooth`/`Wifi`/`FindElement`/`OCR`/
+`KeyEvent`）都是 `staticInputs.first { it.id == ... }` 或 `copy()`，只筛选和改写。
+
+**对 P0-1 的影响（已解决）**：白名单不能取纯静态全集，故定为**并集两轮求值**
+（见 §P0-1）。第一轮收 `workflow_id`，第二轮带上它再求值即得函数参数。
+
+**对 P1-1 的影响（未解决，必须在 P1-1 时处理）**：
+`query_module_schema` 若只调一次（`getInputs()` 或单次 `getDynamicInputs`），
+**返回的函数参数列表是空的**——模型不知道这个函数工作流需要哪些参数，
+也就永远调不对它。**「用 `getInputs()` 静态全量」这条指导对 `CallFunctionModule` 不成立。**
+
+需要 P1-1 决定：查询工具是否为这类「依赖 step 状态」的模块做**多轮求值**，
+或提供一条「先查 workflow_id 候选 → 再带 workflow_id 二次查询」的路径。
+注意这会让 `query_module_schema` 的签名复杂化（可能要接受 `partialParams`）。
+
+> **注意现状已如此**：改造前用 `getDynamicInputs(默认值 step)`，默认 step 里没有 `workflow_id`
+> → 提前 `return base` → 函数参数**现在就全丢**。所以这不是回归，而是**改造前就存在、
+> 且 P1-1 会继承**的缺陷。它属于 fork 自己的功能（函数工作流），不是上游的账。
 
 ---
 
@@ -972,3 +1019,22 @@ P1-1c ──→ P2-2        （缓存需要前缀稳定）
 7. **`AgentSessionContext.kt` 删除**——§3.3 撤销字段后它无内容可放
 8. **P0-1 精确化**——baseStep 不是"空白 step"而是 `createSteps()` 默认值 step，痛点在 `IfModule.kt:165-208` 的分支裁剪；解法定为**两段式**（接受性看静态全集，coerce 精度动态优先）
 9. **旧会话明确不迁移**
+
+### v1.5.1（2026-09-14）—— P0 实施期修正
+
+**P0-1 实施时发现两处需要更正，均已反映到正文**：
+
+1. **求值口径由「静态全集」改为「并集两轮求值」**。原定「接受性看 `getInputs()` 静态全集」
+   有一个反例：`CallFunctionModule` 的 `getInputs()` 只声明 `workflow_id`，
+   各函数参数由 `getDynamicInputs` 依据签名凭空生成——纯静态全集会让它全丢。
+   改为 `getInputs() ∪ getDynamicInputs(step)`，并做两轮（第二轮带上已接受的 `workflow_id`）。
+   并集**只会多收不会少收**，不引入回归。详见 §P0-1 与 §6.2 开放问题 5。
+2. **新增 §6.2 开放问题 5**：`CallFunctionModule` 的函数参数对 schema 发现机制不可见，
+   P1-1 的 `query_module_schema` 必须为此设计多轮求值或二次查询路径。
+   这是**改造前就存在**的缺陷（默认 step 无 `workflow_id` → 提前返回 → 参数全丢），
+   不是本次引入的回归；它属于 fork 自己的功能（函数工作流）。
+
+**P0-3 / P0-1 已实施**（提交见 `git log`）。实施细节与预期一致的：
+
+- P0-3 比预估更简单——`ChatToolResult` 自带 `name` 字段，无需扩充 `format()` 的调用方签名
+- P0-1 的静默丢弃（`?: return@forEach`）已改为显式错误，并在消息里附上可用键供模型自愈

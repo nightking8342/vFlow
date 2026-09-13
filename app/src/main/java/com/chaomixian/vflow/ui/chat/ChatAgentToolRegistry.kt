@@ -113,7 +113,9 @@ internal class ChatAgentToolRegistry(context: Context) {
     private fun buildToolDefinition(moduleId: String): ChatAgentToolDefinition? {
         val module = ModuleRegistry.getModule(moduleId) ?: return null
         val baseStep = module.createSteps().firstOrNull() ?: ActionStep(module.id, emptyMap())
-        val inputs = module.getDynamicInputs(baseStep, listOf(baseStep))
+        // 与执行校验共用同一求值口径（静态全集 ∪ 动态结果），否则会出现
+        // 「schema 里没有该字段但执行时能收下」或反过来的不一致。
+        val inputs = resolveModuleInputDefinitions(module, baseStep)
             .filterNot { it.isHidden }
             .filter(::isInputSupported)
         val localizedName = module.metadata.getLocalizedName(appContext)
@@ -742,7 +744,10 @@ internal class ChatAgentToolRegistry(context: Context) {
             .mapNotNull { moduleId ->
                 val module = ModuleRegistry.getModule(moduleId) ?: return@mapNotNull null
                 val defaultStep = module.createSteps().firstOrNull() ?: ActionStep(module.id, emptyMap())
-                val inputs = module.getDynamicInputs(defaultStep, listOf(defaultStep))
+                // 与执行校验共用同一求值口径：静态全集 ∪ 动态结果。
+                // 只用 getDynamicInputs 会按默认算子裁剪掉字段（如 If 的 value1/value2），
+                // 模型看不见 → 填了也被丢，即病症 B。
+                val inputs = resolveModuleInputDefinitions(module, defaultStep)
                     .filterNot { it.isHidden }
                     .filter(::isInputSupported)
                     .take(6)
