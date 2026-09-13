@@ -84,6 +84,41 @@ class ModuleInputDefinitionsTest {
     }
 
     @Test
+    fun ifModuleDeclaresFieldSemanticsForComparisonValues() {
+        // `query_module_schema` 与模块工具 JSON Schema 都靠 `inputHints` 向模型传达
+        // 字段语义。`If` 的这条尤其关键——它回答了「value1/value2 分别在什么算子下使用」
+        // 与「谁是主体」，这两点**无法从字段名或类型推出**，丢了只能靠模型猜。
+        //
+        // 实测证据：某次真实会话中模型查过 schema 后仍回答
+        // 「value2 是否被 number_between 用到……是我从命名猜的」。
+        val metadata = requireNotNull(ModuleRegistry.getModule("vflow.logic.if.start")?.aiMetadata)
+        val hints = metadata.inputHints
+
+        assertTrue("If 必须声明 value2 的语义", hints.containsKey("value2"))
+        assertTrue(
+            "value2 的说明应点明它只被 number_between 使用。实际：${hints["value2"]}",
+            hints["value2"]?.contains("number_between") == true,
+        )
+        assertTrue(
+            "input1 的说明应点明它是被判断的主体。实际：${hints["input1"]}",
+            hints["input1"]?.contains("Primary value") == true,
+        )
+    }
+
+    @Test
+    fun modulesDeclareRequiredInputsIndependentlyOfDefaults() {
+        // 必填集由模块自己声明（`requiredInputIds`），不能靠 `defaultValue` 有无推断——
+        // 有默认值 ≠ 非必填。`If` 声明 input1/operator 必填，而 operator 是有默认值的。
+        val metadata = requireNotNull(ModuleRegistry.getModule("vflow.logic.if.start")?.aiMetadata)
+
+        assertTrue(
+            "If 应声明必填字段。实际：${metadata.requiredInputIds}",
+            metadata.requiredInputIds.isNotEmpty(),
+        )
+        assertTrue(metadata.requiredInputIds.contains("operator"))
+    }
+
+    @Test
     fun everyRegisteredModuleKeepsItsStaticKeys() {
         // 对所有已注册模块做一次统一体检：解析结果必须覆盖静态全集，
         // 否则换成并集口径就是引入了回归。

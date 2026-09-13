@@ -1561,7 +1561,6 @@ internal class ChatAgentModuleExecutor(
     private fun prepareQueryModuleSchema(toolCall: ChatToolCall): ChatToolResult {
         val arguments = parseArguments(toolCall.argumentsJson)
         val moduleId = arguments["module_id"]?.toString()?.trim().orEmpty()
-        val operator = arguments["operator"]?.toString()?.trim()?.takeIf { it.isNotBlank() }
 
         if (moduleId.isBlank()) {
             return querySchemaError(toolCall, "Missing `module_id`. Pass a canonical module id.")
@@ -1580,17 +1579,18 @@ internal class ChatAgentModuleExecutor(
             )
         }
 
-        val defaultParameters = module.createSteps().firstOrNull()?.parameters.orEmpty()
         val step = ActionStep(
             moduleId = module.id,
-            parameters = buildMap {
-                putAll(defaultParameters)
-                operator?.let { put("operator", it) }
-            },
+            parameters = module.createSteps().firstOrNull()?.parameters.orEmpty(),
         )
         val inputs = resolveModuleInputDefinitions(module, step).filterNot { it.isHidden }
         val scopes = toolRegistry.getUsageScopesForModuleId(moduleId)
         val callable = ChatAgentToolUsageScope.DIRECT_TOOL in scopes
+        val metadata = module.aiMetadata
+
+        // 必填集由模块自己声明（76 个模块用了它）。仅凭 defaultValue 有无判断
+        // 是不可靠的——有默认值 ≠ 非必填。
+        val requiredIds = metadata?.requiredInputIds.orEmpty()
 
         return ChatToolResult(
             callId = toolCall.id,
@@ -1600,25 +1600,34 @@ internal class ChatAgentModuleExecutor(
             outputText = buildString {
                 append("moduleId: ").appendLine(module.id)
                 append("name: ").appendLine(module.metadata.getLocalizedName(appContext))
-                append("description: ").appendLine(module.metadata.getLocalizedDescription(appContext))
+                append("description: ").appendLine(
+                    // 直调场景优先用模块专为 AI 写的描述，而非面向人的本地化文案
+                    metadata?.directToolDescription
+                        ?: module.metadata.getLocalizedDescription(appContext)
+                )
+                metadata?.workflowStepDescription?.let { append("as workflow step: ").appendLine(it) }
                 append("callable: ").appendLine(callable)
                 append("scopes: ").appendLine(scopes.joinToString(", ") { it.label })
                 append("risk: ").appendLine(toolRegistry.getRiskLevelForModuleId(moduleId).name.lowercase())
                 appendLine()
-                appendLine("inputs:")
+                appendLine("inputs (fields marked * are required):")
                 if (inputs.isEmpty()) {
                     appendLine("  (none)")
                 } else {
                     inputs.forEach { input ->
+                        val required = input.id in requiredIds
                         append("  - ").append(input.id)
+                        if (required) append(" *")
                         append(" (").append(input.staticType.name.lowercase()).append(")")
-                        val label = input.getLocalizedName(appContext)
-                        if (label.isNotBlank()) append(" — ").append(label)
+                        // 复用与模块工具 JSON Schema 同一份说明拼装：
+                        // 中文名 + 本地化提示 + 产物类型 + **inputHints** + 枚举值。
+                        // inputHints 是模块作者为 AI 写的字段语义（67 个模块声明了它），
+                        // 例如 If 的 "value2: Upper bound used only by the number_between
+                        // operator." —— 这类信息无法从字段名或类型推出。
+                        val description = buildModuleInputDescription(appContext, moduleId, input)
+                        if (description.isNotBlank()) append(" — ").append(description)
                         if (input.defaultValue != null) {
                             append(" [default: ").append(input.defaultValue.toString()).append("]")
-                        }
-                        if (input.staticType == ParameterType.ENUM && input.options.isNotEmpty()) {
-                            append(" {allowed: ").append(input.options.joinToString("|")).append("}")
                         }
                         appendLine()
                     }

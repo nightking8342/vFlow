@@ -323,16 +323,6 @@ internal class ChatAgentToolRegistry(context: Context) {
                                 put("description", "Canonical module id, e.g. vflow.system.darkmode.")
                             }
                         )
-                        put(
-                            "operator",
-                            buildJsonObject {
-                                put("type", "string")
-                                put(
-                                    "description",
-                                    "Optional. For conditional modules, the operator to get a precise field set for."
-                                )
-                            }
-                        )
                     }
                 )
                 put("required", buildJsonArray { add(JsonPrimitive("module_id")) })
@@ -860,29 +850,8 @@ internal class ChatAgentToolRegistry(context: Context) {
         }
     }
 
-    private fun buildInputDescription(moduleId: String, input: InputDefinition): String {
-        val parts = mutableListOf<String>()
-        parts += input.getLocalizedName(appContext)
-        input.getLocalizedHint(appContext)
-            ?.takeIf { it.isNotBlank() }
-            ?.let(parts::add)
-
-        val artifactTypes = input.acceptedMagicVariableTypes
-            .mapNotNull(::artifactTypeLabelFromTypeId)
-            .distinct()
-        if (artifactTypes.isNotEmpty()) {
-            parts += "Can accept prior artifact handles of type ${artifactTypes.joinToString()}."
-        }
-
-        ModuleRegistry.getModule(moduleId)?.aiMetadata?.inputHints?.get(input.id)
-            ?.let(parts::add)
-
-        if (input.staticType == ParameterType.ENUM && input.options.isNotEmpty()) {
-            parts += "Allowed values: ${input.options.joinToString()}."
-        }
-
-        return parts.joinToString(separator = " ")
-    }
+    private fun buildInputDescription(moduleId: String, input: InputDefinition): String =
+        buildModuleInputDescription(appContext, moduleId, input)
 
     private fun isInputSupported(input: InputDefinition): Boolean {
         return when (input.staticType) {
@@ -895,18 +864,8 @@ internal class ChatAgentToolRegistry(context: Context) {
         }
     }
 
-    private fun artifactTypeLabelFromTypeId(typeId: String): String? {
-        return when (typeId) {
-            VTypeRegistry.IMAGE.id -> "image"
-            VTypeRegistry.FILE.id -> "file"
-            VTypeRegistry.COORDINATE.id -> "coordinate"
-            VTypeRegistry.COORDINATE_REGION.id -> "coordinate region"
-            VTypeRegistry.SCREEN_ELEMENT.id -> "screen element"
-            VTypeRegistry.STRING.id -> "text"
-            VTypeRegistry.NUMBER.id -> "number"
-            else -> null
-        }
-    }
+    private fun artifactTypeLabelFromTypeId(typeId: String): String? =
+        artifactTypeLabel(typeId)
 
     private fun buildModuleUsageScopes(moduleId: String): Set<ChatAgentToolUsageScope> {
         val metadata = ModuleRegistry.getModule(moduleId)?.aiMetadata
@@ -1101,4 +1060,65 @@ Block structure rules:
             }
         }
     }
+}
+
+/**
+ * 产物类型 id → 人类可读标签。
+ *
+ * 提为顶层函数是为了让 `ChatAgentModuleExecutor` 的 `query_module_schema` 复用——
+ * 撤走 59 个模块工具后，模块 schema 的唯一出口是那个工具，两处必须同源。
+ */
+internal fun artifactTypeLabel(typeId: String): String? {
+    return when (typeId) {
+        VTypeRegistry.IMAGE.id -> "image"
+        VTypeRegistry.FILE.id -> "file"
+        VTypeRegistry.COORDINATE.id -> "coordinate"
+        VTypeRegistry.COORDINATE_REGION.id -> "coordinate region"
+        VTypeRegistry.SCREEN_ELEMENT.id -> "screen element"
+        VTypeRegistry.STRING.id -> "text"
+        VTypeRegistry.NUMBER.id -> "number"
+        else -> null
+    }
+}
+
+/**
+ * 拼装单个输入字段的完整说明：中文名 + 本地化提示 + 可接受的产物类型 +
+ * **模块声明的 `inputHints`** + 枚举可选值。
+ *
+ * ⚠️ **`inputHints` 是这里最要紧的一段**：它是模块作者为 AI 写的**字段语义**，
+ * 例如 `IfModule` 的
+ * `"value2" to "Upper bound used only by the number_between operator."`
+ * ——这类信息**无法从字段名或类型推出**，丢了就只能靠模型猜。
+ * 全项目 67 个模块声明了 `inputHints`。
+ *
+ * 提为顶层函数：`ChatAgentToolRegistry`（模块工具的 JSON Schema）与
+ * `ChatAgentModuleExecutor`（`query_module_schema` 的文本输出）共用，
+ * 保证两条路径口径一致——否则撤走模块工具后信息会静默丢失。
+ */
+internal fun buildModuleInputDescription(
+    context: Context,
+    moduleId: String,
+    input: InputDefinition,
+): String {
+    val parts = mutableListOf<String>()
+    parts += input.getLocalizedName(context)
+    input.getLocalizedHint(context)
+        ?.takeIf { it.isNotBlank() }
+        ?.let(parts::add)
+
+    val artifactTypes = input.acceptedMagicVariableTypes
+        .mapNotNull(::artifactTypeLabel)
+        .distinct()
+    if (artifactTypes.isNotEmpty()) {
+        parts += "Can accept prior artifact handles of type ${artifactTypes.joinToString()}."
+    }
+
+    ModuleRegistry.getModule(moduleId)?.aiMetadata?.inputHints?.get(input.id)
+        ?.let(parts::add)
+
+    if (input.staticType == ParameterType.ENUM && input.options.isNotEmpty()) {
+        parts += "Allowed values: ${input.options.joinToString()}."
+    }
+
+    return parts.joinToString(separator = " ")
 }
