@@ -100,6 +100,14 @@ internal object ChatAgentSkillRouter {
             appendLine("If more content is needed after a read, decide explicitly whether to swipe, then re-observe or read again. Do not hide scrolling inside a read request.")
             appendLine("On detail/article screens, summarize from the currently visible node-tree text first. Only continue scrolling when the visible text is clearly insufficient, and avoid long downward swipe chains that skip past正文.")
             appendLine("Before you say a screen-based task is complete, perform a final read-only verification step. If you could not verify the final state, say that it is not yet verified.")
+            // 以下六条原先散落在各个技能的 instructions 里。那些技能的正文与上面的
+            // 规则高度重合（70 行里仅这 6 行是独有的），故技能清空、独有内容上提到这里。
+            appendLine("Input-text tools type into the focused field, so establish focus before typing when necessary.")
+            appendLine("If the user names an app by display name or brand instead of an Android package, resolve it with the installed-app lookup helper before launching or closing it.")
+            appendLine("Shell execution is high risk and a last resort: use it only when no safer module can complete the task, keep commands narrowly scoped, and never assume success before reading the result.")
+            appendLine("For Do Not Disturb requests, call the direct tool with on, off, or toggle instead of opening Settings.")
+            appendLine("For feedback requests (toast, vibration, TTS, audio playback, phone call), prefer the direct tool matching the requested output modality.")
+            appendLine("Prefer accessibility/find_element tools over OCR when the target is in the UI tree; use OCR only as a fallback.")
             val alwaysOnNativeTools = skillSelection.availableTools.filter(::isAlwaysExposedNativeHelper)
             if (alwaysOnNativeTools.isNotEmpty()) {
                 appendLine()
@@ -139,36 +147,14 @@ internal object ChatAgentSkillRouter {
     }
 
     /**
-     * 该工具是否**无条件常驻**，不受技能关键词路由影响。
+     * 常驻的屏幕操作 helper——prompt 里那段 "Always-available agent-native helpers"
+     * 就是用它筛出来的。
      *
-     * 两类：
-     * 1. 屏幕操作 helper——它们是模型的「感官手脚」，任何一轮都可能需要，
-     *    不能因关键词没命中就消失（`ALWAYS_EXPOSED_NATIVE_HELPERS` 即全部 11 个 helper）。
-     * 2. **按需入口**（`load_skill`）——`<available_skills>` 清单常驻 system prompt 并
-     *    指示模型调用它，若工具表里没有它，清单就是在教模型调一个不存在的工具。
+     * 注：P1-1c 之前这里还有一个 `isAlwaysExposedTool`（helper ∪ 按需入口），
+     * 用于在 `selectSkills` 的关键词过滤中保住常驻项。过滤删除后它失去调用者，已一并移除。
+     * **若将来重新引入工具过滤，必须把 `load_skill` / `query_module_schema` / `call_module`
+     * 这三个按需入口纳入白名单**，否则模型会拿不到入口而失能。
      */
-    private fun isAlwaysExposedTool(tool: ChatAgentToolDefinition): Boolean {
-        return isAlwaysExposedNativeHelper(tool) || tool.name in ALWAYS_EXPOSED_AGENT_TOOL_NAMES
-    }
-
-    /**
-     * 常驻的「按需入口」工具名。
-     *
-     * 它们不在任何技能的 `toolNames` / `moduleIds` 里，若不加进常驻就会被
-     * 工具路由过滤掉——模型看不到入口，也就用不上按需机制。
-     * （P1-1c 之前是 `selectSkills` 在做过滤，它已随模块工具撤出一并删除。）
-     *
-     * ⚠️ 新增按需入口（如 P1-1b 的 `call_module`）时**必须**登记到这里。
-     * 尤其 P1-1c 撤走 59 个模块工具后，漏登记会让模型既没有模块工具、
-     * 也拿不到查询入口——彻底失能。
-     */
-    private val ALWAYS_EXPOSED_AGENT_TOOL_NAMES = setOf(
-        CHAT_LOAD_SKILL_TOOL_NAME,
-        CHAT_QUERY_MODULE_SCHEMA_TOOL_NAME,
-        CHAT_CALL_MODULE_TOOL_NAME,
-    )
-
-    /** 常驻的屏幕操作 helper（不含按需入口——prompt 里那段只描述 helper）。 */
     private fun isAlwaysExposedNativeHelper(tool: ChatAgentToolDefinition): Boolean {
         return tool.backend == ChatAgentToolBackend.NATIVE_HELPER &&
             tool.nativeHelperId in ALWAYS_EXPOSED_NATIVE_HELPERS
@@ -176,197 +162,20 @@ internal object ChatAgentSkillRouter {
 
 
 
-    private val temporaryWorkflowSkill = ChatAgentSkillDefinition(
-        id = "temporary_workflow_execution",
-        title = "Temporary Workflow Execution",
-        description = "Execute deterministic multi-step or repeated device actions in one approval.",
-        instructions = """
-            Use `vflow_agent_run_temporary_workflow` only for one-off multi-step or repeated device actions.
-            Generate a real workflow object with canonical `moduleId`, `parameters`, and stable snake_case step IDs.
-            Temporary workflows must never include trigger modules or nested workflow tools.
-            Prefer loop modules for repeated sequences instead of duplicating many steps.
-            If a single direct tool can finish the request safely, prefer that direct tool instead.
-        """.trimIndent(),
-    )
-
-    private val savedWorkflowSkill = ChatAgentSkillDefinition(
-        id = "saved_workflow_creation",
-        title = "Saved Workflow Creation",
-        description = "Create reusable automations that appear in the user's workflow list.",
-        instructions = """
-            Use `vflow_agent_save_workflow` when the user asks to create, save, or generate an automation for later reuse.
-            Put trigger modules only in `workflow.triggers` and action/data/logic modules only in `workflow.steps`.
-            If the user did not request a trigger, omit `workflow.triggers` and let the app add a manual trigger.
-            Never persist artifact:// handles inside saved workflows because chat artifacts are temporary.
-        """.trimIndent(),
-    )
-
-    private val flashlightSkill = ChatAgentSkillDefinition(
-            id = "flashlight_control",
-            title = "Flashlight Control",
-            description = "Operate the flashlight directly without UI automation.",
-            instructions = """
-                Use the direct flashlight tool for on/off/toggle requests.
-                Do not open system UI, take screenshots, or search the screen for flashlight requests.
-            """.trimIndent(),
-    )
-
-    private val clipboardSkill = ChatAgentSkillDefinition(
-            id = "clipboard_and_share",
-            title = "Clipboard And Share",
-            description = "Read, write, and share clipboard-oriented content directly.",
-            instructions = """
-                Use clipboard or share tools for copy, paste, share, and quick-view tasks.
-                Prefer direct clipboard tools instead of UI automation unless the user explicitly asks to interact inside an app screen.
-            """.trimIndent(),
-    )
-
-    private val connectivitySkill = ChatAgentSkillDefinition(
-            id = "device_settings_control",
-            title = "Device Settings Control",
-            description = "Toggle or adjust direct device settings without navigating system UI.",
-            instructions = """
-                Use direct system tools for wifi, bluetooth, brightness, mobile data, dark mode, Do Not Disturb, and volume changes.
-                For dark/light theme requests, call the direct dark mode tool with the requested mode instead of opening Settings.
-                For Do Not Disturb requests, call the direct Do Not Disturb tool with on, off, or toggle instead of opening Settings.
-                Avoid opening Settings or Quick Settings when a direct tool can perform the change safely.
-            """.trimIndent(),
-    )
-
-    private val screenStateSkill = ChatAgentSkillDefinition(
-            id = "screen_state_control",
-            title = "Screen State Control",
-            description = "Wake, sleep, lock, or unlock the screen directly.",
-            instructions = """
-                Use the direct screen state tools for wake, sleep, lock, and unlock requests.
-                Do not build a workflow unless the user asks for repetition or a sequence involving multiple actions.
-            """.trimIndent(),
-    )
-
-    private val observationSkill = ChatAgentSkillDefinition(
-            id = "screen_observation",
-            title = "Screen Observation",
-            description = "Observe the current screen, activity, or visible text when state is unknown.",
-            instructions = """
-                Use read-only tools to build a fresh picture of the current UI before complex screen interactions and again before final completion.
-                Prefer `vflow_agent_observe_ui` for a full control snapshot and `vflow_agent_verify_ui` for final confirmation.
-                Prefer `vflow_agent_read_page_content` when the task depends on reading article text, visible copy, or current page content from the node tree.
-                Treat `vflow_agent_read_page_content` as a pure read-only snapshot; if more content is needed, choose an explicit swipe yourself and then read again.
-                Treat activity changes and detail-like screen roles as strong evidence that navigation already succeeded.
-                On feed/list screens, treat the primary content targets as already ordered by the current viewport from top to bottom.
-                On detail/article screens, use the visible node-tree text before asking for more downward scrolling.
-                Do not recommend scrolling while the requested top content target is already visible on screen.
-                Prefer `find_element` over OCR when the UI is in the accessibility tree; use it only as a module-level fallback.
-                Use current-activity tools only when the foreground app or activity must be confirmed before acting.
-                Prefer direct action tools when they can complete the request without observation.
-            """.trimIndent(),
-    )
-
-    private val visualFallbackSkill = ChatAgentSkillDefinition(
-            id = "visual_screen_fallback",
-            title = "Visual Screen Fallback",
-            description = "Capture screenshots or use OCR only when the user explicitly asks for visual inspection or when non-visual node-tree tools are insufficient.",
-            instructions = """
-                This is an explicit visual fallback layer.
-                Prefer the accessibility/node-tree helper tools first.
-                Use screenshot capture or OCR only when the user explicitly requests screenshot/OCR behavior, or when a future multimodal model needs visual evidence for a UI surface the node tree cannot expose.
-            """.trimIndent(),
-    )
-
-    private val uiInteractionSkill = ChatAgentSkillDefinition(
-            id = "ui_interaction",
-            title = "UI Interaction",
-            description = "Tap, swipe, type, or press keys inside app UI when direct tools are not enough.",
-            instructions = """
-                Use the agent-native tap, long-press, swipe, input, key, and wait helpers as the primary screen-operation layer.
-                Before the first interaction in a multi-step UI flow, observe the screen and work from returned ScreenElement handles or verified id data instead of guessing labels or coordinates.
-                Never issue repeated swipes in the same direction without an intervening observation.
-                If a visible top-ranked content target already satisfies a request like "open the first article", tap it before any scroll.
-                Treat feed/list target ordering as the current viewport order unless a tool result proves otherwise.
-                On detail/article screens, scrolling is an explicit agent decision; after each swipe, re-observe or re-read before deciding whether another swipe is justified.
-                After a tap that should navigate, re-observe first; only scroll if the fresh observation shows that navigation did not happen and the desired target is no longer visible.
-                Re-observe after meaningful screen changes and perform a final verification check before declaring the task complete.
-                Input-text tools type into the focused field, so establish focus before typing when necessary.
-            """.trimIndent(),
-    )
-
-    private val appLifecycleSkill = ChatAgentSkillDefinition(
-            id = "app_lifecycle",
-            title = "App Lifecycle",
-            description = "Launch, stop, or inspect app state directly.",
-            instructions = """
-                Use the agent-native app lookup and launch helpers before falling back to app modules.
-                If the user names an app by display name or brand instead of an Android package, resolve it with the installed-app lookup helper before launching or closing it.
-                After launching an app for inspection, use read-only observation tools to confirm the foreground app or visible content when needed.
-                Use current activity only when the active app or screen must be confirmed before acting.
-            """.trimIndent(),
-    )
-
-    private val notificationSkill = ChatAgentSkillDefinition(
-            id = "notifications",
-            title = "Notifications",
-            description = "Send or manage local notifications.",
-            instructions = """
-                Use notification tools for creating, finding, or removing Android notifications.
-                Do not route notification requests through UI automation unless the user explicitly asks to interact with another app.
-            """.trimIndent(),
-    )
-
-    private val feedbackSkill = ChatAgentSkillDefinition(
-            id = "device_feedback",
-            title = "Device Feedback",
-            description = "Produce device feedback such as toast, vibration, speech, audio, or calls.",
-            instructions = """
-                Use direct feedback tools for toast, vibration, TTS, speech-to-text, audio playback, and phone calls.
-                Prefer the direct tool that matches the user's requested output modality.
-            """.trimIndent(),
-    )
-
-    private val shellSkill = ChatAgentSkillDefinition(
-            id = "shell_execution",
-            title = "Shell Execution",
-            description = "Run shell-like commands only when no safer vFlow tool can complete the task.",
-            instructions = """
-                Shell tools are high risk and should be the last resort.
-                Use them only when no safer direct vFlow module can observe or complete the task.
-                Keep shell commands narrowly scoped and never assume they succeeded before reading the result.
-            """.trimIndent(),
-    )
-
-    private val fallbackInteractionSkill = ChatAgentSkillDefinition(
-        id = "generic_device_interaction",
-        title = "Generic Device Interaction",
-        description = "Handle broad device-action requests with a minimal safe fallback toolset.",
-        instructions = """
-            Use this fallback only when no more specific skill matches the request.
-            Prefer direct tools first; for screen work, use the agent-native helper tools before human-oriented vFlow action modules.
-            Observe the screen before tapping or typing when the target is uncertain.
-            Treat the node tree as primary and keep OCR/screenshot paths for explicit visual fallback only.
-            Do not perform blind repeated swipes; after each navigation tap, re-observe once before deciding to scroll.
-            On feed/list screens, treat the visible primary content ranking as viewport order and exhaust those visible targets before scrolling.
-            On detail/article screens, keep downward scrolling conservative and prefer summarizing from the currently visible node-tree text unless more content is clearly needed.
-            If the requested main content is already visible, act on that visible target instead of scrolling past it.
-            If the task requires multiple screen actions, start with a fresh control snapshot and end with a verification step instead of guessing that the task is done.
-            Keep the plan short and avoid escalating to shell or workflows unless the user explicitly needs them.
-        """.trimIndent(),
-    )
-
-    private val SKILL_CATALOG = listOf(
-        temporaryWorkflowSkill,
-        savedWorkflowSkill,
-        flashlightSkill,
-        clipboardSkill,
-        connectivitySkill,
-        screenStateSkill,
-        observationSkill,
-        visualFallbackSkill,
-        uiInteractionSkill,
-        appLifecycleSkill,
-        notificationSkill,
-        feedbackSkill,
-        shellSkill,
-        fallbackInteractionSkill,
-    )
+    /**
+     * 技能目录。
+     *
+     * **当前为空**：原有 14 个技能的正文经逐行核对，70 行里仅 6 行是独有的，
+     * 已上提到 `buildSystemPrompt` 的规则段（见那里的注释）。其余与 prompt 重复，
+     * 故整批清空。
+     *
+     * **机制保留**：清单（`<available_skills>`）与按需加载（`load_skill`）都在，
+     * 后续要加真正承载独立知识的技能时，在此追加 [ChatAgentSkillDefinition] 即可。
+     *
+     * ⚠️ 加技能前先自问：这条内容**是否已在 system prompt 或工具 description 里**？
+     * 若在，写进技能只会造成重复——上一批技能正是这么变成死重的。
+     */
+    private val SKILL_CATALOG: List<ChatAgentSkillDefinition> = emptyList()
 
     private val ALWAYS_EXPOSED_NATIVE_HELPERS = setOf(
         ChatAgentNativeHelperId.OBSERVE_UI,

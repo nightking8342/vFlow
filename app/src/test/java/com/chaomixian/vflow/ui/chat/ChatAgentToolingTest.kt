@@ -184,30 +184,21 @@ class ChatAgentToolingTest {
     }
 
     @Test
-    fun skillListingContainsIdTitleAndDescriptionOnly() {
+    fun skillCatalogIsEmptyAfterCleanup() {
+        // 14 个技能的正文经逐行核对，70 行里仅 6 行独有，已上提到 system prompt 规则段。
+        // 其余与 prompt / 工具 description 重复，故整批清空。
+        //
+        // **机制保留**：清单与按需加载都在，后续加真正承载独立知识的技能时在此追加。
+        // 本测试锁定「清空」这一事实——若将来加回技能，请连带更新它。
         val listing = ChatAgentSkillRouter.skillListing()
 
-        assertTrue("技能清单不应为空", listing.isNotEmpty())
-        // 清单用于 system prompt 常驻段，必须只含轻量字段。
-        assertTrue(listing.all { it.id.isNotBlank() })
-        assertTrue(listing.all { it.title.isNotBlank() })
-        assertTrue(listing.all { it.description.isNotBlank() })
-        // 14 个技能（P0-2 不改技能集合，瘦身留给 P1-3B）
-        assertEquals(14, listing.size)
-    }
-
-    @Test
-    fun skillInstructionsReturnsFullBodyForKnownSkill() {
-        val skill = requireNotNull(ChatAgentSkillRouter.skillInstructions("flashlight_control"))
-
-        assertEquals("flashlight_control", skill.id)
-        assertTrue(skill.instructions.isNotBlank())
-        // 正文是「加载它就是为了拿到全部内容」，不做裁剪。
-        assertTrue(skill.instructions.contains("flashlight"))
+        assertTrue("技能目录当前应为空", listing.isEmpty())
     }
 
     @Test
     fun skillInstructionsReturnsNullForUnknownSkill() {
+        // 目录已清空，任何 id 都取不到正文。
+        // 关键契约：必须返回 null 而非空对象——调用方据此回错误给模型。
         assertNull(ChatAgentSkillRouter.skillInstructions("no_such_skill"))
     }
 
@@ -279,7 +270,7 @@ class ChatAgentToolingTest {
     }
 
     @Test
-    fun systemPromptListsSkillsWithoutEmbeddingInstructions() {
+    fun systemPromptOmitsSkillListingWhenCatalogIsEmpty() {
         val selection = ChatAgentSkillRouter.availableTools(sampleTools())
 
         val prompt = ChatAgentSkillRouter.buildSystemPrompt(
@@ -287,15 +278,44 @@ class ChatAgentToolingTest {
             skillSelection = selection,
         )
 
-        // 清单在
-        assertTrue(prompt.contains("<available_skills>"))
-        assertTrue(prompt.contains("flashlight_control"))
-        assertTrue(prompt.contains(CHAT_LOAD_SKILL_TOOL_NAME))
-        // 正文不在——这是治疗病症 A 的关键：正文改走 tool result 进历史。
-        val flashlight = requireNotNull(ChatAgentSkillRouter.skillInstructions("flashlight_control"))
+        // 目录为空时不输出 <available_skills> 段——避免给模型一个空的清单占位。
+        assertFalse(prompt.contains("<available_skills>"))
+        // 但 prompt 本身仍完整（规则段不依赖技能）。
+        assertTrue(prompt.contains("You are the vFlow chat agent"))
+    }
+
+    @Test
+    fun systemPromptCarriesTheContentSalvagedFromDeletedSkills() {
+        // 删技能时把 6 条独有内容上提到了 prompt 规则段。
+        // 本测试锁定它们确实在——否则删技能就丢了行为约束。
+        val prompt = ChatAgentSkillRouter.buildSystemPrompt(
+            basePrompt = "Base prompt",
+            skillSelection = ChatAgentSkillRouter.availableTools(sampleTools()),
+        )
+
         assertTrue(
-            "技能正文不得出现在 system prompt 中",
-            !prompt.contains(flashlight.instructions.trim()),
+            "输入框焦点规则丢失",
+            prompt.contains("establish focus before typing"),
+        )
+        assertTrue(
+            "应用名解析规则丢失",
+            prompt.contains("by display name or brand instead of an Android package"),
+        )
+        assertTrue(
+            "shell 风险约束丢失",
+            prompt.contains("Shell execution is high risk and a last resort"),
+        )
+        assertTrue(
+            "勿扰模式规则丢失",
+            prompt.contains("For Do Not Disturb requests"),
+        )
+        assertTrue(
+            "反馈模态规则丢失",
+            prompt.contains("matching the requested output modality"),
+        )
+        assertTrue(
+            "OCR 兜底规则丢失",
+            prompt.contains("use OCR only as a fallback"),
         )
     }
 
@@ -339,11 +359,6 @@ class ChatAgentToolingTest {
         assertTrue(prompt.contains("Do not hide scrolling inside a read request"))
         assertTrue(prompt.contains("summarize from the currently visible node-tree text first"))
         assertTrue(prompt.contains("Before you say a screen-based task is complete"))
-        // 技能**正文**不再进 system prompt——改为按需经 `load_skill` 加载。
-        // 这里断言的是「清单在、正文不在」这个新契约。
-        assertTrue(prompt.contains("<available_skills>"))
-        assertTrue(prompt.contains("screen_observation"))
-        assertTrue(!prompt.contains("Prefer `find_element` over OCR"))
     }
 
     @Test
