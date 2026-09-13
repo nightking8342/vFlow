@@ -164,8 +164,24 @@ internal object ChatAgentSkillRouter {
      *    指示模型调用它，若工具表里没有它，清单就是在教模型调一个不存在的工具。
      */
     private fun isAlwaysExposedTool(tool: ChatAgentToolDefinition): Boolean {
-        return isAlwaysExposedNativeHelper(tool) || tool.name == CHAT_LOAD_SKILL_TOOL_NAME
+        return isAlwaysExposedNativeHelper(tool) || tool.name in ALWAYS_EXPOSED_AGENT_TOOL_NAMES
     }
+
+    /**
+     * 常驻的「按需入口」工具名。
+     *
+     * 它们不在任何技能的 `toolNames` / `moduleIds` 里，若不加进常驻就会被
+     * [selectSkills] 过滤掉——模型看不到入口，也就用不上按需机制。
+     *
+     * ⚠️ 新增按需入口（如 P1-1b 的 `call_module`）时**必须**登记到这里。
+     * 尤其 P1-1c 撤走 59 个模块工具后，漏登记会让模型既没有模块工具、
+     * 也拿不到查询入口——彻底失能。
+     */
+    private val ALWAYS_EXPOSED_AGENT_TOOL_NAMES = setOf(
+        CHAT_LOAD_SKILL_TOOL_NAME,
+        CHAT_QUERY_MODULE_SCHEMA_TOOL_NAME,
+        CHAT_CALL_MODULE_TOOL_NAME,
+    )
 
     /** 常驻的屏幕操作 helper（不含按需入口——prompt 里那段只描述 helper）。 */
     private fun isAlwaysExposedNativeHelper(tool: ChatAgentToolDefinition): Boolean {

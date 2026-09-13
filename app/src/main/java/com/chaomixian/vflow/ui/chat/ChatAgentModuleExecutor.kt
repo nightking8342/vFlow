@@ -375,6 +375,13 @@ internal class ChatAgentModuleExecutor(
                 riskLevel = ChatAgentToolRiskLevel.READ_ONLY,
             )
         }
+        if (toolCall.name == CHAT_QUERY_MODULE_SCHEMA_TOOL_NAME) {
+            return ChatPreparedToolItem.ImmediateResult(
+                toolCall = toolCall,
+                result = prepareQueryModuleSchema(toolCall),
+                riskLevel = ChatAgentToolRiskLevel.READ_ONLY,
+            )
+        }
         if (toolCall.name == CHAT_TEMPORARY_WORKFLOW_TOOL_NAME) {
             return prepareTemporaryWorkflow(toolCall, artifactStore)
         }
@@ -1445,6 +1452,114 @@ internal class ChatAgentModuleExecutor(
                 append(skill.instructions.trim())
                 append("\n</skill>")
             },
+        )
+    }
+
+    /**
+     * 处理 `query_module_schema`：返回模块的完整字段定义。
+     *
+     * **查询域 = 能进保存工作流的全部模块（~184）**，不是能直调的 59——
+     * 写工作流时能用的模块远多于能直接调的。边界靠返回结果里的
+     * `callable` 与 `scopes` 前置给模型，而不是靠把模块排除出查询域。
+     *
+     * 字段定义**与执行校验共用同一求值口径**（[resolveModuleInputDefinitions]），
+     * 保证「模型看得见的字段」与「执行时收下的字段」一致——这条以前是断的，
+     * catalog 用空白 step 求值会裁掉 `If` 的 `value1`/`value2`（病症 B）。
+     */
+    private fun prepareQueryModuleSchema(toolCall: ChatToolCall): ChatToolResult {
+        val arguments = parseArguments(toolCall.argumentsJson)
+        val moduleId = arguments["module_id"]?.toString()?.trim().orEmpty()
+        val operator = arguments["operator"]?.toString()?.trim()?.takeIf { it.isNotBlank() }
+
+        if (moduleId.isBlank()) {
+            return querySchemaError(toolCall, "Missing `module_id`. Pass a canonical module id.")
+        }
+
+        val module = ModuleRegistry.getModule(moduleId)
+            ?: return querySchemaError(
+                toolCall,
+                "Unknown module `$moduleId`. Use the module ids listed in the workflow tool descriptions.",
+            )
+
+        if (!toolRegistry.isSavedWorkflowModuleAllowed(moduleId)) {
+            return querySchemaError(
+                toolCall,
+                "`$moduleId` cannot appear in a saved workflow, so it is out of the queryable set.",
+            )
+        }
+
+        val defaultParameters = module.createSteps().firstOrNull()?.parameters.orEmpty()
+        val step = ActionStep(
+            moduleId = module.id,
+            parameters = buildMap {
+                putAll(defaultParameters)
+                operator?.let { put("operator", it) }
+            },
+        )
+        val inputs = resolveModuleInputDefinitions(module, step).filterNot { it.isHidden }
+        val scopes = toolRegistry.getUsageScopesForModuleId(moduleId)
+        val callable = ChatAgentToolUsageScope.DIRECT_TOOL in scopes
+
+        return ChatToolResult(
+            callId = toolCall.id,
+            name = toolCall.name,
+            status = ChatToolResultStatus.SUCCESS,
+            summary = module.metadata.getLocalizedName(appContext),
+            outputText = buildString {
+                append("moduleId: ").appendLine(module.id)
+                append("name: ").appendLine(module.metadata.getLocalizedName(appContext))
+                append("description: ").appendLine(module.metadata.getLocalizedDescription(appContext))
+                append("callable: ").appendLine(callable)
+                append("scopes: ").appendLine(scopes.joinToString(", ") { it.label })
+                append("risk: ").appendLine(toolRegistry.getRiskLevelForModuleId(moduleId).name.lowercase())
+                appendLine()
+                appendLine("inputs:")
+                if (inputs.isEmpty()) {
+                    appendLine("  (none)")
+                } else {
+                    inputs.forEach { input ->
+                        append("  - ").append(input.id)
+                        append(" (").append(input.staticType.name.lowercase()).append(")")
+                        val label = input.getLocalizedName(appContext)
+                        if (label.isNotBlank()) append(" — ").append(label)
+                        if (input.defaultValue != null) {
+                            append(" [default: ").append(input.defaultValue.toString()).append("]")
+                        }
+                        if (input.staticType == ParameterType.ENUM && input.options.isNotEmpty()) {
+                            append(" {allowed: ").append(input.options.joinToString("|")).append("}")
+                        }
+                        appendLine()
+                    }
+                }
+                val outputs = module.getOutputs(step)
+                if (outputs.isNotEmpty()) {
+                    appendLine()
+                    appendLine("outputs:")
+                    outputs.forEach { output ->
+                        append("  - ").append(output.id)
+                        append(" (").append(output.typeName).append(")")
+                        if (output.name.isNotBlank()) append(" — ").append(output.name)
+                        appendLine()
+                    }
+                }
+                if (!callable) {
+                    appendLine()
+                    append(
+                        "Note: this module cannot be invoked directly with `$CHAT_CALL_MODULE_TOOL_NAME`, " +
+                            "but it is still valid as a workflow step."
+                    )
+                }
+            },
+        )
+    }
+
+    private fun querySchemaError(toolCall: ChatToolCall, message: String): ChatToolResult {
+        return ChatToolResult(
+            callId = toolCall.id,
+            name = toolCall.name,
+            status = ChatToolResultStatus.ERROR,
+            summary = "查询模块字段定义",
+            outputText = message,
         )
     }
 

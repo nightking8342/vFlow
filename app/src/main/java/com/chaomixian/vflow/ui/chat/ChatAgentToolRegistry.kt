@@ -58,6 +58,28 @@ internal const val CHAT_SAVE_WORKFLOW_MODULE_ID = "vflow.agent.save_workflow"
 internal const val CHAT_LOAD_SKILL_TOOL_NAME = "vflow_agent_load_skill"
 internal const val CHAT_LOAD_SKILL_MODULE_ID = "vflow.agent.load_skill"
 
+/**
+ * 按需查询模块完整 schema 的工具名。
+ *
+ * 模块**清单**（moduleId + 中文名）常驻工作流工具的 description；
+ * **完整字段定义**只在模型调用本工具时返回。
+ *
+ * **查询域 = 184**（能进保存工作流的全部模块），**不是** 59（能直调的）。
+ * 写工作流时能用的模块远多于能直接调的，故查询域取大者，
+ * 由返回结果里的 `callable` 字段告诉模型「这个能不能直接调」。
+ */
+internal const val CHAT_QUERY_MODULE_SCHEMA_TOOL_NAME = "vflow_agent_query_module_schema"
+internal const val CHAT_QUERY_MODULE_SCHEMA_MODULE_ID = "vflow.agent.query_module_schema"
+
+/**
+ * 通用模块执行入口的工具名（P1-1b）。
+ *
+ * 59 个模块工具撤出 `tools` 数组后，模型须先 `query_module_schema` 拿字段定义，
+ * 再用本工具执行。它是**固定工具、永远在**，不随技能路由变化。
+ */
+internal const val CHAT_CALL_MODULE_TOOL_NAME = "vflow_agent_call_module"
+internal const val CHAT_CALL_MODULE_MODULE_ID = "vflow.agent.call_module"
+
 internal fun chatToolNameFromModuleId(moduleId: String): String {
     val normalized = moduleId
         .lowercase()
@@ -82,6 +104,7 @@ internal class ChatAgentToolRegistry(context: Context) {
                 buildTemporaryWorkflowToolDefinition(),
                 buildSaveWorkflowToolDefinition(),
                 buildLoadSkillToolDefinition(),
+                buildQueryModuleSchemaToolDefinition(),
             ) +
                 ChatAgentNativeToolExecutor.buildDefinitions(appContext) +
                 buildDirectToolDefinitions()
@@ -97,6 +120,21 @@ internal class ChatAgentToolRegistry(context: Context) {
     }
 
     fun getRiskLevelForModuleId(moduleId: String): ChatAgentToolRiskLevel = riskLevelForModuleId(moduleId)
+
+    /**
+     * 该模块能用在哪些场景（直调 / 临时工作流 / 保存工作流）。
+     * 供 `query_module_schema` 把边界前置给模型。
+     */
+    fun getUsageScopesForModuleId(moduleId: String): Set<ChatAgentToolUsageScope> =
+        buildModuleUsageScopes(moduleId)
+
+    /**
+     * 查询域的全部 moduleId——**能进保存工作流的全部模块（~184）**，不是能直调的 59。
+     *
+     * 写工作流时能用的模块远多于能直接调的，故查询域取大者。
+     * 「能不能直调」由返回结果里的 `callable` 表达，而不是靠把模块排除出查询域。
+     */
+    fun getQueryableModuleIds(): List<String> = savedWorkflowModuleIds
 
     /**
      * 该 moduleId 是否注册在 vFlow 中。
@@ -171,7 +209,7 @@ internal class ChatAgentToolRegistry(context: Context) {
                 append("Allowed steps are curated action modules only, not triggers and not this temporary workflow tool. ")
                 append("Risk level is computed from the workflow steps.")
                 append(stepCatalog)
-                append(buildVariablePassingGuide(temporaryWorkflowModuleIds))
+                append(buildVariablePassingGuide())
             },
             moduleId = CHAT_TEMPORARY_WORKFLOW_MODULE_ID,
             moduleDisplayName = "临时工作流",
@@ -231,6 +269,65 @@ internal class ChatAgentToolRegistry(context: Context) {
         )
     }
 
+    /**
+     * `query_module_schema`：按需查询模块的完整字段定义。
+     *
+     * 纯本地查表（`ModuleRegistry` + 输入定义求值），**无权限、无副作用、无 IO**，
+     * 故 riskLevel = READ_ONLY 且 `truncatable = false`——
+     * 截断的可能正好是字段定义本身，会让模型拿到半份说明书（病症 B 复发）。
+     */
+    private fun buildQueryModuleSchemaToolDefinition(): ChatAgentToolDefinition {
+        return ChatAgentToolDefinition(
+            name = CHAT_QUERY_MODULE_SCHEMA_TOOL_NAME,
+            title = "查询模块字段定义",
+            description = buildString {
+                append("Look up the full input/output schema of a vFlow module. ")
+                append("The module catalog in the workflow tool descriptions lists only module ids and names; ")
+                append("call this tool to get the exact parameter ids, types, and allowed values before writing ")
+                append("or calling a module. ")
+                append("This is a local lookup with no side effects. ")
+                append("Works for any module that can appear in a saved workflow. ")
+                append("Important: `callable: false` means the module cannot be invoked directly with ")
+                append("`$CHAT_CALL_MODULE_TOOL_NAME`, but it is still valid as a workflow step. ")
+                append("This tool itself, `$CHAT_CALL_MODULE_TOOL_NAME` and `$CHAT_LOAD_SKILL_TOOL_NAME` ")
+                append("are agent built-ins, not vFlow modules — do not query them.")
+            },
+            moduleId = CHAT_QUERY_MODULE_SCHEMA_MODULE_ID,
+            moduleDisplayName = "查询模块字段定义",
+            routingHints = setOf("模块", "字段", "参数", "schema", "module", "parameters"),
+            inputSchema = buildJsonObject {
+                put("type", "object")
+                put(
+                    "properties",
+                    buildJsonObject {
+                        put(
+                            "module_id",
+                            buildJsonObject {
+                                put("type", "string")
+                                put("description", "Canonical module id, e.g. vflow.system.darkmode.")
+                            }
+                        )
+                        put(
+                            "operator",
+                            buildJsonObject {
+                                put("type", "string")
+                                put(
+                                    "description",
+                                    "Optional. For conditional modules, the operator to get a precise field set for."
+                                )
+                            }
+                        )
+                    }
+                )
+                put("required", buildJsonArray { add(JsonPrimitive("module_id")) })
+            },
+            permissionNames = emptyList(),
+            riskLevel = ChatAgentToolRiskLevel.READ_ONLY,
+            usageScopes = setOf(ChatAgentToolUsageScope.DIRECT_TOOL),
+            truncatable = false,
+        )
+    }
+
     private fun buildSaveWorkflowToolDefinition(): ChatAgentToolDefinition {
         val triggerCatalog = buildCompactModuleCatalog(
             savedWorkflowModuleIds.filter(::isTriggerModule),
@@ -256,7 +353,7 @@ internal class ChatAgentToolRegistry(context: Context) {
                 append("Usage scope: saved workflow step. ")
                 append(triggerCatalog)
                 append(stepCatalog)
-                append(buildVariablePassingGuide(savedWorkflowModuleIds))
+                append(buildVariablePassingGuide())
             },
             moduleId = CHAT_SAVE_WORKFLOW_MODULE_ID,
             moduleDisplayName = "保存工作流",
@@ -797,57 +894,40 @@ internal class ChatAgentToolRegistry(context: Context) {
             module.id.startsWith(TRIGGER_MODULE_PREFIX)
     }
 
+    /**
+     * 模块**清单**——只留 moduleId，不带描述与字段名。
+     *
+     * 这是 P1-1 的「分层」：清单常驻在工作流工具的 description 里，
+     * **完整字段定义改由 `query_module_schema` 按需提供**。
+     *
+     * 为什么连描述都去掉：184 个模块仅 id 就占约 4,400 字符，加上分隔符约 5,900 字符
+     * （≈1,480 token）。再带描述与字段名会涨到约 24,000 字符（≈6,000 token）。
+     * 而描述与字段名**只在真要用某个模块时才需要**——这正是按需查询要解决的。
+     *
+     * @param preferWorkflowDescriptions 保留参数以兼容调用点；清单模式下不再使用描述。
+     */
     private fun buildCompactModuleCatalog(
         moduleIds: List<String>,
         preferWorkflowDescriptions: Boolean,
     ): String {
-        val entries = moduleIds
-            .mapNotNull { moduleId ->
-                val module = ModuleRegistry.getModule(moduleId) ?: return@mapNotNull null
-                val defaultStep = module.createSteps().firstOrNull() ?: ActionStep(module.id, emptyMap())
-                // 与执行校验共用同一求值口径：静态全集 ∪ 动态结果。
-                // 只用 getDynamicInputs 会按默认算子裁剪掉字段（如 If 的 value1/value2），
-                // 模型看不见 → 填了也被丢，即病症 B。
-                val inputs = resolveModuleInputDefinitions(module, defaultStep)
-                    .filterNot { it.isHidden }
-                    .filter(::isInputSupported)
-                    .take(6)
-                    .joinToString(", ") { input ->
-                        val options = if (input.staticType == ParameterType.ENUM && input.options.isNotEmpty()) {
-                            "=${input.options.joinToString("/")}"
-                        } else {
-                            ""
-                        }
-                        "${input.id}$options"
-                    }
-                val name = module.metadata.getLocalizedName(appContext)
-                val description = if (preferWorkflowDescriptions) {
-                    module.aiMetadata?.workflowStepDescription
-                } else {
-                    module.aiMetadata?.directToolDescription
-                } ?: module.metadata.getLocalizedDescription(appContext)
-                if (inputs.isBlank()) {
-                    "${module.id}($name: $description)"
-                } else {
-                    "${module.id}($name: $description; inputs: $inputs)"
-                }
-            }
-        if (entries.isEmpty()) return ""
-        return " Module catalog: ${entries.joinToString("; ")}."
-    }
-
-    private fun buildModuleOutputCatalog(moduleIds: List<String>): String {
         val entries = moduleIds.mapNotNull { moduleId ->
-            val module = ModuleRegistry.getModule(moduleId) ?: return@mapNotNull null
-            val outputs = module.getOutputs(null).take(8).joinToString(",") { it.id }
-            if (outputs.isBlank()) null else "${module.id}($outputs)"
+            ModuleRegistry.getModule(moduleId)?.id
         }
         if (entries.isEmpty()) return ""
-        return "\n\nAvailable step outputs: ${entries.joinToString("; ")}."
+        return " Module catalog (call $CHAT_QUERY_MODULE_SCHEMA_TOOL_NAME for a module's parameters): " +
+            entries.joinToString(", ") + "."
     }
 
-    private fun buildVariablePassingGuide(moduleIds: List<String>): String {
-        val outputCatalog = buildModuleOutputCatalog(moduleIds)
+    /**
+     * 魔法变量语法与块结构配对规则。
+     *
+     * **保留**：这是无法从模块元数据推导的**操作知识**（变量引用语法、块配对约束、
+     * 类型属性表），不是可查询的元数据，故不随 catalog 分层一起按需化。
+     *
+     * 原本末尾还会追加 184 个模块的输出键清单（约 8,000 字符），
+     * 现改由 `query_module_schema` 按需提供——它的返回里已含 outputs。
+     */
+    private fun buildVariablePassingGuide(): String {
         return """
 To pass data from one step to another, give each step a meaningful `id` and use magic variable syntax in parameters: {{STEP_ID.OUTPUT_ID}}.
 - References must point to earlier steps only. Do not reference future steps or output ids that are not listed for that module.
@@ -861,7 +941,7 @@ To pass data from one step to another, give each step a meaningful `id` and use 
 Block structure rules:
 - Loop.start/Loop.end and If.start/If.middle/If.end must be paired. Set indentationLevel=1 for steps inside a loop or if block.
 - Loop.start outputs "loop_index" (1-based) and "loop_total". Use {{loop_start_id.loop_index}} inside the loop body.
-- If.start evaluates its "condition" parameter; If.end has no extra parameters.""".trimIndent() + outputCatalog
+- If.start evaluates its "condition" parameter; If.end has no extra parameters.""".trimIndent()
     }
 
     private companion object {

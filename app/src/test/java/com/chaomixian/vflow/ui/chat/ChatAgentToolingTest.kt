@@ -471,6 +471,41 @@ class ChatAgentToolingTest {
         )
     }
 
+    /**
+     * 所有「按需入口」必须在任何输入下都常驻。
+     *
+     * 这是 P0-2 / P1-1 实施时发现的坑的**防回归测试**：这些工具不在任何技能的
+     * `toolNames` / `moduleIds` 里，若不显式登记进 `ALWAYS_EXPOSED_AGENT_TOOL_NAMES`
+     * 就会被 `selectSkills` 过滤掉。
+     *
+     * **P1-1c 撤走 59 个模块工具后，漏掉任何一个都会让模型彻底失能**——
+     * 既没有模块工具，也拿不到查询/调用入口。
+     */
+    @Test
+    fun everyOnDemandEntryPointIsAlwaysExposed() {
+        val entryPoints = listOf(
+            CHAT_LOAD_SKILL_TOOL_NAME,
+            CHAT_QUERY_MODULE_SCHEMA_TOOL_NAME,
+            CHAT_CALL_MODULE_TOOL_NAME,
+        )
+        // 覆盖各种路由结果：闲聊（无技能）、单技能命中、工作流技能命中
+        val inputs = listOf("", "解释一下 Koog 的设计思路", "打开手电筒", "创建一个每天 8 点开灯的工作流")
+
+        inputs.forEach { text ->
+            val exposed = ChatAgentSkillRouter.selectSkills(
+                history = listOf(userMessage(text)),
+                availableTools = sampleTools(),
+            ).availableTools.map { it.name }
+
+            entryPoints.forEach { entry ->
+                assertTrue(
+                    "输入「$text」下 $entry 未常驻——模型将无法使用按需机制",
+                    exposed.contains(entry),
+                )
+            }
+        }
+    }
+
     @Test
     fun systemPromptListsSkillsWithoutEmbeddingInstructions() {
         val selection = ChatAgentSkillRouter.selectSkills(
@@ -707,6 +742,14 @@ class ChatAgentToolingTest {
                 moduleId = CHAT_LOAD_SKILL_MODULE_ID,
             ),
             sampleTool(
+                name = CHAT_QUERY_MODULE_SCHEMA_TOOL_NAME,
+                moduleId = CHAT_QUERY_MODULE_SCHEMA_MODULE_ID,
+            ),
+            sampleTool(
+                name = CHAT_CALL_MODULE_TOOL_NAME,
+                moduleId = CHAT_CALL_MODULE_MODULE_ID,
+            ),
+            sampleTool(
                 name = "vflow_device_flashlight",
                 moduleId = "vflow.device.flashlight",
             ),
@@ -838,14 +881,16 @@ class ChatAgentToolingTest {
      * 工具表里没有它就是在教模型调一个不存在的工具。
      */
     /**
-     * 完整常驻工具表 = 屏幕 helper + 按需入口（`load_skill`）。
+     * 完整常驻工具表 = 按需入口 + 屏幕 helper。
      *
-     * 顺序与 [sampleTools] 一致：`load_skill` 排在两个工作流工具之后、
-     * helper 之前？不——实际顺序由 `sampleTools()` 的排列决定，故这里按
-     * 「按需入口在最前」表达，与 registry 的注册顺序无关（selection 保持输入顺序）。
+     * 顺序必须与 [sampleTools] 里的排列一致——`selectSkills` 保持输入顺序。
      */
     private fun alwaysExposedToolNames(): List<String> {
-        return listOf(CHAT_LOAD_SKILL_TOOL_NAME) + alwaysExposedNativeToolNames()
+        return listOf(
+            CHAT_LOAD_SKILL_TOOL_NAME,
+            CHAT_QUERY_MODULE_SCHEMA_TOOL_NAME,
+            CHAT_CALL_MODULE_TOOL_NAME,
+        ) + alwaysExposedNativeToolNames()
     }
 
     private fun expectedToolNames(vararg extra: String): List<String> {
