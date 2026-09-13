@@ -1,13 +1,13 @@
 # Chat Agent 架构重构设计（基于 CCB / dsh / OpenCode / Pi 四家对照分析）
 
-> 版本：v1.5.1（2026-09-14）
-> 状态：**设计定案，待开工**。§4 起为执行契约，不再含"论辩过程"。
+> 版本：v1.5.2（2026-09-14）
+> 状态：**第一批（P0）已实施**，待真机验证；第二批（P1）待开工。§4 起为执行契约，不再含"论辩过程"。
 > 分支：`feature/chat-agent-rearchitecture`（从 `dev` 出）
 > 目录：`docs/fork/`（fork 新增文件，上游无此文件，冲突归属**我方**）
 >
 > **v1.5 是决策定稿版**：经历一轮 19 问拷问后，推翻了三处结构性假设（详见文末修订史）。
 > 正文只讲**当前结论**；「谁推翻了谁」的演进过程收在文末，供将来避免重蹈。
-> **v1.5.1 为 P0 实施期修正**：求值口径改为并集两轮求值（`CallFunctionModule` 反例），
+> **v1.5.1 / v1.5.2 为 P0 实施期修正**：求值口径改为并集两轮求值（`CallFunctionModule` 反例）；
 > 并新增 §6.2 开放问题 5。
 
 ---
@@ -577,9 +577,38 @@ data class ImmediateResult(
 **④ 单测改写**：`ChatAgentToolingTest.kt` 的 3 处 `buildSystemPrompt` 断言（`:304`/`:356`/`:430`）**直接验证 `"Active skills:"` 段**，P0-2 后必然失败 → 改为断言新的 `<available_skills>` 清单格式。
 （其余 17 处 `selectSkills` 断言**不受影响**——工具可见性逻辑不动。）
 
+**⑤ 实施时发现：`load_skill` 必须显式纳入常驻**（v1.5.1 补，本文档原未预见）。
+
+`selectSkills` 会把 `availableTools` 过滤成「命中的技能声明的工具 + 常驻 helper」。
+`load_skill` **两头都不占**：
+- 它不在 `ALWAYS_EXPOSED_NATIVE_HELPERS`（那个集合只列 11 个屏幕 helper）
+- 没有任何技能的 `toolNames` / `moduleIds` 声明它
+
+后果：`<available_skills>` 清单**常驻** system prompt 并指示模型调用 `load_skill`，
+但**工具表里没有它**——等于教模型调一个不存在的工具。模型会反复尝试、反复失败。
+
+**修法**：把「常驻」的判定从 `isAlwaysExposedNativeHelper` 扩展为 `isAlwaysExposedTool`
+（helper **或**按需入口）。注意 prompt 里那段 "Always-available agent-native helpers"
+说的是 helper，**不应**包含 `load_skill`，故保留两个函数、分开使用。
+
+> **这是设计文档的盲区**：它把 `load_skill` 当作「新增工具」讨论，
+> 没意识到 `selectSkills` 会参与**所有**工具的下发决策。
+> **P1-1 的 `query_module_schema` / `call_module` 会踩同一个坑**——
+> 它们同样不在任何技能的 `moduleIds` 里，若不加进常驻，撤走 59 个模块工具后
+> 模型将**既没有模块工具、也拿不到查询入口**。这一点已在 P1-1 的实施要点里标注。
+
 **改动量**：中。
 
 **不需要的**：`ChatConversation` 加字段、状态同步逻辑、清理时机判断——**历史本身就是状态**。
+
+> **实测修正（v1.5.1）**：上述 ④ 预估「3 处 `buildSystemPrompt` 断言失败」，
+> **实际只有 1 处**（`skillRouter_promptInstructsObservationAndVerification` 的末条断言）。
+> 另外 12 处失败是**新增 `load_skill` 进 `sampleTools()` 后，工具表基准变了**——
+> 修的是 `expectedToolNames` / `alwaysExposedNativeToolNames` 两个共享辅助函数，
+> 不是逐个改用例断言。
+>
+> 教训：**测试里的共享基准（这里是一个辅助函数）比断言本身更能放大改动面**。
+> 改工具集合时先看辅助函数，比逐个核断言高效。
 
 ---
 
@@ -623,6 +652,10 @@ data class ImmediateResult(
 - **返回结构须含 `scopes[]` 与 `callable`**——见 §3.4（设计 B）
 - **查询域 = 184**（能进保存工作流的全部），不是 59
 - **挂载点**：常驻（不再限于工作流技能——`call_module` 场景也需要）
+  - ⚠️ **必须显式加进 `isAlwaysExposedTool`**（见 §P0-2 前置⑤）。`query_module_schema` 与
+    `call_module` 都不在任何技能的 `moduleIds` 里，`selectSkills` 会把它们过滤掉。
+    **P1-1c 撤走 59 个模块工具后，若这两个入口没进常驻，模型将既没有模块工具、
+    也拿不到查询入口——彻底失能。** 这是本批次最容易漏、后果最严重的一点。
 
 **现成参考**：`ModuleHandler.kt:172` 的 `handleGetModuleDetail` 已经是这个做法（用 `getInputs()` 静态全量），可直接复用其组装逻辑。
 
@@ -1038,3 +1071,26 @@ P1-1c ──→ P2-2        （缓存需要前缀稳定）
 
 - P0-3 比预估更简单——`ChatToolResult` 自带 `name` 字段，无需扩充 `format()` 的调用方签名
 - P0-1 的静默丢弃（`?: return@forEach`）已改为显式错误，并在消息里附上可用键供模型自愈
+
+### v1.5.2（2026-09-14）—— P0-2 实施期修正，**第一批完成**
+
+**新增发现（本文档原未预见，已补入 §P0-2 前置⑤）**：
+
+**`load_skill` 会被 `selectSkills` 过滤掉。** `selectSkills` 把 `availableTools` 过滤成
+「命中技能声明的工具 + 常驻 helper」，而 `load_skill` 两头都不占。后果是
+`<available_skills>` 清单常驻 system prompt 却调不到对应工具。
+
+**修法**：新增 `isAlwaysExposedTool`（helper **或**按需入口），与 `isAlwaysExposedNativeHelper`
+并存——后者仍用于 prompt 里 "Always-available agent-native helpers" 那段（那里说的是 helper）。
+
+> ⚠️ **对 P1-1 的强约束**：`query_module_schema` / `call_module` 会踩**同一个坑**，
+> 且后果更严重——P1-1c 撤走 59 个模块工具后，若这两个入口没进常驻，
+> 模型将既没有模块工具、也拿不到查询入口。已写入 P1-1 实施要点。
+
+**测试代价的实测修正**：原预估 3 处 `buildSystemPrompt` 断言失败，**实际只有 1 处**。
+其余 12 处是**共享辅助函数**（`expectedToolNames` / `alwaysExposedNativeToolNames`）
+随新工具进 `sampleTools()` 而失配，改辅助函数即可，不必逐个改断言。
+
+**第一批状态**：P0-3 / P0-1 / P0-2 全部实施并提交，`./gradlew test` 452 通过 / 1 失败
+（失败为上游预存问题，与本批次无关）。**待真机验证**：`load_skill` 是否真被模型调用、
+审批是否确实不弹。
