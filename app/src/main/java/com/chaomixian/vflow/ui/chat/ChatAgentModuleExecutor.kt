@@ -382,6 +382,9 @@ internal class ChatAgentModuleExecutor(
                 riskLevel = ChatAgentToolRiskLevel.READ_ONLY,
             )
         }
+        if (toolCall.name == CHAT_CALL_MODULE_TOOL_NAME) {
+            return prepareCallModule(toolCall, artifactStore)
+        }
         if (toolCall.name == CHAT_TEMPORARY_WORKFLOW_TOOL_NAME) {
             return prepareTemporaryWorkflow(toolCall, artifactStore)
         }
@@ -1454,6 +1457,95 @@ internal class ChatAgentModuleExecutor(
             },
         )
     }
+
+    /**
+     * 处理 `call_module(module_id, params)`：通用模块执行入口。
+     *
+     * 59 个模块工具撤出 `tools` 数组后，模型须先 `query_module_schema` 拿字段定义，
+     * 再用本工具执行——**它是固定工具，永远在**。
+     *
+     * ### 四项校验（文档 §P1-1b 的契约）
+     *
+     * 1. **`callable` 校验**：不在 `DIRECT_TOOL` 集合则明确报错。
+     *    不信任模型从查询结果里读到的 `callable`——它可能凭记忆直接调。
+     * 2. **params 自行校验**：`params` 是通用 object，provider 的 `strict` 校验失效，
+     *    必须用与 `query_module_schema` 同一份定义在服务端校验。
+     * 3. **风险等级取目标模块的实际等级**，不能一律放行——它是「万能入口」，
+     *    审批若按「调用 call_module」这个动作统一判定，会绕过所有模块的风险评估。
+     * 4. 参数错误**显式报错**，不静默丢弃（依赖 P0-1）。
+     */
+    private fun prepareCallModule(
+        toolCall: ChatToolCall,
+        artifactStore: ChatAgentArtifactStore,
+    ): ChatPreparedToolItem {
+        val arguments = parseArguments(toolCall.argumentsJson)
+        val moduleId = arguments["module_id"]?.toString()?.trim().orEmpty()
+        if (moduleId.isBlank()) {
+            return callModuleError(toolCall, "Missing `module_id`.")
+        }
+
+        val module = ModuleRegistry.getModule(moduleId)
+            ?: return callModuleError(
+                toolCall,
+                "Unknown module `$moduleId`. Use the module ids listed in the workflow tool descriptions.",
+            )
+
+        // 校验 1：能否直接调用。不信任模型查过的结果。
+        if (ChatAgentToolUsageScope.DIRECT_TOOL !in toolRegistry.getUsageScopesForModuleId(moduleId)) {
+            return callModuleError(
+                toolCall,
+                "`$moduleId` cannot be called directly — it is only valid as a workflow step. " +
+                    "Use `$CHAT_SAVE_WORKFLOW_TOOL_NAME` or `$CHAT_TEMPORARY_WORKFLOW_TOOL_NAME` " +
+                    "if you need this module as part of a workflow.",
+            )
+        }
+
+        // 用真实模块的信息构造 definition：prepareModuleStep 复用它生成错误消息的 summary，
+        // 并据此推导权限与风险等级。
+        val definition = ChatAgentToolDefinition(
+            name = chatToolNameFromModuleId(moduleId),
+            title = module.metadata.getLocalizedName(appContext),
+            description = "",
+            moduleId = moduleId,
+            moduleDisplayName = module.metadata.getLocalizedName(appContext),
+            inputSchema = JsonObject(emptyMap()),
+            permissionNames = emptyList(),
+            riskLevel = toolRegistry.getRiskLevelForModuleId(moduleId),
+            usageScopes = toolRegistry.getUsageScopesForModuleId(moduleId),
+        )
+
+        // params 是嵌套的 JSON 子树，原样取出即可——buildParameters 自己会解析。
+        // 直接从原始 JSON 取，避免经 Map 往返丢失类型信息。
+        val rawParamsJson = runCatching {
+            json.parseToJsonElement(toolCall.argumentsJson)
+                .jsonObject["params"]
+                ?.jsonObject
+                ?.toString()
+        }.getOrNull().orEmpty()
+
+        // 复用主执行链：参数构建（含 P0-1 的非退化求值与显式报错）、validate、权限计算。
+        // stepId 用模块 id，便于模型在后续轮次用 {{STEP_ID.OUTPUT}} 引用本次输出。
+        return prepareModuleStep(
+            toolCall = toolCall,
+            definition = definition,
+            module = module,
+            rawArgumentsJson = rawParamsJson,
+            artifactStore = artifactStore,
+            stepId = moduleId,
+        )
+    }
+
+    private fun callModuleError(toolCall: ChatToolCall, message: String): ChatPreparedToolItem =
+        ChatPreparedToolItem.ImmediateResult(
+            toolCall = toolCall,
+            result = ChatToolResult(
+                callId = toolCall.id,
+                name = toolCall.name,
+                status = ChatToolResultStatus.ERROR,
+                summary = "执行模块",
+                outputText = message,
+            ),
+        )
 
     /**
      * 处理 `query_module_schema`：返回模块的完整字段定义。

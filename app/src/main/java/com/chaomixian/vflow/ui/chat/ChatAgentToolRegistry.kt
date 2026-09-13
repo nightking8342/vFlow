@@ -105,6 +105,7 @@ internal class ChatAgentToolRegistry(context: Context) {
                 buildSaveWorkflowToolDefinition(),
                 buildLoadSkillToolDefinition(),
                 buildQueryModuleSchemaToolDefinition(),
+                buildCallModuleToolDefinition(),
             ) +
                 ChatAgentNativeToolExecutor.buildDefinitions(appContext) +
                 buildDirectToolDefinitions()
@@ -325,6 +326,62 @@ internal class ChatAgentToolRegistry(context: Context) {
             riskLevel = ChatAgentToolRiskLevel.READ_ONLY,
             usageScopes = setOf(ChatAgentToolUsageScope.DIRECT_TOOL),
             truncatable = false,
+        )
+    }
+
+    /**
+     * `call_module`：通用模块执行入口。
+     *
+     * ⚠️ 这里声明的 `riskLevel` 是**占位值**，不会被用于审批——`prepareCallModule`
+     * 会用目标模块的真实风险等级构造执行项（见 `ChatAgentModuleExecutor.prepareCallModule`）。
+     * 若此处被当成实际风险，`call_module` 就成了绕过所有模块风险评估的后门。
+     */
+    private fun buildCallModuleToolDefinition(): ChatAgentToolDefinition {
+        return ChatAgentToolDefinition(
+            name = CHAT_CALL_MODULE_TOOL_NAME,
+            title = "执行模块",
+            description = buildString {
+                append("Execute a vFlow module directly. ")
+                append("Call `$CHAT_QUERY_MODULE_SCHEMA_TOOL_NAME` first to get the module's exact ")
+                append("parameter ids and types — guessing parameter names will fail. ")
+                append("Pass the module id as `module_id` and its parameters as `params`. ")
+                append("Only modules that report `callable: true` can be called this way; ")
+                append("others can only appear as workflow steps. ")
+                append("The approval prompt uses the target module's own risk level.")
+            },
+            moduleId = CHAT_CALL_MODULE_MODULE_ID,
+            moduleDisplayName = "执行模块",
+            routingHints = setOf("执行模块", "调用模块", "call module", "execute"),
+            inputSchema = buildJsonObject {
+                put("type", "object")
+                put(
+                    "properties",
+                    buildJsonObject {
+                        put(
+                            "module_id",
+                            buildJsonObject {
+                                put("type", "string")
+                                put("description", "Canonical module id to execute.")
+                            }
+                        )
+                        put(
+                            "params",
+                            buildJsonObject {
+                                put("type", "object")
+                                put(
+                                    "description",
+                                    "Module parameters, keyed by the parameter ids returned by " +
+                                        "$CHAT_QUERY_MODULE_SCHEMA_TOOL_NAME."
+                                )
+                            }
+                        )
+                    }
+                )
+                put("required", buildJsonArray { add(JsonPrimitive("module_id")) })
+            },
+            permissionNames = emptyList(),
+            riskLevel = ChatAgentToolRiskLevel.STANDARD,
+            usageScopes = setOf(ChatAgentToolUsageScope.DIRECT_TOOL),
         )
     }
 

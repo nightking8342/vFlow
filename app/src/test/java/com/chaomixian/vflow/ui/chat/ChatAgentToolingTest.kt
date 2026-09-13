@@ -471,6 +471,19 @@ class ChatAgentToolingTest {
         )
     }
 
+    @Test
+    fun callModuleIsAlwaysExposedAndReadOnlyQueryIsToo() {
+        // call_module / query_module_schema 是「万能入口 + 查询入口」，
+        // 撤走 59 个模块工具后它们就是模型唯一能触达模块的通道。
+        val exposed = ChatAgentSkillRouter.selectSkills(
+            history = listOf(userMessage("解释一下 Koog 的设计思路")),
+            availableTools = sampleTools(),
+        ).availableTools.map { it.name }
+
+        assertTrue(exposed.contains(CHAT_CALL_MODULE_TOOL_NAME))
+        assertTrue(exposed.contains(CHAT_QUERY_MODULE_SCHEMA_TOOL_NAME))
+    }
+
     /**
      * 所有「按需入口」必须在任何输入下都常驻。
      *
