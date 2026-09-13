@@ -48,6 +48,16 @@ internal const val CHAT_TEMPORARY_WORKFLOW_MODULE_ID = "vflow.agent.temporary_wo
 internal const val CHAT_SAVE_WORKFLOW_TOOL_NAME = "vflow_agent_save_workflow"
 internal const val CHAT_SAVE_WORKFLOW_MODULE_ID = "vflow.agent.save_workflow"
 
+/**
+ * 按需加载技能正文的工具名。
+ *
+ * 技能**清单**（name + description）常驻 system prompt；
+ * **正文**（instructions）只在模型调用本工具时返回，作为 tool result 进入对话历史后永久留存。
+ * 这样技能不会因话题切换而消失——历史即状态，无需额外的会话状态字段。
+ */
+internal const val CHAT_LOAD_SKILL_TOOL_NAME = "vflow_agent_load_skill"
+internal const val CHAT_LOAD_SKILL_MODULE_ID = "vflow.agent.load_skill"
+
 internal fun chatToolNameFromModuleId(moduleId: String): String {
     val normalized = moduleId
         .lowercase()
@@ -68,7 +78,11 @@ internal class ChatAgentToolRegistry(context: Context) {
         temporaryWorkflowModuleIds = buildTemporaryWorkflowModuleIds()
         savedWorkflowModuleIds = buildSavedWorkflowModuleIds()
         toolsByName = (
-            listOf(buildTemporaryWorkflowToolDefinition(), buildSaveWorkflowToolDefinition()) +
+            listOf(
+                buildTemporaryWorkflowToolDefinition(),
+                buildSaveWorkflowToolDefinition(),
+                buildLoadSkillToolDefinition(),
+            ) +
                 ChatAgentNativeToolExecutor.buildDefinitions(appContext) +
                 buildDirectToolDefinitions()
             ).associateBy { it.name }
@@ -167,6 +181,53 @@ internal class ChatAgentToolRegistry(context: Context) {
             riskLevel = ChatAgentToolRiskLevel.STANDARD,
             usageScopes = setOf(ChatAgentToolUsageScope.TEMPORARY_WORKFLOW),
             backend = ChatAgentToolBackend.TEMPORARY_WORKFLOW,
+        )
+    }
+
+    /**
+     * `load_skill`：按需加载技能正文。
+     *
+     * 纯本地计算（查 [ChatAgentSkillRouter.skillInstructions] + 拼字符串），
+     * **无权限、无副作用、无 IO**，故 riskLevel = READ_ONLY 且 `truncatable = false`
+     * （正文必须完整——加载它就是为了拿到全部内容，截断等于让这次调用白做）。
+     */
+    private fun buildLoadSkillToolDefinition(): ChatAgentToolDefinition {
+        val availableIds = ChatAgentSkillRouter.skillListing().joinToString(", ") { it.id }
+        return ChatAgentToolDefinition(
+            name = CHAT_LOAD_SKILL_TOOL_NAME,
+            title = "加载技能说明",
+            description = buildString {
+                append("Load the full instructions of a skill listed in <available_skills>. ")
+                append("The skill listing shows only ids and one-line descriptions; ")
+                append("call this tool to get the detailed rules before doing work that the skill covers. ")
+                append("This is a local lookup with no side effects. ")
+                append("Available skill ids: ")
+                append(availableIds)
+                append(".")
+            },
+            moduleId = CHAT_LOAD_SKILL_MODULE_ID,
+            moduleDisplayName = "加载技能说明",
+            routingHints = setOf("技能", "skill", "load skill", "说明", "instructions"),
+            inputSchema = buildJsonObject {
+                put("type", "object")
+                put(
+                    "properties",
+                    buildJsonObject {
+                        put(
+                            "skill_id",
+                            buildJsonObject {
+                                put("type", "string")
+                                put("description", "Id of the skill to load, as shown in <available_skills>.")
+                            }
+                        )
+                    }
+                )
+                put("required", buildJsonArray { add(JsonPrimitive("skill_id")) })
+            },
+            permissionNames = emptyList(),
+            riskLevel = ChatAgentToolRiskLevel.READ_ONLY,
+            usageScopes = setOf(ChatAgentToolUsageScope.DIRECT_TOOL),
+            truncatable = false,
         )
     }
 

@@ -128,9 +128,18 @@ internal sealed interface ChatPreparedToolItem {
         val missingPermissions: List<Permission>,
     ) : ChatPreparedToolItem
 
+    /**
+     * 无需执行、直接返回结果的工具调用。
+     *
+     * @property riskLevel 该次调用对整批风险等级的贡献（batch 取 max）。
+     *   默认 [ChatAgentToolRiskLevel.HIGH]：现有使用点都是错误/前置校验路径，标 HIGH 合理。
+     *   纯本地计算、无副作用的工具（如 `load_skill`）应显式传 `READ_ONLY`——
+     *   否则每次调用都会触发审批弹窗。
+     */
     data class ImmediateResult(
         override val toolCall: ChatToolCall,
         val result: ChatToolResult,
+        val riskLevel: ChatAgentToolRiskLevel = ChatAgentToolRiskLevel.HIGH,
     ) : ChatPreparedToolItem
 
     data class TemporaryWorkflow(
@@ -349,7 +358,7 @@ internal class ChatAgentModuleExecutor(
             is ChatPreparedToolItem.NativeReady -> item.definition.riskLevel
             is ChatPreparedToolItem.TemporaryWorkflow -> item.riskLevel
             is ChatPreparedToolItem.SaveWorkflow -> item.riskLevel
-            is ChatPreparedToolItem.ImmediateResult -> ChatAgentToolRiskLevel.HIGH
+            is ChatPreparedToolItem.ImmediateResult -> item.riskLevel
         }
     }
 
@@ -357,6 +366,15 @@ internal class ChatAgentModuleExecutor(
         toolCall: ChatToolCall,
         artifactStore: ChatAgentArtifactStore,
     ): ChatPreparedToolItem {
+        if (toolCall.name == CHAT_LOAD_SKILL_TOOL_NAME) {
+            return ChatPreparedToolItem.ImmediateResult(
+                toolCall = toolCall,
+                result = prepareLoadSkill(toolCall),
+                // 纯本地查表 + 拼字符串：无权限、无副作用、无 IO，
+                // 若沿用 ImmediateResult 的默认 HIGH，每次加载技能都会弹审批。
+                riskLevel = ChatAgentToolRiskLevel.READ_ONLY,
+            )
+        }
         if (toolCall.name == CHAT_TEMPORARY_WORKFLOW_TOOL_NAME) {
             return prepareTemporaryWorkflow(toolCall, artifactStore)
         }
@@ -1375,6 +1393,59 @@ internal class ChatAgentModuleExecutor(
     private fun String.compactForLog(maxLength: Int = 160): String {
         val compact = replace(Regex("""\s+"""), " ").trim()
         return if (compact.length > maxLength) compact.take(maxLength) + "…" else compact
+    }
+
+    /**
+     * 处理 `load_skill`：按 id 返回技能正文。
+     *
+     * 正文作为 **tool result** 返回，进入对话历史后永久留存——这治的是
+     * 「技能随话题切换而消失」：正文若每轮重算地拼进 system prompt，
+     * 话题一换就掉出上下文。改造前 vFlow 正是那样做的。
+     *
+     * 失败时**明确报错并给出可选 id**，而不是返回空内容——模型拿到空字符串
+     * 会以为技能没有内容，比报错更难自愈。
+     */
+    private fun prepareLoadSkill(toolCall: ChatToolCall): ChatToolResult {
+        val skillId = parseArguments(toolCall.argumentsJson)["skill_id"]?.toString()?.trim().orEmpty()
+        val listing = ChatAgentSkillRouter.skillListing()
+
+        if (skillId.isBlank()) {
+            return ChatToolResult(
+                callId = toolCall.id,
+                name = toolCall.name,
+                status = ChatToolResultStatus.ERROR,
+                summary = "加载技能说明",
+                outputText = "Missing `skill_id`. Available skills: " +
+                    listing.joinToString(", ") { it.id } + ".",
+            )
+        }
+
+        val skill = ChatAgentSkillRouter.skillInstructions(skillId)
+            ?: return ChatToolResult(
+                callId = toolCall.id,
+                name = toolCall.name,
+                status = ChatToolResultStatus.ERROR,
+                summary = "加载技能说明",
+                outputText = "Unknown skill `$skillId`. Available skills: " +
+                    listing.joinToString(", ") { it.id } + ".",
+            )
+
+        return ChatToolResult(
+            callId = toolCall.id,
+            name = toolCall.name,
+            status = ChatToolResultStatus.SUCCESS,
+            summary = skill.title,
+            outputText = buildString {
+                append("<skill id=\"")
+                append(skill.id)
+                append("\" title=\"")
+                append(skill.title)
+                append("\">\n")
+                // 正文原样输出，不做任何裁剪——加载技能就是为了拿到全部内容。
+                append(skill.instructions.trim())
+                append("\n</skill>")
+            },
+        )
     }
 
     private fun parseArguments(rawArgumentsJson: String): Map<String, Any?> {

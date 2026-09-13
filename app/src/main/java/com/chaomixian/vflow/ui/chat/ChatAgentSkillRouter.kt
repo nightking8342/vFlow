@@ -25,12 +25,25 @@ internal data class ChatAgentSkillSelection(
 }
 
 internal object ChatAgentSkillRouter {
+    /**
+     * 全部技能的**清单条目**（id / title / description），供 `<available_skills>` 常驻段使用。
+     * 不含正文——正文经 [skillInstructions] 按需加载。
+     */
+    fun skillListing(): List<ChatAgentSkillDefinition> = SKILL_CATALOG.map { it.definition }
+
+    /**
+     * 按 id 取技能**正文**，供 `load_skill` 工具返回。
+     * 找不到时返回 null（调用方据此回错误给模型，而不是静默返回空）。
+     */
+    fun skillInstructions(skillId: String): ChatAgentSkillDefinition? =
+        SKILL_CATALOG.firstOrNull { it.definition.id == skillId }?.definition
+
     fun selectSkills(
         history: List<ChatMessage>,
         availableTools: List<ChatAgentToolDefinition>,
     ): ChatAgentSkillSelection {
         if (availableTools.isEmpty()) return ChatAgentSkillSelection.EMPTY
-        val alwaysExposedTools = availableTools.filter(::isAlwaysExposedNativeHelper)
+        val alwaysExposedTools = availableTools.filter(::isAlwaysExposedTool)
 
         val latestUserText = history.lastOrNull { it.role == ChatMessageRole.USER }
             ?.content
@@ -111,19 +124,28 @@ internal object ChatAgentSkillRouter {
                 appendLine(alwaysOnNativeTools.joinToString(separator = ", ") { it.name })
                 appendLine("These helpers stay available even when no specialized skill is selected.")
             }
-            if (skillSelection.skills.isNotEmpty()) {
+            // 技能**清单**常驻：只放 id + 标题 + 一句话描述，供模型判断「要不要加载」。
+            // **正文不再进 system prompt**——它在模型调用 load_skill 时作为 tool result
+            // 进入对话历史，之后永久留存。这治的是「技能随话题切换而消失」：
+            // 正文若每轮重算，话题一换就掉出上下文。
+            val listing = skillListing()
+            if (listing.isNotEmpty()) {
                 appendLine()
-                appendLine("Active skills:")
-                skillSelection.skills.forEach { skill ->
+                appendLine("<available_skills>")
+                listing.forEach { skill ->
                     append("- ")
-                    append(skill.title)
-                    append(" (")
                     append(skill.id)
-                    append("): ")
+                    append(": ")
+                    append(skill.title)
+                    append(" — ")
                     appendLine(skill.description)
-                    appendLine(skill.instructions.trim())
-                    appendLine()
                 }
+                appendLine("</available_skills>")
+                appendLine(
+                    "Skills above are listed by name only. " +
+                        "Call `$CHAT_LOAD_SKILL_TOOL_NAME` with a skill id to load its full instructions " +
+                        "before doing work that the skill covers."
+                )
             }
         }.trim()
 
@@ -132,6 +154,20 @@ internal object ChatAgentSkillRouter {
             .joinToString(separator = "\n\n")
     }
 
+    /**
+     * 该工具是否**无条件常驻**，不受技能关键词路由影响。
+     *
+     * 两类：
+     * 1. 屏幕操作 helper——它们是模型的「感官手脚」，任何一轮都可能需要，
+     *    不能因关键词没命中就消失（`ALWAYS_EXPOSED_NATIVE_HELPERS` 即全部 11 个 helper）。
+     * 2. **按需入口**（`load_skill`）——`<available_skills>` 清单常驻 system prompt 并
+     *    指示模型调用它，若工具表里没有它，清单就是在教模型调一个不存在的工具。
+     */
+    private fun isAlwaysExposedTool(tool: ChatAgentToolDefinition): Boolean {
+        return isAlwaysExposedNativeHelper(tool) || tool.name == CHAT_LOAD_SKILL_TOOL_NAME
+    }
+
+    /** 常驻的屏幕操作 helper（不含按需入口——prompt 里那段只描述 helper）。 */
     private fun isAlwaysExposedNativeHelper(tool: ChatAgentToolDefinition): Boolean {
         return tool.backend == ChatAgentToolBackend.NATIVE_HELPER &&
             tool.nativeHelperId in ALWAYS_EXPOSED_NATIVE_HELPERS

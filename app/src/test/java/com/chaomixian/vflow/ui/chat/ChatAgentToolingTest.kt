@@ -71,7 +71,7 @@ class ChatAgentToolingTest {
         )
 
         assertTrue(selected.skills.isEmpty())
-        assertEquals(alwaysExposedNativeToolNames(), selected.availableTools.map { it.name })
+        assertEquals(alwaysExposedToolNames(), selected.availableTools.map { it.name })
     }
 
     @Test
@@ -259,7 +259,7 @@ class ChatAgentToolingTest {
         )
 
         assertTrue(selected.skills.isEmpty())
-        assertEquals(alwaysExposedNativeToolNames(), selected.availableTools.map { it.name })
+        assertEquals(alwaysExposedToolNames(), selected.availableTools.map { it.name })
     }
 
     @Test
@@ -270,7 +270,7 @@ class ChatAgentToolingTest {
         )
 
         assertTrue(selected.skills.isEmpty())
-        assertEquals(alwaysExposedNativeToolNames(), selected.availableTools.map { it.name })
+        assertEquals(alwaysExposedToolNames(), selected.availableTools.map { it.name })
     }
 
     @Test
@@ -281,7 +281,7 @@ class ChatAgentToolingTest {
         )
 
         assertTrue(selected.skills.isEmpty())
-        assertEquals(alwaysExposedNativeToolNames(), selected.availableTools.map { it.name })
+        assertEquals(alwaysExposedToolNames(), selected.availableTools.map { it.name })
     }
 
     @Test
@@ -292,7 +292,7 @@ class ChatAgentToolingTest {
         )
 
         assertTrue(selected.skills.isEmpty())
-        assertEquals(alwaysExposedNativeToolNames(), selected.availableTools.map { it.name })
+        assertEquals(alwaysExposedToolNames(), selected.availableTools.map { it.name })
     }
 
     @Test
@@ -418,6 +418,83 @@ class ChatAgentToolingTest {
         assertTrue(unknown.contains("... truncated"))
     }
 
+    @Test
+    fun skillListingContainsIdTitleAndDescriptionOnly() {
+        val listing = ChatAgentSkillRouter.skillListing()
+
+        assertTrue("技能清单不应为空", listing.isNotEmpty())
+        // 清单用于 system prompt 常驻段，必须只含轻量字段。
+        assertTrue(listing.all { it.id.isNotBlank() })
+        assertTrue(listing.all { it.title.isNotBlank() })
+        assertTrue(listing.all { it.description.isNotBlank() })
+        // 14 个技能（P0-2 不改技能集合，瘦身留给 P1-3B）
+        assertEquals(14, listing.size)
+    }
+
+    @Test
+    fun skillInstructionsReturnsFullBodyForKnownSkill() {
+        val skill = requireNotNull(ChatAgentSkillRouter.skillInstructions("flashlight_control"))
+
+        assertEquals("flashlight_control", skill.id)
+        assertTrue(skill.instructions.isNotBlank())
+        // 正文是「加载它就是为了拿到全部内容」，不做裁剪。
+        assertTrue(skill.instructions.contains("flashlight"))
+    }
+
+    @Test
+    fun skillInstructionsReturnsNullForUnknownSkill() {
+        assertNull(ChatAgentSkillRouter.skillInstructions("no_such_skill"))
+    }
+
+    @Test
+    fun loadSkillToolIsAlwaysExposedRegardlessOfKeywords() {
+        // load_skill 是「按需入口」：<available_skills> 清单常驻并指示模型调用它，
+        // 若工具表里没有它，清单就是在教模型调一个不存在的工具。
+        val listingTools = { text: String ->
+            ChatAgentSkillRouter.selectSkills(
+                history = listOf(userMessage(text)),
+                availableTools = sampleTools(),
+            ).availableTools.map { it.name }
+        }
+
+        assertTrue(
+            "纯闲聊轮也必须暴露 load_skill",
+            listingTools("解释一下 Koog 的设计思路").contains(CHAT_LOAD_SKILL_TOOL_NAME),
+        )
+        assertTrue(
+            "操作轮也必须暴露 load_skill",
+            listingTools("打开手电筒").contains(CHAT_LOAD_SKILL_TOOL_NAME),
+        )
+        assertTrue(
+            "空输入轮也必须暴露 load_skill",
+            listingTools("").contains(CHAT_LOAD_SKILL_TOOL_NAME),
+        )
+    }
+
+    @Test
+    fun systemPromptListsSkillsWithoutEmbeddingInstructions() {
+        val selection = ChatAgentSkillRouter.selectSkills(
+            history = listOf(userMessage("打开手电筒")),
+            availableTools = sampleTools(),
+        )
+
+        val prompt = ChatAgentSkillRouter.buildSystemPrompt(
+            basePrompt = "Base prompt",
+            skillSelection = selection,
+        )
+
+        // 清单在
+        assertTrue(prompt.contains("<available_skills>"))
+        assertTrue(prompt.contains("flashlight_control"))
+        assertTrue(prompt.contains(CHAT_LOAD_SKILL_TOOL_NAME))
+        // 正文不在——这是治疗病症 A 的关键：正文改走 tool result 进历史。
+        val flashlight = requireNotNull(ChatAgentSkillRouter.skillInstructions("flashlight_control"))
+        assertTrue(
+            "技能正文不得出现在 system prompt 中",
+            !prompt.contains(flashlight.instructions.trim()),
+        )
+    }
+
     private fun testToolDefinition(name: String, truncatable: Boolean): ChatAgentToolDefinition {
         return ChatAgentToolDefinition(
             name = name,
@@ -461,7 +538,11 @@ class ChatAgentToolingTest {
         assertTrue(prompt.contains("Do not hide scrolling inside a read request"))
         assertTrue(prompt.contains("summarize from the currently visible node-tree text first"))
         assertTrue(prompt.contains("Before you say a screen-based task is complete"))
-        assertTrue(prompt.contains("Prefer `find_element` over OCR"))
+        // 技能**正文**不再进 system prompt——改为按需经 `load_skill` 加载。
+        // 这里断言的是「清单在、正文不在」这个新契约。
+        assertTrue(prompt.contains("<available_skills>"))
+        assertTrue(prompt.contains("screen_observation"))
+        assertTrue(!prompt.contains("Prefer `find_element` over OCR"))
     }
 
     @Test
@@ -622,6 +703,10 @@ class ChatAgentToolingTest {
                 usageScopes = setOf(ChatAgentToolUsageScope.SAVED_WORKFLOW),
             ),
             sampleTool(
+                name = CHAT_LOAD_SKILL_TOOL_NAME,
+                moduleId = CHAT_LOAD_SKILL_MODULE_ID,
+            ),
+            sampleTool(
                 name = "vflow_device_flashlight",
                 moduleId = "vflow.device.flashlight",
             ),
@@ -746,8 +831,25 @@ class ChatAgentToolingTest {
         )
     }
 
+    /**
+     * 预期工具表 = 常驻 helper + 常驻的按需入口（`load_skill`）+ 本轮命中的模块工具。
+     *
+     * `load_skill` 恒在：`<available_skills>` 清单常驻并指示模型调用它，
+     * 工具表里没有它就是在教模型调一个不存在的工具。
+     */
+    /**
+     * 完整常驻工具表 = 屏幕 helper + 按需入口（`load_skill`）。
+     *
+     * 顺序与 [sampleTools] 一致：`load_skill` 排在两个工作流工具之后、
+     * helper 之前？不——实际顺序由 `sampleTools()` 的排列决定，故这里按
+     * 「按需入口在最前」表达，与 registry 的注册顺序无关（selection 保持输入顺序）。
+     */
+    private fun alwaysExposedToolNames(): List<String> {
+        return listOf(CHAT_LOAD_SKILL_TOOL_NAME) + alwaysExposedNativeToolNames()
+    }
+
     private fun expectedToolNames(vararg extra: String): List<String> {
-        return alwaysExposedNativeToolNames() + extra.toList()
+        return alwaysExposedToolNames() + extra.toList()
     }
 
     private fun helperTool(
