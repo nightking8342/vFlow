@@ -40,8 +40,19 @@ internal object ChatToolResultInputFormatter {
     fun format(
         message: ChatMessage,
         toolResult: ChatToolResult,
+        toolDefinitions: List<ChatAgentToolDefinition> = emptyList(),
     ): String {
         val raw = message.content.ifBlank { toolResult.outputText }.trim()
+
+        // 声明为不可截断的工具（技能正文、模块 schema）原样返回：
+        // 加载它们就是为了拿到全部内容，截断等于让这次调用白做。
+        // 工具定义查不到时按可截断处理——与改造前的行为保持一致。
+        val truncatable = toolDefinitions
+            .firstOrNull { it.name == toolResult.name }
+            ?.truncatable
+            ?: true
+        if (!truncatable) return raw
+
         if (raw.length <= CHAT_MAX_TOOL_RESULT_INPUT_CHARS) return raw
 
         val marker = "... truncated"
@@ -299,7 +310,14 @@ internal class ChatCompletionClient(
                         items += buildJsonObject {
                             put("role", "tool")
                             put("tool_call_id", callId)
-                            put("content", ChatToolResultInputFormatter.format(message, toolResult))
+                            put(
+                                "content",
+                                ChatToolResultInputFormatter.format(
+                                    message,
+                                    toolResult,
+                                    request.skillSelection.availableTools,
+                                )
+                            )
                         }
                     }
 
@@ -344,7 +362,14 @@ internal class ChatCompletionClient(
                         items += buildJsonObject {
                             put("type", "function_call_output")
                             put("call_id", callId)
-                            put("output", ChatToolResultInputFormatter.format(message, toolResult))
+                            put(
+                                "output",
+                                ChatToolResultInputFormatter.format(
+                                    message,
+                                    toolResult,
+                                    request.skillSelection.availableTools,
+                                )
+                            )
                         }
                     }
 
@@ -835,7 +860,14 @@ internal class ChatCompletionClient(
                                     buildJsonObject {
                                         put("type", "tool_result")
                                         put("tool_use_id", callId)
-                                        put("content", ChatToolResultInputFormatter.format(message, toolResult))
+                                        put(
+                                            "content",
+                                            ChatToolResultInputFormatter.format(
+                                                message,
+                                                toolResult,
+                                                request.skillSelection.availableTools,
+                                            )
+                                        )
                                         put("is_error", toolResult.status != ChatToolResultStatus.SUCCESS)
                                     }
                                 )

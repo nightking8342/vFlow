@@ -3,6 +3,7 @@ package com.chaomixian.vflow.ui.chat
 import com.chaomixian.vflow.core.types.basic.VString
 import com.chaomixian.vflow.core.types.complex.VCoordinate
 import com.chaomixian.vflow.core.types.complex.VImage
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
@@ -344,6 +345,92 @@ class ChatAgentToolingTest {
         assertTrue(formatted.contains("artifact://call_1/image"))
         assertTrue(formatted.contains("... truncated"))
         assertTrue(formatted.length <= CHAT_MAX_TOOL_RESULT_INPUT_CHARS)
+    }
+
+    @Test
+    fun toolResultFormatter_doesNotTruncateToolDeclaredAsNotTruncatable() {
+        val longText = buildString {
+            repeat(CHAT_MAX_TOOL_RESULT_INPUT_CHARS * 3) {
+                append('a')
+            }
+            append(" tail must survive")
+        }
+
+        val formatted = ChatToolResultInputFormatter.format(
+            message = ChatMessage(
+                role = ChatMessageRole.TOOL,
+                content = longText,
+                timestampMillis = 1L,
+            ),
+            toolResult = ChatToolResult(
+                callId = "call_1",
+                name = "vflow_agent_load_skill",
+                status = ChatToolResultStatus.SUCCESS,
+                summary = "Skill",
+                outputText = longText,
+            ),
+            toolDefinitions = listOf(
+                testToolDefinition(name = "vflow_agent_load_skill", truncatable = false),
+            ),
+        )
+
+        assertEquals(longText, formatted)
+        assertFalse(formatted.contains("... truncated"))
+    }
+
+    @Test
+    fun toolResultFormatter_truncatesWhenToolIsTruncatableOrUnknown() {
+        val longText = buildString {
+            repeat(CHAT_MAX_TOOL_RESULT_INPUT_CHARS * 3) {
+                append('a')
+            }
+        }
+
+        val message = ChatMessage(
+            role = ChatMessageRole.TOOL,
+            content = longText,
+            timestampMillis = 1L,
+        )
+        val toolResult = ChatToolResult(
+            callId = "call_1",
+            name = "vflow_agent_observe_ui",
+            status = ChatToolResultStatus.SUCCESS,
+            summary = "UI tree",
+            outputText = longText,
+        )
+
+        // 显式声明可截断
+        val explicit = ChatToolResultInputFormatter.format(
+            message = message,
+            toolResult = toolResult,
+            toolDefinitions = listOf(
+                testToolDefinition(name = "vflow_agent_observe_ui", truncatable = true),
+            ),
+        )
+        assertTrue(explicit.contains("... truncated"))
+
+        // 名字查不到时按可截断处理（与改造前行为一致）
+        val unknown = ChatToolResultInputFormatter.format(
+            message = message,
+            toolResult = toolResult,
+            toolDefinitions = emptyList(),
+        )
+        assertTrue(unknown.contains("... truncated"))
+    }
+
+    private fun testToolDefinition(name: String, truncatable: Boolean): ChatAgentToolDefinition {
+        return ChatAgentToolDefinition(
+            name = name,
+            title = name,
+            description = "",
+            moduleId = "vflow.agent.test",
+            moduleDisplayName = name,
+            inputSchema = JsonObject(emptyMap()),
+            permissionNames = emptyList(),
+            riskLevel = ChatAgentToolRiskLevel.READ_ONLY,
+            usageScopes = setOf(ChatAgentToolUsageScope.DIRECT_TOOL),
+            truncatable = truncatable,
+        )
     }
 
     @Test

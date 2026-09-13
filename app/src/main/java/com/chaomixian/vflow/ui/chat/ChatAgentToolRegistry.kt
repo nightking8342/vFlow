@@ -30,6 +30,17 @@ data class ChatAgentToolDefinition(
     val usageScopes: Set<ChatAgentToolUsageScope>,
     val backend: ChatAgentToolBackend = ChatAgentToolBackend.MODULE,
     val nativeHelperId: ChatAgentNativeHelperId? = null,
+    /**
+     * 输出是否受 [CHAT_MAX_TOOL_RESULT_INPUT_CHARS] 截断。
+     *
+     * 该限制是为「机器 dump、结构重复、长尾无信息量」的输出兜底的（如观察无障碍节点树），
+     * 不是通用约束。两类工具必须显式声明 `false`：
+     * - 按需加载的人写知识（技能正文）——加载它就是为了拿到全部内容，截断等于让这次调用白做
+     * - 结构化元数据（模块 schema 字段定义）——截断的可能正好是字段名，会让模型拿到残缺的说明书
+     *
+     * 默认 `true` 保证新工具默认安全，只有明确声明的才豁免。
+     */
+    val truncatable: Boolean = true,
 )
 
 internal const val CHAT_TEMPORARY_WORKFLOW_TOOL_NAME = "vflow_agent_run_temporary_workflow"
