@@ -1,7 +1,7 @@
 # Chat Agent 架构重构设计（基于 CCB / dsh / OpenCode / Pi 四家对照分析）
 
-> 版本：v1.5.3（2026-09-14）
-> 状态：**P0 / P1 / P2 已全部实施**，部分验收项待真机（见 §4.2.1 / §4.3 验收表）。§4 起为执行契约。
+> 版本：v1.5.4（2026-09-14）
+> 状态：**P0 / P1 / P2 已全部实施**；第二批第 1/2 项**已真机通过**（§4.3.3）。剩余待真机项见 §4.3 验收表。
 > 分支：`feature/chat-agent-rearchitecture`（从 `dev` 出）
 > 目录：`docs/fork/`（fork 新增文件，上游无此文件，冲突归属**我方**）
 >
@@ -13,8 +13,12 @@
 > - v1.5.2：`load_skill` 必须显式**纳入常驻**（否则被工具路由过滤）
 > - v1.5.3：**第二批完成**；技能从「瘦身到 3–4 个」改为**清空**（核对后 70 行正文仅 6 行独有）；
 >   `ChatAgentSkillRouter.kt` 847 → 193 行；工具数 72 → 16
+> - v1.5.4：**第二批真机验证**（工具数 16 ✅、"关不掉手电筒"已治愈 ✅）；
+>   修复 `query_module_schema` 丢失字段语义的缺陷（`inputHints` 等 3 个字段共 67–97 模块受影响）；
+>   删除无效的 `operator` 参数
 >
-> **已完成真机验证**：§4.2.1（P0 三项全部通过）。**待真机**：§4.3 验收表第 1/2/3/8 项。
+> **已真机通过**：§4.2.1（P0 三项）、§4.3.3（第二批第 1/2 项）。
+> **待真机**：§4.3 验收表第 3 项（`call_module` 审批）、第 8 项（缓存命中）、第 9 项（字段语义复验）。
 
 ---
 
@@ -821,21 +825,81 @@ private fun buildDirectToolDefinitions(): List<ChatAgentToolDefinition> {
 
 | # | 验收项 | 状态 |
 |---|---|---|
-| 1 | **病症 A 复现**：建工作流后切话题，追问细节**不再需要用户复述** | ⬜ 待真机 |
-| 2 | **病症 C**：工具数 **72 → 16**；且"关不掉手电筒"场景**不再复现** | ⬜ 待真机 |
-| 3 | `call_module` 的**审批按目标模块风险等级**，不一律放行 | ⬜ 待真机 |
+| 1 | **病症 A 复现**：建工作流后切话题，追问细节**不再需要用户复述** | ✅ **真机证实**（见 §4.3.3） |
+| 2 | **病症 C**：工具数 **72 → 16**；且"关不掉手电筒"场景**不再复现** | ✅ **真机证实**（见 §4.3.3） |
+| 3 | `call_module` 的**审批按目标模块风险等级**，不一律放行 | ✅ 代码已定案（`prepareCallModule` 用目标模块等级构造 definition）；⚠️ 未经真机观察 |
 | 4 | **`selectSkills` 已删除**；四套关键词机制全部消失 | ✅ 已达成（`1afc0a8b`） |
 | 5 | 保留的技能**正文已改写**，不再引用旧工具名 | ✅ **改为清空**（`07f5ee86`，理由见 §P1-3B） |
 | 6 | **`ChatAgentToolingTest.kt` 按新架构改写完毕** | ✅ 已达成 |
 | 7 | `./gradlew test` 全绿 | ⚠️ 除 `VObjectPropertyTest` 的上游预存失败 |
 | 8 | **Anthropic 缓存命中**（读 `usage.cache_read_input_tokens`） | ⬜ 待真机 |
+| 9 | **`query_module_schema` 输出完整字段语义** | ✅ 已修复（`983abb1d`）；⬜ 待真机复验 |
 
-> ⚠️ **第 1、2、3、8 项均需真机**，且 `ChatAgentModuleExecutor` 需要真 `Context`，
-> **从未被单测覆盖**（既有盲区）——`query_module_schema` 的返回内容、`call_module`
-> 的审批判定，目前只有编译与单测层面的间接保证，**没有实证**。
->
-> **P1-1c 是全篇唯一会让模型短期变笨的改动**（从"59 个工具任选"变成"必须先查后调"），
-> 它最需要真机验证。
+> ⚠️ **`ChatAgentModuleExecutor` 需要真 `Context`，从未被单测覆盖**（既有盲区）——
+> `query_module_schema` 的返回内容、`call_module` 的审批判定，只有编译与
+> 间接单测层面的保证。**故第 3、8、9 项仍以真机为准。**
+
+#### 4.3.3 第二批真机验证：第 1、2 项通过（2026-09-14）
+
+**病症 C 与病症 A 的断点均已消除**（对比 §4.2.1 的旧版会话）：
+
+| 场景 | 旧版（P0） | 新版（P1/P2） |
+|---|---|---|
+| 问"你有几个工具" | "12 个"（真实 72） | **"16 个"** ✅ 准确 |
+| 打开手电筒 | 靠猜参数名 | `query_module_schema` → `call_module` ✅ |
+| **"把它关了"**（2 轮后） | ❌ **工具消失，做不到** | ✅ **做到了**（`call_module` 常驻） |
+| 问 `if.start` 参数 | "我看不到" | 完整列出 4 字段 + 19 算子 ✅ |
+| `callable: false` 说明 | — | ✅ 正确输出"不能直调但可作工作流步骤" |
+
+> **Q11 预测的「关不掉手电筒」断点已治愈**——这是 P1-1c 最核心的验收项。
+> 根因（工具随关键词路由消失）已随 `selectSkills` 删除而消失。
+
+#### 4.3.4 真机暴露的缺陷：`query_module_schema` 丢失字段语义（已修复）
+
+验证过程中用户提出一个尖锐问题，直接定位到一个**真 bug**：
+
+> "`number_between` 需要 value1 和 value2，这一点是 schema 定义里面写的吗？"
+
+模型查过 schema 后回答：
+
+> "**不是**……那是我从字段命名（比较值 1 / 比较值 2）和 `between` 的语义**猜的**"
+
+**但 `IfModule` 源码里本来就写着**：
+
+```kotlin
+inputHints = mapOf(
+    "input1" to "Primary value to test. Usually a previous step output or variable.",
+    "value2" to "Upper bound used only by the number_between operator.",
+)
+```
+
+**信息一直在，只是没送到模型面前。**
+
+**根因**：P1-1c 撤走 59 个模块工具时，`query_module_schema` 只搬了「字段定义」，
+**漏搬了一整类字段语义**：
+
+| `AiModuleMetadata` 字段 | 使用模块数 | 修复前 |
+|---|---|---|
+| `inputHints` | **67** | ❌ 丢失 |
+| `requiredInputIds` | **76** | ❌ 丢失 |
+| `workflowStepDescription` | **97** | ❌ 丢失 |
+| `directToolDescription` | 59 | ⚠️ 未用（用了面向人的本地化文案） |
+
+这些信息原本经模块工具的 JSON Schema 送给模型；**59 个工具撤出后唯一出口变成
+`query_module_schema`，而我没复用那套拼装逻辑**，信息便静默断流。
+
+**修复**（`983abb1d`）：提取 `buildModuleInputDescription` / `artifactTypeLabel` 为
+顶层共享函数（与 P0-1 提 `resolveModuleInputDefinitions` 同一手法），两条路径同源；
+输出补必填 `*` 标记、`workflowStepDescription`、优先 `directToolDescription`。
+
+**连带定案（§6.2 开放问题 2）**：**删除 `operator` 参数**。实测它无效——
+传 `number_between` 与 `number_gt` 返回完全相同，因为 `resolveModuleInputDefinitions`
+是**并集**求值，静态全集把动态裁剪结果吃掉了。且修好 `inputHints` 后它更无必要：
+「哪个字段被哪个算子用到」直接写在字段说明里。**若修好它需引入「会裁剪字段的求值模式」，
+那正是病症 B 的成因**，故删除而非修复。
+
+> **教训**：撤换一条信息通路时，要**穷举原通路承载的全部信息**，而不只是最显眼的那部分。
+> 本次漏掉的三个字段都是「模块作者专门为 AI 写的」，恰恰最不该丢。
 
 ---
 
@@ -1270,3 +1334,35 @@ description **逐字重复**，`generic_device_interaction` 10 行里 9 行与 p
 **真机待验**：病症 A 复现、工具数 16、"关不掉手电筒"、`call_module` 审批、
 Anthropic 缓存命中——这五项都需要真机，且 `ChatAgentModuleExecutor` 需要真 `Context`，
 **从未被单测覆盖**（既有盲区）。
+
+### v1.5.4（2026-09-14）—— 第二批真机验证 + 一个字段语义缺陷的修复
+
+**第 1、2 项验收真机通过**（详见 §4.3.3）：
+
+- **工具数 72 → 16**，模型自报"16 个"与代码一致
+- **"关不掉手电筒"断点已治愈**——Q11 预测的场景在新版不再复现，
+  根因（工具随关键词路由消失）随 `selectSkills` 删除而消失
+- `query_module_schema` → `call_module` 路径完整可用
+- 模型能查出 `if.start` 的 4 字段 + 19 算子（旧版答"我看不到"）
+
+**新发现并修复一个真 bug**（`983abb1d`，详见 §4.3.4）：
+
+P1-1c 撤走 59 个模块工具时，`query_module_schema` **只搬了字段定义，漏搬了一整类字段语义**——
+`inputHints`（67 模块）、`requiredInputIds`（76）、`workflowStepDescription`（97）、
+`directToolDescription`（59）。这些原本经模块工具的 JSON Schema 送给模型，
+换通路后我没复用那套拼装逻辑，信息静默断流。
+
+**真机如何暴露的**：用户问「`number_between` 需要 value1 和 value2 是 schema 写的吗」，
+模型答「那是我**猜的**」——而 `IfModule` 源码里明确写着
+`"value2" to "Upper bound used only by the number_between operator."`。
+
+**修复手法**：提取 `buildModuleInputDescription` / `artifactTypeLabel` 为顶层共享函数，
+两条路径同源（与 P0-1 提 `resolveModuleInputDefinitions` 一致）。
+
+**连带定案 §6.2 开放问题 2**：**删除 `operator` 参数**。实测无效（传不同算子返回相同，
+因为并集求值吃掉了动态裁剪），且修好 `inputHints` 后更无必要；
+修好它反而要引入会裁剪字段的求值模式——**那正是病症 B 的成因**。
+
+> **教训（已写入 §4.3.4）**：换信息通路时须**穷举原通路承载的全部信息**，
+> 而非只搬最显眼的那部分。本次漏掉的三个字段都是「模块作者专门为 AI 写的」，
+> 恰恰最不该丢。
