@@ -851,6 +851,7 @@ private fun buildDirectToolDefinitions(): List<ChatAgentToolDefinition> {
 | 10 | **函数工作流链路完整**：查签名 → 按签名传参 | ✅ **真机证实**（见 §4.3.5） |
 | 11 | **AI 侧字段可见性**：`isHidden` 的真参数不再被吞 | ✅ **真机证实**（`userId`/`maxResults` 可见，见 §4.3.5） |
 | 12 | **截断告知**改为结构化三段 + 收窄建议（P2-1a） | ✅ 单测 5 例覆盖（含 2 例新增）；⚠️ 未经真机观察（需一条 >1600 字符的输出）
+| 13 | **AI 能建出带参数的函数工作流**（§6.2 问题 6） | ⚠️ 单测 10 例覆盖（类型转换/默认值/空名/零参数/ANY 声明）；**未经真机**——`ChatAgentModuleExecutor` 需真 `Context`，是既有测试盲区
 
 > ⚠️ **`ChatAgentModuleExecutor` 需要真 `Context`，从未被单测覆盖**（既有盲区）——
 > `query_module_schema` 的返回内容、`call_module` 的审批判定，只有编译与
@@ -1277,6 +1278,11 @@ P0-3 把单条 tool result 卡在 **1,600 字符**（≈400 token），是四家
 | 36 | **P2-1b 只做摘要层，不抄四家的「清老工具输出」层**：P0-3 已把单条封顶 1,600 字符（四家里最狠），那层的前提（单条几万 token）在 vFlow 不存在 | §4.7 |
 | 37 | **P2-1b 推迟**：不阻塞本链、当前非瓶颈（20 轮约 8,000 token）、设计成本高且需真机数据定阈值。**动手前先打点记录 `totalTokens` 增长曲线** | §4.7 |
 | 38 | **P2-1b 的调研结论留在本设计文档，不新开文档**：内容量不够撑一篇（一张表）；它是本项的「去向说明」，读者顺着 §4.4 找过来就地看到最顺。真要设计 compaction 时再独立 | — |
+| 39 | **`functionParams` 声明为 `ParameterType.ANY` 而非 STRING**：STRING 走 `toString()`，`List<Map<...>>` 的 toString 不是合法 JSON，落库后解析必炸——A 方案因此不可行 | §6.2 问题 6 |
+| 40 | **引入通用钩子 `AiParameterNormalizer` 而非 `define_function` 特例**（否掉 B）：钩子只作用于 AI 路径，编辑器靠 UIProvider 已保证形态；契约要求纯函数、失败原样返回、不得增删键 | §6.2 问题 6 |
+| 41 | **`type` 接受简写（`string`）而非全限定 ID（`vflow.type.string`）**：与 `create_variable` 的 `Allowed values` 及编辑器下拉框一致，转换逻辑复用 `FunctionParamTypeMapper`。不是给 AI 开特例，是补上编辑器早就在做的那一步 | §6.2 问题 6 |
+| 42 | **不给 `define_function` 设 `requiredInputIds`**：零参数函数合法，标必填会让模型误以为必须有参数 | §6.2 问题 6 |
+| 43 | **名字非法/重名不在钩子里拦**，交给 `validate()` 回传模型自纠——钩子里静默丢会重现病症 B | §6.2 问题 6 |
 
 ### 6.2 仍开放
 
@@ -1287,7 +1293,7 @@ P0-3 把单条 tool result 卡在 **1,600 字符**（≈400 token），是四家
 | 3 | 技能清单的字节稳定化 | ✅ **已消失**：技能目录已清空，`<available_skills>` 段不再输出 |
 | 4 | 缓存是否真命中 | ⬜ **待真机**：读 Anthropic 响应的 `usage.cache_read_input_tokens`。⚠️ **vFlow 目前不记录该字段**，需先加日志才能验 |
 | 5 | `CallFunctionModule` 的函数参数对 schema 发现机制不可见 | ✅ **已解决**（v1.5.5）：改由 `list_workflows(kind:"function")` 提供——**schema 说形状，数据工具提供值**。真机实证：模型查到签名后按 `s1`/`s2`/`bool`/`dic`/`arr` 拼出了完整调用（见 §4.3.5） |
-| 6 | **`DefineFunctionModule` 无法通过 AI 保存函数参数** | ⬜ **新发现，未解决**（见下方详解）。AI 能建函数工作流，但**建不出带参数的** |
+| 6 | **`DefineFunctionModule` 无法通过 AI 保存函数参数** | ✅ **已解决**（v1.5.7，见下方详解）。方案 C 的前半步：AI 现在能写入参数声明 |
 
 #### 开放问题 6 详解：`DefineFunctionModule` 的参数无法通过 AI 写入
 
@@ -1315,7 +1321,7 @@ P0-3 把单条 tool result 卡在 **1,600 字符**（≈400 token），是四家
 
 **影响**：AI 能建函数工作流，但**建不出带参数的**——`call_function` 场景因此不完整。
 
-**候选解法**（待定，见 §6.1 决策台账条目 26）：
+**候选解法**（当初评估）：
 
 | 方案 | 做法 | 性质 |
 |---|---|---|
@@ -1323,8 +1329,60 @@ P0-3 把单条 tool result 卡在 **1,600 字符**（≈400 token），是四家
 | B | `buildParameters` 对 `define_function` 特例放行 | 修 bug，但开特例 |
 | **C** | **让 `define_function` 真正可被 AI 使用**——把签名设计成结构化输入 | **新功能**：模型能*设计*函数签名 |
 
-**C 是唯一让这个能力完整的方案**（A/B 只是"能存进去"，模型仍不知道签名该怎么写），
-但它是新功能范围，需单独立项。
+**C 是唯一让这个能力完整的方案**（A/B 只是"能存进去"，模型仍不知道签名该怎么写）。
+
+#### 实施结论（v1.5.7，2026-09-14）
+
+**A 和 B 单独都立不住**，实际落地的是 **C 的一半 + 一个通用钩子**。
+
+**① 实测推翻了 A 的可行性**：`coerceInputValue` 对 STRING 走 `rawValue.toString()`，
+而 `JsonArray` 经 `normalizeJsonValue`（`ChatAgentModuleExecutor.kt:1840`）**已经变成 `List<Map<...>>`**——
+Kotlin 的 `toString()` 产出 `{name=x, type=y}`，**不是合法 JSON**，落库后 Gson 解析必炸。
+所以「声明成 STRING」不是"模型要自己拼 JSON"的问题，是**根本存不进去**。
+
+**② B 被规避**：没有在 `buildParameters` 里写 `if (moduleId == "define_function")`，
+改为引入通用钩子 [`AiParameterNormalizer`](../../app/src/main/java/com/chaomixian/vflow/core/module/AiParameterNormalizer.kt)。
+
+**③ 落地方案**：
+
+| 步 | 做法 |
+|---|---|
+| 1 | `getInputs()` 补 `functionParams`，**声明为 `ParameterType.ANY`**（不是 STRING）——原样透传，交给钩子转换 |
+| 2 | 新增 `AiParameterNormalizer` 接口：让「参数本身是列表/字典」的模块把 AI 松散入参收敛成标准存储形态。**契约**：纯函数、失败原样返回（让 `validate` 报错而非崩工具）、不得增删键 |
+| 3 | `DefineFunctionModule` 实现它：简写类型 → 全限定 ID（复用 `FunctionParamTypeMapper`）、丢弃空名项、Gson 序列化 |
+| 4 | `aiMetadata` 补 `workflowStepDescription` + `inputHints`（结构契约 + 简写类型清单） |
+
+钩子接在 `buildParameters` 尾部，故 `call_module` / 临时工作流 / 保存工作流**三条 AI 路径一次覆盖**。
+
+**④ 关键设计取舍：类型用简写，不用全限定 ID**
+
+`FunctionParam.type` 存的是 `vflow.type.string` 这类**全限定 ID**（fork 自己引入的特例，
+见 `FunctionParamTypeMapper` 注释）。但**模型该写简写 `"string"`**：
+
+| 理由 | 证据 |
+|---|---|
+| 项目既定风格 | `CreateVariableModule.TYPE_OPTIONS = ["string", "number", ...]`，存的就是简写 |
+| 模型已形成的习惯 | `query_module_schema` 会输出 `Allowed values: string, number, ...`——模型在别的模块上写的就是这个 |
+| 编辑器 UI 一致 | `DefineFunctionParamEditorSheet` 的下拉框选项就是简写 |
+| 转换逻辑现成 | `FunctionParamTypeMapper.toFullTypeId()`，编辑器已在用 |
+| token 成本 | 每个参数重复 `vflow.type.string` 这种长串会推高 token 且模型易漏 |
+
+**所以这不是"给 AI 开特例"，而是补上编辑器早就在做的那一步**——两条路径最终落到同一个
+`FunctionParam.type` 全限定值，**数据形态统一**。
+
+**⑤ 编辑器侧不会重复渲染**：`ActionEditorUiModel` 用 `getHandledInputIds()` 过滤字段，
+而 `DefineFunctionModuleUIProvider` **早已声明** `setOf("functionParams")`。
+这是当初写 UIProvider 时就埋好的——本来担心要改，实际不用动。
+
+**⑥ 故意不设 `requiredInputIds`**：零参数函数是合法的，标必填会让模型误以为必须有参数。
+（该字段只驱动 `*` 标记，不做强制校验，但错误的提示本身就是误导。）
+
+**⑦ 名字非法与重名不由钩子拦**：那是 `validate()` 的职责，它会把错误回传给模型自纠。
+钩子里若静默丢掉，模型会以为参数声明成功了——正是病症 B 的形态。
+
+**尚未验证**：上述全部是编译 + 单测（10 例）层面的保证，
+**`ChatAgentModuleExecutor` 需要真 `Context`，从未被单测覆盖**（既有盲区）。
+故「模型真能建出带参函数工作流」仍需真机确认。
 
 ---
 ---
@@ -1595,3 +1653,32 @@ system prompt 加一条跨工具通用契约。
 已改为引用原文的定性表述，并说明该差别会如何误导方向（指向"单条截断"还是"总量无闸门"）。
 
 **决策 33–38 入账；实施顺序中 P2-1 拆为 P2-1a（已完成）/ P2-1b（推迟）。**
+
+### v1.5.7（2026-09-14）—— §6.2 问题 6 解决：AI 可写入函数参数
+
+**一、A/B 两个候选被推翻/规避**
+
+- **A 不可行**：`coerceInputValue` 对 STRING 走 `toString()`，而 `List<Map<...>>` 的
+  `toString()` 产出 Kotlin 字面量而非合法 JSON——不是"模型要自己拼 JSON"，是**根本存不进去**。
+- **B 被规避**：不写 `define_function` 特例，改为引入通用钩子 `AiParameterNormalizer`。
+
+**二、落地：C 的前半步**
+
+`getInputs()` 补 `functionParams`（声明 `ANY`）+ 新钩子接口 + 模块实现转换
+（简写类型 → 全限定 ID，复用 `FunctionParamTypeMapper`）+ `aiMetadata` 补提示。
+钩子接在 `buildParameters` 尾部，三条 AI 路径一次覆盖。
+
+**三、一处"本以为要改、实际不用改"**
+
+`ActionEditorUiModel` 用 `getHandledInputIds()` 过滤字段，而
+`DefineFunctionModuleUIProvider` 早已声明 `setOf("functionParams")`——
+给 `getInputs()` 加字段不会让编辑器重复渲染通用表单。这是当初写 UIProvider 时就对上的。
+
+**四、`ParameterType.ANY` 的一个反直觉点（值得记住）**
+
+`coerceInputValue` 的 `ANY` 分支是 `artifactValue ?: rawValue`——**原样透传**。
+对于「参数本身是列表/字典」的字段，**这是唯一能保住 JSON 结构的选择**：
+STRING 会毁掉它，而 NUMBER/BOOLEAN/ENUM 更不可能。
+代价是**类型系统不再为该字段做任何校验**，形态正确性完全由模块自己在钩子里负责。
+
+**代码**：`e2dab0f9`。**测试**：新增 10 例，455 例通过（唯一失败仍是上游预存的 `VObjectPropertyTest`）。
