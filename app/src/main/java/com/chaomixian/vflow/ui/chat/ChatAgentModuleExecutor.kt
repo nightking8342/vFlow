@@ -8,6 +8,7 @@ import com.chaomixian.vflow.core.execution.ExecutionServices
 import com.chaomixian.vflow.core.execution.WorkflowExecutor
 import com.chaomixian.vflow.core.logging.DebugLogger
 import com.chaomixian.vflow.core.module.ActionModule
+import com.chaomixian.vflow.core.module.AiParameterNormalizer
 import com.chaomixian.vflow.core.module.ExecutionResult
 import com.chaomixian.vflow.core.module.InputDefinition
 import com.chaomixian.vflow.core.module.ModuleRegistry
@@ -1365,8 +1366,16 @@ internal class ChatAgentModuleExecutor(
             }
         }
 
+        // 模块可选：把 AI 的松散入参收敛成自己的标准存储形态。
+        // 只有「参数本身是列表/字典」的模块需要（见 AiParameterNormalizer）——
+        // 这类值经 ParameterType.ANY 原样透传到这里，形态与编辑器写的不一致。
+        val merged = defaults + accepted
+        val normalized = (module as? AiParameterNormalizer)
+            ?.normalizeAiParameters(merged)
+            ?: merged
+
         return ChatParameterBuildResult(
-            parameters = defaults + accepted,
+            parameters = normalized,
             rejectedKeys = rejected,
             availableKeys = definitionsById.keys.toList(),
         )
