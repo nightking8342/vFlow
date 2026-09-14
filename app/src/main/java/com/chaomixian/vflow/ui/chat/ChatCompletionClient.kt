@@ -55,7 +55,7 @@ internal object ChatToolResultInputFormatter {
 
         if (raw.length <= CHAT_MAX_TOOL_RESULT_INPUT_CHARS) return raw
 
-        val marker = "... truncated"
+        val marker = buildTruncationNotice(raw.length, toolResult.name)
         val maxArtifactBudget = (CHAT_MAX_TOOL_RESULT_INPUT_CHARS - marker.length - 2).coerceAtLeast(0)
         val artifactSection = buildArtifactSection(toolResult.artifacts, maxArtifactBudget)
         val suffix = listOf(marker, artifactSection.takeIf { it.isNotBlank() })
@@ -67,6 +67,43 @@ internal object ChatToolResultInputFormatter {
         return listOf(head.takeIf { it.isNotBlank() }, suffix)
             .filterNotNull()
             .joinToString(separator = "\n\n")
+    }
+
+    /**
+     * 构造截断告知。
+     *
+     * **为什么不能只写 `... truncated`**：模型看到半份输出却以为拿到全份，
+     * 就会基于残缺信息继续推理——那正是「病症 A」（模型不知道手里有什么）
+     * 换个地方复发。告知必须让模型知道：**被截掉的是尾部、还有多少没看到、
+     * 以及下次怎么避免**。
+     *
+     * 针对已知的「可参数收窄」工具给出具体建议；其余工具只能就事论事说明
+     * 还有多少没读到。**不在此处为单个工具堆特例分支**——新工具应当靠
+     * 自己的 description 说清如何收窄（与 `query_module_schema` 撤掉函数
+     * 工作流特化的同一条原则）。
+     */
+    private fun buildTruncationNotice(originalChars: Int, toolName: String): String {
+        // 保留长度取「约等于预算」而非精确值：notice 自身也计入预算，
+        // 报精确的 CHAT_MAX_TOOL_RESULT_INPUT_CHARS 会与实际的 head 长度对不上。
+        val omitted = (originalChars - CHAT_MAX_TOOL_RESULT_INPUT_CHARS).coerceAtLeast(0)
+        return buildString {
+            append("[output truncated: showing only the first ~")
+            append(CHAT_MAX_TOOL_RESULT_INPUT_CHARS)
+            append(" characters of ")
+            append(originalChars)
+            append("; the tail (~")
+            append(omitted)
+            append(" characters) was dropped. ")
+            when (toolName) {
+                "vflow_agent_observe_ui" ->
+                    append("Re-call with a smaller `limit` for fewer element handles.")
+                "vflow_agent_read_page_content" ->
+                    append("Re-call with `mode=\"primary_content\"` for main content only.")
+                else ->
+                    append("Narrow the request if you need the omitted part.")
+            }
+            append("]")
+        }
     }
 
     private fun buildArtifactSection(

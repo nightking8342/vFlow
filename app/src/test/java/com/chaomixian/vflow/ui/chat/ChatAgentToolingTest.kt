@@ -108,8 +108,59 @@ class ChatAgentToolingTest {
         )
 
         assertTrue(formatted.contains("artifact://call_1/image"))
-        assertTrue(formatted.contains("... truncated"))
+        assertTrue(formatted.contains("[output truncated:"))
         assertTrue(formatted.length <= CHAT_MAX_TOOL_RESULT_INPUT_CHARS)
+    }
+
+    @Test
+    fun toolResultFormatter_truncationNoticeReportsOmittedSizeAndRecoveryHint() {
+        // 告知必须让模型知道「被截掉多少」和「下次怎么收窄」——
+        // 否则就是病症 A 换个地方复发（拿到半份却以为全份）。
+        val originalChars = CHAT_MAX_TOOL_RESULT_INPUT_CHARS * 3
+        val longText = "a".repeat(originalChars)
+        val formatted = ChatToolResultInputFormatter.format(
+            message = ChatMessage(
+                role = ChatMessageRole.TOOL,
+                content = longText,
+                timestampMillis = 1L,
+            ),
+            toolResult = ChatToolResult(
+                callId = "call_1",
+                name = CHAT_AGENT_OBSERVE_UI_TOOL_NAME,
+                status = ChatToolResultStatus.SUCCESS,
+                summary = "UI tree",
+                outputText = longText,
+            ),
+        )
+
+        // 报出原始长度与被丢弃的尾部长度
+        assertTrue("应报出原始字符数", formatted.contains(originalChars.toString()))
+        val expectedOmitted = originalChars - CHAT_MAX_TOOL_RESULT_INPUT_CHARS
+        assertTrue("应报出被丢弃的字符数", formatted.contains(expectedOmitted.toString()))
+        // 针对可参数收窄的工具给出具体建议
+        assertTrue("应给出收窄建议", formatted.contains("limit"))
+    }
+
+    @Test
+    fun toolResultFormatter_truncationNoticeGivesGenericHintForOtherTools() {
+        val longText = "a".repeat(CHAT_MAX_TOOL_RESULT_INPUT_CHARS * 2)
+        val formatted = ChatToolResultInputFormatter.format(
+            message = ChatMessage(
+                role = ChatMessageRole.TOOL,
+                content = longText,
+                timestampMillis = 1L,
+            ),
+            toolResult = ChatToolResult(
+                callId = "call_1",
+                name = "vflow_some_other_tool",
+                status = ChatToolResultStatus.SUCCESS,
+                summary = "Other",
+                outputText = longText,
+            ),
+        )
+
+        assertTrue(formatted.contains("[output truncated:"))
+        assertTrue("未知工具走通用提示，不给具体参数建议", formatted.contains("Narrow the request"))
     }
 
     @Test
@@ -140,7 +191,7 @@ class ChatAgentToolingTest {
         )
 
         assertEquals(longText, formatted)
-        assertFalse(formatted.contains("... truncated"))
+        assertFalse(formatted.contains("[output truncated:"))
     }
 
     @Test
@@ -172,7 +223,7 @@ class ChatAgentToolingTest {
                 testToolDefinition(name = "vflow_agent_observe_ui", truncatable = true),
             ),
         )
-        assertTrue(explicit.contains("... truncated"))
+        assertTrue(explicit.contains("[output truncated:"))
 
         // 名字查不到时按可截断处理（与改造前行为一致）
         val unknown = ChatToolResultInputFormatter.format(
@@ -180,7 +231,7 @@ class ChatAgentToolingTest {
             toolResult = toolResult,
             toolDefinitions = emptyList(),
         )
-        assertTrue(unknown.contains("... truncated"))
+        assertTrue(unknown.contains("[output truncated:"))
     }
 
     @Test

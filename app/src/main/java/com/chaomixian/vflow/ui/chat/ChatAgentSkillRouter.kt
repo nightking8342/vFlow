@@ -89,6 +89,7 @@ internal object ChatAgentSkillRouter {
             appendLine("Prefer small deterministic tool calls over speculative multi-step jumps. Observe, act once, then verify.")
             appendLine("Keep tool usage token-efficient: rely on concise summaries and artifact handles instead of asking tools to dump raw data unless you truly need it.")
             appendLine("When a tool returns an error or guardrail message, use that recovery guidance to self-heal. Do not repeat the same failing call unchanged.")
+            appendLine("A tool result may be truncated: if it contains an `[output truncated: ...]` marker, you are seeing only the head. Never treat a truncated result as the complete output—either narrow the request as the marker suggests, or tell the user the output was too large to read in full.")
             appendLine("If the latest user turn is conceptual or explanatory, answer normally instead of forcing a tool call.")
             appendLine("Before chaining screen interactions, first make a fresh read-only observation of the current UI with `vflow_agent_observe_ui` or another accessibility-first helper, and prefer returned ScreenElement handles or verified ids instead of guessed text.")
             appendLine("Do not issue blind repeated swipes. If a top-ranked content target that matches the task is already visible, tap or verify it before scrolling.")
