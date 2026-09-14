@@ -430,7 +430,10 @@ query_module_schema(moduleId, operator?) → {
 
 **问题**：`ChatToolResultInputFormatter.format()`（`ChatCompletionClient.kt:40`）对**所有**工具输出统一施加 `CHAT_MAX_TOOL_RESULT_INPUT_CHARS = 1_600`（`:26`）限制，**没有区分输出的性质**。
 
-该限制的来历：与 `ChatAgentNativeTooling.kt` 同在提交 `13c38fae feat(ChatAgent): 提供完整的屏幕操作能力` 引入，**是为 `observe_ui` 那类「机器 dump 无障碍节点树」的输出兜底的**——`ai-system-overview.md` §2.10.3 记了真实会话里单条 assistant 消息达 40K token。它的适用面是「机器生成、结构重复、长尾无信息量」的输出，**不是通用约束**。
+该限制的来历：与 `ChatAgentNativeTooling.kt` 同在提交 `13c38fae feat(ChatAgent): 提供完整的屏幕操作能力` 引入，**是为 `observe_ui` 那类「机器 dump 无障碍节点树」的输出兜底的**——`ai-system-overview.md` §2.10.3 短板 1 记了「Agent 单次节点树 dump 就很大」。它的适用面是「机器生成、结构重复、长尾无信息量」的输出，**不是通用约束**。
+
+> **v1.5.6 更正**：本节此前称「真实会话里单条 assistant 消息达 **40K token**」。**该数字查无出处**——`ai-system-overview.md` §2.10.3 并无此记录，全 `docs/` 树中它只出现在这一句话里。原文实为一条**结构性风险判断**（「全量 `forEach` 无裁剪，长会话迟早撞上限」），不是实测数据。
+> 这个差别会**误导方向**：若真有单条 40K 的实测，结论会是「单条截断最重要」；而真实证据指向的是「**总量无闸门**」，即 §4.7 的 P2-1b。故改为引用原文的定性表述。
 
 **三类输出的应然归属**：
 
@@ -469,7 +472,7 @@ query_module_schema      → truncatable = false
 
 **改动位置**：`ChatCompletionClient.kt` 的三条 TOOL 路径**无一例外**走 `format()`（`:302` OpenAI / `:347` OpenAI Responses / `:838` Anthropic），需全部覆盖。
 
-**截断告知**：本次**不做**（推迟到 P2-1）。P2-1 做时必须补——否则就是病症 A 换个地方复发（模型拿到半份说明书却以为拿到全份）。
+**截断告知**：P0-3 时只留了原始的 `... truncated` 字面量（它是 `13c38fae` 引入截断时就带的，不是 P0-3 加的）。该字面量**说了等于没说**——模型只知道"少了点东西"，不知道**少了多少、少的是哪部分、下次怎么拿全**。已于 P2-1a 换成结构化告知（见 §4.6）。
 
 **正文限长**：**不限**。实现时打点记录单个技能正文长度，作为将来加护栏的依据（当前最大 `screen_observation` 为 1,417 字符）。
 
@@ -847,6 +850,7 @@ private fun buildDirectToolDefinitions(): List<ChatAgentToolDefinition> {
 | 9 | **`query_module_schema` 输出完整字段语义** | ✅ **真机复验通过**（模型读出 "Upper bound used only by the number_between operator"，非"猜的"） |
 | 10 | **函数工作流链路完整**：查签名 → 按签名传参 | ✅ **真机证实**（见 §4.3.5） |
 | 11 | **AI 侧字段可见性**：`isHidden` 的真参数不再被吞 | ✅ **真机证实**（`userId`/`maxResults` 可见，见 §4.3.5） |
+| 12 | **截断告知**改为结构化三段 + 收窄建议（P2-1a） | ✅ 单测 5 例覆盖（含 2 例新增）；⚠️ 未经真机观察（需一条 >1600 字符的输出）
 
 > ⚠️ **`ChatAgentModuleExecutor` 需要真 `Context`，从未被单测覆盖**（既有盲区）——
 > `query_module_schema` 的返回内容、`call_module` 的审批判定，只有编译与
@@ -1026,7 +1030,8 @@ P3-1  清理遗留                                ← 并入 P1-1c
 ═══════════════════════════════════════════════════
 
 另开任务（不与本链耦合）
-P2-1  工具输出裁剪  ← 解决"上下文爆炸"，与工具暴露重构无依赖
+P2-1a 截断告知                ← ✅ 已完成（§4.6）
+P2-1b 上下文预算（compaction） ← ⏸ 推迟，方案见 §4.7
 ```
 
 **关键依赖链（不能颠倒）**：
@@ -1051,6 +1056,109 @@ P1-1c ──→ P2-2        （缓存需要前缀稳定）
 | **远程 MCP 路线**（把模块清单暴露给 PC 上的通用 Agent） | 与 App 内重构共享 schema 层但 UI 层不同，属独立议题（原 §7 开放问题 3） |
 | **`ChatAgentNativeTooling.kt` 模块化** | 它是三套工具体系里唯一有内部状态的（observation epoch / swipe direction），重构它会让 11 个 helper 能被工作流复用，但**改动很大且不阻塞本链**（原 §7 开放问题 4） |
 | **`search_tools`** | `query_module_schema` 已覆盖"找到并调用"的需求；清单常驻（189 行文本）也让模型知道"有哪些"。除非清单大到塞不下（当前 ~275 token，远未到） |
+
+---
+
+### 4.6 P2-1a：截断告知 ✅ 已完成（2026-09-14）
+
+**问题**：`format()` 截断后只追加 `... truncated`。这个字面量是 `13c38fae` 引入截断时就带的，**信息量接近于零**：
+
+- 模型不知道**少的是头部还是尾部**（实际只保留头部）
+- 模型不知道**少了多少**（可能只是 1 个字符，也可能是 100KB）
+- 模型不知道**下次怎么拿全**
+
+后果就是**病症 A 换个地方复发**：模型拿到半份输出，却以为掌握全份，据此继续推理。P0-3 解决的是"输出不该被截的别截"，P2-1a 解决的是"真被截了要说明白"。
+
+**方案（定案）**：`buildTruncationNotice(originalChars, toolName)` 替换字面量。
+
+```
+[output truncated: showing only the first ~1600 characters of 4800;
+ the tail (~3200 characters) was dropped. <收窄建议>]
+```
+
+三段信息：**保留量 / 原始量 / 丢弃量**（前两者是事实陈述，模型可据此判断信息完整度），加一句**收窄建议**。
+
+**收窄建议按工具分派，但只给"参数化可收窄"的工具**：
+
+| 工具 | 建议 |
+|---|---|
+| `vflow_agent_observe_ui` | `Re-call with a smaller \`limit\` for fewer element handles.` |
+| `vflow_agent_read_page_content` | `Re-call with \`mode="primary_content"\` for main content only.` |
+| 其余 | `Narrow the request if you need the omitted part.` |
+
+**为什么不给每个工具都写特例**：那会让这个函数随工具数增长堆满 `if`，与决策 27（`query_module_schema` 撤掉函数工作流特化）是同一条原则。**新工具应当靠自己的 `description` 说清如何收窄**，只有调用频次高、截断率高的两个 helper 值得在此点名。
+
+**同时给系统提示词加一条规则**（`buildSystemPrompt` 规则段）：
+
+> A tool result may be truncated: if it contains an `` `[output truncated: ...]` `` marker, you are seeing only the head. Never treat a truncated result as the complete output—either narrow the request as the marker suggests, or tell the user the output was too large to read in full.
+
+**只改提示词、不靠工具返回值**的理由：这一条是**跨工具的通用契约**，放在每个工具的 description 里等于重复 11 次。
+
+**已知不精确处**：告知里报的"first ~1600"是**近似值**——`notice` 自身也计入 1600 的预算，故实际 head 约 1450 字符。用 `~` 与 `Narrow` 措辞回避精确承诺；**报精确值需要先算 notice 长度再定 head 长度，是循环依赖**，不值得为此调整算法。
+
+**改动位置**：`ChatCompletionClient.kt` 的 `buildTruncationNotice`（新增）+ `format()` 一行替换；`ChatAgentSkillRouter.kt` 的 `buildSystemPrompt` 加一行。
+
+**测试**：`ChatAgentToolingTest` 新增 2 例（`truncationNoticeReportsOmittedSizeAndRecoveryHint`、`truncationNoticeGivesGenericHintForOtherTools`），改写 3 例原有断言（`... truncated` → `[output truncated:`）。
+
+---
+
+### 4.7 P2-1b：上下文预算（compaction）⏸ 推迟
+
+**问题**：`buildChatCompletionHistoryMessages`（`ChatCompletionClient.kt:253`）对 `request.history` **全量** `forEach`，三套 adapter（OpenAI / Responses / Anthropic）**均无裁剪**。历史每轮重发且**只增不减**。
+
+> **本节只记录调研结论与推迟理由，不构成实施方案。** 真要动手时需另行设计（阈值、保留策略、摘要格式、失败降级）。
+
+#### 四家怎么做（源码核实，2026-09-14）
+
+| | **第一层：清/裁工具输出**（无模型调用） | **第二层：摘要压缩**（一次模型调用） | 触发 |
+|---|---|---|---|
+| **CCB** | `microcompact`——老 tool result 内容替换为 `[Old tool result content cleared]`，仅限 9 个工具（`microCompact.ts:47`） | `autoCompact`——调模型生成摘要 | ① **计时**（距上条 assistant 超过 `gapThresholdMinutes`）② 接近窗口上限（`AUTOCOMPACT_BUFFER_TOKENS = 13_000`） |
+| **OpenCode** | `prune`——从新到旧扫，累计越过 `PRUNE_PROTECT = 40_000` token 的老输出打 `compacted` 标记；单条超 `TOOL_OUTPUT_MAX_CHARS = 2_000` 截断（`compaction.ts:28-31`） | `processCompaction` | `tokens >= usable()`，其中 `usable = context - 20_000`（`overflow.ts:8`） |
+| **dsh** | `tool-result-pruner`——超 8,192 字符的替换为**头 4096 + `middle pruned` + 尾 1024** | `compaction-basic` 摘要 | `thresholdRatio = 0.8`（上下文 80%） |
+| **Pi** | ❌ **无此层** | 摘要 + 保留 `keepRecentTokens = 20_000` 原样 | `contextTokens > contextWindow - reserveTokens`（`reserveTokens = 16_384`） |
+
+**两点与直觉不符、需记住**：
+
+1. **四家里三家都是"先清工具输出，再摘要"，不是直接摘要。** 清输出这一层几乎免费（无模型调用），能省掉相当一部分压力，dsh 的文档明确说"trimming may relieve enough token pressure to **skip summarization**"。**Pi 是唯一只有摘要的。**
+2. **它们"删"的永远是工具输出的**内容**，从不删整轮对话。** 因为 OpenAI / Anthropic 的 API 强制 `tool_calls` 与 `tool_result` 成对出现，破坏配对直接 400（dsh 专门有 `tool-pairing.ts` 处理这个约束）。所以"动态删"必须精确到内容层——CCB 留 `[Old tool result content cleared]` 占位、OpenCode 打 `time.compacted` 标记，都是这个思路。
+
+**CCB 的计时触发值得单独说**：`gapMinutes > gapThresholdMinutes` → 清老工具输出。逻辑是"用户离开这么久，prompt 缓存反正冷了，不如省 token"。**这对 vFlow 不适用**——手机 App 用户离开再回来，通常是接着看，不是重开话题。
+
+#### 对 vFlow 的适配结论：只需摘要层
+
+P0-3 把单条 tool result 卡在 **1,600 字符**（≈400 token），是四家里**卡得最狠的**：
+
+| | 单条上限 |
+|---|---|
+| dsh | 8,192 字符 |
+| OpenCode | 2,000 字符 |
+| **vFlow（P0-3 之后）** | **1,600 字符** |
+
+那些项目需要"清工具输出"层，是因为**单条能有几万 token**（读一个大文件、dump 一棵完整节点树）。vFlow 已经通过 P0-3 把这个问题从源头掐掉了。剩下的只有**纯累积**：
+
+```
+20 轮 × ~400 token ≈  8,000 token    ← 尚可
+50 轮 × ~400 token ≈ 20,000 token    ← 开始危险
+```
+
+**也就是说**：四家的三层结构（单条上限 → 清老输出 → 摘要）对 vFlow 可砍掉中间层，**只做「摘要压缩 + 保留最近 N token 原样」**（Pi 的形态）即可——这是最省事且够用的做法。
+
+#### 但真正的风险不在工具输出
+
+**vFlow 会撑爆上下文的是 assistant 消息，不是 tool result。** 典型场景：模型一次写出含 61 步的工作流 JSON（`ai-system-overview.md` §2.10.3 提过：历史里躺着完整 JSON，一字不差，每轮重发）。
+
+**这一点四家的"清工具输出"层也不管**（它们只清 `role=tool` 的消息），所以照抄四家**并不能**解决 vFlow 的主要问题。真要设计时，**摘要的取舍标准要针对 assistant 的长 JSON 正文**，而不是工具输出。
+
+#### 现成的抓手
+
+`ChatMessage.tokenCount`（`ChatModels.kt:193`）已由 API 返回的 `totalTokens` 填充（`ChatViewModel.kt:898`），但**目前只用于界面显示**（`ChatScreen.kt:1625` 渲染 "Tokens: N"），**从不参与裁剪**。做预算时这是**免费且精确**的计数来源，不必自己估 token。
+
+#### 推迟理由
+
+- **不阻塞本链**：与工具暴露重构无依赖，两批（P0/P1）全部完成后仍未被阻塞。
+- **当前不是瓶颈**：单条已封顶 400 token，20 轮量级约 8,000 token，远未到危险区。
+- **设计成本高、易做错**：摘要会**改变对话语义**（模型"失忆"），阈值定高了不触发、定低了频繁丢上下文，需要真机长会话验证，不宜草率。
+- **需要先有观测**：动手前应先记录真实会话的 token 增长曲线（`totalTokens` 已在，只是没打点），**用数据定阈值**，而不是照抄四家的数字（它们的窗口和工具输出规模与 vFlow 差一个数量级）。
 
 ---
 
@@ -1147,7 +1255,7 @@ P1-1c ──→ P2-2        （缓存需要前缀稳定）
 | 14 | `selectSkills` 的死亡点是 **P1-1c**，随撤工具一并删除 | §1.1 / P1-1c |
 | 15 | ~~技能正文必须改写~~ → **改为：技能全部清空**，独有内容上提 prompt（见条目 24） | P1-3B |
 | 16 | 保留技能**正文层不限长**，实现时打点记录长度 | P0-3 |
-| 17 | 截断告知**推迟到 P2-1** | P0-3 |
+| 17 | ~~截断告知推迟到 P2-1~~ → **已实现**（P2-1a，结构化告知三段信息 + 提示词规则） | §4.6 |
 | 18 | 新包 `AgentSessionContext.kt` **删除**（无内容可放） | §5.1 |
 | 19 | **长期分叉**：认代价，上游 Chat Agent 迭代不跟随 | §5.1 |
 | 20 | P2-2 纳入（必须晚于 P1-1c）；P2-1 另开任务；P3-1 并入 P1-1c | §4.4 |
@@ -1163,6 +1271,12 @@ P1-1c ──→ P2-2        （缓存需要前缀稳定）
 | 30 | **`list_workflows` 与 `get_environment` 分开**：前者是「被操作的对象」，后者是「理解上下文的背景」——性质、调用场景、变化频率都不同 | §4.3.5 |
 | 31 | **标签查询暂不做**：App 里标签既不在列表页展示也不参与搜索，用户实际很少使用 | §4.3.5 |
 | 32 | **`query_module_schema` 的 `operator` 参数删除**：实测无效（并集求值吃掉动态裁剪），且修好 `inputHints` 后更无必要 | §6.2 问题 2 |
+| 33 | **截断告知用结构化三段（保留量/原始量/丢弃量）+ 收窄建议**，替掉 `... truncated` 字面量；同一条通用契约写进 system prompt，**不重复进 11 个工具 description** | §4.6 |
+| 34 | **收窄建议只给「参数化可收窄」的两个高频 helper**（`observe_ui` / `read_page_content`），其余走通用文案——不与决策 27 的原则相悖（不为各工具堆特例） | §4.6 |
+| 35 | **P2-1 拆为 P2-1a（告知，已完成）/ P2-1b（上下文预算，推迟）**：两者工作量差一个数量级，同一个标题会让人误判 | §4.6 / §4.7 |
+| 36 | **P2-1b 只做摘要层，不抄四家的「清老工具输出」层**：P0-3 已把单条封顶 1,600 字符（四家里最狠），那层的前提（单条几万 token）在 vFlow 不存在 | §4.7 |
+| 37 | **P2-1b 推迟**：不阻塞本链、当前非瓶颈（20 轮约 8,000 token）、设计成本高且需真机数据定阈值。**动手前先打点记录 `totalTokens` 增长曲线** | §4.7 |
+| 38 | **P2-1b 的调研结论留在本设计文档，不新开文档**：内容量不够撑一篇（一张表）；它是本项的「去向说明」，读者顺着 §4.4 找过来就地看到最顺。真要设计 compaction 时再独立 | — |
 
 ### 6.2 仍开放
 
@@ -1461,3 +1575,23 @@ P1-1c 撤走 59 个模块工具时，`query_module_schema` **只搬了字段定�
 **文档修正**：§4.0 的「改造后 16 个」更正为 18；
 「description 降到几百字符」的估算也错了——184 个模块**仅 id 就占约 4,400 字符**，
 加分隔符最少约 5,900 字符（≈1,480 token），**降幅约 73% 而非 99%**。
+
+### v1.5.6（2026-09-14）—— P2-1a 截断告知 + P2-1b 方案调研与推迟
+
+**一、P2-1a：截断告知（已完成，§4.6）**
+
+`... truncated` 字面量换成结构化三段告知（保留量 / 原始量 / 丢弃量）+ 收窄建议；
+system prompt 加一条跨工具通用契约。
+
+**二、P2-1b：上下文预算（推迟，§4.7）**
+
+补上四家 compaction 的源码级对照（**新增发现：CCB/OpenCode/dsh 都是"先清工具输出、再摘要"两层，Pi 是唯一只有摘要的**），
+得出对 vFlow 的适配结论：**P0-3 的单条 1,600 字符上限是四家里最狠的，中间层可砍，只做摘要即可。**
+
+**三、一处查无出处的引用被更正**
+
+§4.2 此前称「真实会话里单条 assistant 消息达 **40K token**」，并归因给 `ai-system-overview.md` §2.10.3。
+**该文档中并无此记录**，全 `docs/` 树里这个数字只出现在那一句话中；原文实为**结构性风险判断**，非实测。
+已改为引用原文的定性表述，并说明该差别会如何误导方向（指向"单条截断"还是"总量无闸门"）。
+
+**决策 33–38 入账；实施顺序中 P2-1 拆为 P2-1a（已完成）/ P2-1b（推迟）。**
