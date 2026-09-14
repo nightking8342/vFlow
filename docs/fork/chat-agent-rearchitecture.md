@@ -851,7 +851,8 @@ private fun buildDirectToolDefinitions(): List<ChatAgentToolDefinition> {
 | 10 | **函数工作流链路完整**：查签名 → 按签名传参 | ✅ **真机证实**（见 §4.3.5） |
 | 11 | **AI 侧字段可见性**：`isHidden` 的真参数不再被吞 | ✅ **真机证实**（`userId`/`maxResults` 可见，见 §4.3.5） |
 | 12 | **截断告知**改为结构化三段 + 收窄建议（P2-1a） | ✅ 单测 5 例覆盖（含 2 例新增）；⚠️ 未经真机观察（需一条 >1600 字符的输出）
-| 13 | **AI 能建出带参数的函数工作流**（§6.2 问题 6） | ⚠️ 单测 10 例覆盖（类型转换/默认值/空名/零参数/ANY 声明）；**未经真机**——`ChatAgentModuleExecutor` 需真 `Context`，是既有测试盲区
+| 13 | **AI 能建出带参数的函数工作流**（§6.2 问题 6） | ✅ **真机证实**（5 次保存全部成功，简写类型正确，见 §4.3.6） |
+| 14 | **模型正确引用函数参数**（`{{vars.<name>}}`） | ⚠️ 提示词已补 + `VariableResolverTest` 锁定语义；**修复效果未经真机复验** |
 
 > ⚠️ **`ChatAgentModuleExecutor` 需要真 `Context`，从未被单测覆盖**（既有盲区）——
 > `query_module_schema` 的返回内容、`call_module` 的审批判定，只有编译与
@@ -1007,6 +1008,94 @@ inputHints = mapOf(
 
 **同时暴露了新缺陷**：会话 [30][38] 显示模型**建不出带参数的函数工作流**——
 `DefineFunctionModule` 的参数无法经 AI 写入，见 §6.2 开放问题 6。
+
+---
+
+#### 4.3.6 第四轮真机验证（2026-09-15）—— 问题 6 修复通过，但发现引用语法缺陷
+
+**验证目标**：§6.2 问题 6 的修复（AI 能否写入函数参数）。用户在真机跑了一个 31 条消息的会话，
+建了 5 个函数工作流：`带 user_id 参数`、`乘积函数(a x b)`（建了两次，其中一次是用户手动重跑）、
+`HTTP响应字典函数(url)`、`返回模拟响应字典函数(user_id)`。
+
+**① 问题 6 的修复通过 ✅**
+
+| 验证点 | 结果 |
+|---|---|
+| 模型会调 `query_module_schema` 查 `define_function` | ✅ 首个动作就是它 |
+| schema 里能看到 `functionParams` | ✅ 显示为 `functionParams (any)` 并附完整结构契约 |
+| **5 次保存全部成功** | ✅ **无一例 `unknown parameter(s)`**（修复前是 `Available parameters: none`） |
+| 模型用简写类型 | ✅ 全部是 `"string"` / `"number"`，无一处全限定 ID——**与设计取舍一致**（决策 41） |
+| 模型正确使用 `isRequired` / `defaultValue` | ✅ 含一例可选参数带默认值（`{"name":"user_id","isRequired":false,"defaultValue":"test_user"}`） |
+| `aiMetadata.workflowStepDescription` 生效 | ✅ 模型自述「声明参数…供调用方使用」，并主动提示用 `call_function` 引用 |
+
+**`query_module_schema` 返回的片段**（模型据此拼参数）：
+
+```
+moduleId: vflow.logic.define_function
+as workflow step: Declare this workflow as a function and define its parameter signature.
+  Must be the first step. Parameters declared here become available to later steps and to
+  callers of this workflow.
+callable: false
+scopes: temporary workflow step, saved workflow step
+
+inputs (fields marked * are required):
+  - functionParams (any) — 函数参数 JSON array of objects, each {name, type, isRequired,
+    defaultValue}. `type` is a shorthand value: string, number, ... `name` must be snake_case...
+    Example: [{"name":"user_id","type":"string","isRequired":true}]
+```
+
+**② 新缺陷：模型引用函数参数时语法错误 ❌（已修，见决策 44）**
+
+模型建的工作流里，**中间步骤引用函数参数全部写成了裸形式**：
+
+| 工作流 | 模型写的 | 正确形式 |
+|---|---|---|
+| `带 user_id 参数的函数` | `{{user_id}}` | `{{vars.user_id}}` |
+| `乘积函数(a x b)` | `{{a}}`、`{{b}}` | `{{vars.a}}`、`{{vars.b}}` |
+| `HTTP响应字典函数(url)` | `{{url}}` | `{{vars.url}}` |
+
+**而步骤输出引用是对的**（`{{multiply.result}}`、`{{http_req.response_body}}`）——
+说明模型理解「引用」这个概念，**只是不知道函数参数走 `vars.` 命名空间**。
+
+**根因：提示词只讲了一种引用形式。** `parameters` 的 description 原文是：
+
+> Values can be literal values or magic variable references like
+> `{{previousStepId.outputId}}` to pass data from earlier steps.
+
+**只有「步骤输出」，没有「函数参数」**——模型据此合理类推成了裸写。
+
+**后果是静默失败**（本批第二次遇到同型问题）：
+
+```kotlin
+VariablePathParser.NAMED_VARIABLE_NAMESPACE = "vars"
+VariableResolver:146   if (segment.isNamedVariable)   // 需 vars. 前缀 → 裸写不进
+VariableResolver:165   if (path.size >= 2)            // 当作 stepId.outputId → 只有 1 段，不进
+```
+
+**两条分支都不匹配 → 返回空值**。而保存时不报错：
+`canonicalizeVariableReference` 遇 `path.size < 3` 就原样返回（`VariablePathParser.kt:155`）。
+**故「看起来保存成功、运行时参数是空的」。**
+
+**修复**：只补提示词（按决策 45，不动 `define_function` 的输出语义），三处：
+
+| 落点 | 补什么 |
+|---|---|
+| `save_workflow` / `temporary_workflow` 的 `parameters` description | 列出两种引用形式 + **明确点出裸写不会解析** |
+| `define_function` 的 `inputHints` | 声明处就说清「后续步骤用 `{{vars.<name>}}` 引用」 |
+| 系统提示词规则段 | 一条通用说明（不查 schema 时也知道） |
+
+**为什么不加 `OutputDefinition`**：那会把参数暴露成 `{{define_fn.user_id}}` 形式，
+而**正确语法是 `{{vars.user_id}}`**——反而误导模型。决策 45。
+
+**回归防护**：`VariableResolverTest` 补 1 例，同时锁定「带前缀成功」与「裸写不解析」两条语义，
+防止将来有人"放宽"裸写法时无意改变行为。
+
+> **本批第三次遇到同一个模式**：*一个信息通路承载了两类语义，撤换/新增时只覆盖了显眼的那一类。*
+> - §4.3.4：`query_module_schema` 丢字段语义（`inputHints` / `requiredInputIds` / `workflowStepDescription`）
+> - §4.3.5：`isHidden` 被当成 AI 侧的过滤条件，吞掉真参数
+> - **本次**：提示词讲了「步骤输出」引用，漏了「函数参数」引用
+>
+> 共同点：**都不是逻辑错误，而是"该说的没说全"**，且都表现为静默失败。
 
 ---
 
@@ -1283,6 +1372,8 @@ P0-3 把单条 tool result 卡在 **1,600 字符**（≈400 token），是四家
 | 41 | **`type` 接受简写（`string`）而非全限定 ID（`vflow.type.string`）**：与 `create_variable` 的 `Allowed values` 及编辑器下拉框一致，转换逻辑复用 `FunctionParamTypeMapper`。不是给 AI 开特例，是补上编辑器早就在做的那一步 | §6.2 问题 6 |
 | 42 | **不给 `define_function` 设 `requiredInputIds`**：零参数函数合法，标必填会让模型误以为必须有参数 | §6.2 问题 6 |
 | 43 | **名字非法/重名不在钩子里拦**，交给 `validate()` 回传模型自纠——钩子里静默丢会重现病症 B | §6.2 问题 6 |
+| 44 | **函数参数引用必须写 `{{vars.<name>}}`**：裸写 `{{<name>}}` 既不匹配命名变量分支、也不匹配 `stepId.outputId` 分支 → 静默返回空值 | §4.3.6 |
+| 45 | **不为 `define_function` 加 `OutputDefinition` 暴露参数**：那会呈现成 `{{define_fn.user_id}}` 形式，而正确语法是 `{{vars.user_id}}`——反而误导。只补提示词 | §4.3.6 |
 
 ### 6.2 仍开放
 
@@ -1380,9 +1471,8 @@ Kotlin 的 `toString()` 产出 `{name=x, type=y}`，**不是合法 JSON**，落�
 **⑦ 名字非法与重名不由钩子拦**：那是 `validate()` 的职责，它会把错误回传给模型自纠。
 钩子里若静默丢掉，模型会以为参数声明成功了——正是病症 B 的形态。
 
-**尚未验证**：上述全部是编译 + 单测（10 例）层面的保证，
-**`ChatAgentModuleExecutor` 需要真 `Context`，从未被单测覆盖**（既有盲区）。
-故「模型真能建出带参函数工作流」仍需真机确认。
+**真机验证通过**（见 §4.3.6）——5 次保存全部成功，无一例 `unknown parameter(s)`。
+但**同时暴露出第二个缺陷**：模型引用函数参数时语法错误（见 §4.3.6）。
 
 ---
 ---
@@ -1682,3 +1772,35 @@ STRING 会毁掉它，而 NUMBER/BOOLEAN/ENUM 更不可能。
 代价是**类型系统不再为该字段做任何校验**，形态正确性完全由模块自己在钩子里负责。
 
 **代码**：`e2dab0f9`。**测试**：新增 10 例，455 例通过（唯一失败仍是上游预存的 `VObjectPropertyTest`）。
+
+### v1.5.8（2026-09-15）—— 真机验证：问题 6 修复通过，发现引用语法缺陷
+
+**一、问题 6 的修复真机通过**（§4.3.6）
+
+31 条消息、5 个函数工作流，**无一例 `unknown parameter(s)`**；模型全部用简写类型
+（印证决策 41）；`aiMetadata.workflowStepDescription` 生效。
+
+**二、发现并修复第二个缺陷：函数参数引用语法**
+
+模型写 `{{user_id}}`，正确是 `{{vars.user_id}}`。提示词原文只讲了
+`{{previousStepId.outputId}}` 一种形式，漏了函数参数——模型据此合理类推成裸写。
+
+后果是**静默失败**：`VariableResolver` 两条分支都不匹配 → 返回空值；
+`canonicalizeVariableReference` 遇 `path.size < 3` 原样返回 → 保存时不报错。
+**「看着成功、运行时空值」。**
+
+修复只补提示词（三处），**不加 `OutputDefinition`**（那会呈现成
+`{{define_fn.user_id}}` 而正确语法是 `{{vars.user_id}}`，反而误导）。决策 44/45。
+
+**三、第三次遇到同一个模式**
+
+| 轮次 | 丢的是什么 | 表现 |
+|---|---|---|
+| §4.3.4 | `query_module_schema` 丢字段语义（`inputHints` 等） | 模型拿到半份说明书 |
+| §4.3.5 | `isHidden` 被当成 AI 过滤条件，吞掉真参数 | 模型看不到合法字段 |
+| **§4.3.6** | 提示词讲了「步骤输出」引用，漏了「函数参数」引用 | 模型写出不解析的引用 |
+
+**共同点：都不是逻辑错误，而是「该说的没说全」——且都表现为静默失败。**
+这三处已写入 §4.3.6 作为模式记录。
+
+**代码**：`13195806`。**测试**：`VariableResolverTest` 补 1 例锁定两条分支语义，456 例通过。
