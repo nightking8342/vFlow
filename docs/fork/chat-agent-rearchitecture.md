@@ -1,7 +1,7 @@
 # Chat Agent 架构重构设计（基于 CCB / dsh / OpenCode / Pi 四家对照分析）
 
 > 版本：v1.5.4（2026-09-14）
-> 状态：**P0 / P1 / P2 已全部实施**；第二批第 1/2 项**已真机通过**（§4.3.3）。剩余待真机项见 §4.3 验收表。
+> 状态：**P0 / P1 / P2 已全部实施并基本验证通过**（§4.2.1 / §4.3.3 / §4.3.4）。剩余待真机项见 §4.3 验收表。
 > 分支：`feature/chat-agent-rearchitecture`（从 `dev` 出）
 > 目录：`docs/fork/`（fork 新增文件，上游无此文件，冲突归属**我方**）
 >
@@ -17,8 +17,8 @@
 >   修复 `query_module_schema` 丢失字段语义的缺陷（`inputHints` 等 3 个字段共 67–97 模块受影响）；
 >   删除无效的 `operator` 参数
 >
-> **已真机通过**：§4.2.1（P0 三项）、§4.3.3（第二批第 1/2 项）。
-> **待真机**：§4.3 验收表第 3 项（`call_module` 审批）、第 8 项（缓存命中）、第 9 项（字段语义复验）。
+> **已真机通过**：§4.2.1（P0 三项）、§4.3.3（第二批第 1/2 项）、§4.3.4 的字段语义修复。
+> **待真机**：§4.3 验收表第 3 项（`call_module` 审批）、第 8 项（缓存命中）。
 
 ---
 
@@ -833,7 +833,7 @@ private fun buildDirectToolDefinitions(): List<ChatAgentToolDefinition> {
 | 6 | **`ChatAgentToolingTest.kt` 按新架构改写完毕** | ✅ 已达成 |
 | 7 | `./gradlew test` 全绿 | ⚠️ 除 `VObjectPropertyTest` 的上游预存失败 |
 | 8 | **Anthropic 缓存命中**（读 `usage.cache_read_input_tokens`） | ⬜ 待真机 |
-| 9 | **`query_module_schema` 输出完整字段语义** | ✅ 已修复（`983abb1d`）；⬜ 待真机复验 |
+| 9 | **`query_module_schema` 输出完整字段语义** | ✅ **真机复验通过**（模型读出 "Upper bound used only by the number_between operator"，非"猜的"） |
 
 > ⚠️ **`ChatAgentModuleExecutor` 需要真 `Context`，从未被单测覆盖**（既有盲区）——
 > `query_module_schema` 的返回内容、`call_module` 的审批判定，只有编译与
