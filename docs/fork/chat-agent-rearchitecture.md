@@ -846,7 +846,7 @@ private fun buildDirectToolDefinitions(): List<ChatAgentToolDefinition> {
 | 5 | 保留的技能**正文已改写**，不再引用旧工具名 | ✅ **改为清空**（`07f5ee86`，理由见 §P1-3B） |
 | 6 | **`ChatAgentToolingTest.kt` 按新架构改写完毕** | ✅ 已达成 |
 | 7 | `./gradlew test` 全绿 | ⚠️ 除 `VObjectPropertyTest` 的上游预存失败 |
-| 8 | **Anthropic 缓存命中**（读 `usage.cache_read_input_tokens`） | ⬜ 待真机（**需先加日志**，vFlow 目前不记录该字段） |
+| 8 | **Anthropic 缓存命中**（读 `usage.cache_read_input_tokens`） | ✅ **已完成**（实测命中，但**归因存疑**——见 §4.3.8）。按用户决策标记完成，不再做对照实验 |
 | 9 | **`query_module_schema` 输出完整字段语义** | ✅ **真机复验通过**（模型读出 "Upper bound used only by the number_between operator"，非"猜的"） |
 | 10 | **函数工作流链路完整**：查签名 → 按签名传参 | ✅ **真机证实**（见 §4.3.5） |
 | 11 | **AI 侧字段可见性**：`isHidden` 的真参数不再被吞 | ✅ **真机证实**（`userId`/`maxResults` 可见，见 §4.3.5） |
@@ -856,7 +856,7 @@ private fun buildDirectToolDefinitions(): List<ChatAgentToolDefinition> {
 
 > ⚠️ **`ChatAgentModuleExecutor` 需要真 `Context`，从未被单测覆盖**（既有盲区）——
 > `query_module_schema` 的返回内容、`call_module` 的审批判定，只有编译与
-> 间接单测层面的保证。**故第 8 项仍以真机为准。**
+> 间接单测层面的保证。**故以真机为准。**
 
 #### 4.3.3 第二批真机验证：第 1、2 项通过（2026-09-14）
 
@@ -1125,6 +1125,72 @@ VariableResolver:165   if (path.size >= 2)            // 当作 stepId.outputId 
 它需要先加 `cache_read_input_tokens` 日志，属独立小任务，见 §4.7。
 
 ---
+
+#### 4.3.8 验收项 8：缓存实测（2026-09-15）——**命中，但归因存疑**
+
+**先说结论**：`cache_read_input_tokens` 非零，**缓存是活的**；但**现有证据无法证明功劳属于 P2-2 的 `cache_control` 断点**。标记为「已完成」，但下面的归因问题必须一并留档——**否则将来会有人误以为 P2-2 已被验证**。
+
+**前置改动**：`c317414f` 记录 `cache_create` / `cache_read` / `cache_deleted` 三个字段（`ChatCompletionResult` 加可空字段 + Anthropic 解析补提取 + `ChatViewModel` 日志追加）。**这三处保留**——将来排查「这轮为什么慢/贵」有用。
+
+**实测数据**（7 轮，`cliapin2.x.ddnsto.com`，`model=deepseek-v4.1-flash`）：
+
+| 轮 | `input_tokens` | `cache_read` | 命中率 |
+|---|---|---|---|
+| 1 | 224 | 12,800 | 98.3% |
+| 2 | 458 | 12,928 | 96.6% |
+| 3 | 461 | 13,312 | 96.7% |
+| 4 | 249 | 13,696 | 98.2% |
+| 5 | 469 | 13,824 | 96.7% |
+| 6 | 163 | 14,208 | 98.9% |
+| 7 | 257 | 14,336 | 98.2% |
+
+命中率 = `cache_read / (input_tokens + cache_read)`，区间 **96.6%–98.9%**。
+
+**请求侧确证我们的改动发出去了**（临时诊断日志，验完已移除）：
+
+```
+systemChars=5347（恒定）  toolsChars=42441（恒定）  system=true  lastTool=true
+```
+
+**→ 「代码写对了」这一点是确证的。** 且 `toolsChars` 逐轮恒定，**印证 P1-1c 让前缀稳定了**（改造前 `tools` 随 `selectSkills` 每轮变）。
+
+**但归因有问题**，两条：
+
+**① `cache_creation_input_tokens` 从不存在。** 原样打印的 `usage` 只有：
+
+```json
+{"input_tokens":224,"output_tokens":143,"cache_read_input_tokens":12800}
+```
+
+**不是"我们没取"**（提取代码就在那里），**是服务端根本没返回**。真 Anthropic 在冷启动时必然返回它。
+
+**② `cache_read` 超出了 `system + tools`，且随 messages 增长。**
+
+```
+断点覆盖 = 5347 + 42441 = 47,788 字符 ≈ 11,947 token
+实测 cache_read 起点 = 12,800 token   ← 已超出
+```
+
+**我们的断点只覆盖 `system + tools`（二者字节恒定），故 `cache_read` 应当恒定**——它在涨，说明**被缓存的前缀包含了 messages**。而代码明确注释了「messages 每轮都变，故不予标记」（`ChatCompletionClient.kt:546`）。
+
+**判断**：这条链路是 **DeepSeek 经 Anthropic 兼容网关**，而 **DeepSeek 原生是自动前缀缓存**——不需要 `cache_control`，自己缓存整个前缀。两条异常都指向它，而非我们的断点。
+
+**唯一能隔离归因的实验**（**未做，按用户决策跳过**）：临时去掉两处 `cache_control` 再跑一次——
+
+| 结果 | 结论 |
+|---|---|
+| `cache_read` 仍非零 | 后端自动缓存，断点无贡献 |
+| `cache_read` 归零 | 断点确实必需，P2-2 有效 |
+
+> **若真要做，别看"命中率"**：本场景分母里 `cache_read` 占 96%+，比率天然接近 100%，
+> **无区分度**。要看 `cache_read` 的**绝对值是否归零**。
+
+**P2-2 代码不应因此回退**：
+
+- 对**真 Anthropic**，`cache_control` 是**唯一**途径，不写必定 100% 冷启动
+- 对 **DeepSeek / 兼容网关**，未知字段被忽略，**无害**
+
+**故不存在负收益**，只是「在本项目当前使用的链路上无法归因」。
 
 ### 4.4 实施顺序
 
@@ -1401,6 +1467,8 @@ P0-3 把单条 tool result 卡在 **1,600 字符**（≈400 token），是四家
 | 43 | **名字非法/重名不在钩子里拦**，交给 `validate()` 回传模型自纠——钩子里静默丢会重现病症 B | §6.2 问题 6 |
 | 44 | **函数参数引用必须写 `{{vars.<name>}}`**：裸写 `{{<name>}}` 既不匹配命名变量分支、也不匹配 `stepId.outputId` 分支 → 静默返回空值 | §4.3.6 |
 | 45 | **不为 `define_function` 加 `OutputDefinition` 暴露参数**：那会呈现成 `{{define_fn.user_id}}` 形式，而正确语法是 `{{vars.user_id}}`——反而误导。只补提示词 | §4.3.6 |
+| 46 | **保留缓存明细日志**（`cacheCreate`/`cacheRead`/`cacheDeleted`）：成本一行，将来排查「这轮为什么慢/贵」有用；临时诊断日志（打印原始 usage 与请求断点）**验完即删** | §4.3.8 |
+| 47 | **验收项 8 标记完成，不做归因对照实验**（用户决策）：命中已确认，但功劳可能属后端自动缓存。**结论与局限一并留档**，不留「已完美验证」的错误印象 | §4.3.8 |
 
 ### 6.2 仍开放
 
@@ -1409,7 +1477,7 @@ P0-3 把单条 tool result 卡在 **1,600 字符**（≈400 token），是四家
 | 1 | `call_module` 的**审批粒度** | ✅ **已定案**：按目标模块风险等级逐次判定——`prepareCallModule` 用 `getRiskLevelForModuleId(moduleId)` 构造 `definition`，`riskLevelOf` 对 `Ready` 取 `definition.riskLevel`。工具定义里声明的 `riskLevel` 是占位值，不参与审批 |
 | 2 | `query_module_schema` 的 **`operator` 参数** | ✅ **已删除**：真机实测无效——传 `number_between` 与 `number_gt` 返回完全相同，因为 `resolveModuleInputDefinitions` 是**并集**求值，静态全集吃掉了动态裁剪结果。且修好 `inputHints` 后它更无必要（「哪个字段被哪个算子用到」直接写在字段说明里）。**修好它反而要引入会裁剪字段的求值模式——那正是病症 B 的成因** |
 | 3 | 技能清单的字节稳定化 | ✅ **已消失**：技能目录已清空，`<available_skills>` 段不再输出 |
-| 4 | 缓存是否真命中 | ⬜ **待真机**：读 Anthropic 响应的 `usage.cache_read_input_tokens`。⚠️ **vFlow 目前不记录该字段**，需先加日志才能验 |
+| 4 | 缓存是否真命中 | ✅ **已闭环**（v1.5.10）：命中，但**归因存疑**——当前链路是 DeepSeek 经 Anthropic 兼容网关，其自动前缀缓存与我们的断点无法区分。详见 §4.3.8 |
 | 5 | `CallFunctionModule` 的函数参数对 schema 发现机制不可见 | ✅ **已解决**（v1.5.5）：改由 `list_workflows(kind:"function")` 提供——**schema 说形状，数据工具提供值**。真机实证：模型查到签名后按 `s1`/`s2`/`bool`/`dic`/`arr` 拼出了完整调用（见 §4.3.5） |
 | 6 | **`DefineFunctionModule` 无法通过 AI 保存函数参数** | ✅ **已解决**（v1.5.7，见下方详解）。方案 C 的前半步：AI 现在能写入参数声明 |
 
@@ -1849,3 +1917,33 @@ STRING 会毁掉它，而 NUMBER/BOOLEAN/ENUM 更不可能。
 
 **结论：本设计文档（v1.5）的两批实施契约 P0 三项 + P1 三项 + 依赖清理已全部落地并验证。**
 P2-1a 已完成；P2-1b（上下文预算）按决策 37 推迟，方案已存档于 §4.7。
+
+### v1.5.10（2026-09-15）—— 验收项 8 闭环：缓存命中，归因存疑
+
+**一、加了缓存明细日志**（`c317414f`）：`ChatCompletionResult` 加三个可空字段
+（`cacheCreate`/`cacheRead`/`cacheDeleted`），Anthropic 解析补提取，`ChatViewModel` 日志追加。
+**保留**——将来排查「这轮为什么慢/贵」有用。
+
+**二、实测：命中，但归因无法确定**（§4.3.8）
+
+7 轮数据，`cache_read` 在 12,800–14,336 之间且随 messages 增长，命中率 96.6%–98.9%。
+请求侧确证两个断点都发出去了，且 `toolsChars=42441` 逐轮恒定（**印证 P1-1c 让前缀稳定**）。
+
+**但两条异常指向「功劳不是我们的」**：
+
+1. `cache_creation_input_tokens` **从不存在**——原样打印的 usage 只有
+   `input_tokens`/`output_tokens`/`cache_read_input_tokens`。真 Anthropic 冷启动必然返回它。
+2. `cache_read` **超出** `system + tools` 的估算值（12,800 > 11,947 token）**且随 messages 增长**——
+   而我们的断点只覆盖字节恒定的 `system + tools`，理应恒定。
+
+**判断**：链路是 **DeepSeek 经 Anthropic 兼容网关**，DeepSeek 原生自带自动前缀缓存，
+`cache_control` 的贡献无法从这份数据中隔离。
+
+**三、按用户决策跳过归因对照实验**（临时去掉 `cache_control` 再测），验收项 8 标记完成。
+**结论与局限一并留档**——避免留下「P2-2 已完美验证」的错误印象。
+
+**四、P2-2 不回退**：对真 Anthropic 它是唯一途径，对 DeepSeek/兼容网关无害，**无负收益**。
+
+**五、一处方法论教训**：本次一度用「命中率 ≈ 98%」表述结论，但该比率在本场景分母里
+`cache_read` 占 96%+，**天然接近 100%，无区分度**。有效的观察是 `cache_read` 的**绝对值**。
+**数字要带算法，且要先问「这个指标在这种数据分布下能不能区分」**。
