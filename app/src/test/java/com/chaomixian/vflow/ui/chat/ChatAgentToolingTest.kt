@@ -237,6 +237,8 @@ class ChatAgentToolingTest {
             CHAT_LOAD_SKILL_TOOL_NAME,
             CHAT_QUERY_MODULE_SCHEMA_TOOL_NAME,
             CHAT_CALL_MODULE_TOOL_NAME,
+            CHAT_LIST_WORKFLOWS_TOOL_NAME,
+            CHAT_GET_ENVIRONMENT_TOOL_NAME,
         )
         val exposed = ChatAgentSkillRouter.availableTools(sampleTools()).availableTools.map { it.name }
 
@@ -526,6 +528,14 @@ class ChatAgentToolingTest {
             sampleTool(
                 name = CHAT_CALL_MODULE_TOOL_NAME,
                 moduleId = CHAT_CALL_MODULE_MODULE_ID,
+            ),
+            sampleTool(
+                name = CHAT_LIST_WORKFLOWS_TOOL_NAME,
+                moduleId = CHAT_LIST_WORKFLOWS_MODULE_ID,
+            ),
+            sampleTool(
+                name = CHAT_GET_ENVIRONMENT_TOOL_NAME,
+                moduleId = CHAT_GET_ENVIRONMENT_MODULE_ID,
             ),
             sampleTool(
                 name = "vflow_device_flashlight",

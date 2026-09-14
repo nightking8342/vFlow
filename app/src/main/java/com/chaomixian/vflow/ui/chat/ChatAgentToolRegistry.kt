@@ -80,6 +80,30 @@ internal const val CHAT_QUERY_MODULE_SCHEMA_MODULE_ID = "vflow.agent.query_modul
 internal const val CHAT_CALL_MODULE_TOOL_NAME = "vflow_agent_call_module"
 internal const val CHAT_CALL_MODULE_MODULE_ID = "vflow.agent.call_module"
 
+/**
+ * 列出用户工作流的工具名。
+ *
+ * 与 [CHAT_QUERY_MODULE_SCHEMA_TOOL_NAME] 的分工：那个回答「模块长什么样」（形状），
+ * 这个回答「用户现在有哪些工作流」（数据）。`CallFunctionModule` 的 `workflow_id`
+ * 是必填 string，但其可选值只能从这里得到——**schema 说形状，数据工具提供值**。
+ *
+ * 也是将来「修改工作流」工具的前置：要改某个工作流，先得知道它的 id。
+ */
+internal const val CHAT_LIST_WORKFLOWS_TOOL_NAME = "vflow_agent_list_workflows"
+internal const val CHAT_LIST_WORKFLOWS_MODULE_ID = "vflow.agent.list_workflows"
+
+/**
+ * 查询用户环境的工具名：文件夹 + 全局变量。
+ *
+ * 这两类都是**跨工作流的持久配置**，与工作流本身的性质不同（工作流是被操作的对象，
+ * 而这些是 AI 用来理解上下文的背景），故独立成一个工具。
+ *
+ * 标签暂不纳入——App 里标签既不在列表页展示也不参与搜索，用户实际很少使用，
+ * 给它做查询接口是为一个未打通的功能加维护成本。
+ */
+internal const val CHAT_GET_ENVIRONMENT_TOOL_NAME = "vflow_agent_get_environment"
+internal const val CHAT_GET_ENVIRONMENT_MODULE_ID = "vflow.agent.get_environment"
+
 internal fun chatToolNameFromModuleId(moduleId: String): String {
     val normalized = moduleId
         .lowercase()
@@ -115,6 +139,8 @@ internal class ChatAgentToolRegistry(context: Context) {
                 buildLoadSkillToolDefinition(),
                 buildQueryModuleSchemaToolDefinition(),
                 buildCallModuleToolDefinition(),
+                buildListWorkflowsToolDefinition(),
+                buildGetEnvironmentToolDefinition(),
             ) +
                 ChatAgentNativeToolExecutor.buildDefinitions(appContext)
             ).associateBy { it.name }
@@ -183,9 +209,10 @@ internal class ChatAgentToolRegistry(context: Context) {
         val baseStep = module.createSteps().firstOrNull() ?: ActionStep(module.id, emptyMap())
         // 与执行校验共用同一求值口径（静态全集 ∪ 动态结果），否则会出现
         // 「schema 里没有该字段但执行时能收下」或反过来的不一致。
-        val inputs = resolveModuleInputDefinitions(module, baseStep)
-            .filterNot { it.isHidden }
-            .filter(::isInputSupported)
+        val inputs = visibleInputsForAgent(
+            resolveModuleInputDefinitions(module, baseStep),
+            baseStep.parameters,
+        ).filter(::isInputSupported)
         val localizedName = module.metadata.getLocalizedName(appContext)
         val permissions = module.getRequiredPermissions(baseStep)
             .map { it.getLocalizedName(appContext) }
@@ -341,6 +368,104 @@ internal class ChatAgentToolRegistry(context: Context) {
      * 会用目标模块的真实风险等级构造执行项（见 `ChatAgentModuleExecutor.prepareCallModule`）。
      * 若此处被当成实际风险，`call_module` 就成了绕过所有模块风险评估的后门。
      */
+    /**
+     * `list_workflows`：列出用户的工作流（可选筛选）。
+     *
+     * 纯本地查询，无副作用，故 READ_ONLY + 不截断（列表可能较长，但截断会让模型
+     * 看不到它要找的那条）。
+     */
+    private fun buildListWorkflowsToolDefinition(): ChatAgentToolDefinition {
+        return ChatAgentToolDefinition(
+            name = CHAT_LIST_WORKFLOWS_TOOL_NAME,
+            title = "列出用户工作流",
+            description = buildString {
+                append("List the user's vFlow workflows, optionally filtered. ")
+                append("Use this to find a workflow id before calling one or modifying one. ")
+                append("Each entry shows the workflow id, name, folder, and — for function workflows — ")
+                append("its full parameter list, so you can build a complete ")
+                append("`$CHAT_CALL_MODULE_TOOL_NAME` call for `$CALL_FUNCTION_MODULE_ID` without guessing. ")
+                append("A function workflow is one that starts with a Define Function block. ")
+                append("This is a local lookup with no side effects.")
+            },
+            moduleId = CHAT_LIST_WORKFLOWS_MODULE_ID,
+            moduleDisplayName = "列出用户工作流",
+            routingHints = setOf("工作流", "列表", "workflow", "list"),
+            inputSchema = buildJsonObject {
+                put("type", "object")
+                put(
+                    "properties",
+                    buildJsonObject {
+                        put(
+                            "query",
+                            buildJsonObject {
+                                put("type", "string")
+                                put("description", "Optional. Case-insensitive substring match on the workflow name.")
+                            }
+                        )
+                        put(
+                            "folder",
+                            buildJsonObject {
+                                put("type", "string")
+                                put(
+                                    "description",
+                                    "Optional. Only workflows directly inside this folder (by folder name). " +
+                                        "Use `$CHAT_GET_ENVIRONMENT_TOOL_NAME` or an unfiltered call to see folder names."
+                                )
+                            }
+                        )
+                        put(
+                            "kind",
+                            buildJsonObject {
+                                put("type", "string")
+                                put("enum", JsonArray(listOf("all", "function", "regular").map(::JsonPrimitive)))
+                                put(
+                                    "description",
+                                    "Optional. `function` = only function workflows (callable via " +
+                                        "`$CALL_FUNCTION_MODULE_ID`); `regular` = everything else. Defaults to `all`."
+                                )
+                            }
+                        )
+                    }
+                )
+            },
+            permissionNames = emptyList(),
+            riskLevel = ChatAgentToolRiskLevel.READ_ONLY,
+            usageScopes = setOf(ChatAgentToolUsageScope.DIRECT_TOOL),
+            truncatable = false,
+        )
+    }
+
+    /**
+     * `get_environment`：文件夹 + 全局变量。
+     *
+     * 全局变量**只返回名字与类型，不返回值**——模型引用 `{{global.x}}` 不需要知道当前值
+     * （执行时取值），而值可能是长 JSON 或用户敏感数据，无谓地送进上下文。
+     */
+    private fun buildGetEnvironmentToolDefinition(): ChatAgentToolDefinition {
+        return ChatAgentToolDefinition(
+            name = CHAT_GET_ENVIRONMENT_TOOL_NAME,
+            title = "查询用户环境",
+            description = buildString {
+                append("Look up the user's persistent vFlow environment: workflow folders and global variables. ")
+                append("Global variables are shared across workflows; reference one in a module parameter as ")
+                append("`{{global.<name>}}`. Use this before writing a step that reads or writes a global variable, ")
+                append("so you use a name that actually exists. ")
+                append("This is a local lookup with no side effects.")
+            },
+            moduleId = CHAT_GET_ENVIRONMENT_MODULE_ID,
+            moduleDisplayName = "查询用户环境",
+            routingHints = setOf("全局变量", "文件夹", "变量", "environment", "global variable"),
+            inputSchema = buildJsonObject {
+                put("type", "object")
+                put("properties", buildJsonObject { })
+            },
+            permissionNames = emptyList(),
+            riskLevel = ChatAgentToolRiskLevel.READ_ONLY,
+            usageScopes = setOf(ChatAgentToolUsageScope.DIRECT_TOOL),
+            truncatable = false,
+        )
+    }
+
     private fun buildCallModuleToolDefinition(): ChatAgentToolDefinition {
         return ChatAgentToolDefinition(
             name = CHAT_CALL_MODULE_TOOL_NAME,

@@ -24,6 +24,8 @@ import com.chaomixian.vflow.core.types.complex.VScreenElement
 import com.chaomixian.vflow.core.workflow.model.ActionStep
 import com.chaomixian.vflow.core.workflow.model.Workflow
 import com.chaomixian.vflow.core.workflow.model.WorkflowReentryBehavior
+import com.chaomixian.vflow.core.workflow.FolderManager
+import com.chaomixian.vflow.core.workflow.GlobalVariableStore
 import com.chaomixian.vflow.core.workflow.WorkflowManager
 import com.chaomixian.vflow.permissions.Permission
 import com.chaomixian.vflow.permissions.PermissionManager
@@ -384,6 +386,20 @@ internal class ChatAgentModuleExecutor(
         }
         if (toolCall.name == CHAT_CALL_MODULE_TOOL_NAME) {
             return prepareCallModule(toolCall, artifactStore)
+        }
+        if (toolCall.name == CHAT_LIST_WORKFLOWS_TOOL_NAME) {
+            return ChatPreparedToolItem.ImmediateResult(
+                toolCall = toolCall,
+                result = prepareListWorkflows(toolCall),
+                riskLevel = ChatAgentToolRiskLevel.READ_ONLY,
+            )
+        }
+        if (toolCall.name == CHAT_GET_ENVIRONMENT_TOOL_NAME) {
+            return ChatPreparedToolItem.ImmediateResult(
+                toolCall = toolCall,
+                result = prepareGetEnvironment(toolCall),
+                riskLevel = ChatAgentToolRiskLevel.READ_ONLY,
+            )
         }
         if (toolCall.name == CHAT_TEMPORARY_WORKFLOW_TOOL_NAME) {
             return prepareTemporaryWorkflow(toolCall, artifactStore)
@@ -1548,6 +1564,142 @@ internal class ChatAgentModuleExecutor(
         )
 
     /**
+     * 处理 `list_workflows`：列出用户的工作流，支持按名字 / 文件夹 / 类型筛选。
+     *
+     * **为什么需要它**：`CallFunctionModule` 的 `workflow_id` 是必填 string，但其可选值
+     * 只能来自用户数据。schema 工具回答「字段长什么样」，这个工具回答「有哪些可选值」——
+     * 职责分开，避免 schema 工具为各模块的数据依赖堆满特例。
+     *
+     * 输出带**文件夹名**（而非 id）：模型要按文件夹筛选时只需填名字，不必先查 id。
+     */
+    private fun prepareListWorkflows(toolCall: ChatToolCall): ChatToolResult {
+        val arguments = parseArguments(toolCall.argumentsJson)
+        val query = arguments["query"]?.toString()?.trim()?.takeIf { it.isNotBlank() }
+        val folder = arguments["folder"]?.toString()?.trim()?.takeIf { it.isNotBlank() }
+        val kind = arguments["kind"]?.toString()?.trim()?.lowercase() ?: "all"
+
+        val workflows = runCatching { WorkflowManager(appContext).getAllWorkflows() }
+            .getOrDefault(emptyList())
+        val foldersById = runCatching {
+            FolderManager(appContext).getAllFolders().associateBy { it.id }
+        }.getOrDefault(emptyMap())
+
+        val filtered = workflows.filter { workflow ->
+            val matchesQuery = query == null || workflow.name.contains(query, ignoreCase = true)
+            val matchesKind = when (kind) {
+                "function" -> workflow.isFunction
+                "regular" -> !workflow.isFunction
+                else -> true
+            }
+            val matchesFolder = folder == null || run {
+                val folderName = workflow.folderId?.let { foldersById[it]?.name }
+                folderName != null && folderName.equals(folder, ignoreCase = true)
+            }
+            matchesQuery && matchesKind && matchesFolder
+        }
+
+        return ChatToolResult(
+            callId = toolCall.id,
+            name = toolCall.name,
+            status = ChatToolResultStatus.SUCCESS,
+            summary = "列出用户工作流",
+            outputText = buildString {
+                if (filtered.isEmpty()) {
+                    append("No workflow matches ")
+                    append(
+                        listOfNotNull(
+                            query?.let { "query=\"$it\"" },
+                            folder?.let { "folder=\"$it\"" },
+                            kind.takeIf { it != "all" }?.let { "kind=$it" },
+                        ).joinToString(", ").ifBlank { "the request" }
+                    )
+                    appendLine(".")
+                    if (workflows.isNotEmpty()) {
+                        append("There are ${workflows.size} workflow(s) in total.")
+                    }
+                    return@buildString
+                }
+
+                filtered.forEach { workflow ->
+                    append("- ").append(workflow.id).append(" — ").append(workflow.name)
+                    if (workflow.isFunction) append(" [function]")
+                    workflow.folderId?.let { id -> foldersById[id]?.name }?.let { append(" 📁").append(it) }
+                    workflow.tags.takeIf { it.isNotEmpty() }?.let { append(" #").append(it.joinToString(",")) }
+
+                    // 函数工作流附上完整签名——模型据此才能拼出 call_function 的 params
+                    workflow.functionSignature?.let { signature ->
+                        val params = signature.params
+                        if (params.isEmpty()) {
+                            append(" (no parameters)")
+                        } else {
+                            append(" (")
+                            append(
+                                params.joinToString(", ") { param ->
+                                    val required = if (param.isRequired) " *" else ""
+                                    "${param.name}:${param.type}$required"
+                                }
+                            )
+                            append(")")
+                        }
+                        signature.returnDef?.let { ret -> append(" -> ").append(ret.type) }
+                    }
+                    appendLine()
+                }
+            },
+        )
+    }
+
+    /**
+     * 处理 `get_environment`：文件夹 + 全局变量。
+     *
+     * 全局变量**只给名字与类型**：模型引用 `{{global.x}}` 不需要知道当前值（执行时取值），
+     * 而值可能是长 JSON 或用户敏感数据，无谓地进上下文。
+     */
+    private fun prepareGetEnvironment(toolCall: ChatToolCall): ChatToolResult {
+        val folders = runCatching { FolderManager(appContext).getAllFolders() }
+            .getOrDefault(emptyList())
+        val workflows = runCatching { WorkflowManager(appContext).getAllWorkflows() }
+            .getOrDefault(emptyList())
+        val globals = runCatching { GlobalVariableStore.getAll(appContext) }
+            .getOrDefault(emptyMap())
+
+        return ChatToolResult(
+            callId = toolCall.id,
+            name = toolCall.name,
+            status = ChatToolResultStatus.SUCCESS,
+            summary = "查询用户环境",
+            outputText = buildString {
+                appendLine("folders:")
+                if (folders.isEmpty()) {
+                    appendLine("  (none)")
+                } else {
+                    folders.sortedBy { it.order }.forEach { folder ->
+                        val count = workflows.count { it.folderId == folder.id }
+                        append("  - ").append(folder.name).append(" (").append(count).append(" workflows)")
+                        folder.parentId?.let { parent ->
+                            folders.firstOrNull { it.id == parent }?.let { append(" under ").append(it.name) }
+                        }
+                        appendLine()
+                    }
+                }
+                val unfiled = workflows.count { it.folderId == null }
+                if (unfiled > 0) appendLine("  - (unfiled): $unfiled workflows")
+
+                appendLine()
+                appendLine("global variables (reference as {{global.<name>}}):")
+                if (globals.isEmpty()) {
+                    appendLine("  (none)")
+                } else {
+                    globals.entries.sortedBy { it.key }.forEach { (name, value) ->
+                        append("  - ").append(name)
+                            .append(" (").append(value.type.name.lowercase()).appendLine(")")
+                    }
+                }
+            },
+        )
+    }
+
+    /**
      * 处理 `query_module_schema`：返回模块的完整字段定义。
      *
      * **查询域 = 能进保存工作流的全部模块（~184）**，不是能直调的 59——
@@ -1583,7 +1735,10 @@ internal class ChatAgentModuleExecutor(
             moduleId = module.id,
             parameters = module.createSteps().firstOrNull()?.parameters.orEmpty(),
         )
-        val inputs = resolveModuleInputDefinitions(module, step).filterNot { it.isHidden }
+        val inputs = visibleInputsForAgent(
+            resolveModuleInputDefinitions(module, step),
+            step.parameters,
+        )
         val scopes = toolRegistry.getUsageScopesForModuleId(moduleId)
         val callable = ChatAgentToolUsageScope.DIRECT_TOOL in scopes
         val metadata = module.aiMetadata
@@ -1648,6 +1803,17 @@ internal class ChatAgentModuleExecutor(
                     append(
                         "Note: this module cannot be invoked directly with `$CHAT_CALL_MODULE_TOOL_NAME`, " +
                             "but it is still valid as a workflow step."
+                    )
+                }
+                // 查询"有哪些函数工作流"是**数据**问题，不是 schema 问题——
+                // 由 `list_workflows` 承担（见该工具定义）。这里只给出指引，
+                // 避免 schema 工具因各模块的数据依赖而堆满特例。
+                if (moduleId == CALL_FUNCTION_MODULE_ID) {
+                    appendLine()
+                    appendLine(
+                        "Note: `workflow_id` must be the id of a **function workflow**. " +
+                            "Call `$CHAT_LIST_WORKFLOWS_TOOL_NAME` with kind=\"function\" to see " +
+                            "the available ones and their parameters."
                     )
                 }
             },
@@ -2009,3 +2175,50 @@ internal data class ChatParameterBuildResult(
     val rejectedKeys: List<String> = emptyList(),
     val availableKeys: List<String> = emptyList(),
 )
+
+/** 「调用函数工作流」的 moduleId。查询它的字段定义时会附上指向 `list_workflows` 的指引。 */
+internal const val CALL_FUNCTION_MODULE_ID = "vflow.logic.call_function"
+
+/**
+ * 从模块的输入定义中筛出**该让 AI 看到的**字段。
+ *
+ * ### 为什么不能照搬编辑器的 `isHidden` 判定
+ *
+ * 编辑器的过滤是两道（`ActionEditorUiModel.build`）：
+ * 1. `getHandledInputIds()`——UIProvider 声明的「这些字段我来画」
+ * 2. `visibility?.isVisible(params) ?: !isHidden`——可见性
+ *
+ * `isHidden` 在那里的语义是「**通用渲染器别碰**」，它回答的是「谁负责画这个字段」。
+ * **AI 不渲染 UI，这个问题对 AI 无意义。** 拿渲染管线的标记去判断「字段该不该给模型看」
+ * 是两件不相干的事。
+ *
+ * 它的三个实际用法：
+ * - 「UIProvider 接管渲染」→ 有替代品 `getHandledInputIds()`，但**多数模块尚未迁移**
+ * - 「条件可见性」→ 已被 `InputVisibility` 取代，**这就是上游标注它废弃的原因**
+ * - 「动态生成的字段不参与通用渲染」→ **至今无替代品**（`getHandledInputIds` 是静态
+ *   Set，声明不了运行时才知道的参数名；`CallFunctionModule` 正是这种情况）
+ *
+ * ### 是否照搬是经过权衡的
+ *
+ * 不读 `isHidden` 会让模型多看到几个 UI 开关（如 `show_advanced`——编辑器里
+ * 「▼ 显示高级选项」那个折叠箭头，它根本不是模块参数）。代价是轻微的噪声。
+ *
+ * 而照搬的代价更重：**真参数会被一起丢掉**。最典型的是
+ * `CallFunctionModule` 的函数参数与 `FindInstalledAppModule` 的 `userId`/`maxResults`
+ * ——它们被标了 `isHidden`，但模块作者**专门为 AI 写了 `inputHints`**，
+ * 显然期望模型使用。丢掉它们，模型就再也调不对这些模块。
+ *
+ * 两害相权，选择让模型多看到几个无害的开关。
+ *
+ * @param stepParameters 当前参数，供 `visibility` 条件求值
+ */
+internal fun visibleInputsForAgent(
+    inputs: List<InputDefinition>,
+    stepParameters: Map<String, Any?>,
+): List<InputDefinition> {
+    return inputs.filter { input ->
+        // 只认声明式的条件可见性。`visibility` 表达的是「此刻该字段有没有意义」——
+        // 这才是与 AI 相关的语义。
+        input.visibility?.isVisible(stepParameters) ?: true
+    }
+}
