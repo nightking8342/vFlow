@@ -618,6 +618,9 @@ internal class ChatCompletionClient(
                 reasoningContent = normalized.reasoningContent,
                 totalTokens = extractAnthropicTotalTokens(root["usage"]),
                 toolCalls = toolCalls,
+                cacheCreationTokens = extractAnthropicCacheTokens(root["usage"], "cache_creation_input_tokens"),
+                cacheReadTokens = extractAnthropicCacheTokens(root["usage"], "cache_read_input_tokens"),
+                cacheDeletedTokens = extractAnthropicCacheTokens(root["usage"], "cache_deleted_input_tokens"),
             )
         }
     }
@@ -784,6 +787,18 @@ internal class ChatCompletionClient(
             usage["input_tokens"]?.jsonPrimitive?.intOrNull,
             usage["output_tokens"]?.jsonPrimitive?.intOrNull,
         ).filterNotNull().takeIf { it.isNotEmpty() }?.sum()
+    }
+
+    /**
+     * 取 Anthropic 缓存明细里的单个字段。
+     *
+     * **缺字段时返回 null 而不是 0**：两者含义不同——null 是「服务端没报这个字段」，
+     * 0 是「报了且为零」。缓存命中的判据（`cache_read > 0`）只关心后者，
+     * 而日志里若把 null 打成 0，会把「没报告」误读成「未命中」。
+     */
+    private fun extractAnthropicCacheTokens(element: JsonElement?, field: String): Int? {
+        val usage = element as? JsonObject ?: return null
+        return usage[field]?.jsonPrimitive?.intOrNull
     }
 
     private fun firstNonBlank(vararg values: String?): String? {

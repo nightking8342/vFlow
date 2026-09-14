@@ -880,7 +880,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 DebugLogger.i(
                     LOG_TAG,
-                    "Model reply conversation=${updatedConversation.id} tokens=${result.totalTokens ?: -1} reasoningChars=${result.reasoningContent?.length ?: 0} toolCalls=${result.toolCalls.summarizeToolCalls()} content=${result.content.compactForLog()}"
+                    "Model reply conversation=${updatedConversation.id} tokens=${result.totalTokens ?: -1} reasoningChars=${result.reasoningContent?.length ?: 0} cacheCreate=${result.cacheCreationTokens ?: "-"} cacheRead=${result.cacheReadTokens ?: "-"} cacheDeleted=${result.cacheDeletedTokens ?: "-"} toolCalls=${result.toolCalls.summarizeToolCalls()} content=${result.content.compactForLog()}"
                 )
                 val timestamp = System.currentTimeMillis()
                 var shouldAutoApproveMessageId: String? = null
