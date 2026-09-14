@@ -15,6 +15,29 @@ import java.util.Stack
 class VariableResolverTest {
 
     @Test
+    fun `function parameter reference requires the vars namespace prefix`() {
+        // 真机回归：模型建函数工作流时，把「引用已声明的函数参数」写成了 {{user_id}}，
+        // 正确形式是 {{vars.user_id}}。裸写不会解析、也不报错，静默得到空值——
+        // 工作流看起来保存成功，运行时参数却是空的。
+        //
+        // 本测试锁定两条分支的语义，防止将来有人"放宽"裸写法时无意间改掉行为。
+        val context = createContext(
+            namedVariables = mutableMapOf("user_id" to VString("u_123"))
+        )
+
+        assertEquals(
+            "带 vars. 前缀应解析到命名变量",
+            "u_123",
+            VariableResolver.resolve("{{vars.user_id}}", context),
+        )
+
+        assertFalse(
+            "裸写 {{user_id}} 不应被当作命名变量解析——它既非 vars.* 也非 stepId.outputId",
+            VariableResolver.resolve("{{user_id}}", context).contains("u_123"),
+        )
+    }
+
+    @Test
     fun `resolveValue uses canonical variable as list index`() {
         val context = createContext(
             stepOutputs = mutableMapOf(

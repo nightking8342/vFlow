@@ -59,6 +59,8 @@ class DefineFunctionModule : BaseModule(), AiParameterNormalizer {
                 "`type` is a shorthand value: string, number, boolean, dictionary, list, image, " +
                 "file, coordinate. `name` must be snake_case and unique within the function. " +
                 "Omit this field entirely for a zero-argument function. " +
+                "Later steps read a declared parameter as {{vars.<name>}} — the `vars.` prefix is " +
+                "required; a bare {{<name>}} does not resolve and silently yields an empty value. " +
                 "Example: [{\"name\":\"user_id\",\"type\":\"string\",\"isRequired\":true}]",
         ),
         // 故意不设 requiredInputIds：零参数函数是合法的，标必填会让模型以为必须有参数。

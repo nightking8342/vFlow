@@ -83,6 +83,7 @@ internal object ChatAgentSkillRouter {
             appendLine("Treat the accessibility/UI node tree as the primary source of truth. Keep screenshots, OCR, and other visual tools as explicit fallback paths so future multimodal models can use them without making them the default.")
             appendLine("If one direct tool can complete a simple request such as dark mode, flashlight, wifi, brightness, clipboard, volume, or app launch, call that direct tool instead of navigating system UI or building a workflow.")
             appendLine("Use canonical module parameters and step IDs; never invent localized parameter keys.")
+            appendLine("To pass data between steps, use references: `{{previousStepId.outputId}}` for an earlier step's output, and `{{vars.paramName}}` for a parameter declared by the `vflow.logic.define_function` step. The `vars.` prefix is required — a bare `{{paramName}}` does not resolve and silently produces an empty value.")
             appendLine("Ask one concise clarification only when a missing target, time, account, or condition would make the action ambiguous or risky.")
             appendLine("Never claim a tool succeeded until you receive the tool result.")
             appendLine("If a tool result includes artifact:// handles, preserve and reuse them in later tool arguments when needed.")

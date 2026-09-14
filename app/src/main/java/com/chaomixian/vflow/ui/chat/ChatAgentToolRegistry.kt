@@ -625,7 +625,7 @@ internal class ChatAgentToolRegistry(context: Context) {
                                                                 buildJsonObject {
                                                                     put("type", "object")
                                                                     put("additionalProperties", JsonPrimitive(true))
-                                                                    put("description", "Step parameters. Values can be literal values or magic variable references like {{previousStepId.outputId}} to pass data from earlier steps.")
+                                                                    put("description", "Step parameters. Values can be literal values or references. Two reference forms exist: {{previousStepId.outputId}} reads an earlier step's output; {{vars.paramName}} reads a parameter declared by the vflow.logic.define_function step. A bare {{paramName}} (without the `vars.` prefix) does NOT resolve and silently yields an empty value.")
                                                                 }
                                                             )
                                                             put(
@@ -819,7 +819,7 @@ internal class ChatAgentToolRegistry(context: Context) {
                         buildJsonObject {
                             put("type", "object")
                             put("additionalProperties", JsonPrimitive(true))
-                            put("description", "Step parameters. Values can be literal values or magic variable references like {{previousStepId.outputId}} to pass data from earlier steps.")
+                            put("description", "Step parameters. Values can be literal values or references. Two reference forms exist: {{previousStepId.outputId}} reads an earlier step's output; {{vars.paramName}} reads a parameter declared by the vflow.logic.define_function step. A bare {{paramName}} (without the `vars.` prefix) does NOT resolve and silently yields an empty value.")
                         }
                     )
                     put(
