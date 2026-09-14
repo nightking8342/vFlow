@@ -1,7 +1,8 @@
 # Chat Agent 架构重构设计（基于 CCB / dsh / OpenCode / Pi 四家对照分析）
 
-> 版本：v1.5.4（2026-09-14）
-> 状态：**P0 / P1 / P2 已全部实施并基本验证通过**（§4.2.1 / §4.3.3 / §4.3.4）。剩余待真机项见 §4.3 验收表。
+> 版本：v1.5.5（2026-09-14）
+> 状态：**P0 / P1 / P2 已全部实施；三轮真机验证通过**（§4.2.1 / §4.3.3 / §4.3.5）。
+> 剩余待真机项（§4.3 验收表第 3、8 项）与一个未解决的缺陷（§6.2 开放问题 6）。
 > 分支：`feature/chat-agent-rearchitecture`（从 `dev` 出）
 > 目录：`docs/fork/`（fork 新增文件，上游无此文件，冲突归属**我方**）
 >
@@ -12,13 +13,16 @@
 > - v1.5.1：求值口径改为**并集两轮求值**（`CallFunctionModule` 反例）
 > - v1.5.2：`load_skill` 必须显式**纳入常驻**（否则被工具路由过滤）
 > - v1.5.3：**第二批完成**；技能从「瘦身到 3–4 个」改为**清空**（核对后 70 行正文仅 6 行独有）；
->   `ChatAgentSkillRouter.kt` 847 → 193 行；工具数 72 → 16
-> - v1.5.4：**第二批真机验证**（工具数 16 ✅、"关不掉手电筒"已治愈 ✅）；
+>   `ChatAgentSkillRouter.kt` 847 → 193 行（当时工具数 72 → 16，v1.5.5 后为 18）
+> - v1.5.4：**第二批真机验证**（"关不掉手电筒"已治愈 ✅）；
 >   修复 `query_module_schema` 丢失字段语义的缺陷（`inputHints` 等 3 个字段共 67–97 模块受影响）；
 >   删除无效的 `operator` 参数
+> - v1.5.5：**第三轮真机验证**（函数工作流链路打通 ✅、`isHidden` 真参数恢复可见 ✅）；
+>   AI 侧改用 `visibility` 判定；新增 `list_workflows` / `get_environment`（工具数 **16 → 18**）；
+>   发现未解决缺陷：`DefineFunctionModule` 参数无法经 AI 写入（§6.2 问题 6）
 >
-> **已真机通过**：§4.2.1（P0 三项）、§4.3.3（第二批第 1/2 项）、§4.3.4 的字段语义修复。
-> **待真机**：§4.3 验收表第 3 项（`call_module` 审批）、第 8 项（缓存命中）。
+> **已真机通过**：§4.2.1（P0 三项）、§4.3.3、§4.3.4、§4.3.5。
+> **待真机**：§4.3 验收表第 3 项（`call_module` 审批）、第 8 项（缓存命中，需先加日志）。
 
 ---
 
@@ -360,24 +364,31 @@ query_module_schema(moduleId, operator?) → {
 
 ### 4.0 工具数量总览
 
-**改造前 72 个 → 改造后 16 个。**
+**改造前 72 个 → 改造后 18 个。**
 
 | 类别 | 改造前 | 改造后 | 说明 |
 |---|---|---|---|
 | 原生 helper | 11 | **11** | 不变（与模块工具集合独立，见 §3.5） |
 | 工作流工具 | 2 | **2** | `save_workflow` / `run_temporary_workflow` |
 | 模块工具（`DIRECT_TOOL`） | **59** | **0** | **全部撤出 `tools` 数组**，改由 `query` + `call_module` 按需 |
-| `query_module_schema` | — | **1** | 新增（P1-1） |
+| `load_skill` | — | **1** | 新增（P0-2）。**技能目录现已清空**，机制保留待后续加技能 |
+| `query_module_schema` | — | **1** | 新增（P1-1）——回答「模块长什么样」（形状） |
 | `call_module` | — | **1** | 新增（P1-1b） |
-| `load_skill` | — | **1** | 新增（P0-2） |
-| `search_tools` | — | （0） | 默认不做（P1-3C），待工具表再增长时启用 |
-| **合计** | **72** | **16** | 落在 OpenCode 内建量级（~15）内 |
+| `list_workflows` | — | **1** | 新增（v1.5.5）——回答「用户有哪些工作流」（数据） |
+| `get_environment` | — | **1** | 新增（v1.5.5）——文件夹 + 全局变量 |
+| `search_tools` | — | （0） | 默认不做（P1-3C） |
+| **合计** | **72** | **18** | 低于 CCB `CORE_TOOLS`（28） |
 
 **收益**：
 
-1. **工具数进入被验证过的区间**（16 ≈ OpenCode 的 15）
-2. **token 大降**——两个工作流工具的 description 从数万字符降到几百字符（清单只留 moduleId + 中文名）
+1. **工具数进入被验证过的区间**（18，低于 CCB 的 28、OpenCode 内建 ~15 同量级）
+2. **token 大降**——两个工作流工具的 description 从数万字符降到约 6,000 字符（清单只留 moduleId）
 3. **消除"技能=可见性开关"**——不再需要手写 `moduleIds` 白名单
+
+> **v1.5.5 修正**：原文档写「16」，且称 workflow 工具 description「降到**几百**字符」。
+> 实测前者因两个新工具变 18；后者估算错误——184 个模块**仅 id 就占约 4,400 字符**，
+> 加上分隔符最少约 5,900 字符（≈1,480 token），**降幅约 73% 而非 99%**。
+> 详见 §7 修订史 v1.5.5。
 
 **代价与前置条件**：
 
@@ -832,8 +843,10 @@ private fun buildDirectToolDefinitions(): List<ChatAgentToolDefinition> {
 | 5 | 保留的技能**正文已改写**，不再引用旧工具名 | ✅ **改为清空**（`07f5ee86`，理由见 §P1-3B） |
 | 6 | **`ChatAgentToolingTest.kt` 按新架构改写完毕** | ✅ 已达成 |
 | 7 | `./gradlew test` 全绿 | ⚠️ 除 `VObjectPropertyTest` 的上游预存失败 |
-| 8 | **Anthropic 缓存命中**（读 `usage.cache_read_input_tokens`） | ⬜ 待真机 |
+| 8 | **Anthropic 缓存命中**（读 `usage.cache_read_input_tokens`） | ⬜ 待真机（**需先加日志**，vFlow 目前不记录该字段） |
 | 9 | **`query_module_schema` 输出完整字段语义** | ✅ **真机复验通过**（模型读出 "Upper bound used only by the number_between operator"，非"猜的"） |
+| 10 | **函数工作流链路完整**：查签名 → 按签名传参 | ✅ **真机证实**（见 §4.3.5） |
+| 11 | **AI 侧字段可见性**：`isHidden` 的真参数不再被吞 | ✅ **真机证实**（`userId`/`maxResults` 可见，见 §4.3.5） |
 
 > ⚠️ **`ChatAgentModuleExecutor` 需要真 `Context`，从未被单测覆盖**（既有盲区）——
 > `query_module_schema` 的返回内容、`call_module` 的审批判定，只有编译与
@@ -958,6 +971,37 @@ inputHints = mapOf(
 
 **对我们决策的意义**：删技能不是删功能，而是**把一个功能从错误的载体迁到正确的载体**
 （模块暴露改由 `query_module_schema` + `call_module` 承担）。
+
+---
+
+#### 4.3.5 第三轮真机验证（2026-09-14）—— 函数工作流链路打通
+
+一次 47 条消息的真实会话，验证了 v1.5.5 的两项改动（AI 侧 `visibility` 判定 + 两个新工具）。
+
+**全部通过**：
+
+| 验证项 | 真机表现 |
+|---|---|
+| `list_workflows` | ✅ 列出 8 个工作流 + 文件夹分组 + 标签 |
+| `get_environment` | ✅ 文件夹（含计数）+ 全局变量（"当前没有任何全局变量"） |
+| **函数签名完整呈现** | ✅ `(s1:string *, s2:number, bool:boolean, dic:dictionary, arr:list, img:image, file:file, zb:coordinate) -> dictionary` |
+| **`isHidden` 修正生效** | ✅ `find_installed_app` 列出 `query *` / `launchableOnly` / `userId` / `maxResults`——**旧版后两个被吞掉** |
+| schema 工具的指引 | ✅ 输出 "Call `vflow_agent_list_workflows` with kind=\"function\"" |
+| **模型照做** | ✅ 模型看到指引后**主动调用** `list_workflows(kind: "function")` |
+| **按签名传参** | ✅ 用 `s1`/`s2`/`bool`/`dic`/`arr` 拼出完整的 `call_function` 调用 |
+
+> **§6.2 开放问题 5 就此闭合**——`CallFunctionModule` 的参数不可见问题，
+> 由 `list_workflows` 提供签名解决。这是「**schema 说形状，数据工具提供值**」这个分工的实证。
+
+**一个意外收获**：模型在无法声明函数签名时（见下），**主动如实报告了能力边界**：
+
+> "我这边能保存步骤，但**不能通过接口声明函数的参数签名**……
+> `name` 这个入参还需要你在 App 编辑器中打开该函数、在「定义函数」模块里手动添加"
+
+**没有假装成功**——这说明 system prompt 里的「不要谎报成功」在起作用。
+
+**同时暴露了新缺陷**：会话 [30][38] 显示模型**建不出带参数的函数工作流**——
+`DefineFunctionModule` 的参数无法经 AI 写入，见 §6.2 开放问题 6。
 
 ---
 
@@ -1112,66 +1156,63 @@ P1-1c ──→ P2-2        （缓存需要前缀稳定）
 | 23 | fail 归因规则：错误可见化→改用例；逻辑退化→改代码；不明→停下问 | §4.1 |
 | 24 | **技能清空（14 → 0）而非瘦身**——核对后 70 行正文仅 6 行独有，上提 prompt；**机制保留**供后续添加 | §4.3.1 |
 | 25 | **技能机制保留**：清单段 / `load_skill` / 两个访问器 / 数据类都不删，后续可继续加技能 | §4.3.1 |
+| 26 | **AI 侧不读 `isHidden`**：改用 `visibility?.isVisible(params) ?: true`。理由是 `isHidden` 回答「谁负责画这个字段」（渲染管线的事），与 AI 无关；照搬会丢掉真参数（函数参数、`userId` 等）。代价是模型多看到几个 UI 开关，无害 | §4.3.5 |
+| 27 | **`query_module_schema` 只给形状，数据交给专门工具**：撤掉其中的函数工作流特化，改为输出指引。避免该工具为各模块的数据依赖堆满 `if` 特例 | §4.3.5 |
+| 28 | **新增 `list_workflows`**（`query?` / `folder?` / `kind?`）：`kind=function` 时附完整签名；返回带文件夹名而非 id | §4.3.5 |
+| 29 | **新增 `get_environment`**：文件夹 + 全局变量；全局变量**只给名字与类型，不给值**（模型引用 `{{global.x}}` 无需知道当前值） | §4.3.5 |
+| 30 | **`list_workflows` 与 `get_environment` 分开**：前者是「被操作的对象」，后者是「理解上下文的背景」——性质、调用场景、变化频率都不同 | §4.3.5 |
+| 31 | **标签查询暂不做**：App 里标签既不在列表页展示也不参与搜索，用户实际很少使用 | §4.3.5 |
+| 32 | **`query_module_schema` 的 `operator` 参数删除**：实测无效（并集求值吃掉动态裁剪），且修好 `inputHints` 后更无必要 | §6.2 问题 2 |
 
 ### 6.2 仍开放
 
-| # | 问题 | 何时定 |
+| # | 问题 | 状态 |
 |---|---|---|
 | 1 | `call_module` 的**审批粒度** | ✅ **已定案**：按目标模块风险等级逐次判定——`prepareCallModule` 用 `getRiskLevelForModuleId(moduleId)` 构造 `definition`，`riskLevelOf` 对 `Ready` 取 `definition.riskLevel`。工具定义里声明的 `riskLevel` 是占位值，不参与审批 |
-| 2 | `query_module_schema` 的 **`operator` 参数是否必要** | ✅ **已保留**：实现时保留了该可选参数（传则返回该算子精确字段集），待真机验证其实际价值 |
+| 2 | `query_module_schema` 的 **`operator` 参数** | ✅ **已删除**：真机实测无效——传 `number_between` 与 `number_gt` 返回完全相同，因为 `resolveModuleInputDefinitions` 是**并集**求值，静态全集吃掉了动态裁剪结果。且修好 `inputHints` 后它更无必要（「哪个字段被哪个算子用到」直接写在字段说明里）。**修好它反而要引入会裁剪字段的求值模式——那正是病症 B 的成因** |
 | 3 | 技能清单的字节稳定化 | ✅ **已消失**：技能目录已清空，`<available_skills>` 段不再输出 |
-| 4 | 缓存是否真命中 | ⬜ **待真机**：读 Anthropic 响应的 `usage.cache_read_input_tokens` |
-| 5 | `CallFunctionModule` 的函数参数对 schema 发现机制不可见 | ⬜ **P1-1 未解决**（见下方详解）。`prepareQueryModuleSchema` 用单次求值 + 可选 `operator`，**仍拿不到依赖 `workflow_id` 才生成的函数参数** |
+| 4 | 缓存是否真命中 | ⬜ **待真机**：读 Anthropic 响应的 `usage.cache_read_input_tokens`。⚠️ **vFlow 目前不记录该字段**，需先加日志才能验 |
+| 5 | `CallFunctionModule` 的函数参数对 schema 发现机制不可见 | ✅ **已解决**（v1.5.5）：改由 `list_workflows(kind:"function")` 提供——**schema 说形状，数据工具提供值**。真机实证：模型查到签名后按 `s1`/`s2`/`bool`/`dic`/`arr` 拼出了完整调用（见 §4.3.5） |
+| 6 | **`DefineFunctionModule` 无法通过 AI 保存函数参数** | ⬜ **新发现，未解决**（见下方详解）。AI 能建函数工作流，但**建不出带参数的** |
 
-#### 开放问题 5 的现状（P1-1 实施后仍未闭合）
+#### 开放问题 6 详解：`DefineFunctionModule` 的参数无法通过 AI 写入
 
-`prepareQueryModuleSchema` 的实现是：
+**问题**：`DefineFunctionModule.getInputs()` **返回 `emptyList()`**（源码注释：「运行时为空操作」），
+它的签名参数实际存于 `step.parameters["functionParams"]`，由**编辑器的 UIProvider 写入**。
 
-```kotlin
-val step = ActionStep(moduleId, defaultParameters + operator?)
-val inputs = resolveModuleInputDefinitions(module, step)   // 单次求值
-```
+**因此**：AI 走 `save_workflow` 保存时，`buildParameters` 求值得到空定义表 →
+`functionParams` 落进 `rejectedKeys` → 报错
+「`vflow.logic.define_function` has unknown parameter(s): parameters. Available parameters: none」。
 
-对 `CallFunctionModule`：默认 parameters 里没有 `workflow_id` → `getDynamicInputs` 提前
-`return base` → **函数参数不会出现在查询结果里**。
+**真机实证**（§4.3.5 的会话 [30][38]）：模型尝试建带参函数工作流失败，
+并如实报告「我不能通过接口声明函数的参数签名……`name` 这个入参还需要你在 App 编辑器中手动添加」。
 
-**模型因此不知道某个函数工作流需要哪些参数**，也就无法用 `call_module` 正确调用它。
-这与 `call_module` 在 `buildParameters` 里的**两轮求值**能力不匹配——
-执行时能收下函数参数，但查询时看不到它们。
+**这是 P0-1 引入的**：改造前这里是 `?: return@forEach` **静默丢弃**——
+参数没存上但模型以为成功，**更糟，只是不会被发现**。P0-1 把静默改成显式报错后，
+这个模块的缺陷才浮出水面。
 
-**可能的解法**（待定）：
-- 查询工具接受 `partialParams`，做与执行侧相同的两轮求值
-- 或返回时附带提示「此模块的可用参数取决于 `workflow_id`，请先确定它」
+**与其他模块的对比**：
 
-**影响范围**：仅 fork 自己的函数工作流功能（FORK.md 已登记），不影响上游模块。
-| 5 | **`CallFunctionModule` 与 schema 发现机制的根本冲突**（P0-1 实现时发现） | P1-1 实现时必须解决 |
+| 模块 | 参数从哪来 | 处理状态 |
+|---|---|---|
+| `IfModule` 等 11 个 | `getInputs()` 静态声明，`getDynamicInputs` 只筛选/改写 | ✅ 正常 |
+| `CallFunctionModule` | `getDynamicInputs` 运行时生成 | ✅ 并集两轮求值（P0-1）+ `list_workflows` 提供签名（v1.5.5） |
+| **`DefineFunctionModule`** | **`getInputs()` 为空，参数靠 UIProvider 写入** | ❌ **未处理** |
 
-#### 开放问题 5 详解：`CallFunctionModule` 的 schema 不可发现
+**影响**：AI 能建函数工作流，但**建不出带参数的**——`call_function` 场景因此不完整。
 
-**问题**：`CallFunctionModule.getInputs()` **只声明 `workflow_id` 一个键**（源码注释原文：
-「各参数输入框由 `getDynamicInputs` 依据选中函数工作流的签名动态生成」）。
-各函数参数由 `getDynamicInputs` 在**知道 `workflow_id` 之后**凭空生成 `InputDefinition`。
+**候选解法**（待定，见 §6.1 决策台账条目 26）：
 
-它是 14 个重写 `getDynamicInputs` 的模块里**唯一会新增键**的——其余（`If`/`While`/`DoWhile`/
-`HttpRequest`/`Flashlight`/`PlayAudio`/`Vibration`/`Bluetooth`/`Wifi`/`FindElement`/`OCR`/
-`KeyEvent`）都是 `staticInputs.first { it.id == ... }` 或 `copy()`，只筛选和改写。
+| 方案 | 做法 | 性质 |
+|---|---|---|
+| A | 给 `getInputs()` 加 `functionParams`（声明成 STRING） | 修 bug，但模型要自己拼 JSON，且该字段会出现在 schema 里 |
+| B | `buildParameters` 对 `define_function` 特例放行 | 修 bug，但开特例 |
+| **C** | **让 `define_function` 真正可被 AI 使用**——把签名设计成结构化输入 | **新功能**：模型能*设计*函数签名 |
 
-**对 P0-1 的影响（已解决）**：白名单不能取纯静态全集，故定为**并集两轮求值**
-（见 §P0-1）。第一轮收 `workflow_id`，第二轮带上它再求值即得函数参数。
+**C 是唯一让这个能力完整的方案**（A/B 只是"能存进去"，模型仍不知道签名该怎么写），
+但它是新功能范围，需单独立项。
 
-**对 P1-1 的影响（未解决，必须在 P1-1 时处理）**：
-`query_module_schema` 若只调一次（`getInputs()` 或单次 `getDynamicInputs`），
-**返回的函数参数列表是空的**——模型不知道这个函数工作流需要哪些参数，
-也就永远调不对它。**「用 `getInputs()` 静态全量」这条指导对 `CallFunctionModule` 不成立。**
-
-需要 P1-1 决定：查询工具是否为这类「依赖 step 状态」的模块做**多轮求值**，
-或提供一条「先查 workflow_id 候选 → 再带 workflow_id 二次查询」的路径。
-注意这会让 `query_module_schema` 的签名复杂化（可能要接受 `partialParams`）。
-
-> **注意现状已如此**：改造前用 `getDynamicInputs(默认值 step)`，默认 step 里没有 `workflow_id`
-> → 提前 `return base` → 函数参数**现在就全丢**。所以这不是回归，而是**改造前就存在、
-> 且 P1-1 会继承**的缺陷。它属于 fork 自己的功能（函数工作流），不是上游的账。
-
+---
 ---
 
 ## 7. 相关文档
@@ -1366,3 +1407,57 @@ P1-1c 撤走 59 个模块工具时，`query_module_schema` **只搬了字段定�
 > **教训（已写入 §4.3.4）**：换信息通路时须**穷举原通路承载的全部信息**，
 > 而非只搬最显眼的那部分。本次漏掉的三个字段都是「模块作者专门为 AI 写的」，
 > 恰恰最不该丢。
+
+### v1.5.5（2026-09-14）—— 第三轮真机验证 + 字段可见性修正 + 两个新工具
+
+**一、AI 侧不再读 `isHidden`**
+
+原先两处过滤（`query_module_schema` 与模块工具 schema）都写 `filterNot { it.isHidden }`,
+照搬了编辑器的渲染判定。但 `isHidden` 回答的是「**谁负责画这个字段**」——
+这是渲染管线的事，与「字段该不该给模型看」无关。
+
+它被用在三种目的上：
+
+| 目的 | 例子 | 替代品 |
+|---|---|---|
+| UIProvider 接管渲染 | `text` / `userId` | `getHandledInputIds()`，但**多数模块尚未迁移** |
+| 条件可见性 | `strengthPercent`（关灯时） | `InputVisibility`——**这就是上游标注废弃的原因** |
+| 动态字段不参与通用渲染 | 函数参数 | **至今无替代品**（静态 Set 声明不了运行时参数名） |
+
+照搬的代价是**真参数被一起丢掉**：`CallFunctionModule` 的函数参数、
+`FindInstalledAppModule` 的 `userId`/`maxResults` 都标了 `isHidden`，
+但模块作者**专门为 AI 写了 `inputHints`**——显然期望模型使用。
+
+改为 `visibleInputsForAgent`：只认 `visibility` 条件求值，无条件则保留。
+两处共用同一函数，避免口径分叉。
+
+**二、撤掉 `query_module_schema` 里的函数工作流特化**
+
+那段逻辑回答的是「有哪些可选值」（数据），而 schema 工具该回答「字段长什么样」（形状）。
+留在那里会让该工具为每个数据依赖型模块堆满 `if` 特例。
+
+**三、新增 `list_workflows(query?, folder?, kind?)`**
+
+`kind=function` 时附**完整函数签名**；返回带文件夹名而非 id。
+**这解决了 §6.2 开放问题 5**——`CallFunctionModule` 的 `workflow_id` 是必填 string，
+但其可选值只存在于用户数据中；没有这个工具，模型看到必填字段却不知填什么。
+
+**四、新增 `get_environment()`**
+
+文件夹（含工作流计数）+ 全局变量（**只给名字与类型，不给值**——
+模型引用 `{{global.x}}` 无需知道当前值）。与 `list_workflows` 分开，
+因为「被操作的对象」与「理解上下文的背景」性质不同。
+
+**工具数 16 → 18。**
+
+**第三轮真机验证**（§4.3.5）：以上改动**全部通过**，函数工作流链路打通；
+`isHidden` 修正使 `userId`/`maxResults` 重新可见。
+
+**新发现一个未解决的缺陷**：`DefineFunctionModule` 的参数无法经 AI 写入
+（§6.2 开放问题 6）——AI 能建函数工作流，但建不出带参数的。
+**这是 P0-1 引入的**：改造前是静默丢弃（更糟但不会被发现），
+改成显式报错后才浮出水面。
+
+**文档修正**：§4.0 的「改造后 16 个」更正为 18；
+「description 降到几百字符」的估算也错了——184 个模块**仅 id 就占约 4,400 字符**，
+加分隔符最少约 5,900 字符（≈1,480 token），**降幅约 73% 而非 99%**。
