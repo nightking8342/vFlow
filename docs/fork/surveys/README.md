@@ -35,6 +35,7 @@
 | [`ai-system-overview.md`](ai-system-overview.md) | **AI 体系（本项目现状）**：三条独立 AI 链路（聊天 Agent / AI 生成工作流 / 工作流内 AI 模块）、链路 A 内部三套并行工具体系、提示词组装、技能路由（含各技能的工具/模块明细与兜底机制、**跨轮存续边界**）、工具清单、scope 判定、执行与审批流程、模块可发现性与 catalog 截断、**动态输入在 AI 链路的退化**、Prompt 缓存现状、能力与现状评估 | v1.7 · 已走查定稿 |
 | [`agent-design-comparison.md`](agent-design-comparison.md) | **外部调研**：头部 Agent 项目（Claude Code / Hermes Agent / Codex CLI）的工具暴露、渐进式披露、上下文压缩、缓存做法，及对 vFlow 的启示 | v1.0 · 外部调研 |
 | [`trigger-system-overview.md`](trigger-system-overview.md) | **触发器体系（本项目现状）**：三层架构（模块声明 / Handler 事件 / Service 分发）、**两处注册**（漏一处即静默失效）、两条链路（配置链路 + 事件链路）、数据模型、三种 Handler 范式（含定时调度 / 外部进程 / 独立 Service）、triggerData 两条数据路、**三套独立的触发器身份判定**、24 个触发器全量清单（事件源 / 权限矩阵）、能力评估与排障顺序 | v1.0 · 已走查定稿 |
+| [`logcat-readability-survey.md`](logcat-readability-survey.md) | **logcat 可读性调研（单点）**：无 root 纯 Shizuku 下能否读 logcat、是否需要 `READ_LOGS`、能读到谁（系统 TAG / 第三方应用）的**真机实测结论**；含三个判定陷阱（采样窗口过小、子串匹配假阴性、标签与实际身份不符）与相邻能力的可行性对照 | v1.0 · 真机实测 |
 
 ---
 
