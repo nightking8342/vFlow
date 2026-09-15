@@ -34,6 +34,7 @@
 |---|---|---|
 | [`ai-system-overview.md`](ai-system-overview.md) | **AI 体系（本项目现状）**：三条独立 AI 链路（聊天 Agent / AI 生成工作流 / 工作流内 AI 模块）、链路 A 内部三套并行工具体系、提示词组装、技能路由（含各技能的工具/模块明细与兜底机制、**跨轮存续边界**）、工具清单、scope 判定、执行与审批流程、模块可发现性与 catalog 截断、**动态输入在 AI 链路的退化**、Prompt 缓存现状、能力与现状评估 | v1.7 · 已走查定稿 |
 | [`agent-design-comparison.md`](agent-design-comparison.md) | **外部调研**：头部 Agent 项目（Claude Code / Hermes Agent / Codex CLI）的工具暴露、渐进式披露、上下文压缩、缓存做法，及对 vFlow 的启示 | v1.0 · 外部调研 |
+| [`trigger-system-overview.md`](trigger-system-overview.md) | **触发器体系（本项目现状）**：三层架构（模块声明 / Handler 事件 / Service 分发）、**两处注册**（漏一处即静默失效）、两条链路（配置链路 + 事件链路）、数据模型、三种 Handler 范式（含定时调度 / 外部进程 / 独立 Service）、triggerData 两条数据路、**三套独立的触发器身份判定**、24 个触发器全量清单（事件源 / 权限矩阵）、能力评估与排障顺序 | v1.0 · 已走查定稿 |
 
 ---
 
@@ -68,7 +69,6 @@
 
 - **工作流引擎**：`WorkflowExecutor` 执行循环、块结构（If/Loop）、子工作流、变量作用域、错误恢复。
 - **模块系统**：`ModuleRegistry` 注册机制、`BaseModule` 生命周期、UIProvider 契约、参数类型系统。
-- **触发器体系**：23 个触发器的注册与触发链路、权限模型。
 - **类型系统**：`VObject` 家族、属性访问、魔法变量解析。
 - **远程 API**：本地 Web 服务器 handler 结构、鉴权、既有接口签名。
 - **Core 独立进程**：Master-Worker、Socket 协议、权限提升路径。
