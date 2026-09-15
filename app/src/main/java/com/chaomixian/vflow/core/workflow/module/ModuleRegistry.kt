@@ -87,6 +87,7 @@ object ModuleRegistry {
         register(GKDTriggerModule(), context)
         register(LocationTriggerModule(), context)
         register(PoseTriggerModule(), context)
+        register(DoNotDisturbTriggerModule(), context)
         register(VoiceTriggerModule(), context)
 
         // 界面交互

@@ -3373,4 +3373,14 @@
     <string name="error_vflow_external_module_failed">外部扩展返回失败。</string>
     <string name="error_vflow_external_module_exception_title">扩展执行异常</string>
     <string name="error_vflow_external_module_unknown">发生了未知错误</string>
+    <!-- 免打扰模式触发器（fork 新增） -->
+    <string name="module_vflow_trigger_do_not_disturb_name">免打扰触发</string>
+    <string name="module_vflow_trigger_do_not_disturb_desc">当系统免打扰模式开启或关闭时触发工作流</string>
+    <string name="param_vflow_trigger_do_not_disturb_state_name">触发条件</string>
+    <string name="summary_vflow_trigger_do_not_disturb_prefix">免打扰</string>
+    <string name="option_vflow_trigger_do_not_disturb_on">开启时</string>
+    <string name="option_vflow_trigger_do_not_disturb_off">关闭时</string>
+    <string name="option_vflow_trigger_do_not_disturb_any">任意变化</string>
+    <string name="output_vflow_trigger_do_not_disturb_enabled_name">免打扰已开启</string>
+    <string name="output_vflow_trigger_do_not_disturb_previous_enabled_name">变化前是否开启</string>
 </resources>

@@ -45,6 +45,7 @@ object TriggerHandlerRegistry {
         register(GKDTriggerModule().id) { GKDTriggerHandler() }
         register(LocationTriggerModule().id) { LocationTriggerHandler() }
         register(PoseTriggerModule().id) { PoseTriggerHandler() }
+        register(DoNotDisturbTriggerModule().id) { DoNotDisturbTriggerHandler() }
 
     }
 

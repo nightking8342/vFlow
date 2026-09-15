@@ -3370,4 +3370,14 @@
     <string name="error_vflow_external_module_failed">The external extension returned a failure.</string>
     <string name="error_vflow_external_module_exception_title">Extension exception</string>
     <string name="error_vflow_external_module_unknown">An unknown error occurred.</string>
+    <!-- Do Not Disturb trigger (fork addition) -->
+    <string name="module_vflow_trigger_do_not_disturb_name">Do Not Disturb Trigger</string>
+    <string name="module_vflow_trigger_do_not_disturb_desc">Trigger the workflow when Do Not Disturb is turned on or off</string>
+    <string name="param_vflow_trigger_do_not_disturb_state_name">Trigger Condition</string>
+    <string name="summary_vflow_trigger_do_not_disturb_prefix">Do Not Disturb</string>
+    <string name="option_vflow_trigger_do_not_disturb_on">When turned on</string>
+    <string name="option_vflow_trigger_do_not_disturb_off">When turned off</string>
+    <string name="option_vflow_trigger_do_not_disturb_any">Any change</string>
+    <string name="output_vflow_trigger_do_not_disturb_enabled_name">Do Not Disturb is on</string>
+    <string name="output_vflow_trigger_do_not_disturb_previous_enabled_name">Was on before the change</string>
 </resources>
