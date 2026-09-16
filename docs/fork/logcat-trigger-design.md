@@ -23,9 +23,9 @@
 
 | 约束 | 来源 |
 |---|---|
-| 走 Shell 身份（uid 2000）可读全量日志 | `surveys/logcat-readability-survey.md` §3.1 |
-| **无需** `READ_LOGS` 权限（shell 在 `log` 组） | 同上 §2 |
-| 应用进程内直读**只能读自己** | 同上 §3.2 |
+| 走 Shell 身份（uid 2000）可读全量日志 | [`surveys/logcat-readability-survey.md`](surveys/logcat-readability-survey.md) §3.1 |
+| **无需** `READ_LOGS` 权限（shell 在 `log` 组） | 同文件 §2 |
+| 应用进程内直读**只能读自己** | 同文件 §3.2 |
 | 现有 shell 执行是**请求-响应**式，无流式能力 | `ShellManager` 内 `stream` 关键词命中 0 处 |
 
 ### 1.2 被否掉的三个方案
@@ -36,14 +36,41 @@
 | **grep 预过滤**（`logcat \| grep -E 'A\|B'`） | ① 多触发器条件要并成一条命令，`regex` 条件因**锚点问题**无法可靠并入（`^WeChat$` 匹配不到带时间戳的整行）→ 假阴性 ② 增删触发器要**重启管道** ③ grep 变体方言差异 |
 | **C 独立进程**（照抄 Tasker） | 收益递减：从「每行跨进程」到「只传命中行」是**数量级**改善；从 Core(Kotlin) 到 C 只是**常数级**（省 JVM 开销）。代价是 C + CMake + 四 ABI + 长期维护，且要用 C 重写正则引擎 |
 
-### 1.3 Tasker 的对照（澄清一个常见误读）
+### 1.3 Tasker 的对照（**已反编译核实**）
 
-Tasker 用 native + grep 的原因**不是性能优化本身**，而是：
+> 本节结论来自对 Tasker 6.7.3-beta 的**反编译**（jadx），
+> 不是社区文档转述。详见 `D:/develop/references/tasker/notes/logcat-implementation.md`
 
-- 它的 native 层**没有正则引擎** → 把匹配「外包」给系统 `grep` 二进制
-- 它**不做结构化参数** → 用户直接写 grep，所以没有「条件翻译」问题（代价是把 shell 细节泄漏给用户，官方文档明确警告「不懂 shell 就别用」）
+**Tasker 的实际做法**：
 
-**vFlow 的处境更好**：Core 是 JVM，`kotlin.text.Regex` 现成，不需要外包给 grep，因此**不承担方言、锚点、引号转义等问题**。
+```bash
+{ logcat -v epoch | grep --line-buffered <filter> ; } & logcat_pid=$! ; wait $logcat_pid ;
+```
+
+**关键事实**（纠正两处常见误读）：
+
+| 常见说法 | 实际 |
+|---|---|
+| 「Tasker 用 native C 代码读日志并匹配」 | ❌ **错**。用 shell 起 `logcat` 进程，匹配**外包给系统的 `grep` 二进制**。Tasker 的 7 个 `.so` 全是 Matter/CHIP、图像处理、AndroidX，**无日志相关** |
+| 「Tasker 用一条流服务所有 profile」 | ❌ **错**。按 `(component, grepFilter)` 去重的 **monitor 池**（`activeMonitors: ConcurrentHashMap<LogcatIdentifier, LogcatMonitor>`），条件不同则各起一个进程 |
+| 「它不需要 Shizuku」 | ❌ **错**。它**专门实现了 `LogcatFlowShizuku`**（见 §9.1），说明普通路径受限 |
+
+**Tasker 为什么用 grep 而不是自己在 Kotlin 里匹配**：
+
+- 它**不做结构化参数** —— 用户直接写 grep 语法，所以没有「条件翻译」问题
+- 代价是把 shell 细节泄漏给用户：官方文档明确警告「不懂 shell 就别用」，
+  并花大量篇幅教引号规则、grep 变体差异
+
+**vFlow 的处境更好**：Core 是 JVM，`kotlin.text.Regex` 现成，不需要外包给 grep，
+因此**不承担 grep 方言、锚点、引号转义等问题**；同时用结构化参数避免把 shell 复杂度暴露给用户。
+
+**可借鉴的三点**（已纳入本设计）：
+
+| # | Tasker 的做法 | 采纳情况 |
+|---|---|---|
+| 1 | `grep --line-buffered` | ⭐ 证实**块缓冲问题真实存在**。我们不走 grep，绕开该问题 |
+| 2 | `logcat -v epoch`（而非 `threadtime`） | ⭐ 纯数字时间戳更好解析，**见 §5 待定项** |
+| 3 | 重启前等「服务绑定就绪」再启动 | ⭐ 比固定 `delay` 可靠，**见 §6.4** |
 
 ---
 
@@ -144,6 +171,30 @@ Regex("""^(\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2}\.\d+)\s+(\d+)\s+(\d+)\s+([VDIWEF])\
 **降级原则**：解析失败时**不能丢行**——把整行作为 `message`、`tag` 置空、`level` 置 `V`，让条件仍有机会命中。
 （多行堆栈、非标准 TAG 都会走到这里。）
 
+### 5.1 待定：`threadtime` vs `epoch`
+
+反编译发现 **Tasker 用的是 `logcat -v epoch`**（不是 `threadtime`）：
+
+```
+1694876653.040  9278 15081 I WeChat: 具体消息
+└─秒.毫秒─────┘ └pid┘└tid┘ └级┘└─TAG─┘
+```
+
+| | `threadtime` | `epoch` |
+|---|---|---|
+| 时间戳 | `09-16 21:04:13.040` | `1694876653.040` |
+| 解析 | 需处理月/日/时/分/秒 | **单一数字，无跨月/跨年歧义** |
+| 人类可读 | ✅ 好 | ❌ 差 |
+| 可直接暴露为变量 | 需转换 | ✅ Tasker 就暴露了 `epochSeconds`/`epochMilliseconds` |
+
+**Tasker 选 epoch 的理由**：时间戳好解析，且能直接给用户用。
+
+**我们的取舍**：本设计需要的是 `tag` / `message` / `level`，**时间戳仅用于调试输出**——
+所以 `threadtime` 对用户更友好。但若将来要暴露「日志时间」给下游变量，`epoch` 更合适。
+
+⚠️ **实现时二选一即可**，解析正则相应调整。**建议先用 `threadtime`**（可读性优先），
+若真需要时间变量再换 `epoch`。
+
 ---
 
 ## 6. Core 侧新增：`LogcatStreamWrapper`
@@ -205,6 +256,30 @@ while (isActive) {
 
 照抄 `VoiceTriggerHandler` 的重试模式（`handlers/VoiceTriggerHandler.kt:89-98` 的 `while(isActive){ try{...}catch{delay(1000)} }`）。
 
+**改进（借鉴 Tasker）**：重启前应先**等服务就绪**，而不是死等固定时长。
+
+Tasker 的 `LogcatFlowShizuku.waitBeforeRestart` 做法：
+
+```
+1. 若 Shizuku 已可用 → 先等 1 秒，确认不是 stale 状态
+2. 然后挂起等待「Shizuku 服务已绑定」的信号
+3. 再启动 logcat
+```
+
+**为何重要**：vFlow Core 依赖 Shizuku/root 提供 shell 身份。若 Core 刚被杀、Shizuku 尚未重连，
+固定 `delay(1000)` 后启动会**再次失败**，陷入「启动→失败→等待→再失败」的循环。
+
+**建议改为**：`delay` 之前先检查 `ShellManager.isShizukuActive()` / `VFlowCoreBridge.ping()`，
+不就绪则继续等待（带上限），比固定退避可靠。
+
+**另需处理**：启动 `logcat` 时会吐出**缓冲区里的历史日志**，可能一次性匹配几百条 → 连环触发。
+两种解法（实现时验证）：
+
+| 方案 | 说明 |
+|---|---|
+| `logcat -c` 先清缓冲 | Tasker 的做法 |
+| `-T 1` 从最近一行开始 | logcat 原生参数，更精准 |
+
 ---
 
 ## 7. App 侧改动
@@ -243,10 +318,58 @@ lastTriggerAtMs = now
 | 2 | **高频日志压垮推送** | ⚠️ 需保护：命中率过高时告警/限流；或 Core 侧也做冷却（但冷却需状态，会复杂化） |
 | 3 | **Core 跑长驻进程 + 高频推流的稳定性** | ⚠️ **未验证**。`IClipboardWrapper` 证明 Core 能做流式推送，但那是**低频**事件；logcat 是**高频**，压力大得多 |
 | 4 | **多行堆栈的解析** | 堆栈行不以 `threadtime` 格式开头 → 走降级路径（整行作 message） |
-| 5 | **`pm grant READ_LOGS` + 重启**是否可行 | ⚠️ **未验证**。若可行，可改为**在 App 进程内直读**，完全省掉 Core wrapper 与 IPC —— 方案会大幅简化 |
 
-> 第 5 项是唯一可能**颠覆本设计**的未知数。探针曾报 `pm grant` 成功但 `granted=false`
-> （因未重启应用），故当时无法定论。若日后验证通过，应优先采用该路线。
+### 9.1 「App 进程内直读」已被实测否决 ✅ 已定论
+
+原第 5 项（App 直读可简化方案）**已通过真机探针彻底否定**，不再是未知数。
+
+**首轮失败的真实原因**（与当时推测不同，值得记录）：
+
+```bash
+pm grant com.chaomixian.vflow android.permission.READ_LOGS
+# → 输出 "Command executed successfully"
+# → 但 granted=false，且重启后仍为 false
+```
+
+**根因**：vFlow 的 `AndroidManifest.xml` **未声明** `READ_LOGS`。
+`pm grant` 对未在清单声明的权限**不报错但也不生效**。补上声明后：
+
+```
+dumpsys package: android.permission.READ_LOGS: granted=true     ← 授权成功
+```
+
+**但即便 `granted=true`，仍然读不到其他进程的日志**：
+
+| 指标 | 实测 |
+|---|---|
+| 本进程日志 | ✅ 能读 |
+| 系统日志 | ❌ 读不到 |
+| 第三方应用日志（微信/QQ） | ❌ **他进程行数=0** |
+
+**结论：`READ_LOGS` 权限不是决定因素。** 普通应用（uid 10684）读不到其他进程日志，
+是因为 Android 对 logcat 有**多层访问控制**，权限只是其中一层：
+
+| 层 | 普通应用 |
+|---|---|
+| 权限层 `READ_LOGS` | ✅ 可授予（`protectionLevel` 含 `development`） |
+| **SELinux 层**（能否访问 `logd` socket） | ❌ **被拒** |
+| **logd 白名单**（部分 ROM 只允许特定 uid） | ❌ 被拒 |
+
+**而 shell 用户能读，靠的是组成员资格而非权限**：
+
+```
+uid=2000(shell) groups=...,1007(log),...
+                        ^^^^^^^^^^ ← log 组
+```
+
+**这个身份无法通过任何授权获得**，只能由 Shizuku/root 以 uid 2000 运行进程。
+
+**旁证**：Tasker 同样为 Shizuku 单独实现了 `LogcatFlowShizuku`
+（见 `D:/develop/references/tasker/notes/logcat-implementation.md`）——
+说明它也遇到了同样的限制，并选择了同样的解法。
+
+**因此：Core 方案不是权宜之计，而是此问题在 Android 上的唯一可行解。**
+本设计（§2 起的全部内容）保持不变，且依据更充分。
 
 ---
 
