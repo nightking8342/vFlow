@@ -13,6 +13,8 @@ import androidx.core.graphics.drawable.IconCompat
 import com.chaomixian.vflow.R
 import com.chaomixian.vflow.core.execution.WorkflowExecutor
 import com.chaomixian.vflow.core.workflow.model.Workflow
+import com.chaomixian.vflow.services.island.IslandNotificationDispatcher
+import com.chaomixian.vflow.services.island.IslandNotificationSpec
 import com.chaomixian.vflow.ui.main.MainActivity
 
 /**
@@ -76,6 +78,9 @@ object ExecutionNotificationManager {
         appContext = context.applicationContext
         notificationManager = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         createNotificationChannel()
+        // 异步探测超级岛能力（耗时 provider 调用，不能在启动路径上做）。
+        // 探测完成前发出的通知走普通路径，见 IslandNotificationDispatcher 的降级说明。
+        IslandNotificationDispatcher.initialize(appContext)
     }
 
     /**
@@ -126,6 +131,35 @@ object ExecutionNotificationManager {
     )
 
     /**
+     * 把执行器的内部状态映射为超级岛的展示语义。
+     *
+     * 两者不是一一对应：执行器没有独立的「超时」状态（它复用 [ExecutionNotificationState.Failed]），
+     * 而岛上「执行中」与「已停止」都不该自动浮出。
+     */
+    private fun islandSpecOf(
+        workflow: Workflow,
+        state: ExecutionNotificationState,
+        contentIntent: PendingIntent
+    ): IslandNotificationSpec {
+        val (islandState, message) = when (state) {
+            is ExecutionNotificationState.Running ->
+                IslandNotificationSpec.State.RUNNING to state.message
+            is ExecutionNotificationState.Completed ->
+                IslandNotificationSpec.State.COMPLETED to state.message
+            is ExecutionNotificationState.Failed ->
+                IslandNotificationSpec.State.FAILED to state.message
+            is ExecutionNotificationState.Cancelled ->
+                IslandNotificationSpec.State.CANCELLED to state.message
+        }
+        return IslandNotificationSpec(
+            title = workflow.name,
+            state = islandState,
+            subtitle = message,
+            contentIntent = contentIntent
+        )
+    }
+
+    /**
      * 为 Android 16+ 构建 "Status Chip" 样式的通知。
      * 根据官方文档，不再使用 ProgressStyle，而是直接在 Builder 上设置进度。
      */
@@ -146,7 +180,6 @@ object ExecutionNotificationManager {
             .setContentTitle(workflow.name)
             .setSmallIcon(R.drawable.ic_workflows) // 这个是 Status Chip 收起时显示的图标
             .setOnlyAlertOnce(true)
-            .setContentIntent(buildContentIntent())
 
         when (state) {
             is ExecutionNotificationState.Running -> {
@@ -199,7 +232,14 @@ object ExecutionNotificationManager {
                     .setSmallIcon(R.drawable.rounded_close_small_24)
             }
         }
-        notificationManager.notify(executionNotificationIdFor(workflow.id), builder.build())
+        notificationManager.notify(
+            executionNotificationIdFor(workflow.id),
+            IslandNotificationDispatcher.dispatch(
+                appContext,
+                builder,
+                islandSpecOf(workflow, state, buildContentIntent())
+            )
+        )
     }
 
     /**
@@ -210,7 +250,6 @@ object ExecutionNotificationManager {
             .setContentTitle(workflow.name)
             .setSmallIcon(R.drawable.ic_workflows)
             .setOnlyAlertOnce(true)
-            .setContentIntent(buildContentIntent())
 
         when (state) {
             is ExecutionNotificationState.Running -> {
@@ -241,7 +280,14 @@ object ExecutionNotificationManager {
                     .setAutoCancel(true)
             }
         }
-        notificationManager.notify(executionNotificationIdFor(workflow.id), builder.build())
+        notificationManager.notify(
+            executionNotificationIdFor(workflow.id),
+            IslandNotificationDispatcher.dispatch(
+                appContext,
+                builder,
+                islandSpecOf(workflow, state, buildContentIntent())
+            )
+        )
     }
 
 
