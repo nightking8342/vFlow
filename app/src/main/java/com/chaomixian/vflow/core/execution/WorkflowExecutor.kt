@@ -228,7 +228,7 @@ object WorkflowExecutor {
                             }
                         } catch (e: TimeoutCancellationException) {
                             DebugLogger.e("WorkflowExecutor", "工作流执行超时（最大 ${maxExecutionTime} 秒）")
-                            ExecutionNotificationManager.updateState(workflow, ExecutionNotificationState.Cancelled("执行超时（${maxExecutionTime}秒）"))
+                            ExecutionNotificationManager.updateState(workflow, ExecutionNotificationState.Failed("执行超时（${maxExecutionTime}秒）"))
                             isTimeout = true
 
                             // 在主线程显示 Toast 提示
@@ -323,9 +323,12 @@ object WorkflowExecutor {
                             }
                             DebugLogger.d("WorkflowExecutor", "主工作流 '${workflow.name}' 执行完毕。")
                         }
-                        // 延迟后取消通知，给用户时间查看最终状态
-                        delay(3000)
-                        ExecutionNotificationManager.cancelNotification()
+                        // 失败与超时需要用户处理，保留通知让其常驻（由系统通知超时或用户手动清除）；
+                        // 其余状态（正常完成、用户主动停止）延迟 3 秒后取消，给用户时间查看最终状态。
+                        if (!wasFailureHandled && !isTimeout) {
+                            delay(3000)
+                            ExecutionNotificationManager.cancelNotification(workflow.id)
+                        }
                     }
                 }
             }
@@ -642,7 +645,7 @@ object WorkflowExecutor {
                         pc++ // 继续下一步
                     } else {
                         // POLICY_STOP (默认) 或 重试耗尽
-                        ExecutionNotificationManager.updateState(workflow, ExecutionNotificationState.Cancelled("失败: ${result.errorMessage}"))
+                        ExecutionNotificationManager.updateState(workflow, ExecutionNotificationState.Failed("失败: ${result.errorMessage}"))
 
                         // 尝试获取 UI 服务并显示错误弹窗
                         // 仅当应用在前台或有悬浮窗权限时，弹窗才会显示（由 ExecutionUIService 处理）
