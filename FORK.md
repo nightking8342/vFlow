@@ -19,7 +19,12 @@
 |---|---|---|
 | `FORK.md`、`AGENTS.md`、`CLAUDE.md` | fork 独有文件，上游没有 | 我方 |
 | `docs/fork/function-workflow.md`、`docs/fork/function-workflow-ui.html` | fork 独有：函数工作流需求文档 + 可交互 UI 原型（上游无此文件） | 我方 |
-| `docs/fork/notification-island-design.md` | fork 独有：**通知机制改造设计（适配小米澎湃 OS 超级岛）**。基于官方接入文档 + 官方模板库 + mindfs 已落地实现，给出分层架构（能力探测 / 参数装配 / 图标装配）、文件级改动计划、分阶段实施（**阶段 0 真机探针为硬门槛**）、三个待决策项（模板 vs 自定义 RemoteViews / 进度表达 / 与 AOSP Live Updates 的关系）与风险清单。上游无此文件 | 我方 |
+| `docs/fork/notification-island-design.md` | fork 独有：**通知机制改造设计（适配小米澎湃 OS 超级岛）**。基于官方接入文档 + 官方模板库 + mindfs 已落地实现。v2.0 定稿：26 项决策台账（§6）、三层架构（能力探测 / 参数装配 / 图标装配）、状态×样式对照表、决策理由与已知限制（§8.1–8.4）。上游无此文件 | 我方 |
+| `services/island/`（`IslandCapability.kt` + `IslandNotificationSpec.kt` + `IslandParamsBuilder.kt` + `IslandIcons.kt` + `IslandNotificationDispatcher.kt`，均新增） | fork 独有：**小米澎湃 OS 超级岛装配层**。能力探测（`notification_focus_protocol >= 3` + `canShowFocus`）、厂商中立的通知语义、`miui.focus.param` JSON 装配（纯函数）、`miui.focus.pics` 图标装配、对外唯一入口。厂商私有协议完全收敛在本目录内，业务侧不出现任何 `miui.*` 字符串 | 我方 |
+| `test/services/island/IslandParamsBuilderTest.kt`（新增） | fork 独有：装配层单测 21 例（JSON 结构、状态映射、浮出策略、强调色差异、`miui.focus.rv` 禁令） | 我方 |
+| `test/services/ExecutionNotificationIdTest.kt`（新增） | fork 独有：通知 ID 派生回归测试（区间合法性、与既有通知 ID 不冲突、稳定性、负 hashCode、空 ID） | 我方 |
+| `services/ExecutionNotificationManager.kt` | ① `ExecutionNotificationState` 新增 `Failed` 子类（此前失败复用 `Cancelled`，无法区分「失败」与「用户停止」）；② 通知 ID 由固定 1998 改为 `executionNotificationIdFor(workflowId)` 派生到 `[100000, 150000)`（修复并发执行互相覆盖 + 取消误删）；③ `cancelNotification()` 改为 `cancelNotification(workflowId)`；④ 两个 build 方法补 `setContentIntent`（此前点击通知本体无反应）；⑤ `notify` 经 `IslandNotificationDispatcher.dispatch` 附加岛参数；⑥ `initialize` 加一次异步能力探测；⑦ 新增 `islandSpecOf` 状态映射。上游若改这几个方法需逐块判断 | **手动合并**（改动集中在 `notify` 调用与状态分支） |
+| `core/execution/WorkflowExecutor.kt` | ① 失败与超时改用 `ExecutionNotificationState.Failed`（两处）；② finally 块的「3 秒后取消通知」加条件——失败与超时保留通知给用户查看，不再无条件取消。改动集中在 `:326-328` 与两处状态替换，`updateState` 对外签名未变，9 个 `updateState` 调用点均未改动。上游若改执行器收尾逻辑需逐块判断 | **手动合并** |
 | `docs/fork/chat-agent-enhancement-plan.md` | fork 独有：Chat Agent 四点改造方案（技能目录化/Prompt 缓存/catalog 全量化+模块查询工具/悬浮窗），上游无此文件 | 我方 |
 | `docs/fork/chat-agent-rearchitecture.md` | fork 独有：**Chat Agent 架构重构设计**（基于 **CCB / dsh / OpenCode / Pi 四家**源码对照）。v1.5.3 为决策定稿版：三病症诊断、四家技能注入位置与工具暴露策略对照（含"内建工具 vs 扩展工具"的关键区分）、目标架构（**工具 72→16**：撤出 59 个模块工具，改由 `query_module_schema` + `call_module` + `load_skill` 按需）、**查询域≠调用域**的设计 B、两批执行契约与验收项（§4）、长期分叉的接管范围（§5.1）、决策台账（§6）。上游无此文件 | 我方 |
 
