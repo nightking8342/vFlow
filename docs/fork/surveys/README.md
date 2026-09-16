@@ -34,6 +34,7 @@
 |---|---|---|
 | [`ai-system-overview.md`](ai-system-overview.md) | **AI 体系（本项目现状）**：三条独立 AI 链路（聊天 Agent / AI 生成工作流 / 工作流内 AI 模块）、链路 A 内部三套并行工具体系、提示词组装、技能路由（含各技能的工具/模块明细与兜底机制、**跨轮存续边界**）、工具清单、scope 判定、执行与审批流程、模块可发现性与 catalog 截断、**动态输入在 AI 链路的退化**、Prompt 缓存现状、能力与现状评估 | v1.7 · 已走查定稿 |
 | [`agent-design-comparison.md`](agent-design-comparison.md) | **外部调研**：头部 Agent 项目（Claude Code / Hermes Agent / Codex CLI）的工具暴露、渐进式披露、上下文压缩、缓存做法，及对 vFlow 的启示 | v1.0 · 外部调研 |
+| [`notification-system-overview.md`](notification-system-overview.md) | **通知体系（本项目现状）**：两套反向链路（8 处生产者 / 单点监听消费者）、`ExecutionNotificationManager` 的 API 36+ 活体通知分支、渠道与权限清单、用户开关、AI 暴露面、面向小米超级岛改造的落点与风险 | v1.0 · 已走查定稿 |
 
 ---
 
@@ -74,5 +75,6 @@
 - **Core 独立进程**：Master-Worker、Socket 协议、权限提升路径。
 
 > AI 体系（含缓存、模块可发现性）已由 `ai-system-overview.md` 覆盖，不再列为待办。
+> 通知体系已由 `notification-system-overview.md` 覆盖，不再列为待办。
 
 > 新增梳理文档后，请回到本 README 的「现有文档」表补一行。
