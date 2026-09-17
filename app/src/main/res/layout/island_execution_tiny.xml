@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  vFlow 工作流执行 · 状态栏紧凑胶囊（miui.focus.rv.tiny）。
+
+  ⚠️ 必须提供：`createCustomView` 取不到 `rv.tiny` 时会回落到 `miui.focus.rv`
+  ——把整张四行卡片塞进胶囊会被压变形。
+
+  恒为深色（状态栏与岛一致，不随应用主题变化）。
+
+  只放三样：图标 + 工作流名 + 进度。胶囊空间极其有限，不要加更多。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:gravity="center_vertical"
+    android:paddingLeft="4dp"
+    android:paddingRight="10dp">
+
+    <ImageView
+        android:id="@+id/tiny_icon"
+        android:layout_width="22dp"
+        android:layout_height="22dp"
+        android:padding="4dp"
+        android:background="@drawable/island_rv_icon_bg"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_workflows"
+        android:contentDescription="@null" />
+
+    <TextView
+        android:id="@+id/tiny_title"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginLeft="7dp"
+        android:maxWidth="120dp"
+        android:maxLines="1"
+        android:ellipsize="end"
+        android:textSize="12sp"
+        android:textStyle="bold"
+        android:textColor="#FFFFFFFF" />
+
+    <TextView
+        android:id="@+id/tiny_progress"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginLeft="8dp"
+        android:maxLines="1"
+        android:ellipsize="end"
+        android:fontFeatureSettings="tnum"
+        android:textSize="12sp"
+        android:textColor="#FFB6BCC2" />
+</LinearLayout>

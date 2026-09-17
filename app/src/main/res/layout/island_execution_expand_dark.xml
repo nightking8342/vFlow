@@ -1,0 +1,190 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  vFlow 工作流执行 · 超级岛展开态（深色）。
+
+  用于 miui.focus.rvNight（通知栏深色）与 miui.focus.rv.island.expand（岛展开卡片，
+  恒深色——岛不随应用主题变化）。
+
+  ⚠️ RemoteViews 白名单：只能用 LinearLayout / FrameLayout / RelativeLayout /
+  ImageView / TextView / Chronometer / ProgressBar。ConstraintLayout、Space、
+  自定义 View 会在远端 inflate 失败。
+
+  ⚠️ 根容器不设背景：卡片底由 SystemUI 绘制，自带背景会叠成嵌套卡片。
+
+  四行骨架（与岛上的摘要态保持一致的信息层级）：
+    头部  图标 + 工作流名 + 状态胶囊
+    进度  大号「3/8」+ 进度条 + 当前模块名
+    底部  耗时（Chronometer 自走）+ 「结束」按钮
+
+  浅色版本见 island_execution_expand_light.xml，两份布局的 view id 必须一致，
+  这样同一份 RemoteViews 操作代码可以作用于两者。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingLeft="16dp"
+    android:paddingRight="16dp"
+    android:paddingTop="14dp"
+    android:paddingBottom="13dp">
+
+    <!-- ==================== 头部 ==================== -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+
+        <!-- 状态图标。底与图形都由代码按状态切换（setImageViewResource） -->
+        <ImageView
+            android:id="@+id/island_icon"
+            android:layout_width="34dp"
+            android:layout_height="34dp"
+            android:background="@drawable/island_rv_icon_bg"
+            android:padding="7dp"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_workflows"
+            android:contentDescription="@null" />
+
+        <TextView
+            android:id="@+id/island_title"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginLeft="10dp"
+            android:layout_marginRight="8dp"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFFFF" />
+
+        <TextView
+            android:id="@+id/island_chip"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/island_rv_chip_bg"
+            android:paddingLeft="9dp"
+            android:paddingRight="9dp"
+            android:paddingTop="3dp"
+            android:paddingBottom="3dp"
+            android:maxLines="1"
+            android:textSize="10sp"
+            android:textStyle="bold"
+            android:textColor="#FFD7DADE" />
+    </LinearLayout>
+
+    <!-- ==================== 进度区 ==================== -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="13dp"
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+
+        <!-- 大号进度：执行中显示「3/8」，终态显示状态词 -->
+        <TextView
+            android:id="@+id/island_progress_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginRight="14dp"
+            android:maxLines="1"
+            android:textSize="27sp"
+            android:textStyle="bold"
+            android:fontFeatureSettings="tnum"
+            android:textColor="#FFFFFFFF" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <ProgressBar
+                android:id="@+id/island_progress_bar"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="6dp"
+                android:max="100"
+                android:progress="0"
+                android:progressDrawable="@drawable/island_rv_progress_dark" />
+
+            <!-- 当前模块名（执行中）/ 结果摘要（终态） -->
+            <TextView
+                android:id="@+id/island_module"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="7dp"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:textSize="11sp"
+                android:textColor="#FF8A9096" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- ==================== 底部 ==================== -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="13dp"
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+
+        <!--
+          左侧计时组：用外层 LinearLayout 吃掉剩余宽度（layout_weight），
+          而不用 <View> 占位——View 不在 RemoteViews 白名单内。
+        -->
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <!-- 执行中的秒表。系统自走，不需要为计时重发通知 -->
+            <Chronometer
+                android:id="@+id/island_timer"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFeatureSettings="tnum"
+                android:textSize="15sp"
+                android:textStyle="bold"
+                android:textColor="#FFFFFFFF" />
+
+            <!-- 终态的定格耗时（执行中隐藏） -->
+            <TextView
+                android:id="@+id/island_elapsed"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:visibility="gone"
+                android:fontFeatureSettings="tnum"
+                android:textSize="15sp"
+                android:textStyle="bold"
+                android:textColor="#FFA1D39A" />
+
+            <TextView
+                android:id="@+id/island_timer_label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="6dp"
+                android:maxLines="1"
+                android:textSize="11sp"
+                android:textColor="#FF8A9096" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/island_stop"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/island_rv_btn_danger_dark"
+            android:paddingLeft="16dp"
+            android:paddingRight="16dp"
+            android:paddingTop="7dp"
+            android:paddingBottom="7dp"
+            android:gravity="center"
+            android:maxLines="1"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFCFC9" />
+    </LinearLayout>
+</LinearLayout>

@@ -96,6 +96,44 @@ internal object IslandParamsBuilder {
     }
 
     /**
+     * 构建 `miui.focus.param.custom` 的值——**扁平结构**，配合 RemoteViews 使用。
+     *
+     * 与 [buildParam] 的差异（mindfs 实测，`FocusIslandSupport.java:435-437`）：
+     * 自定义模式下 SystemUI 直接从**根级**读 `timeout` / `enableFloat` / `ticker`，
+     * **不解包 `param_v2`**。但 `param_island`（大岛/小岛数据）照常传递——
+     * 自定义模式只接管**展开态**，岛摘要态不受影响。
+     *
+     * 两个 key 可以同时存在于 extras：`miui.focus.param`（模板）与
+     * `miui.focus.param.custom`（自定义）。后者配合 `miui.focus.rv` 生效。
+     */
+    fun buildCustomParam(
+        title: String,
+        subtitle: String?,
+        state: IslandNotificationSpec.State,
+    ): String {
+        val shouldFloat = state != IslandNotificationSpec.State.RUNNING &&
+            state != IslandNotificationSpec.State.CANCELLED
+
+        return JsonObject().apply {
+            addProperty("business", BUSINESS)
+            addProperty("isShowNotification", true)
+            addProperty("updatable", true)
+            addProperty("reopen", "reopen")
+            addProperty("timeout", NOTIFICATION_TIMEOUT_MINUTES)
+            addProperty("enableFloat", shouldFloat)
+            addProperty("islandFirstFloat", shouldFloat)
+
+            addProperty("ticker", tickerText(title, state))
+            addProperty("tickerPic", PIC_WORKFLOW)
+            addProperty("aodTitle", tickerText(title, state))
+            addProperty("aodPic", PIC_WORKFLOW)
+
+            // 岛数据与模板路径完全一致——这是「自定义模式不影响岛」的关键。
+            add("param_island", buildIslandParam(state, title, subtitle))
+        }.toString()
+    }
+
+    /**
      * 构建 `param_island`——岛摘要态的数据。
      *
      * 结构对应「大岛 = A 区图文组件1 + B 区文本组件」，这是模板库里最贴合

@@ -31,3 +31,6 @@ debug-signing.properties
 # Python local cache
 __pycache__/
 *.py[cod]
+
+# Playwright MCP 临时产物（浏览器快照 / 控制台日志）
+.playwright-mcp/

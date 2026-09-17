@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>vFlow · 超级岛展开态 UI 规格（方案 3 · 进度主导）</title>
+<style>
+  /* ============================================================
+     设计 token。左右两栏分别对应 RemoteViews 的浅色 / 深色版本：
+       浅色 → miui.focus.rv
+       深色 → miui.focus.rvNight
+     ============================================================ */
+  :root {
+    --page-bg: #F5F6F3;
+    --page-card: #FFFFFF;
+    --page-text: #191D17;
+    --page-text-dim: #5A6058;
+    --page-line: #DFE3DA;
+
+    /* ---- 岛卡片 · 深色（岛展开态 / 通知栏深色 / rvNight） ---- */
+    --d-bg: #1A1D1A;
+    --d-title: #FFFFFF;
+    --d-text: #B6BCC2;
+    --d-tertiary: #8A9096;
+    --d-hairline: rgba(255,255,255,.10);
+    --d-summary-bg: rgba(255,255,255,.05);
+    --d-track: rgba(255,255,255,.14);
+
+    --d-accent: #A1D39A;          /* vFlow dark primary */
+    --d-accent-2: #7FB878;
+    --d-error: #FFB4AB;           /* vFlow dark error */
+    --d-error-2: #D97066;
+    --d-neutral: #C9CFC7;
+
+    --d-chip-run-bg: rgba(255,255,255,.10);
+    --d-chip-run-fg: #D7DADE;
+    --d-chip-done-bg: rgba(52,199,89,.16);
+    --d-chip-done-fg: #A1D39A;
+    --d-chip-fail-bg: rgba(255,90,80,.18);
+    --d-chip-fail-fg: #FFB4AB;
+    --d-chip-stop-bg: rgba(255,255,255,.08);
+    --d-chip-stop-fg: #8A9096;
+
+    --d-btn-bg: rgba(255,255,255,.14);
+    --d-btn-fg: #FFFFFF;
+    --d-btn-danger-bg: rgba(255,90,80,.20);
+    --d-btn-danger-fg: #FFCFC9;
+
+    /* ---- 岛卡片 · 浅色（通知栏浅色 / 锁屏预览 / rv） ---- */
+    --l-bg: #FFFFFF;
+    --l-title: #1A1A1A;
+    --l-text: #4A4F55;
+    --l-tertiary: #6B7075;
+    --l-hairline: rgba(0,0,0,.08);
+    --l-summary-bg: rgba(0,0,0,.04);
+    --l-track: rgba(0,0,0,.10);
+
+    --l-accent: #3B6939;          /* vFlow light primary */
+    --l-accent-2: #4A8A47;
+    --l-error: #BA1A1A;           /* vFlow light error */
+    --l-error-2: #D16A63;
+    --l-neutral: #9AA39A;
+
+    --l-chip-run-bg: rgba(0,0,0,.06);
+    --l-chip-run-fg: #4A4F55;
+    --l-chip-done-bg: rgba(15,159,124,.12);
+    --l-chip-done-fg: #0F7A52;
+    --l-chip-fail-bg: rgba(186,26,26,.10);
+    --l-chip-fail-fg: #BA1A1A;
+    --l-chip-stop-bg: rgba(0,0,0,.05);
+    --l-chip-stop-fg: #6B7075;
+
+    --l-btn-bg: rgba(0,0,0,.07);
+    --l-btn-fg: #1A1A1A;
+    --l-btn-danger-bg: rgba(186,26,26,.10);
+    --l-btn-danger-fg: #BA1A1A;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background: var(--page-bg); color: var(--page-text);
+    line-height: 1.6; padding: 40px 20px 80px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1240px; margin: 0 auto; }
+
+  h1 { font-size: 26px; font-weight: 700; letter-spacing: -.3px; }
+  .sub { font-size: 13px; color: var(--page-text-dim); margin-top: 8px; max-width: 800px; }
+
+  .note {
+    background: #FFF8E6; border: 1px solid #F0DFB0; border-radius: 10px;
+    padding: 12px 16px; font-size: 13px; color: #6B5518;
+    margin-top: 18px; max-width: 860px;
+  }
+  .note b { color: #4A3A0E; }
+  .note code, .footer code, .token code {
+    background: rgba(0,0,0,.06); padding: 1px 5px; border-radius: 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px;
+  }
+
+  /* ---------- 工具条 ---------- */
+  .toolbar {
+    position: sticky; top: 0; z-index: 50;
+    background: rgba(245,246,243,.93); backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--page-line);
+    margin: 24px -20px 8px; padding: 12px 20px;
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  }
+  .tb-label {
+    font-size: 12px; font-weight: 600; color: var(--page-text-dim);
+    text-transform: uppercase; letter-spacing: .6px; margin-right: 2px;
+  }
+  .seg { display: inline-flex; background: #E8EBE4; border-radius: 9px; padding: 3px; }
+  .seg button {
+    border: 0; background: transparent; cursor: pointer;
+    font-size: 13px; font-family: inherit; font-weight: 500;
+    padding: 6px 13px; border-radius: 7px; color: var(--page-text-dim);
+    transition: all .15s;
+  }
+  .seg button.on { background: #FFF; color: var(--page-text); box-shadow: 0 1px 3px rgba(0,0,0,.10); }
+  .seg button:hover:not(.on) { color: var(--page-text); }
+  .tb-sep { width: 1px; height: 22px; background: var(--page-line); margin: 0 4px; }
+
+  /* ---------- 区块 ---------- */
+  .section { margin-top: 34px; }
+  .section > h2 { font-size: 17px; font-weight: 700; margin-bottom: 6px; }
+  .section > p.lead { font-size: 12.5px; color: var(--page-text-dim); margin-bottom: 18px; max-width: 820px; }
+
+  /* ---------- 舞台：模拟系统背景 ---------- */
+  .stage {
+    border-radius: 14px; padding: 18px 16px;
+    display: flex; justify-content: center; align-items: flex-start;
+    min-height: 150px;
+  }
+  .stage.d { background: linear-gradient(160deg, #0E110E 0%, #1D221C 55%, #2A302A 100%); }
+  .stage.l { background: linear-gradient(160deg, #F2F4EF 0%, #E7EBE2 100%); }
+
+  .stage-cap {
+    font-size: 11px; font-weight: 700; letter-spacing: .4px;
+    color: var(--page-text-dim); text-align: center; margin-bottom: 8px;
+    text-transform: uppercase;
+  }
+
+  /* ---------- 岛卡片本体 ---------- */
+  .island {
+    width: 100%; max-width: 336px; border-radius: 18px;
+    padding: 14px 16px 13px; font-size: 13px;
+    border: 1px solid transparent;
+  }
+  .island.d {
+    background: var(--d-bg); color: var(--d-title);
+    border-color: rgba(255,255,255,.07);
+  }
+  .island.l {
+    background: var(--l-bg); color: var(--l-title);
+    border-color: rgba(0,0,0,.06);
+    box-shadow: 0 1px 3px rgba(0,0,0,.07);
+  }
+
+  .row { display: flex; align-items: center; }
+
+  .icon {
+    width: 34px; height: 34px; border-radius: 50%; flex: 0 0 auto;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 15px; font-weight: 800;
+  }
+  .d .icon { background: linear-gradient(135deg, #A1D39A, #6FA86B); color: #0A390F; }
+  .l .icon { background: linear-gradient(135deg, #4A8A47, #3B6939); color: #FFFFFF; }
+  .d .icon.done { background: linear-gradient(135deg, #A1D39A, #6FA86B); color: #0A390F; }
+  .l .icon.done { background: linear-gradient(135deg, #4A8A47, #3B6939); color: #FFFFFF; }
+  .d .icon.fail { background: linear-gradient(135deg, #FFB4AB, #D97066); color: #690005; }
+  .l .icon.fail { background: linear-gradient(135deg, #E08A80, #BA1A1A); color: #FFFFFF; }
+  .d .icon.stop { background: linear-gradient(135deg, #C9CFC7, #9AA39A); color: #2B322A; }
+  .l .icon.stop { background: linear-gradient(135deg, #C2C9BD, #9AA39A); color: #FFFFFF; }
+
+  .t-main {
+    font-size: 14px; font-weight: 700; letter-spacing: -.1px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .spacer { flex: 1; }
+
+  .chip {
+    font-size: 10px; font-weight: 700; padding: 3px 9px;
+    border-radius: 999px; flex: 0 0 auto; letter-spacing: .2px;
+  }
+  .d .chip              { background: var(--d-chip-run-bg);  color: var(--d-chip-run-fg); }
+  .l .chip              { background: var(--l-chip-run-bg);  color: var(--l-chip-run-fg); }
+  .d .chip.done         { background: var(--d-chip-done-bg); color: var(--d-chip-done-fg); }
+  .l .chip.done         { background: var(--l-chip-done-bg); color: var(--l-chip-done-fg); }
+  .d .chip.fail         { background: var(--d-chip-fail-bg); color: var(--d-chip-fail-fg); }
+  .l .chip.fail         { background: var(--l-chip-fail-bg); color: var(--l-chip-fail-fg); }
+  .d .chip.stop         { background: var(--d-chip-stop-bg); color: var(--d-chip-stop-fg); }
+  .l .chip.stop         { background: var(--l-chip-stop-bg); color: var(--l-chip-stop-fg); }
+
+  .big-progress {
+    font-size: 27px; font-weight: 800; letter-spacing: -.9px;
+    line-height: 1.05; font-variant-numeric: tabular-nums;
+    flex: 0 0 auto;
+  }
+  .d .big-progress { color: var(--d-title); }
+  .l .big-progress { color: var(--l-title); }
+
+  .bar { height: 6px; border-radius: 999px; overflow: hidden; }
+  .d .bar { background: var(--d-track); }
+  .l .bar { background: var(--l-track); }
+  .bar > i { display: block; height: 100%; border-radius: 999px; transition: width .3s ease; }
+  .d .bar > i { background: linear-gradient(90deg, var(--d-accent-2), var(--d-accent)); }
+  .l .bar > i { background: linear-gradient(90deg, var(--l-accent-2), var(--l-accent)); }
+  .d .bar.fail > i { background: linear-gradient(90deg, var(--d-error-2), var(--d-error)); }
+  .l .bar.fail > i { background: linear-gradient(90deg, var(--l-error-2), var(--l-error)); }
+  .d .bar.stop > i { background: linear-gradient(90deg, #9AA39A, var(--d-neutral)); }
+  .l .bar.stop > i { background: linear-gradient(90deg, #9AA39A, var(--l-neutral)); }
+
+  .meta { font-size: 11px; }
+  .d .meta { color: var(--d-tertiary); }
+  .l .meta { color: var(--l-tertiary); }
+
+  .timer {
+    font-size: 15px; font-weight: 700; letter-spacing: -.2px;
+    font-variant-numeric: tabular-nums;
+  }
+  .d .timer { color: var(--d-title); }
+  .l .timer { color: var(--l-title); }
+  .d .timer.done { color: var(--d-accent); }
+  .l .timer.done { color: var(--l-accent); }
+
+  .btn {
+    border: 0; border-radius: 999px; cursor: pointer;
+    font-family: inherit; font-size: 11.5px; font-weight: 700;
+    padding: 7px 16px; transition: filter .15s;
+  }
+  .btn:hover { filter: brightness(1.12); }
+  .d .btn { background: var(--d-btn-bg); color: var(--d-btn-fg); }
+  .l .btn { background: var(--l-btn-bg); color: var(--l-btn-fg); }
+  .d .btn.danger { background: var(--d-btn-danger-bg); color: var(--d-btn-danger-fg); }
+  .l .btn.danger { background: var(--l-btn-danger-bg); color: var(--l-btn-danger-fg); }
+
+  .summary {
+    border-radius: 9px; padding: 9px 11px;
+    font-size: 11.5px; line-height: 1.5;
+  }
+  .d .summary { background: var(--d-summary-bg); color: var(--d-text); }
+  .l .summary { background: var(--l-summary-bg); color: var(--l-text); }
+
+  /* ---------- 状态 × 配色 矩阵 ---------- */
+  .matrix { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; }
+  .cell-title {
+    font-size: 12px; font-weight: 700; margin-bottom: 10px;
+    display: flex; align-items: center; gap: 7px;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .dot.run  { background: #9AA39A; }
+  .dot.done { background: #34C759; }
+  .dot.fail { background: #FF5A50; }
+  .dot.stop { background: #6B7075; }
+
+  /* ---------- token 表 ---------- */
+  .tokens { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .tokens th, .tokens td {
+    text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--page-line);
+    vertical-align: middle;
+  }
+  .tokens th {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .5px;
+    color: var(--page-text-dim); font-weight: 700;
+  }
+  .tokens tr:last-child td { border-bottom: 0; }
+  .sw {
+    display: inline-block; width: 15px; height: 15px; border-radius: 4px;
+    vertical-align: -3px; margin-right: 7px;
+    border: 1px solid rgba(0,0,0,.14);
+  }
+  .tokens code {
+    background: rgba(0,0,0,.06); padding: 1px 5px; border-radius: 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px;
+  }
+  .tokens .tok-name { font-weight: 600; }
+  .tokens .used { font-size: 11.5px; color: var(--page-text-dim); }
+
+  .footer {
+    margin-top: 40px; padding-top: 20px; border-top: 1px solid var(--page-line);
+    font-size: 12px; color: var(--page-text-dim);
+  }
+  .footer p + p { margin-top: 8px; }
+  .footer b { color: var(--page-text); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>vFlow · 超级岛展开态 UI 规格</h1>
+  <p class="sub">
+    已选定 <b>方案 3（进度主导）</b>。本页是实施规格：含浅色／深色两套配色的全部状态，
+    以及 RemoteViews 实现所需的色值 token。
+  </p>
+
+  <div class="note">
+    <b>为什么要两套配色：</b>这套 RemoteViews 不只用于超级岛展开态，还被<b>通知栏</b>与<b>锁屏预览</b>复用——
+    后两者有浅色模式。岛展开态本身恒为深色，但同一份布局必须以两种配色交付：
+    <code>miui.focus.rv</code>（浅）与 <code>miui.focus.rvNight</code>（深）。
+  </div>
+
+  <!-- 工具条 -->
+  <div class="toolbar">
+    <span class="tb-label">状态</span>
+    <div class="seg" id="segState">
+      <button data-state="running" class="on">执行中</button>
+      <button data-state="done">已完成</button>
+      <button data-state="fail">失败</button>
+      <button data-state="stop">已停止</button>
+    </div>
+    <div class="tb-sep"></div>
+    <span class="tb-label">配色</span>
+    <div class="seg" id="segTheme">
+      <button data-theme="both" class="on">并排对照</button>
+      <button data-theme="light">仅浅色</button>
+      <button data-theme="dark">仅深色</button>
+    </div>
+  </div>
+
+  <!-- ============ 主规格：状态 × 配色 ============ -->
+  <div class="section">
+    <h2>展开态 · 状态 × 配色</h2>
+    <p class="lead">
+      骨架固定为四行：头部（图标＋工作流名＋状态胶囊）／进度区（大号进度＋进度条＋当前模块）／底部（耗时＋结束按钮）。
+      四行的存在与否在各状态间保持一致，仅内容与配色变化。
+    </p>
+    <div class="matrix" id="matrix"></div>
+  </div>
+
+  <!-- ============ token 表 ============ -->
+  <div class="section">
+    <h2>色值 token</h2>
+    <p class="lead">
+      浅色取 vFlow 浅色主题色，深色取深色主题色（见 <code>res/values/colors.xml</code> 的
+      <code>md_theme_*_primary</code> / <code>_error</code>）。RemoteViews 不支持主题变量，
+      两套颜色需要在布局里分别写死。
+    </p>
+
+    <table class="tokens">
+      <thead>
+        <tr>
+          <th style="width:34%">用途</th>
+          <th style="width:33%">浅色 · <code>miui.focus.rv</code></th>
+          <th style="width:33%">深色 · <code>miui.focus.rvNight</code></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="tok-name">卡片背景</td>
+          <td><span class="sw" style="background:#FFFFFF"></span><code>#FFFFFF</code></td>
+          <td><span class="sw" style="background:#1A1D1A"></span><code>#1A1D1A</code></td>
+        </tr>
+        <tr>
+          <td class="tok-name">主文本（工作流名／进度／耗时）</td>
+          <td><span class="sw" style="background:#1A1A1A"></span><code>#1A1A1A</code></td>
+          <td><span class="sw" style="background:#FFFFFF"></span><code>#FFFFFF</code></td>
+        </tr>
+        <tr>
+          <td class="tok-name">次要文本（摘要区正文）</td>
+          <td><span class="sw" style="background:#4A4F55"></span><code>#4A4F55</code></td>
+          <td><span class="sw" style="background:#B6BCC2"></span><code>#B6BCC2</code></td>
+        </tr>
+        <tr>
+          <td class="tok-name">三级文本（「正在执行」前缀、耗时标签）</td>
+          <td><span class="sw" style="background:#6B7075"></span><code>#6B7075</code></td>
+          <td><span class="sw" style="background:#8A9096"></span><code>#8A9096</code></td>
+        </tr>
+        <tr>
+          <td class="tok-name">摘要区背景</td>
+          <td><span class="sw" style="background:#F5F6F3"></span><code>rgba(0,0,0,.04)</code></td>
+          <td><span class="sw" style="background:#292D28"></span><code>rgba(255,255,255,.05)</code></td>
+        </tr>
+        <tr>
+          <td class="tok-name">进度条轨道</td>
+          <td><span class="sw" style="background:#E6E6E6"></span><code>rgba(0,0,0,.10)</code></td>
+          <td><span class="sw" style="background:#3A3F39"></span><code>rgba(255,255,255,.14)</code></td>
+        </tr>
+        <tr>
+          <td class="tok-name">进度条填充 · 执行中</td>
+          <td><span class="sw" style="background:#3B6939"></span><code>#3B6939</code> → <code>#4A8A47</code></td>
+          <td><span class="sw" style="background:#A1D39A"></span><code>#A1D39A</code> → <code>#7FB878</code></td>
+        </tr>
+        <tr>
+          <td class="tok-name">进度条填充 · 失败</td>
+          <td><span class="sw" style="background:#BA1A1A"></span><code>#BA1A1A</code> → <code>#D16A63</code></td>
+          <td><span class="sw" style="background:#FFB4AB"></span><code>#FFB4AB</code> → <code>#D97066</code></td>
+        </tr>
+        <tr>
+          <td class="tok-name">进度条填充 · 已停止</td>
+          <td><span class="sw" style="background:#9AA39A"></span><code>#9AA39A</code> → <code>#C2C9BD</code></td>
+          <td><span class="sw" style="background:#C9CFC7"></span><code>#C9CFC7</code> → <code>#9AA39A</code></td>
+        </tr>
+        <tr>
+          <td class="tok-name">状态胶囊 · 执行中</td>
+          <td><span class="sw" style="background:#F0F0F0"></span><code>bg rgba(0,0,0,.06)</code> / <code>fg #4A4F55</code></td>
+          <td><span class="sw" style="background:#33372F"></span><code>bg rgba(255,255,255,.10)</code> / <code>fg #D7DADE</code></td>
+        </tr>
+        <tr>
+          <td class="tok-name">状态胶囊 · 已完成</td>
+          <td><span class="sw" style="background:#0F7A52"></span><code>bg rgba(15,159,124,.12)</code> / <code>fg #0F7A52</code></td>
+          <td><span class="sw" style="background:#A1D39A"></span><code>bg rgba(52,199,89,.16)</code> / <code>fg #A1D39A</code></td>
+        </tr>
+        <tr>
+          <td class="tok-name">状态胶囊 · 失败</td>
+          <td><span class="sw" style="background:#BA1A1A"></span><code>bg rgba(186,26,26,.10)</code> / <code>fg #BA1A1A</code></td>
+          <td><span class="sw" style="background:#FFB4AB"></span><code>bg rgba(255,90,80,.18)</code> / <code>fg #FFB4AB</code></td>
+        </tr>
+        <tr>
+          <td class="tok-name">状态胶囊 · 已停止</td>
+          <td><span class="sw" style="background:#6B7075"></span><code>bg rgba(0,0,0,.05)</code> / <code>fg #6B7075</code></td>
+          <td><span class="sw" style="background:#8A9096"></span><code>bg rgba(255,255,255,.08)</code> / <code>fg #8A9096</code></td>
+        </tr>
+        <tr>
+          <td class="tok-name">结束按钮</td>
+          <td><span class="sw" style="background:#F0F0F0"></span><code>bg rgba(0,0,0,.07)</code> / <code>fg #1A1A1A</code></td>
+          <td><span class="sw" style="background:#3A3F39"></span><code>bg rgba(255,255,255,.14)</code> / <code>fg #FFFFFF</code></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ============ RemoteViews 交付映射 ============ -->
+  <div class="section">
+    <h2>交付映射</h2>
+    <p class="lead">四个 key 各交付一份 RemoteViews，其中两份是同一布局的浅／深配色。</p>
+
+    <table class="tokens">
+      <thead>
+        <tr><th style="width:34%">extras key</th><th style="width:22%">配色</th><th>使用场景</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>miui.focus.rv</code></td>
+          <td>浅色</td>
+          <td class="used">通知栏（浅色模式）；也是 <code>createCustomView</code> 的入口，<b>必须提供</b></td>
+        </tr>
+        <tr>
+          <td><code>miui.focus.rvNight</code></td>
+          <td>深色</td>
+          <td class="used">通知栏（深色模式）</td>
+        </tr>
+        <tr>
+          <td><code>miui.focus.rv.island.expand</code></td>
+          <td><b>恒深色</b></td>
+          <td class="used">点击超级岛后悬浮的展开卡片（岛不随应用主题变化）</td>
+        </tr>
+        <tr>
+          <td><code>miui.focus.rv.tiny</code></td>
+          <td>恒深色</td>
+          <td class="used">状态栏紧凑胶囊。缺省会回落到 <code>miui.focus.rv</code>（整张卡片塞进胶囊会压变形）</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ============ 摘要态（不受影响） ============ -->
+  <div class="section">
+    <h2>摘要态（本次不改）</h2>
+    <p class="lead">
+      大岛／小岛仍由 <code>miui.focus.param</code> 的 <code>param_island</code> 模板驱动，
+      本次改造只接管展开态。下面列出仅作对照。
+    </p>
+    <div class="matrix">
+      <div>
+        <div class="cell-title">大岛</div>
+        <div class="stage d" style="min-height:0; padding:14px 12px;">
+          <div style="width:100%; max-width:290px; background:#1A1D1A; border-radius:16px;
+                      padding:11px 14px; display:flex; align-items:center; gap:10px;
+                      border:1px solid rgba(255,255,255,.07);">
+            <div class="icon d" style="width:26px;height:26px;font-size:12px;
+                 background:linear-gradient(135deg,#A1D39A,#6FA86B); color:#0A390F;">流</div>
+            <div style="flex:1; min-width:0; color:#FFF; font-size:13px; font-weight:700;
+                        white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">每日签到</div>
+            <div style="color:#B6BCC2; font-size:12px; font-weight:600;
+                        font-variant-numeric:tabular-nums;">3/8</div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="cell-title">小岛（胶囊）</div>
+        <div class="stage d" style="min-height:0; padding:14px 12px;">
+          <div style="background:#1A1D1A; border-radius:999px; padding:6px 12px 6px 7px;
+                      display:inline-flex; align-items:center; gap:7px;
+                      border:1px solid rgba(255,255,255,.07);">
+            <div style="width:22px;height:22px;border-radius:50%;
+                 background:linear-gradient(135deg,#A1D39A,#6FA86B);
+                 display:flex;align-items:center;justify-content:center;
+                 font-size:11px;font-weight:800;color:#0A390F;">流</div>
+            <div style="color:#FFF;font-size:12px;font-weight:700;">每日签到</div>
+            <div style="color:#B6BCC2;font-size:12px;font-variant-numeric:tabular-nums;">3/8</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <p><b>性能前提：</b>RemoteViews 的收益来自「复用同一实例，只调 <code>setTextViewText</code> 等改变化字段」。
+    本设计在工作流每推进一步时只改动 <b>3 个字段</b>（大号进度、进度条宽度、当前模块名）；
+    秒表由 <code>Chronometer</code> 系统自走，不需要为计时重发通知。</p>
+
+    <p><b>进度语义提醒：</b>进度按<b>顶层步骤数</b>计算（<code>(pc * 100) / steps.size</code>），
+    不感知 If／Loop 内部步骤。长工作流里若内部循环跑很多步，进度条会长时间静止——这是既有语义，
+    本设计的大号 <code>3/8</code> 数字可部分补偿（数字本身是准确的「第几个顶层步骤」）。</p>
+
+    <p><b>RemoteViews 白名单：</b>只能使用 <code>LinearLayout</code> / <code>FrameLayout</code> /
+    <code>RelativeLayout</code> / <code>ImageView</code> / <code>TextView</code> /
+    <code>Chronometer</code> / <code>ProgressBar</code>。<code>ConstraintLayout</code>、<code>Space</code>、
+    自定义 View 会在远端 inflate 失败。根容器不设背景（卡片底由 SystemUI 绘制）。</p>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var SAMPLE = {
+    title: '每日签到',
+    module: '打开应用',
+    progress: '3/8',
+    ratio: 3 / 8,
+    elapsed: '00:42',
+    elapsedFinal: '1分24秒'
+  };
+
+  var STATES = {
+    running: {
+      chip: '执行中', icon: '流', iconCls: '', chipCls: '', timerLabel: '已运行',
+      summary: '正在执行：' + SAMPLE.module
+    },
+    done: {
+      chip: '已完成', icon: '✓', iconCls: 'done', chipCls: 'done', timerLabel: '耗时',
+      summary: '执行完毕'
+    },
+    fail: {
+      chip: '失败', icon: '✕', iconCls: 'fail', chipCls: 'fail', timerLabel: '耗时',
+      summary: '错误：未找到目标元素'
+    },
+    stop: {
+      chip: '已停止', icon: '✕', iconCls: 'stop', chipCls: 'stop', timerLabel: '耗时',
+      summary: '已被用户停止'
+    }
+  };
+
+  var THEME_LABEL = { light: '浅色 · miui.focus.rv', dark: '深色 · miui.focus.rvNight' };
+
+  /** 配色 → 卡片/舞台的短类名（CSS 里用 .l / .d 定位颜色 token）。 */
+  var THEME_CLS = { light: 'l', dark: 'd' };
+
+  var curState = 'running';
+  var curTheme = 'both';
+
+  function cardHtml(state, theme) {
+    var s = STATES[state];
+    var isRun = state === 'running';
+
+    var progressNum = isRun ? SAMPLE.progress : s.chip;
+    var barPct = isRun ? (SAMPLE.ratio * 100) : (state === 'done' ? 100 : SAMPLE.ratio * 100);
+    var barCls = state === 'fail' ? ' fail' : (state === 'stop' ? ' stop' : '');
+    var timer = isRun ? SAMPLE.elapsed : SAMPLE.elapsedFinal;
+    var timerCls = state === 'done' ? ' done' : '';
+
+    return '' +
+    '<div class="island ' + THEME_CLS[theme] + '" data-card-theme="' + theme + '">' +
+      '<div class="row">' +
+        '<div class="icon ' + s.iconCls + '">' + s.icon + '</div>' +
+        '<div class="t-main" style="margin-left:10px; flex:1; min-width:0;">' +
+          SAMPLE.title +
+        '</div>' +
+        '<span class="chip ' + s.chipCls + '">' + s.chip + '</span>' +
+      '</div>' +
+
+      '<div class="row" style="margin-top:13px; gap:14px;">' +
+        '<div class="big-progress">' + progressNum + '</div>' +
+        '<div style="flex:1; min-width:0;">' +
+          '<div class="bar' + barCls + '"><i style="width:' + barPct + '%"></i></div>' +
+          '<div class="meta" style="margin-top:7px; white-space:nowrap; overflow:hidden;' +
+               ' text-overflow:ellipsis;">' + s.summary + '</div>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="row" style="margin-top:13px;">' +
+        '<span class="timer' + timerCls + '">' + timer + '</span>' +
+        '<span class="meta" style="margin-left:6px;">' + s.timerLabel + '</span>' +
+        '<div class="spacer"></div>' +
+        (isRun ? '<button class="btn danger">结束</button>' : '') +
+      '</div>' +
+    '</div>';
+  }
+
+  function cellHtml(state, theme) {
+    return '' +
+    '<div class="cell">' +
+      '<div class="stage-cap">' + THEME_LABEL[theme] + '</div>' +
+      '<div class="stage ' + THEME_CLS[theme] + '">' + cardHtml(state, theme) + '</div>' +
+    '</div>';
+  }
+
+  function render() {
+    var matrix = document.getElementById('matrix');
+    var s = STATES[curState];
+    var html = '';
+
+    var dotCls = curState === 'running' ? 'run'
+               : curState === 'done' ? 'done'
+               : curState === 'fail' ? 'fail' : 'stop';
+
+    var themes = curTheme === 'both' ? ['light', 'dark'] : [curTheme];
+
+    themes.forEach(function (th) {
+      html += cellHtml(curState, th);
+    });
+
+    matrix.innerHTML =
+      '<div style="grid-column:1/-1;">' +
+        '<div class="cell-title" style="font-size:13px;">' +
+          '<span class="dot ' + dotCls + '"></span>' + s.chip +
+        '</div>' +
+      '</div>' + html;
+
+    // 仅浅色/仅深色时收紧栅格
+    matrix.style.gridTemplateColumns = themes.length === 1
+      ? 'minmax(280px, 420px)'
+      : 'repeat(auto-fit, minmax(280px, 1fr))';
+  }
+
+  document.getElementById('segState').addEventListener('click', function (e) {
+    var btn = e.target.closest('button');
+    if (!btn) return;
+    Array.prototype.forEach.call(this.querySelectorAll('button'), function (b) {
+      b.classList.toggle('on', b === btn);
+    });
+    curState = btn.dataset.state;
+    render();
+  });
+
+  document.getElementById('segTheme').addEventListener('click', function (e) {
+    var btn = e.target.closest('button');
+    if (!btn) return;
+    Array.prototype.forEach.call(this.querySelectorAll('button'), function (b) {
+      b.classList.toggle('on', b === btn);
+    });
+    curTheme = btn.dataset.theme;
+    render();
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

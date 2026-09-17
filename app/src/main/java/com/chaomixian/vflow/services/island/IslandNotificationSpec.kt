@@ -31,6 +31,37 @@ internal data class IslandNotificationSpec(
      * 为 `null` 时不设置 contentIntent（点击无反应）。
      */
     val contentIntent: PendingIntent? = null,
+
+    /**
+     * 当前正在执行的模块名。执行中显示在展开态的摘要区。
+     */
+    val moduleName: String? = null,
+
+    /**
+     * 进度文本（如 `3/8`）。
+     *
+     * 与 [subtitle] 的区别：subtitle 是给岛模板用的通用副文本（终态时是状态词），
+     * 而本字段专供展开态的大号进度位——执行中显示 `3/8`，终态由渲染层改显示状态词。
+     */
+    val progressText: String? = null,
+
+    /** 进度百分比（0..100），供展开态进度条使用。 */
+    val progressPercent: Int = 0,
+
+    /**
+     * 秒表基准（`SystemClock.elapsedRealtime()`）。
+     *
+     * 由 `Chronometer` 系统自走，不需要为计时重发通知。
+     * 非执行中状态该值不被使用。
+     */
+    val chronometerBase: Long = 0L,
+
+    /**
+     * 「结束」按钮的点击意图。
+     *
+     * 仅执行中展示该按钮；为 `null` 时按钮隐藏。
+     */
+    val stopIntent: PendingIntent? = null,
 ) {
 
     /**

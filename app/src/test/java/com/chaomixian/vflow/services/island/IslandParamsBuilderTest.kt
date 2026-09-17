@@ -156,18 +156,23 @@ class IslandParamsBuilderTest {
     }
 
     /**
-     * **岛参数里绝不能出现 `miui.focus.rv`。**
+     * 岛参数 JSON 里不出现 RemoteViews 相关键。
      *
-     * 这是本方案最容易踩的坑：SystemUI 以 extras 里有没有 `miui.focus.rv` 硬分叉，
-     * 一旦设置，整份 `param_v2` 模板作废、改读 `param.custom`，岛会完全不显示。
-     * 本测试锁住「走模板路径」这个决策。
+     * 这两个键（`miui.focus.rv` / `miui.focus.param.custom`）是**通知 extras 的 key**，
+     * 不是 JSON 内容——由 `IslandNotificationDispatcher` 负责写入 extras。
+     * 本测试锁住「JSON 只承载岛数据、不承载 RemoteViews 引用」这条边界，
+     * 避免有人把 rv 序列化进 JSON。
+     *
+     * 注：早期版本本测试断言「绝不能设 miui.focus.rv」，那是基于
+     * 「设了会让整份模板作废」的**错误理解**（实际只接管展开态，param_island 照常生效）。
+     * 该误解已修正，见 design 文档 §1.6。
      */
     @Test
-    fun paramDoesNotContainRemoteViewsKey() {
+    fun paramJsonDoesNotCarryRemoteViewsKeys() {
         val raw = IslandParamsBuilder.buildParam("每日签到", "3/8", IslandNotificationSpec.State.RUNNING)
 
-        assertFalse("岛参数不应包含 miui.focus.rv", raw.contains("miui.focus.rv"))
-        assertFalse("岛参数不应包含 param.custom", raw.contains("param.custom"))
+        assertFalse("rv 不应序列化进 JSON", raw.contains("miui.focus.rv"))
+        assertFalse("param.custom 是 extras key，不应出现在 JSON 里", raw.contains("param.custom"))
     }
 
     // ------------------------------------------------------------------

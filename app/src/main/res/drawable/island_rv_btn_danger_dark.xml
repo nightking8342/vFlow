@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 超级岛展开态：「结束」按钮底（深色版本）。 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#33FF5A50" />
+    <corners android:radius="999dp" />
+</shape>

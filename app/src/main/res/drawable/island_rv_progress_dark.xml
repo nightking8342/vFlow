@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  超级岛展开态：进度条（深色版本）。
+
+  ProgressBar 的 progressDrawable 需要同时定义 background（轨道）与 progress（填充）。
+  填充色固定为 vFlow 绿；失败态由代码切换为 island_rv_progress_fail_dark。
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:id="@android:id/background">
+        <shape android:shape="rectangle">
+            <solid android:color="#24FFFFFF" />
+            <corners android:radius="999dp" />
+        </shape>
+    </item>
+    <item android:id="@android:id/progress">
+        <clip>
+            <shape android:shape="rectangle">
+                <gradient
+                    android:angle="0"
+                    android:startColor="#7FB878"
+                    android:endColor="#A1D39A" />
+                <corners android:radius="999dp" />
+            </shape>
+        </clip>
+    </item>
+</layer-list>

@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.SystemClock
 import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
 import androidx.core.graphics.drawable.IconCompat
@@ -16,6 +17,7 @@ import com.chaomixian.vflow.core.workflow.model.Workflow
 import com.chaomixian.vflow.services.island.IslandNotificationDispatcher
 import com.chaomixian.vflow.services.island.IslandNotificationSpec
 import com.chaomixian.vflow.ui.main.MainActivity
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * 表示通知的不同状态。
@@ -67,6 +69,9 @@ object ExecutionNotificationManager {
     private const val CHANNEL_ID = "workflow_execution_channel"
     private const val CHANNEL_NAME = "工作流执行状态"
 
+    /** 匹配执行器的步骤进度文案：`步骤 3/8: 打开应用`。 */
+    private val STEP_MESSAGE_PATTERN = Regex("""^步骤\s+(\d+)/(\d+):\s*(.*)$""")
+
     private lateinit var notificationManager: NotificationManager
     private lateinit var appContext: Context
 
@@ -109,12 +114,23 @@ object ExecutionNotificationManager {
             return
         }
 
+        // 计时基准：执行开始时记一次，终态时清理。
+        // Chronometer 靠这个值自走，不需要为计时重发通知。
+        if (state is ExecutionNotificationState.Running) {
+            chronometerBase.getOrPut(workflow.id) { SystemClock.elapsedRealtime() }
+        }
+
         // 使用 SDK 版本判断
         // 官方文档指出 API 级别为 35 (Android 15)，但为了兼容预览版，使用 36 也是安全的。
         if (Build.VERSION.SDK_INT >= 36) {
             buildStatusChipNotification(workflow, state)
         } else {
             buildLegacyNotification(workflow, state)
+        }
+
+        // 终态后基准不再需要（下次执行会重新记）。
+        if (state !is ExecutionNotificationState.Running) {
+            chronometerBase.remove(workflow.id)
         }
     }
 
@@ -135,11 +151,18 @@ object ExecutionNotificationManager {
      *
      * 两者不是一一对应：执行器没有独立的「超时」状态（它复用 [ExecutionNotificationState.Failed]），
      * 而岛上「执行中」与「已停止」都不该自动浮出。
+     *
+     * **为什么不直接接收步骤信息**：`updateState` 是执行器调用的对外入口，
+     * 改签名会波及 9 个调用点。`Running.progress` 已是百分比、
+     * `Running.message` 已含 `"步骤 3/8: 打开应用"` 这样的结构化文本，
+     * 故从既有字段解析即可，签名保持不变。
      */
     private fun islandSpecOf(
         workflow: Workflow,
         state: ExecutionNotificationState,
-        contentIntent: PendingIntent
+        contentIntent: PendingIntent,
+        stopIntent: PendingIntent?,
+        chronometerBase: Long,
     ): IslandNotificationSpec {
         val (islandState, message) = when (state) {
             is ExecutionNotificationState.Running ->
@@ -151,13 +174,51 @@ object ExecutionNotificationManager {
             is ExecutionNotificationState.Cancelled ->
                 IslandNotificationSpec.State.CANCELLED to state.message
         }
+
+        val isRunning = state is ExecutionNotificationState.Running
+        val stepInfo = if (isRunning) parseStepMessage(state.message) else null
+
         return IslandNotificationSpec(
             title = workflow.name,
             state = islandState,
             subtitle = message,
+            moduleName = stepInfo?.moduleName,
+            progressText = stepInfo?.progressText,
+            progressPercent = if (isRunning) state.progress else 0,
+            chronometerBase = chronometerBase,
+            stopIntent = stopIntent,
             contentIntent = contentIntent
         )
     }
+
+    /**
+     * 从执行器给的进度文案里解出「进度」与「模块名」。
+     *
+     * 执行器发的是 `"步骤 3/8: 打开应用"`（`WorkflowExecutor.kt:507`）。展开态需要把
+     * 这两部分分开放（大号进度位 + 摘要区），故在此拆一次。
+     *
+     * 识别不了就返回 null——此时展开态的大号进度位会退回显示状态词，
+     * 摘要区留空。重试/模块自定义进度的文案（`"重试 (1/3): xxx"` 等）走这条路径。
+     */
+    private fun parseStepMessage(message: String): StepInfo? {
+        val match = STEP_MESSAGE_PATTERN.find(message) ?: return null
+        val (current, total, module) = match.destructured
+        if (total == "0") return null
+        return StepInfo(
+            progressText = "$current/$total",
+            moduleName = module.trim()
+        )
+    }
+
+    private data class StepInfo(val progressText: String, val moduleName: String)
+
+    /**
+     * 各工作流本次执行的计时基准（`SystemClock.elapsedRealtime()`）。
+     *
+     * 展开态用 `Chronometer` 展示耗时，只需传一个基准值，系统自走——**不需要为计时重发通知**。
+     * 键是 workflowId：并发执行的不同工作流各计各的。
+     */
+    private val chronometerBase = ConcurrentHashMap<String, Long>()
 
     /**
      * 为 Android 16+ 构建 "Status Chip" 样式的通知。
@@ -237,7 +298,11 @@ object ExecutionNotificationManager {
             IslandNotificationDispatcher.dispatch(
                 appContext,
                 builder,
-                islandSpecOf(workflow, state, buildContentIntent())
+                islandSpecOf(
+                    workflow, state, buildContentIntent(),
+                    stopPendingIntent,
+                    chronometerBase[workflow.id] ?: SystemClock.elapsedRealtime()
+                )
             )
         )
     }
@@ -285,7 +350,11 @@ object ExecutionNotificationManager {
             IslandNotificationDispatcher.dispatch(
                 appContext,
                 builder,
-                islandSpecOf(workflow, state, buildContentIntent())
+                islandSpecOf(
+                    workflow, state, buildContentIntent(),
+                    null,
+                    chronometerBase[workflow.id] ?: SystemClock.elapsedRealtime()
+                )
             )
         )
     }

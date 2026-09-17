@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 超级岛展开态：图标圆形底（已停止）——深色版本。 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <gradient
+        android:angle="270"
+        android:startColor="#C9CFC7"
+        android:endColor="#9AA39A"
+        android:type="linear" />
+</shape>

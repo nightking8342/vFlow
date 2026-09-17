@@ -42,8 +42,20 @@ internal object IslandNotificationDispatcher {
     /** 岛参数在通知 extras 里的 key（官方约定）。 */
     private const val KEY_FOCUS_PARAM = "miui.focus.param"
 
+    /** 自定义模式的岛参数 key（扁平结构，配合 RemoteViews 使用）。 */
+    private const val KEY_FOCUS_PARAM_CUSTOM = "miui.focus.param.custom"
+
     /** 岛图片包在通知 extras 里的 key（官方约定）。 */
     private const val KEY_FOCUS_PICS = "miui.focus.pics"
+
+    /** RemoteViews 系列 key。存在与否决定 SystemUI 走模板还是自定义分支。 */
+    private const val KEY_FOCUS_RV = "miui.focus.rv"
+    private const val KEY_FOCUS_RV_NIGHT = "miui.focus.rvNight"
+    private const val KEY_FOCUS_RV_ISLAND_EXPAND = "miui.focus.rv.island.expand"
+    private const val KEY_FOCUS_RV_TINY = "miui.focus.rv.tiny"
+
+    /** 「结束」按钮文案。 */
+    private const val STOP_LABEL = "结束"
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -102,23 +114,59 @@ internal object IslandNotificationDispatcher {
         notification: Notification,
         spec: IslandNotificationSpec,
     ) {
+        // ---- 1. 岛摘要态参数（模板路径）----
+        // 这条驱动大岛 / 小岛 / 状态栏 ticker，与是否使用 RemoteViews 无关。
         val param = IslandParamsBuilder.buildParam(
             title = spec.title,
             subtitle = spec.subtitle,
             state = spec.state,
         )
-
         notification.extras.putString(KEY_FOCUS_PARAM, param)
+
+        // ---- 2. 图片包 ----
         notification.extras.putBundle(
             KEY_FOCUS_PICS,
             IslandIcons.buildPics(context, spec.state)
         )
 
+        // ---- 3. 自定义展开态（RemoteViews 路径）----
+        // param.custom 与 miui.focus.rv 必须成对出现：SystemUI 以 extras 里
+        // 有没有 miui.focus.rv 硬分叉，有则改读 param.custom（扁平结构）。
+        // 注意 param_island 在 custom 里照常携带，故岛的摘要态不受影响。
+        notification.extras.putString(
+            KEY_FOCUS_PARAM_CUSTOM,
+            IslandParamsBuilder.buildCustomParam(
+                title = spec.title,
+                subtitle = spec.subtitle,
+                state = spec.state,
+            )
+        )
+
+        val views = IslandRemoteViews.build(
+            context = context,
+            title = spec.title,
+            state = spec.state,
+            moduleName = spec.moduleName,
+            progressText = spec.progressText,
+            progressPercent = spec.progressPercent,
+            chronometerBase = spec.chronometerBase,
+            stopIntent = spec.stopIntent,
+            stopLabel = STOP_LABEL,
+        )
+
+        // 浅色 / 深色 / 岛展开（恒深色）/ 状态栏胶囊（恒深色）。
+        // rv.tiny 不能省——缺省会回落 rv，整张卡片塞进胶囊会被压变形。
+        notification.extras.putParcelable(KEY_FOCUS_RV, views.light)
+        notification.extras.putParcelable(KEY_FOCUS_RV_NIGHT, views.dark)
+        notification.extras.putParcelable(KEY_FOCUS_RV_ISLAND_EXPAND, views.islandExpand)
+        notification.extras.putParcelable(KEY_FOCUS_RV_TINY, views.tiny)
+
         // 诊断日志：只记录结构与长度，不记录值——岛参数里含工作流名（可能是用户隐私）。
         DebugLogger.d(
             TAG,
             "已附加岛参数 state=${spec.state} paramLength=${param.length} " +
-                "titleLength=${spec.title.length} subtitleLength=${spec.subtitle?.length ?: 0}"
+                "titleLength=${spec.title.length} subtitleLength=${spec.subtitle?.length ?: 0} " +
+                "progress=${spec.progressPercent}"
         )
     }
 }

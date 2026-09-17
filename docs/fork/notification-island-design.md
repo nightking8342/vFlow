@@ -91,26 +91,38 @@ miui.focus.param = {
 
 图片不走 JSON，而是**单独的 Bundle**（`:509-548`）：`miui.focus.pics` 里 `putParcelable("miui.focus.pic_xxx", Icon)`，JSON 里用 `{"type":1,"pic":"miui.focus.pic_xxx"}` 引用。
 
-### 1.6 ⚠️ 最大的坑：`miui.focus.rv` 会把整份模板作废
+### 1.6 `miui.focus.rv` 会切到 `param.custom`，但**岛数据照常生效**
 
-mindfs 用血泪注释标明了这个硬分叉（`FocusIslandSupport.java:187-190`）：
+mindfs 标注了这个硬分叉（`FocusIslandSupport.java:187-190`）：
 
 > SystemUI 的 `onNotificationPosted` 以 extras 里**有没有 `miui.focus.rv`** 硬分叉：有则走 `buildNoParamsFocusNotification`（读 `param.custom`），无则走模板（读 `param`）。唯一渲染展开态自定义视图的 `createCustomView` 只在前一条分支里被调用。
 
-也就是说：
+**⚠️ 修订（2026-09-17）**：本文档 v1.0–v2.0 曾写「设了 `miui.focus.rv` 会让整份模板作废」，**这是错的**。经核对 mindfs 的实现（`FocusIslandSupport.java:436-455`），其 `param.custom` 里**带着完整的 `param_island`**：
 
-| 你想用 | 必填 key | 参数键名 |
+```java
+return new JSONObject()
+    .put("business", ...)
+    .put("updatable", true)
+    ...
+    .put("param_island", paramIsland)   // ← 大岛/小岛数据照常传递
+    .toString();
+```
+
+**真实差异只在三点**：
+
+| | 模板路径 | 自定义路径 |
 |---|---|---|
-| 官方**模板**驱动（大岛/小岛/焦点卡片都是模板） | **不设** `miui.focus.rv` | `miui.focus.param`（内含 `param_v2`） |
-| **自定义 RemoteViews** 展开态 | **必须设** `miui.focus.rv` + `miui.focus.rvNight` | `miui.focus.param.custom`（**扁平结构**） |
+| 参数键 | `miui.focus.param` | `miui.focus.param.custom`（**两者可以同时存在**） |
+| 结构 | `param_v2` 包裹 | **扁平**：`timeout` / `enableFloat` / `ticker` 直接在根级读，不解包 `param_v2` |
+| 展开态卡片 | 由模板渲染 | **由 `miui.focus.rv` 渲染** |
 
-**两者互斥。只能选一条。** 这是个二选一的架构决策（见 §6）。
+**结论：`param_island`（大岛/小岛/摘要态）在两种路径下都生效，不受影响。** 自定义路径只是**接管展开态**。因此不需要「二选一」，可以同时提供两套参数——见 §6.7。
 
 ### 1.7 自定义模式的其它约束（mindfs 实测）
 
 - `param.custom` 是**扁平结构**：`timeout` / `enableFloat` / `ticker` / `outEffectSrc` 直接从根级读，**不像模板那样解包 `param_v2`**（`:435-437`）。
-- 自定义模式下**不放 `chatInfo`**——通知卡片由 `miui.focus.rv` 提供，模板模块不会被渲染（`:437`）。
-- 即使 `miui.focus.rv` 用不上，**也必须给**，否则 `createCustomView` 提前 return，连带跳过 tiny / deco（`:205-207`）。
+- 自定义模式下通知卡片由 `miui.focus.rv` 提供，模板的**展开态模块**不会被渲染（岛数据不受影响，见 §1.6）。
+- **`miui.focus.rv` 必须给**：`createCustomView` 在它为空时会提前 return，**连带跳过 `rv.tiny` / `rv.deco`**（`:205-207`）。
 - 光效相关三个 key 位置不同、各自生效（`:36-46`、`:193-203`、`:426-431`）：
   - `miui.effect.src` → 展开态外圈光（只判非空，值本身不被解析为资源，社区约定填 `outer_glow`）
   - `miui.effect.color` → 光色，**自定义模式下必须直接写在 extras**（`fillCustomViewNotifiParams` 只搬 `outEffectSrc`，不读颜色）
@@ -573,6 +585,49 @@ notification.extras.putBundle("miui.focus.pics", pics)
 
 **小岛仅显示图标**（不做环形进度）——与 Q12「只做摘要态」的基调一致，减少需验证的字段。
 
+### 6.7 展开态改 RemoteViews（2026-09-17 追加决策）
+
+**背景**：工作流执行时通知更新频繁（每推进一步一次）。RemoteViews 的**复用实例、只传变化字段**机制比每次都传完整参数包更省。同时展开态此前没有设计（Q12 定为「用系统默认」），本次一并补齐。
+
+#### 决策：双路径并存，不做二选一
+
+依据 §1.6 的修订结论（`miui.focus.rv` 只接管展开态、不影响 `param_island`），改为**同时提供两套参数**：
+
+| extras key | 内容 | 作用 |
+|---|---|---|
+| `miui.focus.param` | 现有 `param_v2` 结构 | 大岛 / 小岛 / 通知栏卡片（**不变**） |
+| `miui.focus.param.custom` | 扁平结构 + `param_island` | 配合 rv 使用；岛数据照常传递 |
+| `miui.focus.rv` | **浅色** RemoteViews | 通知栏浅色；也是 `createCustomView` 入口，**必须给** |
+| `miui.focus.rvNight` | **深色** RemoteViews | 通知栏深色 |
+| `miui.focus.rv.island.expand` | 恒深色 | 岛展开卡片 |
+| `miui.focus.rv.tiny` | 恒深色 | 状态栏紧凑胶囊（缺省会回落到 `miui.focus.rv`，整张卡片塞进胶囊会压变形） |
+
+#### 为什么需要浅色版本
+
+**这套 RemoteViews 不只用于岛展开态**——它被通知栏与锁屏预览复用，而那两处**有浅色模式**。岛展开态本身恒为深色，但同一份布局必须以两种配色交付。色值取自 vFlow 既有的 `colors.xml`（`md_theme_*`），见设计稿。
+
+#### 展开态视觉方案（方案 3 · 进度主导）
+
+```
+[◯] 每日签到                    [执行中]   ← 图标 + 工作流名 + 状态胶囊
+3/8  ██████░░░░░░░░░░░░░░░░              ← 大号进度 + 进度条
+     正在执行：打开应用                    ← 当前模块
+00:42 已运行                       [结束]  ← 耗时 + 操作
+```
+
+- 设计稿（可交互，含浅/深双配色 + 全部状态）：`docs/fork/island-expand-ui.html`
+- 终态差异仅在状态胶囊颜色、图标色、底部按钮（终态隐藏「结束」）
+
+#### 实现约束（**必须遵守**）
+
+1. **复用 `RemoteViews` 实例**，只调 `setTextViewText` / `setProgress` 改变化字段——**不要每次 `new RemoteViews`**。后者要重新 inflate + 传整棵树，比模板还贵，会把本改造的收益抹掉。这是本决策成立的前提。
+2. **每次更新只改 3 个字段**：大号进度、进度条宽度、当前模块名。标题/图标/胶囊在 `RUNNING` 期间不变。
+3. **`Chronometer` 承载计时**（系统自走），只需传一次 `SystemClock.elapsedRealtime()` 基准，**不需要为计时重发通知**。
+4. 遵守 RemoteViews 白名单（§1.7）：`LinearLayout` / `FrameLayout` / `RelativeLayout` / `ImageView` / `TextView` / `Chronometer` / `ProgressBar`。
+5. 根容器不设背景（卡片底由 SystemUI 绘制）。
+
+> **对 Q25 的影响**：Q25 曾定「不做耗时展示」——理由是需新建启动时刻 Map 而只服务一行文案。改用 `Chronometer` 后该成本降为「传一个 long」，故**改为展示耗时**。
+
 ---
 
 ## 7. 验证方案
@@ -625,7 +680,7 @@ notification.extras.putBundle("miui.focus.pics", pics)
 | R2 | ~~与 AOSP Live Updates 打架~~ | ~~岛不出现~~ | **已消除**（§1.4：两者互不相干，见决策 3） |
 | R3 | **焦点通知权限是应用级、用户可关** | 静默降级 | 检测 `canShowFocus`；必要时在设置页加入口引导（参考 chat-float 的 `HyperOS 拦截 overlay` 处理思路，`chat-float-window-design.md:820`） |
 | **R4** | **通知 ID 硬编码导致并发互相覆盖 + 取消误伤**（**既有 bug，非岛引入**） | **通知栏错乱 / 通知凭空消失** | **阶段 1 前置修复**，详见 §8.1 |
-| R5 | **`miui.focus.rv` 设错导致模板作废** | 岛完全不显示 | 走模板路径时**确保不设**这个 key；写测试断言 |
+| R5 | ~~`miui.focus.rv` 设错导致模板作废~~ | ~~岛完全不显示~~ | **已消除**（§1.6 修订：该 key 只接管展开态，`param_island` 照常生效）。改走双路径方案，见 §6.7 |
 | R6 | **RemoteViews 白名单踩坑**（本次不做，无需关注） | 展开态空白 | 严格遵守 §1.7 白名单；根容器不设背景 |
 | R7 | **厂商行为随版本漂移** | 升级后失效 | 能力探测做在运行时（不写死版本号）；文档记录基线设备 |
 | R8 | **岛 extras 与 `setRequestPromotedOngoing` 同存的副作用** | 澎汓 OS 上可能被系统拒发 | 真机验证（§7.2 第 5 项）；若有冲突，加一行「有岛能力则跳过 AOSP 提升」 |
