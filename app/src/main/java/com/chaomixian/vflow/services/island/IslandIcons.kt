@@ -15,6 +15,9 @@ import com.chaomixian.vflow.core.logging.DebugLogger
  *
  * 岛的图片不内联在 JSON 里，而是放进通知 extras 的 `miui.focus.pics` Bundle
  * （key → [Icon]），JSON 侧用 `{"type":1,"pic":"<key>"}` 引用。见 [IslandParamsBuilder]。
+ *
+ * **与通知小图标无关**：这里走的是 `miui.focus.pics` 通道，SystemUI 显示的是
+ * **全彩图形**，不受 Android 通知小图标「alpha 蒙版、颜色由系统填充」的限制。
  */
 internal object IslandIcons {
 
@@ -27,37 +30,24 @@ internal object IslandIcons {
     /**
      * 构建 `miui.focus.pics` Bundle。
      *
-     * @param context 应用上下文。
-     * @param state 当前状态，决定工作流图标用哪一张。
-     */
-    fun buildPics(context: Context, state: IslandNotificationSpec.State): Bundle =
-        Bundle().apply {
-            putParcelable(IslandParamsBuilder.PIC_WORKFLOW, workflowIcon(context, state))
-            putParcelable(IslandParamsBuilder.PIC_APP, roundAppIcon(context))
-        }
-
-    /**
-     * 状态对应的工作流图标。
+     * 岛上各处的图标统一用**应用图标**——它是用户识别「这条通知来自 vFlow」最直接的线索，
+     * 比功能图标（四宫格）更能表达来源。状态差异由岛上的文本与强调色承载，
+     * 不再靠换图标（那样反而让来源变模糊）。
      *
-     * 三个 drawable 都是项目既有的（与 `ExecutionNotificationManager` 通知小图标用的
-     * 是同一套），无需新增资源。
+     * @param context 应用上下文。
      */
-    private fun workflowIcon(context: Context, state: IslandNotificationSpec.State): Icon {
-        val resId = when (state) {
-            IslandNotificationSpec.State.RUNNING -> R.drawable.ic_workflows
-            IslandNotificationSpec.State.COMPLETED -> R.drawable.rounded_save_24
-            IslandNotificationSpec.State.FAILED -> R.drawable.rounded_close_small_24
-            IslandNotificationSpec.State.CANCELLED -> R.drawable.rounded_close_small_24
+    fun buildPics(context: Context): Bundle =
+        Bundle().apply {
+            val appIcon = roundAppIcon(context)
+            // 两个 key 都指向同一个应用图标：大岛 A 区与小岛容器各自引用其中之一。
+            putParcelable(IslandParamsBuilder.PIC_APP, appIcon)
         }
-        return Icon.createWithResource(context, resId)
-    }
 
     /**
      * 把 launcher 图标裁成圆形位图。
      *
-     * **为什么不能直接用 `Icon.createWithResource(context, R.mipmap.ic_launcher)`**：
-     * API 26+ 的 launcher 图标是自适应图标（`<adaptive-icon>` XML），交给 SystemUI
-     * 在岛的小圆形容器里渲染会**变成方形**。必须自己画成圆形位图。
+     * **为什么需要裁剪**：API 26+ 的 launcher 图标是自适应图标（`<adaptive-icon>` XML），
+     * 交给 SystemUI 在岛的小圆形容器里渲染会**变成方形**。必须自己画成圆形位图。
      */
     private fun roundAppIcon(context: Context): Icon {
         cachedAppIcon?.let { return it }

@@ -16,16 +16,6 @@ internal data class IslandNotificationSpec(
     /** 当前状态。决定岛上的文案、强调色与自动浮出行为。 */
     val state: State,
     /**
-     * 副文本（岛的摘要区）。
-     *
-     * 执行中传进度（如 `3/8`），终态传状态词（如「已完成」）。
-     *
-     * 注：超级岛支持进度条（模板的 `progressInfo`），但需要一整套图形资源
-     * （前进/中间节点/目标点图标），且 vFlow 的百分比按顶层步骤计算、
-     * 遇到 If/Loop 会长时间不变。当前设计选择用文本而非进度条，故本类不含进度字段。
-     */
-    val subtitle: String? = null,
-    /**
      * 点击通知/岛主体时的跳转。
      *
      * 为 `null` 时不设置 contentIntent（点击无反应）。
@@ -33,15 +23,17 @@ internal data class IslandNotificationSpec(
     val contentIntent: PendingIntent? = null,
 
     /**
-     * 当前正在执行的模块名。执行中显示在展开态的摘要区。
+     * 当前正在执行的步骤名（模块名）。
+     *
+     * 显示位置有两个：大岛 B 区的大字位、展开态摘要区。步骤名可能很长，
+     * 所以放在 B 区（纯文本位，比被图标占去一半的 A 区更宽）。
      */
-    val moduleName: String? = null,
+    val stepName: String? = null,
 
     /**
      * 进度文本（如 `3/8`）。
      *
-     * 与 [subtitle] 的区别：subtitle 是给岛模板用的通用副文本（终态时是状态词），
-     * 而本字段专供展开态的大号进度位——执行中显示 `3/8`，终态由渲染层改显示状态词。
+     * 显示位置：大岛 B 区的前置小字（渲染为「步骤 3/8:」）、展开态的大号进度位。
      */
     val progressText: String? = null,
 

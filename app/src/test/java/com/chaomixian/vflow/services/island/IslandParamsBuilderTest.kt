@@ -20,17 +20,19 @@ class IslandParamsBuilderTest {
 
     private fun paramOf(
         title: String = "每日签到",
-        subtitle: String? = "3/8",
         state: IslandNotificationSpec.State = IslandNotificationSpec.State.RUNNING,
+        stepName: String? = "打开应用",
+        progressText: String? = "3/8",
     ) = JsonParser.parseString(
-        IslandParamsBuilder.buildParam(title, subtitle, state)
+        IslandParamsBuilder.buildParam(title, state, stepName, progressText)
     ).asJsonObject
 
     private fun paramV2Of(
         title: String = "每日签到",
-        subtitle: String? = "3/8",
         state: IslandNotificationSpec.State = IslandNotificationSpec.State.RUNNING,
-    ) = paramOf(title, subtitle, state).getAsJsonObject("param_v2")
+        stepName: String? = "打开应用",
+        progressText: String? = "3/8",
+    ) = paramOf(title, state, stepName, progressText).getAsJsonObject("param_v2")
 
     // ------------------------------------------------------------------
     // 顶层结构
@@ -97,36 +99,111 @@ class IslandParamsBuilderTest {
         assertEquals("每日签到", left.getAsJsonObject("textInfo").get("title").asString)
     }
 
-    /** 大岛 B 区承载进度/状态词。 */
+    // ------------------------------------------------------------------
+    // B 区：前置小字 + 大字（方案 ii）
+    // ------------------------------------------------------------------
+
+    /**
+     * **A 区放工作流名，B 区放步骤名**。
+     *
+     * 这样分工商的理由：A 区被图标占去一半宽度，只能放短文本（工作流名通常简短）；
+     * B 区是纯文本位，可用宽度更大，适合可能很长的步骤名。
+     */
     @Test
-    fun bigIslandRightAreaCarriesSubtitle() {
-        val textInfo = paramV2Of(subtitle = "3/8")
+    fun bigIslandSplitsWorkflowNameAndStepName() {
+        val bigArea = paramV2Of(title = "每日签到", stepName = "等待元素出现")
             .getAsJsonObject("param_island")
             .getAsJsonObject("bigIslandArea")
-            .getAsJsonObject("textInfo")
 
-        assertEquals("3/8", textInfo.get("title").asString)
+        // A 区：工作流名
+        assertEquals(
+            "每日签到",
+            bigArea.getAsJsonObject("imageTextInfoLeft")
+                .getAsJsonObject("textInfo").get("title").asString
+        )
+        // B 区大字：步骤名
+        assertEquals(
+            "等待元素出现",
+            bigArea.getAsJsonObject("textInfo").get("title").asString
+        )
     }
 
-    /** 副文本为空时不应写入 title 字段（避免岛上出现空文本块）。 */
+    /**
+     * B 区前置小字是「步骤 3/8:」——与大字拼成一句完整的话。
+     *
+     * 前置小字 + 大字的对比让步骤名成为视觉主体。
+     */
     @Test
-    fun emptySubtitleIsOmittedInsteadOfWrittenBlank() {
-        val textInfo = paramV2Of(subtitle = "")
+    fun bigIslandFrontTitleCarriesProgressPrefix() {
+        val textInfo = paramV2Of(state = IslandNotificationSpec.State.RUNNING, progressText = "3/8")
             .getAsJsonObject("param_island")
             .getAsJsonObject("bigIslandArea")
             .getAsJsonObject("textInfo")
 
-        assertFalse("空副文本不应写入 title", textInfo.has("title"))
+        assertEquals("步骤 3/8:", textInfo.get("frontTitle").asString)
     }
 
+    /** 没有进度时不应写出空的前置小字。 */
     @Test
-    fun nullSubtitleIsOmitted() {
-        val textInfo = paramV2Of(subtitle = null)
+    fun missingProgressOmitsFrontTitle() {
+        val textInfo = paramV2Of(state = IslandNotificationSpec.State.RUNNING, progressText = null)
             .getAsJsonObject("param_island")
             .getAsJsonObject("bigIslandArea")
             .getAsJsonObject("textInfo")
 
-        assertFalse("null 副文本不应写入 title", textInfo.has("title"))
+        assertFalse("无进度时不应有 frontTitle", textInfo.has("frontTitle"))
+    }
+
+    /** 没有步骤名时不应写出空的大字位。 */
+    @Test
+    fun missingStepNameOmitsBigText() {
+        val textInfo = paramV2Of(state = IslandNotificationSpec.State.RUNNING, stepName = null)
+            .getAsJsonObject("param_island")
+            .getAsJsonObject("bigIslandArea")
+            .getAsJsonObject("textInfo")
+
+        // 执行中没有步骤名时，terminalTextOf 返回 null，B 区大字位留空
+        assertFalse("执行中无步骤名时不应有 title", textInfo.has("title"))
+    }
+
+    /**
+     * 终态在 B 区大字位显示状态词（执行中该位放步骤名）。
+     *
+     * 避免终态时 B 区出现「只有前置小字、没有大字」的残缺结构。
+     */
+    @Test
+    fun terminalStatesShowStatusWordInBigTextSlot() {
+        val expected = mapOf(
+            IslandNotificationSpec.State.COMPLETED to "已完成",
+            IslandNotificationSpec.State.FAILED to "失败",
+            IslandNotificationSpec.State.CANCELLED to "已停止",
+        )
+
+        expected.forEach { (state, word) ->
+            val textInfo = paramV2Of(state = state, stepName = null)
+                .getAsJsonObject("param_island")
+                .getAsJsonObject("bigIslandArea")
+                .getAsJsonObject("textInfo")
+
+            assertEquals("$state 应在 B 区大字位显示状态词", word, textInfo.get("title").asString)
+        }
+    }
+
+    /** 终态不应有「步骤 x/y:」前缀（那是执行中的语义）。 */
+    @Test
+    fun terminalStatesHaveNoProgressPrefix() {
+        listOf(
+            IslandNotificationSpec.State.COMPLETED,
+            IslandNotificationSpec.State.FAILED,
+            IslandNotificationSpec.State.CANCELLED,
+        ).forEach { state ->
+            val textInfo = paramV2Of(state = state, progressText = "3/8")
+                .getAsJsonObject("param_island")
+                .getAsJsonObject("bigIslandArea")
+                .getAsJsonObject("textInfo")
+
+            assertFalse("$state 不应有进度前缀", textInfo.has("frontTitle"))
+        }
     }
 
     /** 小岛只放图标。 */
@@ -169,7 +246,9 @@ class IslandParamsBuilderTest {
      */
     @Test
     fun paramJsonDoesNotCarryRemoteViewsKeys() {
-        val raw = IslandParamsBuilder.buildParam("每日签到", "3/8", IslandNotificationSpec.State.RUNNING)
+        val raw = IslandParamsBuilder.buildParam(
+            "每日签到", IslandNotificationSpec.State.RUNNING, "打开应用", "3/8"
+        )
 
         assertFalse("rv 不应序列化进 JSON", raw.contains("miui.focus.rv"))
         assertFalse("param.custom 是 extras key，不应出现在 JSON 里", raw.contains("param.custom"))

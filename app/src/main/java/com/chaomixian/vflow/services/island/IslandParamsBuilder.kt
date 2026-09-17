@@ -28,13 +28,12 @@ internal object IslandParamsBuilder {
     /** 运营场景标识。官方建议按业务场景填（如打车的 taxi），用于数据统计。 */
     private const val BUSINESS = "vflow_workflow"
 
-    /** 岛图标在 `miui.focus.pics` 中的 key。 */
-    internal const val PIC_WORKFLOW = "vflow.focus.pic_workflow"
-
     /**
-     * 圆角应用图标在 `miui.focus.pics` 中的 key。
+     * 岛图标在 `miui.focus.pics` 中的 key。
      *
-     * 用于小岛——小岛空间只够放一个图标，放应用图标比放功能图标更易识别来源。
+     * 全岛统一使用**应用图标**（大岛 A 区、小岛容器、状态栏 ticker、息屏都用它）——
+     * 它是用户识别「这条通知来自 vFlow」最直接的线索。
+     * 状态差异由岛上的文本与强调色承载，不再靠换图标。
      */
     internal const val PIC_APP = "vflow.focus.pic_app"
 
@@ -59,14 +58,16 @@ internal object IslandParamsBuilder {
     /**
      * 构建 `miui.focus.param` 的值（一个 JSON 字符串）。
      *
-     * @param title 标题，用工作流名。
-     * @param subtitle 副文本，执行中是进度（如 `3/8`），终态是状态词。
+     * @param title 工作流名。显示在大岛 A 区（图标旁的大字）。
      * @param state 展示状态。
+     * @param stepName 当前步骤名。显示在大岛 B 区的大字位（执行中）。
+     * @param progressText 进度文本（如 `3/8`）。显示在 B 区的前置小字位。
      */
     fun buildParam(
         title: String,
-        subtitle: String?,
         state: IslandNotificationSpec.State,
+        stepName: String?,
+        progressText: String?,
     ): String {
         val paramV2 = JsonObject().apply {
             addProperty("business", BUSINESS)
@@ -85,11 +86,11 @@ internal object IslandParamsBuilder {
 
             // 状态栏 ticker 与息屏文案（OS2 走这部分，OS3 也会用于状态栏）。
             addProperty("ticker", tickerText(title, state))
-            addProperty("tickerPic", PIC_WORKFLOW)
+            addProperty("tickerPic", PIC_APP)
             addProperty("aodTitle", tickerText(title, state))
-            addProperty("aodPic", PIC_WORKFLOW)
+            addProperty("aodPic", PIC_APP)
 
-            add("param_island", buildIslandParam(state, title, subtitle))
+            add("param_island", buildIslandParam(state, title, stepName, progressText))
         }
 
         return JsonObject().apply { add("param_v2", paramV2) }.toString()
@@ -108,8 +109,9 @@ internal object IslandParamsBuilder {
      */
     fun buildCustomParam(
         title: String,
-        subtitle: String?,
         state: IslandNotificationSpec.State,
+        stepName: String?,
+        progressText: String?,
     ): String {
         val shouldFloat = state != IslandNotificationSpec.State.RUNNING &&
             state != IslandNotificationSpec.State.CANCELLED
@@ -124,38 +126,63 @@ internal object IslandParamsBuilder {
             addProperty("islandFirstFloat", shouldFloat)
 
             addProperty("ticker", tickerText(title, state))
-            addProperty("tickerPic", PIC_WORKFLOW)
+            addProperty("tickerPic", PIC_APP)
             addProperty("aodTitle", tickerText(title, state))
-            addProperty("aodPic", PIC_WORKFLOW)
+            addProperty("aodPic", PIC_APP)
 
             // 岛数据与模板路径完全一致——这是「自定义模式不影响岛」的关键。
-            add("param_island", buildIslandParam(state, title, subtitle))
+            add("param_island", buildIslandParam(state, title, stepName, progressText))
         }.toString()
     }
 
     /**
      * 构建 `param_island`——岛摘要态的数据。
      *
-     * 结构对应「大岛 = A 区图文组件1 + B 区文本组件」，这是模板库里最贴合
-     * 「图标 + 工作流名 + 进度」这一形态的组合。
+     * 结构对应「大岛 = A 区图文组件1 + B 区文本组件」（模板库的大岛组合 2）。
+     *
+     * **A 区放工作流名，B 区放当前步骤**。这样分工的理由：
+     * - A 区空间被图标占去一半，只能放短文本，适合工作流名（用户自己起的，通常简短）；
+     * - B 区是纯文本位，可用宽度更大，适合步骤名（可能很长，如「等待元素出现」）；
+     * - 两者并存可让多工作流并发时仍能分辨「这是哪个工作流」。
+     *
+     * @param title 工作流名（A 区大字）
+     * @param stepName 当前步骤名（B 区大字）。执行中才有。
+     * @param progressText 进度文本（B 区前置小字），如 `3/8`。
      */
     private fun buildIslandParam(
         state: IslandNotificationSpec.State,
         title: String,
-        subtitle: String?,
+        stepName: String?,
+        progressText: String?,
     ): JsonObject {
-        // A 区：图标 + 工作流名。图标随状态变化（见 IslandIcons.picKeyFor）。
+        // A 区：图标 + 工作流名。
         val primaryText = JsonObject().apply { addProperty("title", title) }
 
         val imageTextInfoLeft = JsonObject().apply {
             addProperty("type", 1) // 图文组件1
-            add("picInfo", picRef(PIC_WORKFLOW))
+            add("picInfo", picRef(PIC_APP))
             add("textInfo", primaryText)
         }
 
-        // B 区：进度 / 状态词。文本组件（type=1）。
+        // B 区：文本组件（type=1）。前置小字 + 大字。
+        //
+        // 用两段拼出一句完整的话（「步骤 3/8: 打开应用」），比单段大字能承载更多信息，
+        // 且小字/大字的对比让「步骤名」这一用户真正关心的内容成为视觉主体。
         val textInfo = JsonObject().apply {
-            subtitle?.takeIf { it.isNotBlank() }?.let { addProperty("title", it) }
+            // 前置小字：执行中放进度（形如「步骤 3/8:」），终态放状态词前缀。
+            val frontText = if (state == IslandNotificationSpec.State.RUNNING) {
+                progressText?.takeIf { it.isNotBlank() }?.let { "步骤 $it:" }
+            } else {
+                null
+            }
+            frontText?.let { addProperty("frontTitle", it) }
+
+            // 大字位：执行中用步骤名；终态没有「当前步骤」，用状态词兜底，
+            // 避免 B 区出现空的大字位。
+            val mainText = stepName?.takeIf { it.isNotBlank() }
+                ?: terminalTextOf(state)
+            mainText?.let { addProperty("title", it) }
+
             // 只让「需要用户注意」的状态使用强调色。
             addProperty(
                 "showHighlightColor",
@@ -181,6 +208,14 @@ internal object IslandParamsBuilder {
             add("bigIslandArea", bigIslandArea)
             add("smallIslandArea", smallIslandArea)
         }
+    }
+
+    /** 终态在 B 区大字位显示的文案。执行中返回 null（那时该位放步骤名）。 */
+    private fun terminalTextOf(state: IslandNotificationSpec.State): String? = when (state) {
+        IslandNotificationSpec.State.RUNNING -> null
+        IslandNotificationSpec.State.COMPLETED -> "已完成"
+        IslandNotificationSpec.State.FAILED -> "失败"
+        IslandNotificationSpec.State.CANCELLED -> "已停止"
     }
 
     /** 图片引用。超级岛不内联图片，而是引用 `miui.focus.pics` 里的 key。 */

@@ -181,8 +181,7 @@ object ExecutionNotificationManager {
         return IslandNotificationSpec(
             title = workflow.name,
             state = islandState,
-            subtitle = message,
-            moduleName = stepInfo?.moduleName,
+            stepName = stepInfo?.moduleName,
             progressText = stepInfo?.progressText,
             progressPercent = if (isRunning) state.progress else 0,
             chronometerBase = chronometerBase,

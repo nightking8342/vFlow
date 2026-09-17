@@ -118,15 +118,16 @@ internal object IslandNotificationDispatcher {
         // 这条驱动大岛 / 小岛 / 状态栏 ticker，与是否使用 RemoteViews 无关。
         val param = IslandParamsBuilder.buildParam(
             title = spec.title,
-            subtitle = spec.subtitle,
             state = spec.state,
+            stepName = spec.stepName,
+            progressText = spec.progressText,
         )
         notification.extras.putString(KEY_FOCUS_PARAM, param)
 
         // ---- 2. 图片包 ----
         notification.extras.putBundle(
             KEY_FOCUS_PICS,
-            IslandIcons.buildPics(context, spec.state)
+            IslandIcons.buildPics(context)
         )
 
         // ---- 3. 自定义展开态（RemoteViews 路径）----
@@ -137,8 +138,9 @@ internal object IslandNotificationDispatcher {
             KEY_FOCUS_PARAM_CUSTOM,
             IslandParamsBuilder.buildCustomParam(
                 title = spec.title,
-                subtitle = spec.subtitle,
                 state = spec.state,
+                stepName = spec.stepName,
+                progressText = spec.progressText,
             )
         )
 
@@ -146,7 +148,7 @@ internal object IslandNotificationDispatcher {
             context = context,
             title = spec.title,
             state = spec.state,
-            moduleName = spec.moduleName,
+            moduleName = spec.stepName,
             progressText = spec.progressText,
             progressPercent = spec.progressPercent,
             chronometerBase = spec.chronometerBase,
@@ -165,7 +167,7 @@ internal object IslandNotificationDispatcher {
         DebugLogger.d(
             TAG,
             "已附加岛参数 state=${spec.state} paramLength=${param.length} " +
-                "titleLength=${spec.title.length} subtitleLength=${spec.subtitle?.length ?: 0} " +
+                "titleLength=${spec.title.length} stepNameLength=${spec.stepName?.length ?: 0} " +
                 "progress=${spec.progressPercent}"
         )
     }
