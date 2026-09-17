@@ -6,6 +6,7 @@ import android.content.Context
 import android.os.Parcelable
 import android.widget.RemoteViews
 import androidx.core.app.NotificationCompat
+import java.util.concurrent.ConcurrentHashMap
 import com.chaomixian.vflow.core.logging.DebugLogger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -41,25 +42,56 @@ internal object IslandNotificationDispatcher {
 
     private const val TAG = "IslandDispatcher"
 
-    /** 岛参数在通知 extras 里的 key（官方约定）。 */
-    private const val KEY_FOCUS_PARAM = "miui.focus.param"
-
-    /** 自定义模式的岛参数 key（扁平结构，配合 RemoteViews 使用）。 */
+    /**
+     * 岛参数在通知 extras 里的 key（扁平结构，配合 RemoteViews 使用）。
+     *
+     * **只写这一个**——不写模板的 `miui.focus.param`。依据 mindfs 的可用实现，
+     * 它全程只用 custom。两者并存时 SystemUI 可能走模板分支、忽略 RemoteViews。
+     */
     private const val KEY_FOCUS_PARAM_CUSTOM = "miui.focus.param.custom"
 
     /** 岛图片包在通知 extras 里的 key（官方约定）。 */
     private const val KEY_FOCUS_PICS = "miui.focus.pics"
 
-    /** RemoteViews 系列 key。存在与否决定 SystemUI 走模板还是自定义分支。 */
+    /** RemoteViews 系列 key。`miui.focus.rv` 存在与否决定走自定义还是模板分支。 */
     private const val KEY_FOCUS_RV = "miui.focus.rv"
     private const val KEY_FOCUS_RV_NIGHT = "miui.focus.rvNight"
     private const val KEY_FOCUS_RV_ISLAND_EXPAND = "miui.focus.rv.island.expand"
-    private const val KEY_FOCUS_RV_TINY = "miui.focus.rv.tiny"
+
+    /** 光效相关 key（mindfs 实测生效的组合）。 */
+    private const val KEY_EFFECT_SRC = "miui.effect.src"
+    private const val KEY_EFFECT_COLOR = "miui.effect.color"
+    private const val KEY_BIG_ISLAND_EFFECT_SRC = "miui.bigIsland.effect.src"
+
+    /** 光色，取 vFlow 深色主题主色。 */
+    private const val EFFECT_COLOR = "#A1D39A"
 
     /** 「结束」按钮文案。 */
     private const val STOP_LABEL = "结束"
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    /**
+     * 各工作流正在使用的 RemoteViews 实例组。
+     *
+     * **为什么要缓存**：一个工作流执行期间只有一条通知（ID 恒定），它被反复更新。
+     * 若每次都新建 RemoteViews，等于每次重新 inflate 布局 + 跨进程传整棵树，
+     * 比模板路径还贵。缓存后每次更新只传变化字段的差异——这才是用 RemoteViews 的意义。
+     *
+     * 键是 workflowId：并发执行的不同工作流各持一组，互不干扰。
+     * 由 [releaseViews] 在工作流结束时清理。
+     */
+    private val viewsByWorkflow = ConcurrentHashMap<String, IslandViews>()
+
+    /**
+     * 释放某工作流的 RemoteViews 缓存。应在工作流执行结束时调用。
+     *
+     * 不释放的后果：每个执行过的工作流都会常驻一组 RemoteViews（3 个实例，
+     * 各持有布局引用），长期运行会累积。
+     */
+    fun releaseViews(workflowId: String) {
+        viewsByWorkflow.remove(workflowId)
+    }
 
     /**
      * 初始化能力探测。应在 App 启动时调用。
@@ -118,41 +150,57 @@ internal object IslandNotificationDispatcher {
         notification: Notification,
         spec: IslandNotificationSpec,
     ) {
-        // ---- 1. 岛摘要态参数（模板路径）----
-        // 这条驱动大岛 / 小岛 / 状态栏 ticker，与是否使用 RemoteViews 无关。
-        val param = IslandParamsBuilder.buildParam(
-            title = spec.title,
-            state = spec.state,
-            stepName = spec.stepName,
-            progressText = spec.progressText,
-        )
-        notification.extras.putString(KEY_FOCUS_PARAM, param)
-
-        // ---- 2. 图片包 ----
+        // ---- 1. 图片包 ----
         notification.extras.putBundle(
             KEY_FOCUS_PICS,
             IslandIcons.buildPics(context)
         )
 
-        // ---- 3. 自定义展开态（RemoteViews 路径）----
-        // param.custom 与 miui.focus.rv 必须成对出现：SystemUI 以 extras 里
-        // 有没有 miui.focus.rv 硬分叉，有则改读 param.custom（扁平结构）。
-        // 注意 param_island 在 custom 里照常携带，故岛的摘要态不受影响。
+        // ---- 2. 岛参数（自定义结构）----
+        //
+        // 只写 `param.custom`，**不写** `miui.focus.param`。
+        // 依据 mindfs 的可用实现（`FocusIslandSupport.java:185-214`）：它全程只写 custom，
+        // 从不写模板 key。两者并存时 SystemUI 的行为不可靠，实测表现为走模板分支、
+        // RemoteViews 被忽略。
+        //
+        // custom 是**扁平结构**（不解包 param_v2），但 `param_island` 在根级照常携带，
+        // 故大岛/小岛的摘要态由它驱动。
         notification.extras.putString(
             KEY_FOCUS_PARAM_CUSTOM,
             IslandParamsBuilder.buildCustomParam(
                 title = spec.title,
                 state = spec.state,
                 stepName = spec.stepName,
+                statusText = spec.statusText,
                 progressText = spec.progressText,
             )
         )
 
-        val views = IslandRemoteViews.build(
+        // ---- 3. 光效 ----
+        // mindfs 写的三个 key（`:196-203`）。岛与展开态的外圈光效开关，
+        // 只判非空、值本身不被解析为资源，社区约定填 outer_glow。
+        notification.extras.putString(KEY_EFFECT_SRC, "outer_glow")
+        notification.extras.putString(KEY_EFFECT_COLOR, EFFECT_COLOR)
+        notification.extras.putString(KEY_BIG_ISLAND_EFFECT_SRC, "outer_glow")
+
+        // ---- 4. 展开态 RemoteViews ----
+        // `miui.focus.rv` 存在与否是 SystemUI 的硬分叉点：有则走自定义分支
+        //（读 param.custom、渲染展开态），无则走模板。
+        //
+        // **只写这三个**——与 mindfs 一致，不写 `rv.tiny`（那是小折叠机型的折叠态用）。
+        //
+        // **实例复用**：一个工作流执行期间只有一条通知被反复更新。每次更新都重建
+        // RemoteViews 会重新 inflate + 重新传整棵树，比模板路径还贵，会把本改造的收益
+        // 抹掉。故按 workflowId 缓存实例，只在首次创建、之后复用同一组。
+        val views = viewsByWorkflow.getOrPut(spec.workflowId) {
+            IslandRemoteViews.newInstance(context)
+        }
+        views.update(
             context = context,
             title = spec.title,
             state = spec.state,
-            moduleName = spec.stepName,
+            stepName = spec.stepName,
+            statusText = spec.statusText,
             progressText = spec.progressText,
             progressPercent = spec.progressPercent,
             chronometerBase = spec.chronometerBase,
@@ -160,12 +208,9 @@ internal object IslandNotificationDispatcher {
             stopLabel = STOP_LABEL,
         )
 
-        // 浅色 / 深色 / 岛展开（恒深色）/ 状态栏胶囊（恒深色）。
-        // rv.tiny 不能省——缺省会回落 rv，整张卡片塞进胶囊会被压变形。
         notification.extras.putParcelable(KEY_FOCUS_RV, views.light)
         notification.extras.putParcelable(KEY_FOCUS_RV_NIGHT, views.dark)
         notification.extras.putParcelable(KEY_FOCUS_RV_ISLAND_EXPAND, views.islandExpand)
-        notification.extras.putParcelable(KEY_FOCUS_RV_TINY, views.tiny)
 
         // 诊断日志：只记录结构与长度，不记录值——岛参数里含工作流名（可能是用户隐私）。
         //
@@ -176,13 +221,13 @@ internal object IslandNotificationDispatcher {
         val expandReadBack = notification.extras.getParcelable<Parcelable>(KEY_FOCUS_RV_ISLAND_EXPAND)
         DebugLogger.d(
             TAG,
-            "已附加岛参数 state=${spec.state} paramLength=${param.length} " +
+            "已附加岛参数 state=${spec.state} " +
                 "titleLength=${spec.title.length} stepNameLength=${spec.stepName?.length ?: 0} " +
+                "statusLength=${spec.statusText?.length ?: 0} " +
                 "progress=${spec.progressPercent} " +
-                "rvType=${rvReadBack?.javaClass?.name ?: "null"} " +
                 "rvIsRemoteViews=${rvReadBack is RemoteViews} " +
-                "expandType=${expandReadBack?.javaClass?.name ?: "null"} " +
-                "extrasKeys=${notification.extras.keySet()}"
+                "expandIsRemoteViews=${expandReadBack is RemoteViews} " +
+                "templateParamPresent=${notification.extras.containsKey("miui.focus.param")}"
         )
     }
 }

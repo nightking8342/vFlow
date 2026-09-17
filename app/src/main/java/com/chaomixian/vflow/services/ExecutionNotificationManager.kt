@@ -14,6 +14,7 @@ import androidx.core.graphics.drawable.IconCompat
 import com.chaomixian.vflow.R
 import com.chaomixian.vflow.core.execution.WorkflowExecutor
 import com.chaomixian.vflow.core.workflow.model.Workflow
+import com.chaomixian.vflow.services.island.IslandCapability
 import com.chaomixian.vflow.services.island.IslandNotificationDispatcher
 import com.chaomixian.vflow.services.island.IslandNotificationSpec
 import com.chaomixian.vflow.ui.main.MainActivity
@@ -87,6 +88,14 @@ object ExecutionNotificationManager {
     private const val CHANNEL_ID = "workflow_execution_channel"
     private const val CHANNEL_NAME = "工作流执行状态"
 
+    /**
+     * 匹配「步骤切换」时执行器发的导航性文案：`步骤 3/8: 延迟`。
+     *
+     * 这类文案要排除在「模块实时状态」之外——否则展开态的状态行会显示
+     * 「步骤 3/8: 延迟」，与上方进度行（`3/8 延迟`）内容重复。
+     */
+    private val STEP_TRANSITION_PATTERN = Regex("""^步骤\s*\d+/\d+:""")
+
     private lateinit var notificationManager: NotificationManager
     private lateinit var appContext: Context
 
@@ -154,6 +163,10 @@ object ExecutionNotificationManager {
         if (state !is ExecutionNotificationState.Running) {
             chronometerBase.remove(workflow.id)
             currentStepName.remove(workflow.id)
+            // 释放该工作流的 RemoteViews 实例缓存，避免长期运行累积。
+            // 注意：必须在 notify 之后释放——释放只影响我们的缓存，
+            // 已经交给 NotificationManager 的那份副本不受影响。
+            IslandNotificationDispatcher.releaseViews(workflow.id)
         }
     }
 
@@ -180,6 +193,10 @@ object ExecutionNotificationManager {
      * 显式携带（执行器在步骤切换时给出），进度文本从 `Running.progress`
      * 与工作流总步数算出——两者都是结构化数据，不再从文案里解析。
      */
+    /** 判断一条 Running.message 是否来自「步骤切换」而非模块自报状态。 */
+    private fun isStepTransitionMessage(message: String): Boolean =
+        STEP_TRANSITION_PATTERN.containsMatchIn(message)
+
     private fun islandSpecOf(
         workflow: Workflow,
         state: ExecutionNotificationState,
@@ -203,6 +220,19 @@ object ExecutionNotificationManager {
         // 步骤名取自「当前步骤」表——执行器在步骤切换时写入，模块自报进度不会覆盖。
         val stepName = if (isRunning) currentStepName[workflow.id] else null
 
+        // 模块实时状态取自 message，但要**排除步骤切换时那条结构化文案**。
+        //
+        // message 有两种来源（见 WorkflowExecutor）：
+        //  - 步骤切换：`"步骤 3/8: 延迟"`——这是导航性文案，不是模块状态，应丢弃；
+        //  - 模块自报：`"正在延迟 6000ms"`——这才是要显示的实时状态。
+        //
+        // 若把前者也当状态显示，展开态会出现「步骤 3/8: 延迟」这种与上方进度行重复的内容。
+        val statusText = if (isRunning && !isStepTransitionMessage(state.message)) {
+            state.message.takeIf { it.isNotBlank() }
+        } else {
+            null
+        }
+
         // 进度文本「3/8」由百分比反推第几步 + 顶层总步数。
         // 这样与 Running.progress（同样是按顶层步骤算的百分比）口径一致。
         val totalSteps = workflow.steps.size
@@ -216,7 +246,9 @@ object ExecutionNotificationManager {
         return IslandNotificationSpec(
             title = workflow.name,
             state = islandState,
+            workflowId = workflow.id,
             stepName = stepName,
+            statusText = statusText,
             progressText = progressText,
             progressPercent = if (isRunning) state.progress else 0,
             chronometerBase = chronometerBase,
@@ -263,13 +295,22 @@ object ExecutionNotificationManager {
             .setSmallIcon(R.drawable.ic_workflows) // 这个是 Status Chip 收起时显示的图标
             .setOnlyAlertOnce(true)
 
+        // AOSP「实时更新」（Status Chip）提升请求与超级岛是**互斥的渲染路径**。
+        //
+        // 真机实测（小米 MIX Fold 3 / HyperOS V816）：执行中同时带
+        // `setRequestPromotedOngoing(true)` 与岛参数时，通知被提升为活体通知，
+        // SystemUI 走 AOSP 渲染、**忽略焦点通知的自定义视图**——表现为只有终态
+        //（不请求提升）能显示 RemoteViews，执行中是系统默认样式。
+        //
+        // 有岛能力时让位给岛：岛本身提供了更完整的展示（图标 + 进度 + 步骤名 + 按钮）。
+        // 无岛能力时保留提升，那正是 API 36+ 非小米设备上唯一的活体通知能力。
+        val useIsland = IslandCapability.isAvailable()
+
         when (state) {
             is ExecutionNotificationState.Running -> {
                 builder
                     .setContentText(state.message)
                     .setOngoing(true)
-                    // 请求提升为高优持续性通知 (Status Chip)
-                    .setRequestPromotedOngoing(true)
                     // [新增API] 设置在 Status Chip 进度条旁边显示的图标
                     // 直接在 Builder 上设置进度，系统会自动渲染为 Status Chip 进度条
                     .setProgress(100, state.progress, false)
@@ -279,6 +320,11 @@ object ExecutionNotificationManager {
                         "结束",
                         stopPendingIntent
                     )
+
+                // 请求提升为高优持续性通知 (Status Chip)。有岛时不请求——见函数开头的说明。
+                if (!useIsland) {
+                    builder.setRequestPromotedOngoing(true)
+                }
             }
             is ExecutionNotificationState.Completed -> {
                 builder

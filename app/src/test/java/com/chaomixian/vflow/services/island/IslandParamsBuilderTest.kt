@@ -21,18 +21,20 @@ class IslandParamsBuilderTest {
     private fun paramOf(
         title: String = "每日签到",
         state: IslandNotificationSpec.State = IslandNotificationSpec.State.RUNNING,
-        stepName: String? = "打开应用",
+        stepName: String? = "延迟",
+        statusText: String? = "正在延迟 6000ms",
         progressText: String? = "3/8",
     ) = JsonParser.parseString(
-        IslandParamsBuilder.buildParam(title, state, stepName, progressText)
+        IslandParamsBuilder.buildParam(title, state, stepName, statusText, progressText)
     ).asJsonObject
 
     private fun paramV2Of(
         title: String = "每日签到",
         state: IslandNotificationSpec.State = IslandNotificationSpec.State.RUNNING,
-        stepName: String? = "打开应用",
+        stepName: String? = "延迟",
+        statusText: String? = "正在延迟 6000ms",
         progressText: String? = "3/8",
-    ) = paramOf(title, state, stepName, progressText).getAsJsonObject("param_v2")
+    ) = paramOf(title, state, stepName, statusText, progressText).getAsJsonObject("param_v2")
 
     // ------------------------------------------------------------------
     // 顶层结构
@@ -96,47 +98,41 @@ class IslandParamsBuilderTest {
         assertEquals("A 区组件类型应为 1（图文组件1）", 1, left.get("type").asInt)
         assertTrue("A 区缺少 picInfo", left.has("picInfo"))
         assertTrue("A 区缺少 textInfo", left.has("textInfo"))
-        // A 区放**步骤进度**（不是工作流名）——见 buildIslandParam 的分工说明。
-        assertEquals("3/8", left.getAsJsonObject("textInfo").get("title").asString)
+        // A 区放**「进度 · 步骤名」**（不是工作流名）。
+        assertTrue(
+            "A 区应含进度与步骤名",
+            left.getAsJsonObject("textInfo").get("title").asString.contains("3/8")
+        )
     }
 
     // ------------------------------------------------------------------
     // B 区：前置小字 + 大字（方案 ii）
     // ------------------------------------------------------------------
 
-    /**
-     * **A 区放步骤进度，B 区放步骤名**。
-     *
-     * 分工理由：A 区被图标占去一半宽度，只够放短文本（「15/50」）；
-     * B 区是纯文本位，宽度更大，适合可能很长的步骤名。
-     */
+    /** A 区把进度与步骤名拼成「3/8 · 延迟」，不加「步骤」前缀（挤占窄空间）。 */
     @Test
-    fun bigIslandSplitsProgressAndStepName() {
-        val bigArea = paramV2Of(progressText = "15/50", stepName = "等待元素出现")
+    fun leftAreaJoinsProgressAndStepName() {
+        val leftText = paramV2Of(
+            state = IslandNotificationSpec.State.RUNNING,
+            progressText = "3/8",
+            stepName = "延迟",
+        )
             .getAsJsonObject("param_island")
             .getAsJsonObject("bigIslandArea")
+            .getAsJsonObject("imageTextInfoLeft")
+            .getAsJsonObject("textInfo")
 
-        // A 区（左图文）：步骤进度
-        assertEquals(
-            "15/50",
-            bigArea.getAsJsonObject("imageTextInfoLeft")
-                .getAsJsonObject("textInfo").get("title").asString
-        )
-        // B 区大字：步骤名
-        assertEquals(
-            "等待元素出现",
-            bigArea.getAsJsonObject("textInfo").get("title").asString
-        )
+        assertEquals("3/8 · 延迟", leftText.get("title").asString)
     }
 
-    /**
-     * A 区的进度文本直接是 `3/8`，不加「步骤」前缀。
-     *
-     * 前缀会挤占本就狭窄的 A 区；且该文本位于图标旁，语义由位置自明。
-     */
+    /** 只有进度时 A 区只显示进度，不出现多余的分隔符。 */
     @Test
-    fun leftAreaShowsRawProgressWithoutPrefix() {
-        val leftText = paramV2Of(state = IslandNotificationSpec.State.RUNNING, progressText = "3/8")
+    fun leftAreaOmitsSeparatorWhenStepNameMissing() {
+        val leftText = paramV2Of(
+            state = IslandNotificationSpec.State.RUNNING,
+            progressText = "3/8",
+            stepName = null,
+        )
             .getAsJsonObject("param_island")
             .getAsJsonObject("bigIslandArea")
             .getAsJsonObject("imageTextInfoLeft")
@@ -145,28 +141,50 @@ class IslandParamsBuilderTest {
         assertEquals("3/8", leftText.get("title").asString)
     }
 
-    /** 没有进度时 A 区不应写出空文本块。 */
+    /** 两者都缺时 A 区不应写出空文本块。 */
     @Test
-    fun missingProgressOmitsLeftText() {
-        val leftText = paramV2Of(state = IslandNotificationSpec.State.RUNNING, progressText = null)
+    fun missingProgressAndStepNameOmitsLeftText() {
+        val leftText = paramV2Of(
+            state = IslandNotificationSpec.State.RUNNING,
+            progressText = null,
+            stepName = null,
+        )
             .getAsJsonObject("param_island")
             .getAsJsonObject("bigIslandArea")
             .getAsJsonObject("imageTextInfoLeft")
             .getAsJsonObject("textInfo")
 
-        assertFalse("无进度时不应有 title", leftText.has("title"))
+        assertFalse("无进度也无步骤名时不应有 title", leftText.has("title"))
     }
 
-    /** 没有步骤名时不应写出空的大字位。 */
+    /**
+     * **B 区放模块实时状态**（这是本次改动的核心）——不再是步骤名。
+     *
+     * 状态文案来自模块 `onProgress`（如「正在延迟 6000ms」），比模块名信息量大。
+     */
     @Test
-    fun missingStepNameOmitsBigText() {
-        val textInfo = paramV2Of(state = IslandNotificationSpec.State.RUNNING, stepName = null)
+    fun rightAreaCarriesModuleStatusText() {
+        val textInfo = paramV2Of(
+            state = IslandNotificationSpec.State.RUNNING,
+            stepName = "延迟",
+            statusText = "正在延迟 6000ms",
+        )
             .getAsJsonObject("param_island")
             .getAsJsonObject("bigIslandArea")
             .getAsJsonObject("textInfo")
 
-        // 执行中没有步骤名时，terminalTextOf 返回 null，B 区大字位留空
-        assertFalse("执行中无步骤名时不应有 title", textInfo.has("title"))
+        assertEquals("正在延迟 6000ms", textInfo.get("title").asString)
+    }
+
+    /** 没有状态文案时 B 区不应写出空块。 */
+    @Test
+    fun missingStatusTextOmitsRightArea() {
+        val textInfo = paramV2Of(state = IslandNotificationSpec.State.RUNNING, statusText = null)
+            .getAsJsonObject("param_island")
+            .getAsJsonObject("bigIslandArea")
+            .getAsJsonObject("textInfo")
+
+        assertFalse("无状态文案时不应有 title", textInfo.has("title"))
     }
 
     /**
@@ -255,7 +273,7 @@ class IslandParamsBuilderTest {
     @Test
     fun paramJsonDoesNotCarryRemoteViewsKeys() {
         val raw = IslandParamsBuilder.buildParam(
-            "每日签到", IslandNotificationSpec.State.RUNNING, "打开应用", "3/8"
+            "每日签到", IslandNotificationSpec.State.RUNNING, "延迟", "正在延迟 6000ms", "3/8"
         )
 
         assertFalse("rv 不应序列化进 JSON", raw.contains("miui.focus.rv"))

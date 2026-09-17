@@ -3,7 +3,8 @@
   超级岛展开态：进度条（深色版本）。
 
   ProgressBar 的 progressDrawable 需要同时定义 background（轨道）与 progress（填充）。
-  填充色固定为 vFlow 绿；失败态由代码切换为 island_rv_progress_fail_dark。
+  填充色固定为 vFlow 绿（深色配色）。
+  进度条配色不能运行时切换——见 IslandRemoteViews 里的说明。
 -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:id="@android:id/background">

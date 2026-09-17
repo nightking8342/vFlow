@@ -36,11 +36,18 @@ internal object IslandParamsBuilder {
     /**
      * 岛图标在 `miui.focus.pics` 中的 key。
      *
+     * **必须以 `miui.focus.pic_` 为前缀**——SystemUI 按这个前缀解析图片 key
+     *（见 `FocusNotifUtils.java:326` 的 `extras.getString("miui.focus.pic_ticker")`）。
+     * 用别的命名（如 `vflow.focus.pic_app`）会导致图片解析失败、岛上无图标。
+     *
+     * 三家参考实现一致：mindfs 用 `miui.focus.pic_mindfs`、
+     * HyperIsland 用 `miui.focus.pic_aod`。
+     *
      * 全岛统一使用**应用图标**（大岛 A 区、小岛容器、状态栏 ticker、息屏都用它）——
      * 它是用户识别「这条通知来自 vFlow」最直接的线索。
      * 状态差异由岛上的文本与强调色承载，不再靠换图标。
      */
-    internal const val PIC_APP = "vflow.focus.pic_app"
+    internal const val PIC_APP = "miui.focus.pic_vflow"
 
     /** vFlow 主色（浅色主题）。见 `res/values/colors.xml` 的 `md_theme_light_primary`。 */
     private const val HIGHLIGHT_COLOR = "#A1D39A"
@@ -63,15 +70,17 @@ internal object IslandParamsBuilder {
     /**
      * 构建 `miui.focus.param` 的值（一个 JSON 字符串）。
      *
-     * @param title 工作流名。显示在大岛 A 区（图标旁的大字）。
+     * @param title 工作流名。只进 ticker / 息屏 / 通知栏正文，**不显示在大岛上**。
      * @param state 展示状态。
-     * @param stepName 当前步骤名。显示在大岛 B 区的大字位（执行中）。
-     * @param progressText 进度文本（如 `3/8`）。显示在 B 区的前置小字位。
+     * @param stepName 当前步骤名。拼进大岛 A 区，如「3/8 · 延迟」。
+     * @param statusText 模块实时状态。显示在大岛 B 区，如「正在延迟 6000ms」。
+     * @param progressText 进度文本。显示在大岛 A 区，如 `3/8`。
      */
     fun buildParam(
         title: String,
         state: IslandNotificationSpec.State,
         stepName: String?,
+        statusText: String?,
         progressText: String?,
     ): String {
         val paramV2 = JsonObject().apply {
@@ -95,7 +104,7 @@ internal object IslandParamsBuilder {
             addProperty("aodTitle", tickerText(title, state))
             addProperty("aodPic", PIC_APP)
 
-            add("param_island", buildIslandParam(state, stepName, progressText))
+            add("param_island", buildIslandParam(state, stepName, statusText, progressText))
         }
 
         return JsonObject().apply { add("param_v2", paramV2) }.toString()
@@ -116,6 +125,7 @@ internal object IslandParamsBuilder {
         title: String,
         state: IslandNotificationSpec.State,
         stepName: String?,
+        statusText: String?,
         progressText: String?,
     ): String {
         val shouldFloat = state != IslandNotificationSpec.State.RUNNING &&
@@ -136,7 +146,7 @@ internal object IslandParamsBuilder {
             addProperty("aodPic", PIC_APP)
 
             // 岛数据与模板路径完全一致——这是「自定义模式不影响岛」的关键。
-            add("param_island", buildIslandParam(state, stepName, progressText))
+            add("param_island", buildIslandParam(state, stepName, statusText, progressText))
         }.toString()
     }
 
@@ -145,32 +155,37 @@ internal object IslandParamsBuilder {
      *
      * 结构对应「大岛 = A 区图文组件1 + B 区文本组件」（模板库的大岛组合 2）。
      *
-     * **A 区放步骤进度，B 区放步骤名**。这样分工的理由：
-     * - A 区被图标占去一半宽度，只能放短文本——「15/50」正好适配；
-     * - B 区是纯文本位，可用宽度更大，适合可能很长的步骤名（如「等待元素出现」）。
+     * **A 区放「进度 · 步骤名」，B 区放模块实时状态**。这样分工的理由：
+     * - B 区是纯文本位、宽度最大，给信息量最大且可能很长的实时状态
+     *  （如「正在使用 vFlow Core 读取剪贴板...」）；
+     * - A 区窄，只放短文本，但需要同时承载进度与步骤名——否则用户看不出
+     *  「这是哪个步骤」（B 区已被状态占满）。
      *
      * 代价是工作流名不再出现在大岛上（只出现在 ticker / 息屏 / 通知栏正文）。
-     * 这是有意的权衡：用户自己发起的执行通常知道在跑哪个工作流，
-     * 而「跑到哪一步了」是执行期间更关心的信息。
      *
-     * @param stepName 当前步骤名（B 区大字）。执行中才有。
-     * @param progressText 进度文本（A 区大字），如 `15/50`。
+     * @param stepName 当前步骤名（拼进 A 区，如「3/8 · 延迟」）。
+     * @param statusText 模块实时状态（B 区大字，如「正在延迟 6000ms」）。
+     * @param progressText 进度文本（A 区，如 `15/50`）。
      */
     private fun buildIslandParam(
         state: IslandNotificationSpec.State,
         stepName: String?,
+        statusText: String?,
         progressText: String?,
     ): JsonObject {
         val isRunning = state == IslandNotificationSpec.State.RUNNING
 
-        // A 区（左侧图文区）：图标 + **步骤进度**。
+        // A 区（左侧图文区）：图标 + **进度 · 步骤名**。
         //
-        // 放进度而非工作流名，是刻意的取舍：步骤进度是短文本（「15/50」），
-        // 适配 A 区被图标占去一半的窄空间；而步骤名可能很长，交给更宽的 B 区。
-        // 代价是工作流名不再出现在大岛上——用户自己发起的执行，通常知道在跑哪个。
+        // 之所以把步骤名也塞进 A 区：B 区已被模块实时状态占满，若不在这里留一份步骤名，
+        // 用户就完全看不出「这是哪个步骤」。A 区虽被图标占去一半，但「3/8 · 延迟」
+        // 这类短文本放得下；过长时由系统截断，属可接受降级。
         val primaryText = JsonObject().apply {
             val leftText = if (isRunning) {
-                progressText?.takeIf { it.isNotBlank() }
+                listOfNotNull(
+                    progressText?.takeIf { it.isNotBlank() },
+                    stepName?.takeIf { it.isNotBlank() },
+                ).joinToString(" · ").takeIf { it.isNotBlank() }
             } else {
                 terminalTextOf(state)
             }
@@ -183,10 +198,12 @@ internal object IslandParamsBuilder {
             add("textInfo", primaryText)
         }
 
-        // B 区（右侧文本区）：**步骤名**。纯文本位，宽度更大，适合可能很长的步骤名。
+        // B 区（右侧文本区）：**模块实时状态**（如「正在延迟 6000ms」）。
+        //
+        // 比步骤名信息量大得多——含参数与进展。纯文本位宽度更大，适合这类长文案。
         val textInfo = JsonObject().apply {
             val mainText = if (isRunning) {
-                stepName?.takeIf { it.isNotBlank() }
+                statusText?.takeIf { it.isNotBlank() }
             } else {
                 null // 终态的状态词已放在 A 区，B 区留空避免重复
             }

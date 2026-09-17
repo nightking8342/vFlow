@@ -34,3 +34,6 @@ __pycache__/
 
 # Playwright MCP 临时产物（浏览器快照 / 控制台日志）
 .playwright-mcp/
+
+# 原型验证的临时截图（不随仓库分发）
+/*.png

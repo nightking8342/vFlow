@@ -21,10 +21,11 @@ class IslandCustomParamsTest {
     private fun customOf(
         title: String = "每日签到",
         state: IslandNotificationSpec.State = IslandNotificationSpec.State.RUNNING,
-        stepName: String? = "打开应用",
+        stepName: String? = "延迟",
+        statusText: String? = "正在延迟 6000ms",
         progressText: String? = "3/8",
     ) = JsonParser.parseString(
-        IslandParamsBuilder.buildCustomParam(title, state, stepName, progressText)
+        IslandParamsBuilder.buildCustomParam(title, state, stepName, statusText, progressText)
     ).asJsonObject
 
     // ------------------------------------------------------------------
@@ -57,7 +58,7 @@ class IslandCustomParamsTest {
     fun templateAndCustomHaveDifferentShapes() {
         val template = JsonParser.parseString(
             IslandParamsBuilder.buildParam(
-                "每日签到", IslandNotificationSpec.State.RUNNING, "打开应用", "3/8"
+                "每日签到", IslandNotificationSpec.State.RUNNING, "打开应用", "正在延迟 6000ms", "3/8"
             )
         ).asJsonObject
         val custom = customOf()
@@ -102,9 +103,9 @@ class IslandCustomParamsTest {
 
         assertEquals(1, left.get("type").asInt)
         assertTrue(left.has("picInfo"))
-        // A 区放**步骤进度**（不是工作流名）——见 IslandParamsBuilder.buildIslandParam。
+        // A 区放**「进度 · 步骤名」**（不是工作流名）。
         assertEquals(
-            "3/8",
+            "3/8 · 延迟",
             left.getAsJsonObject("textInfo").get("title").asString
         )
     }
@@ -120,13 +121,13 @@ class IslandCustomParamsTest {
     fun customAndTemplateProduceIdenticalIslandData() {
         val fromTemplate = JsonParser.parseString(
             IslandParamsBuilder.buildParam(
-                "每日签到", IslandNotificationSpec.State.RUNNING, "打开应用", "3/8"
+                "每日签到", IslandNotificationSpec.State.RUNNING, "打开应用", "正在延迟 6000ms", "3/8"
             )
         ).asJsonObject.getAsJsonObject("param_v2").getAsJsonObject("param_island")
 
         val fromCustom = JsonParser.parseString(
             IslandParamsBuilder.buildCustomParam(
-                "每日签到", IslandNotificationSpec.State.RUNNING, "打开应用", "3/8"
+                "每日签到", IslandNotificationSpec.State.RUNNING, "打开应用", "正在延迟 6000ms", "3/8"
             )
         ).asJsonObject.getAsJsonObject("param_island")
 
@@ -142,10 +143,10 @@ class IslandCustomParamsTest {
     fun customAndTemplateAgreeOnIslandDataAcrossAllStates() {
         IslandNotificationSpec.State.entries.forEach { state ->
             val fromTemplate = JsonParser.parseString(
-                IslandParamsBuilder.buildParam("W", state, "步骤", "1/2")
+                IslandParamsBuilder.buildParam("W", state, "延迟", "正在延迟 6000ms", "1/2")
             ).asJsonObject.getAsJsonObject("param_v2").getAsJsonObject("param_island")
             val fromCustom = JsonParser.parseString(
-                IslandParamsBuilder.buildCustomParam("W", state, "步骤", "1/2")
+                IslandParamsBuilder.buildCustomParam("W", state, "延迟", "正在延迟 6000ms", "1/2")
             ).asJsonObject.getAsJsonObject("param_island")
 
             assertEquals("$state 的岛数据应一致", fromTemplate.toString(), fromCustom.toString())
@@ -235,8 +236,8 @@ class IslandCustomParamsTest {
     @Test
     fun customParamJsonDoesNotCarryRemoteViewsKeys() {
         val raw = IslandParamsBuilder.buildCustomParam(
-            "每日签到", IslandNotificationSpec.State.RUNNING, "打开应用", "3/8"
-        )
+                "每日签到", IslandNotificationSpec.State.RUNNING, "打开应用", "正在延迟 6000ms", "3/8"
+            )
 
         assertFalse(raw.contains("miui.focus.rv"))
     }

@@ -3,7 +3,6 @@ package com.chaomixian.vflow.services.island
 
 import android.app.PendingIntent
 import android.content.Context
-import android.os.SystemClock
 import android.view.View
 import android.widget.RemoteViews
 import com.chaomixian.vflow.R
@@ -13,65 +12,50 @@ import com.chaomixian.vflow.R
  *
  * ## 为什么用 RemoteViews
  *
- * 工作流执行时通知更新频繁（每推进一步一次）。RemoteViews 的收益来自
- * **复用同一个实例、只调 `setTextViewText` 等改变化字段**——跨进程只传差异，
- * 而不是重新传整棵布局树。
+ * 一个工作流执行期间**只有一条通知**（ID 按 workflowId 派生、恒定），
+ * 它被反复 `notify(id, ...)` 更新——每推进一步、模块每次自报进度都会更新一次。
  *
- * **因此本类必须复用实例**：调用方持有 [IslandViews] 并在每次更新时调
- * [IslandViews.update]，不要每次 `new RemoteViews`。后者要重新 inflate +
- * 传整棵树，比模板路径还贵，会把本改造的收益抹掉。
+ * RemoteViews 的收益来自**复用同一个实例、只调 `setTextViewText` 等改变化字段**：
+ * 跨进程只传差异，而不是每次重新传整棵布局树 + 重新 inflate。
  *
- * ## 浅色 / 深色
+ * 因此正确的用法是：
  *
- * 这套布局不只用于岛展开态——它被通知栏与锁屏预览复用，而那两处有浅色模式。
- * 岛展开态本身恒为深色，但同一份布局必须出两个配色版本：
- * `miui.focus.rv`（浅）与 `miui.focus.rvNight`（深）。
- * 两份布局的 view id 完全一致，故本类操作代码可以通用。
+ * ```kotlin
+ * // 执行开始时一次
+ * val views = IslandRemoteViews.newInstance(context)
+ * // 之后每次更新
+ * views.update(context, spec)
+ * ```
+ *
+ * **不要**每次更新都调 [newInstance]——那比模板路径还贵。
  */
 internal object IslandRemoteViews {
-
-    /** 状态栏紧凑胶囊的布局（恒深色）。 */
-    private val LAYOUT_TINY = R.layout.island_execution_tiny
 
     private val LAYOUT_DARK = R.layout.island_execution_expand_dark
     private val LAYOUT_LIGHT = R.layout.island_execution_expand_light
 
     /**
-     * 构建一组 RemoteViews：浅色、深色、岛展开态、状态栏胶囊。
+     * 创建一组空的 RemoteViews 实例（不填数据）。
      *
-     * @return 四个 key 对应的实例。调用方把它们放进通知 extras。
+     * 调用方持有返回值，之后反复调 [IslandViews.update]。
+     * RemoteViews 需要包名来远端 inflate，故必须传 context。
      */
-    fun build(
-        context: Context,
-        title: String,
-        state: IslandNotificationSpec.State,
-        moduleName: String?,
-        progressText: String?,
-        progressPercent: Int,
-        chronometerBase: Long,
-        stopIntent: PendingIntent?,
-        stopLabel: String,
-    ): IslandViews {
-        // RemoteViews 需要包名来远端 inflate。项目未启用 BuildConfig，从 Context 取。
+    fun newInstance(context: Context): IslandViews {
         val pkg = context.packageName
-
-        // 浅色与深色各一份；岛展开态与通知栏深色共用深色布局（岛恒深色）。
-        val light = RemoteViews(pkg, LAYOUT_LIGHT)
-        val dark = RemoteViews(pkg, LAYOUT_DARK)
-        val islandExpand = RemoteViews(pkg, LAYOUT_DARK)
-        val tiny = RemoteViews(pkg, LAYOUT_TINY)
-
-        val views = IslandViews(light, dark, islandExpand, tiny)
-        views.update(context, title, state, moduleName, progressText, progressPercent, chronometerBase, stopIntent, stopLabel)
-        return views
+        return IslandViews(
+            // 浅色与深色各一份；岛展开态与通知栏深色共用深色布局（岛恒深色）。
+            light = RemoteViews(pkg, LAYOUT_LIGHT),
+            dark = RemoteViews(pkg, LAYOUT_DARK),
+            islandExpand = RemoteViews(pkg, LAYOUT_DARK),
+        )
     }
 }
 
 /**
  * 一次执行期间持有的一组 RemoteViews。
  *
- * **生命周期与执行实例相同**：执行开始时 [IslandRemoteViews.build] 一次，
- * 之后每步只调 [update]，不要重建。
+ * **生命周期与执行实例相同**：由调用方在执行开始时创建一次、结束时丢弃，
+ * 期间只调 [update]。三个实例共用一套操作代码——它们的布局 view id 完全一致。
  */
 internal class IslandViews(
     /** 通知栏浅色模式。 */
@@ -80,19 +64,19 @@ internal class IslandViews(
     val dark: RemoteViews,
     /** 岛展开卡片（恒深色）。 */
     val islandExpand: RemoteViews,
-    /** 状态栏紧凑胶囊。 */
-    val tiny: RemoteViews,
 ) {
 
     /**
-     * 按状态刷新全部字段。三个布局逐一套用同一份逻辑
-     *（它们的 view id 一致，故可以同一套代码操作）。
+     * 按状态刷新全部字段。
+     *
+     * **只调改变化字段的 setter**，不要重建实例——这是 RemoteViews 的性能前提。
      */
     fun update(
         context: Context,
         title: String,
         state: IslandNotificationSpec.State,
-        moduleName: String?,
+        stepName: String?,
+        statusText: String?,
         progressText: String?,
         progressPercent: Int,
         chronometerBase: Long,
@@ -100,9 +84,11 @@ internal class IslandViews(
         stopLabel: String,
     ) {
         listOf(light, dark, islandExpand).forEach { rv ->
-            applyToCard(context, rv, title, state, moduleName, progressText, progressPercent, chronometerBase, stopIntent, stopLabel)
+            applyToCard(
+                context, rv, title, state, stepName, statusText,
+                progressText, progressPercent, chronometerBase, stopIntent, stopLabel
+            )
         }
-        applyToTiny(tiny, title, progressText)
     }
 
     private fun applyToCard(
@@ -110,7 +96,8 @@ internal class IslandViews(
         rv: RemoteViews,
         title: String,
         state: IslandNotificationSpec.State,
-        moduleName: String?,
+        stepName: String?,
+        statusText: String?,
         progressText: String?,
         progressPercent: Int,
         chronometerBase: Long,
@@ -126,34 +113,46 @@ internal class IslandViews(
         rv.setInt(R.id.island_chip, "setBackgroundResource", chipBackgroundOf(state, isDark))
         rv.setTextColor(R.id.island_chip, chipTextColorOf(state, isDark))
 
-        // 图标用**应用图标**（裁圆位图），与岛摘要态、状态栏 ticker 保持一致，
-        // 让用户一眼认出这条通知来自 vFlow。
-        //
-        // 注意：应用图标本身已是完整图形，**不能再套状态色圆底、也不能着色**——
-        // 否则会盖住图形或把品牌色洗掉。布局里的 background 与 tint 在下面显式清掉。
+        // 图标用应用图标（裁圆位图）。它自身是完整图形，不能再套状态色圆底或着色——
+        // 故显式清掉布局里的 background 与 tint。
         rv.setImageViewBitmap(R.id.island_icon, IslandIcons.appIconBitmap(context))
         rv.setInt(R.id.island_icon, "setBackgroundResource", 0)
         rv.setInt(R.id.island_icon, "setColorFilter", 0)
 
-        // ---- 进度区 ----
-        // 执行中显示进度（3/8），终态显示状态词（让大号数字位承载结果）
+        // ---- 进度行：大号数值 + 步骤名 ----
+        // 执行中显示「3/8」，终态显示状态词（大号数字位承载结果）。
         rv.setTextViewText(
             R.id.island_progress_text,
             if (isRunning) progressText.orEmpty() else chipTextOf(state)
         )
+        // 终态没有「当前步骤」，步骤名留空避免与状态词重复。
+        rv.setTextViewText(R.id.island_step_name, if (isRunning) stepName.orEmpty() else "")
+        rv.setTextColor(R.id.island_step_name, tertiaryTextColor(isDark))
+
+        // ---- 进度条：独占整行 ----
         rv.setProgressBar(
             R.id.island_progress_bar,
             100,
-            if (isRunning) progressPercent else if (state == IslandNotificationSpec.State.COMPLETED) 100 else progressPercent,
+            when {
+                !isRunning && state == IslandNotificationSpec.State.COMPLETED -> 100
+                isRunning -> progressPercent
+                else -> progressPercent
+            },
             false
         )
-        rv.setInt(
-            R.id.island_progress_bar,
-            "setProgressDrawable",
-            progressDrawableOf(state, isDark)
-        )
-        rv.setTextViewText(R.id.island_module, moduleName.orEmpty())
-        rv.setTextColor(R.id.island_module, moduleTextColor(isDark))
+        // ⚠️ 进度条填充色**不能**用 setInt(id, "setProgressDrawable", resId) 切换。
+        // RemoteViews 的 setInt 走反射，只能调带 @RemotableViewMethod 注解且参数为 int
+        // 的方法；而 ProgressBar.setProgressDrawable(Drawable) 收的是对象，反射必然失败
+        // → 整个 apply() 抛异常 → 远端 inflate 失败 → 静默回落到系统模板样式。
+        // 配色由布局静态指定（深/浅两份布局各用自己的 drawable）。
+
+        // ---- 状态行：模块实时状态，独占整行 ----
+        // 终态时这里显示结果摘要（已完成 / 错误信息）。
+        val statusLine = if (isRunning) statusText.orEmpty() else terminalStatusOf(state)
+        rv.setTextViewText(R.id.island_status, statusLine)
+        rv.setTextColor(R.id.island_status, secondaryTextColor(isDark))
+        // 没有内容时整行隐藏，避免留一条空行撑高卡片。
+        rv.setViewVisibility(R.id.island_status, if (statusLine.isBlank()) View.GONE else View.VISIBLE)
 
         // ---- 底部 ----
         if (isRunning) {
@@ -162,6 +161,7 @@ internal class IslandViews(
             rv.setViewVisibility(R.id.island_elapsed, View.GONE)
             rv.setTextViewText(R.id.island_timer_label, TIMER_LABEL_RUNNING)
         } else {
+            // 终态：秒表隐藏，定格耗时暂无数据（不记录，故只留标签为空）。
             rv.setViewVisibility(R.id.island_timer, View.GONE)
             rv.setViewVisibility(R.id.island_elapsed, View.GONE)
             rv.setTextViewText(R.id.island_timer_label, "")
@@ -177,11 +177,6 @@ internal class IslandViews(
         }
     }
 
-    private fun applyToTiny(rv: RemoteViews, title: String, progressText: String?) {
-        rv.setTextViewText(R.id.tiny_title, title)
-        rv.setTextViewText(R.id.tiny_progress, progressText.orEmpty())
-    }
-
     // ------------------------------------------------------------------
     // 状态 → 外观。浅/深两套色值取自 res/values/colors.xml 的 md_theme_*
     // ------------------------------------------------------------------
@@ -193,12 +188,14 @@ internal class IslandViews(
         IslandNotificationSpec.State.CANCELLED -> "已停止"
     }
 
-    /**
-     * 状态胶囊的底色资源。
-     *
-     * 浅/深是两套独立的 drawable 文件（RemoteViews 不支持主题变量），
-     * 故用 `if (dark)` 显式分派，不能靠 id 拼接。
-     */
+    /** 终态时状态行的文案。执行中返回空（那时该行放模块实时状态）。 */
+    private fun terminalStatusOf(state: IslandNotificationSpec.State): String = when (state) {
+        IslandNotificationSpec.State.RUNNING -> ""
+        IslandNotificationSpec.State.COMPLETED -> "执行完毕"
+        IslandNotificationSpec.State.FAILED -> "执行出错"
+        IslandNotificationSpec.State.CANCELLED -> "已停止"
+    }
+
     private fun chipBackgroundOf(state: IslandNotificationSpec.State, dark: Boolean): Int = when (state) {
         IslandNotificationSpec.State.COMPLETED ->
             if (dark) R.drawable.island_rv_chip_done else R.drawable.island_rv_chip_done_light
@@ -221,48 +218,13 @@ internal class IslandViews(
             if (dark) 0xFFD7DADE.toInt() else 0xFF4A4F55.toInt()
     }
 
-    private fun iconBackgroundOf(state: IslandNotificationSpec.State, dark: Boolean): Int = when (state) {
-        IslandNotificationSpec.State.COMPLETED ->
-            if (dark) R.drawable.island_rv_icon_bg else R.drawable.island_rv_icon_bg_light
-        IslandNotificationSpec.State.FAILED ->
-            if (dark) R.drawable.island_rv_icon_bg_fail else R.drawable.island_rv_icon_bg_fail_light
-        IslandNotificationSpec.State.CANCELLED ->
-            if (dark) R.drawable.island_rv_icon_bg_stop else R.drawable.island_rv_icon_bg_stop_light
-        IslandNotificationSpec.State.RUNNING ->
-            if (dark) R.drawable.island_rv_icon_bg else R.drawable.island_rv_icon_bg_light
-    }
+    private fun secondaryTextColor(dark: Boolean): Int =
+        if (dark) 0xFFB6BCC2.toInt() else 0xFF4A4F55.toInt()
 
-    private fun iconDrawableOf(state: IslandNotificationSpec.State): Int = when (state) {
-        IslandNotificationSpec.State.COMPLETED -> R.drawable.rounded_save_24
-        IslandNotificationSpec.State.FAILED -> R.drawable.rounded_close_small_24
-        IslandNotificationSpec.State.CANCELLED -> R.drawable.rounded_close_small_24
-        IslandNotificationSpec.State.RUNNING -> R.drawable.ic_workflows
-    }
-
-    /** 图标着色：浅色底上用白图形，深色底上用深色图形。 */
-    private fun iconTintOf(state: IslandNotificationSpec.State, dark: Boolean): Int {
-        val light = !dark
-        return when (state) {
-            IslandNotificationSpec.State.FAILED -> if (dark) 0xFF690005.toInt() else 0xFFFFFFFF.toInt()
-            IslandNotificationSpec.State.CANCELLED -> if (dark) 0xFF2B322A.toInt() else 0xFFFFFFFF.toInt()
-            else -> if (light) 0xFFFFFFFF.toInt() else 0xFF0A390F.toInt()
-        }
-    }
-
-    private fun progressDrawableOf(state: IslandNotificationSpec.State, dark: Boolean): Int = when (state) {
-        IslandNotificationSpec.State.FAILED ->
-            if (dark) R.drawable.island_rv_progress_fail_dark else R.drawable.island_rv_progress_fail_light
-        else ->
-            if (dark) R.drawable.island_rv_progress_dark else R.drawable.island_rv_progress_light
-    }
-
-    private fun moduleTextColor(dark: Boolean): Int =
+    private fun tertiaryTextColor(dark: Boolean): Int =
         if (dark) 0xFF8A9096.toInt() else 0xFF6B7075.toInt()
 
-    companion object {
-        private const val TIMER_LABEL_RUNNING = "已运行"
-
-        /** 便于调用方在不关心计时基准时传值。 */
-        fun nowBase(): Long = SystemClock.elapsedRealtime()
+    private companion object {
+        const val TIMER_LABEL_RUNNING = "已运行"
     }
 }

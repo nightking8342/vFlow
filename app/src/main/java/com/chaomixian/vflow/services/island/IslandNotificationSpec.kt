@@ -16,6 +16,12 @@ internal data class IslandNotificationSpec(
     /** 当前状态。决定岛上的文案、强调色与自动浮出行为。 */
     val state: State,
     /**
+     * 工作流 ID。用于按工作流缓存 [IslandNotificationDispatcher] 里的 RemoteViews 实例。
+     *
+     * 一个工作流执行期间只有一条通知被反复更新，复用同一组 RemoteViews 才有性能收益。
+     */
+    val workflowId: String,
+    /**
      * 点击通知/岛主体时的跳转。
      *
      * 为 `null` 时不设置 contentIntent（点击无反应）。
@@ -23,17 +29,27 @@ internal data class IslandNotificationSpec(
     val contentIntent: PendingIntent? = null,
 
     /**
-     * 当前正在执行的步骤名（模块名）。
+     * 当前正在执行的步骤名（模块名），如「延迟」。
      *
-     * 显示位置有两个：大岛 B 区的大字位、展开态摘要区。步骤名可能很长，
-     * 所以放在 B 区（纯文本位，比被图标占去一半的 A 区更宽）。
+     * 显示位置：展开态进度行（大号数值旁）、大岛 A 区（与进度数值拼成「3/8 · 延迟」）。
      */
     val stepName: String? = null,
 
     /**
+     * 模块自报的**实时状态**，如「正在延迟 6000ms」。
+     *
+     * 来自模块 `execute()` 里的 `onProgress`，比模块名具体得多（可能含参数、进度）。
+     * 显示位置：展开态状态行（独占整行）、大岛 B 区。
+     *
+     * 注意它会高频变化——同一模块执行期间可能每秒报几次，故各处都设了单行省略，
+     * 否则文案长短变化会导致卡片高度跳动。
+     */
+    val statusText: String? = null,
+
+    /**
      * 进度文本（如 `3/8`）。
      *
-     * 显示位置：大岛 B 区的前置小字（渲染为「步骤 3/8:」）、展开态的大号进度位。
+     * 显示位置：展开态的大号进度位、大岛 A 区。
      */
     val progressText: String? = null,
 
