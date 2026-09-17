@@ -9,16 +9,21 @@ import com.google.gson.JsonObject
  * **纯函数**：不触碰 Android 框架、不做 IO，因此可以完整单测。岛的真机渲染无法
  * 在单测里验证，但「字段有没有拼对」可以——把这个不确定性拆出来是本类存在的理由。
  *
- * ## 走的哪条路
+ * ## 两条路径
  *
- * 走**模板路径**（`miui.focus.param` + `param_v2`），不使用自定义 RemoteViews
- * （那需要 `miui.focus.rv`，会让 `param_v2` 里除 `param.custom` 外的内容全部失效）。
+ * 本类同时产出两份参数，它们并存于通知 extras：
+ * - [buildParam] → `miui.focus.param`（`param_v2` 包裹）——模板路径，驱动岛摘要态；
+ * - [buildCustomParam] → `miui.focus.param.custom`（**扁平结构**）——配合 `miui.focus.rv`
+ *   使用，接管展开态。
+ *
+ * 两者的 `param_island` **完全一致**（共用 [buildIslandParam]），所以改用 RemoteViews
+ * 不影响大岛/小岛。
  *
  * ## 关键约束（来自官方文档与模板库）
  *
  * - `param_island` 必填，其中 `bigIslandArea` / `smallIslandArea` 必填；
  * - 大岛 A 区恒为「图文组件1」（`imageTextInfoLeft`，`type=1`）：图标 + 主文本；
- * - 大岛 B 区用「文本组件」（`textInfo`）：显示进度或状态词；
+ * - 大岛 B 区用「文本组件」（`textInfo`）；
  * - 小岛只放图标（`picInfo`）；
  * - 图片不在 JSON 里内联，而是通过 `miui.focus.pics` Bundle 以 key 引用，
  *   格式为 `{"type":1,"pic":"<key>"}`。
@@ -90,7 +95,7 @@ internal object IslandParamsBuilder {
             addProperty("aodTitle", tickerText(title, state))
             addProperty("aodPic", PIC_APP)
 
-            add("param_island", buildIslandParam(state, title, stepName, progressText))
+            add("param_island", buildIslandParam(state, stepName, progressText))
         }
 
         return JsonObject().apply { add("param_v2", paramV2) }.toString()
@@ -131,7 +136,7 @@ internal object IslandParamsBuilder {
             addProperty("aodPic", PIC_APP)
 
             // 岛数据与模板路径完全一致——这是「自定义模式不影响岛」的关键。
-            add("param_island", buildIslandParam(state, title, stepName, progressText))
+            add("param_island", buildIslandParam(state, stepName, progressText))
         }.toString()
     }
 
@@ -140,23 +145,37 @@ internal object IslandParamsBuilder {
      *
      * 结构对应「大岛 = A 区图文组件1 + B 区文本组件」（模板库的大岛组合 2）。
      *
-     * **A 区放工作流名，B 区放当前步骤**。这样分工的理由：
-     * - A 区空间被图标占去一半，只能放短文本，适合工作流名（用户自己起的，通常简短）；
-     * - B 区是纯文本位，可用宽度更大，适合步骤名（可能很长，如「等待元素出现」）；
-     * - 两者并存可让多工作流并发时仍能分辨「这是哪个工作流」。
+     * **A 区放步骤进度，B 区放步骤名**。这样分工的理由：
+     * - A 区被图标占去一半宽度，只能放短文本——「15/50」正好适配；
+     * - B 区是纯文本位，可用宽度更大，适合可能很长的步骤名（如「等待元素出现」）。
      *
-     * @param title 工作流名（A 区大字）
+     * 代价是工作流名不再出现在大岛上（只出现在 ticker / 息屏 / 通知栏正文）。
+     * 这是有意的权衡：用户自己发起的执行通常知道在跑哪个工作流，
+     * 而「跑到哪一步了」是执行期间更关心的信息。
+     *
      * @param stepName 当前步骤名（B 区大字）。执行中才有。
-     * @param progressText 进度文本（B 区前置小字），如 `3/8`。
+     * @param progressText 进度文本（A 区大字），如 `15/50`。
      */
     private fun buildIslandParam(
         state: IslandNotificationSpec.State,
-        title: String,
         stepName: String?,
         progressText: String?,
     ): JsonObject {
-        // A 区：图标 + 工作流名。
-        val primaryText = JsonObject().apply { addProperty("title", title) }
+        val isRunning = state == IslandNotificationSpec.State.RUNNING
+
+        // A 区（左侧图文区）：图标 + **步骤进度**。
+        //
+        // 放进度而非工作流名，是刻意的取舍：步骤进度是短文本（「15/50」），
+        // 适配 A 区被图标占去一半的窄空间；而步骤名可能很长，交给更宽的 B 区。
+        // 代价是工作流名不再出现在大岛上——用户自己发起的执行，通常知道在跑哪个。
+        val primaryText = JsonObject().apply {
+            val leftText = if (isRunning) {
+                progressText?.takeIf { it.isNotBlank() }
+            } else {
+                terminalTextOf(state)
+            }
+            leftText?.let { addProperty("title", it) }
+        }
 
         val imageTextInfoLeft = JsonObject().apply {
             addProperty("type", 1) // 图文组件1
@@ -164,23 +183,13 @@ internal object IslandParamsBuilder {
             add("textInfo", primaryText)
         }
 
-        // B 区：文本组件（type=1）。前置小字 + 大字。
-        //
-        // 用两段拼出一句完整的话（「步骤 3/8: 打开应用」），比单段大字能承载更多信息，
-        // 且小字/大字的对比让「步骤名」这一用户真正关心的内容成为视觉主体。
+        // B 区（右侧文本区）：**步骤名**。纯文本位，宽度更大，适合可能很长的步骤名。
         val textInfo = JsonObject().apply {
-            // 前置小字：执行中放进度（形如「步骤 3/8:」），终态放状态词前缀。
-            val frontText = if (state == IslandNotificationSpec.State.RUNNING) {
-                progressText?.takeIf { it.isNotBlank() }?.let { "步骤 $it:" }
+            val mainText = if (isRunning) {
+                stepName?.takeIf { it.isNotBlank() }
             } else {
-                null
+                null // 终态的状态词已放在 A 区，B 区留空避免重复
             }
-            frontText?.let { addProperty("frontTitle", it) }
-
-            // 大字位：执行中用步骤名；终态没有「当前步骤」，用状态词兜底，
-            // 避免 B 区出现空的大字位。
-            val mainText = stepName?.takeIf { it.isNotBlank() }
-                ?: terminalTextOf(state)
             mainText?.let { addProperty("title", it) }
 
             // 只让「需要用户注意」的状态使用强调色。
@@ -210,7 +219,7 @@ internal object IslandParamsBuilder {
         }
     }
 
-    /** 终态在 B 区大字位显示的文案。执行中返回 null（那时该位放步骤名）。 */
+    /** 终态在 A 区大字位显示的文案（执行中该位放步骤进度）。 */
     private fun terminalTextOf(state: IslandNotificationSpec.State): String? = when (state) {
         IslandNotificationSpec.State.RUNNING -> null
         IslandNotificationSpec.State.COMPLETED -> "已完成"

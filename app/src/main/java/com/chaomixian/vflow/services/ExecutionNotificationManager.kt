@@ -23,7 +23,25 @@ import java.util.concurrent.ConcurrentHashMap
  * 表示通知的不同状态。
  */
 sealed class ExecutionNotificationState {
-    data class Running(val progress: Int, val message: String) : ExecutionNotificationState()
+    /**
+     * 执行中。
+     *
+     * @param progress 进度百分比（0..100），按顶层步骤数计算。
+     * @param message 展示文案。步骤推进时是 `"步骤 3/8: 模块名"`，模块自报进度时
+     *        是模块给的任意文本，重试时是 `"重试 (1/3): 模块名"`。
+     * @param stepName **当前步骤（模块）名**，或 `null` 表示「沿用上一步骤名」。
+     *
+     * **为什么要独立于 message**：模块执行期间会通过 `onProgress` 频繁自报进度
+     * （146 个模块这么做），那些文本会覆盖 [message]。若步骤名从 message 里解析，
+     * 一有模块自报进度就丢失，岛上会频繁闪成空白。故步骤名由执行器在**步骤切换时**
+     * 显式给出，模块内部的进度回调传 `null` 表示沿用。
+     */
+    data class Running(
+        val progress: Int,
+        val message: String,
+        val stepName: String? = null,
+    ) : ExecutionNotificationState()
+
     data class Completed(val message: String) : ExecutionNotificationState()
     data class Cancelled(val message: String) : ExecutionNotificationState()
 
@@ -68,9 +86,6 @@ object ExecutionNotificationManager {
 
     private const val CHANNEL_ID = "workflow_execution_channel"
     private const val CHANNEL_NAME = "工作流执行状态"
-
-    /** 匹配执行器的步骤进度文案：`步骤 3/8: 打开应用`。 */
-    private val STEP_MESSAGE_PATTERN = Regex("""^步骤\s+(\d+)/(\d+):\s*(.*)$""")
 
     private lateinit var notificationManager: NotificationManager
     private lateinit var appContext: Context
@@ -118,6 +133,13 @@ object ExecutionNotificationManager {
         // Chronometer 靠这个值自走，不需要为计时重发通知。
         if (state is ExecutionNotificationState.Running) {
             chronometerBase.getOrPut(workflow.id) { SystemClock.elapsedRealtime() }
+
+            // 步骤名：执行器在步骤切换时给出新值，模块内部自报进度时传 null 表示沿用。
+            // 这条「记住上一次」的逻辑是必需的——146 个模块会频繁自报进度，
+            // 若每次都把步骤名当 null，岛上会闪成空白。
+            state.stepName?.takeIf { it.isNotBlank() }?.let {
+                currentStepName[workflow.id] = it
+            }
         }
 
         // 使用 SDK 版本判断
@@ -128,9 +150,10 @@ object ExecutionNotificationManager {
             buildLegacyNotification(workflow, state)
         }
 
-        // 终态后基准不再需要（下次执行会重新记）。
+        // 终态后基准与步骤名不再需要（下次执行会重新记）。
         if (state !is ExecutionNotificationState.Running) {
             chronometerBase.remove(workflow.id)
+            currentStepName.remove(workflow.id)
         }
     }
 
@@ -153,9 +176,9 @@ object ExecutionNotificationManager {
      * 而岛上「执行中」与「已停止」都不该自动浮出。
      *
      * **为什么不直接接收步骤信息**：`updateState` 是执行器调用的对外入口，
-     * 改签名会波及 9 个调用点。`Running.progress` 已是百分比、
-     * `Running.message` 已含 `"步骤 3/8: 打开应用"` 这样的结构化文本，
-     * 故从既有字段解析即可，签名保持不变。
+     * 改签名会波及多个调用点。步骤名改由 [ExecutionNotificationState.Running.stepName]
+     * 显式携带（执行器在步骤切换时给出），进度文本从 `Running.progress`
+     * 与工作流总步数算出——两者都是结构化数据，不再从文案里解析。
      */
     private fun islandSpecOf(
         workflow: Workflow,
@@ -176,13 +199,25 @@ object ExecutionNotificationManager {
         }
 
         val isRunning = state is ExecutionNotificationState.Running
-        val stepInfo = if (isRunning) parseStepMessage(state.message) else null
+
+        // 步骤名取自「当前步骤」表——执行器在步骤切换时写入，模块自报进度不会覆盖。
+        val stepName = if (isRunning) currentStepName[workflow.id] else null
+
+        // 进度文本「3/8」由百分比反推第几步 + 顶层总步数。
+        // 这样与 Running.progress（同样是按顶层步骤算的百分比）口径一致。
+        val totalSteps = workflow.steps.size
+        val progressText = if (isRunning && totalSteps > 0) {
+            val currentStep = (state.progress * totalSteps) / 100
+            "${currentStep.coerceIn(1, totalSteps)}/$totalSteps"
+        } else {
+            null
+        }
 
         return IslandNotificationSpec(
             title = workflow.name,
             state = islandState,
-            stepName = stepInfo?.moduleName,
-            progressText = stepInfo?.progressText,
+            stepName = stepName,
+            progressText = progressText,
             progressPercent = if (isRunning) state.progress else 0,
             chronometerBase = chronometerBase,
             stopIntent = stopIntent,
@@ -191,33 +226,20 @@ object ExecutionNotificationManager {
     }
 
     /**
-     * 从执行器给的进度文案里解出「进度」与「模块名」。
-     *
-     * 执行器发的是 `"步骤 3/8: 打开应用"`（`WorkflowExecutor.kt:507`）。展开态需要把
-     * 这两部分分开放（大号进度位 + 摘要区），故在此拆一次。
-     *
-     * 识别不了就返回 null——此时展开态的大号进度位会退回显示状态词，
-     * 摘要区留空。重试/模块自定义进度的文案（`"重试 (1/3): xxx"` 等）走这条路径。
-     */
-    private fun parseStepMessage(message: String): StepInfo? {
-        val match = STEP_MESSAGE_PATTERN.find(message) ?: return null
-        val (current, total, module) = match.destructured
-        if (total == "0") return null
-        return StepInfo(
-            progressText = "$current/$total",
-            moduleName = module.trim()
-        )
-    }
-
-    private data class StepInfo(val progressText: String, val moduleName: String)
-
-    /**
      * 各工作流本次执行的计时基准（`SystemClock.elapsedRealtime()`）。
      *
      * 展开态用 `Chronometer` 展示耗时，只需传一个基准值，系统自走——**不需要为计时重发通知**。
      * 键是 workflowId：并发执行的不同工作流各计各的。
      */
     private val chronometerBase = ConcurrentHashMap<String, Long>()
+
+    /**
+     * 各工作流**当前正在执行的步骤名**。
+     *
+     * 执行器在步骤切换时给出新值（[ExecutionNotificationState.Running.stepName] 非空），
+     * 模块内部自报进度时传 null 表示沿用。键是 workflowId，并发执行的不同工作流各记各的。
+     */
+    private val currentStepName = ConcurrentHashMap<String, String>()
 
     /**
      * 为 Android 16+ 构建 "Status Chip" 样式的通知。

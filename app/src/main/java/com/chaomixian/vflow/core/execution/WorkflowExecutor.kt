@@ -522,7 +522,17 @@ object WorkflowExecutor {
             val progress = (pc * 100) / workflow.steps.size
             val progressMessage = "步骤 ${pc + 1}/${workflow.steps.size}: ${module.metadata.name}"
             if (!isSubWorkflow) {
-                ExecutionNotificationManager.updateState(workflow, ExecutionNotificationState.Running(progress, progressMessage))
+                // stepName 显式传入：这是「步骤切换」的时刻，岛上的步骤名在此更新。
+                // 模块执行期间自报的进度会覆盖 message，故步骤名不能从 message 解析
+                //（见 ExecutionNotificationState.Running.stepName 的说明）。
+                ExecutionNotificationManager.updateState(
+                    workflow,
+                    ExecutionNotificationState.Running(
+                        progress,
+                        progressMessage,
+                        stepName = module.metadata.name
+                    )
+                )
             }
 
             // 为当前步骤创建执行上下文

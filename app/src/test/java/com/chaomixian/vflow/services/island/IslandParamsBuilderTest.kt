@@ -96,7 +96,8 @@ class IslandParamsBuilderTest {
         assertEquals("A 区组件类型应为 1（图文组件1）", 1, left.get("type").asInt)
         assertTrue("A 区缺少 picInfo", left.has("picInfo"))
         assertTrue("A 区缺少 textInfo", left.has("textInfo"))
-        assertEquals("每日签到", left.getAsJsonObject("textInfo").get("title").asString)
+        // A 区放**步骤进度**（不是工作流名）——见 buildIslandParam 的分工说明。
+        assertEquals("3/8", left.getAsJsonObject("textInfo").get("title").asString)
     }
 
     // ------------------------------------------------------------------
@@ -104,20 +105,20 @@ class IslandParamsBuilderTest {
     // ------------------------------------------------------------------
 
     /**
-     * **A 区放工作流名，B 区放步骤名**。
+     * **A 区放步骤进度，B 区放步骤名**。
      *
-     * 这样分工商的理由：A 区被图标占去一半宽度，只能放短文本（工作流名通常简短）；
-     * B 区是纯文本位，可用宽度更大，适合可能很长的步骤名。
+     * 分工理由：A 区被图标占去一半宽度，只够放短文本（「15/50」）；
+     * B 区是纯文本位，宽度更大，适合可能很长的步骤名。
      */
     @Test
-    fun bigIslandSplitsWorkflowNameAndStepName() {
-        val bigArea = paramV2Of(title = "每日签到", stepName = "等待元素出现")
+    fun bigIslandSplitsProgressAndStepName() {
+        val bigArea = paramV2Of(progressText = "15/50", stepName = "等待元素出现")
             .getAsJsonObject("param_island")
             .getAsJsonObject("bigIslandArea")
 
-        // A 区：工作流名
+        // A 区（左图文）：步骤进度
         assertEquals(
-            "每日签到",
+            "15/50",
             bigArea.getAsJsonObject("imageTextInfoLeft")
                 .getAsJsonObject("textInfo").get("title").asString
         )
@@ -129,29 +130,31 @@ class IslandParamsBuilderTest {
     }
 
     /**
-     * B 区前置小字是「步骤 3/8:」——与大字拼成一句完整的话。
+     * A 区的进度文本直接是 `3/8`，不加「步骤」前缀。
      *
-     * 前置小字 + 大字的对比让步骤名成为视觉主体。
+     * 前缀会挤占本就狭窄的 A 区；且该文本位于图标旁，语义由位置自明。
      */
     @Test
-    fun bigIslandFrontTitleCarriesProgressPrefix() {
-        val textInfo = paramV2Of(state = IslandNotificationSpec.State.RUNNING, progressText = "3/8")
+    fun leftAreaShowsRawProgressWithoutPrefix() {
+        val leftText = paramV2Of(state = IslandNotificationSpec.State.RUNNING, progressText = "3/8")
             .getAsJsonObject("param_island")
             .getAsJsonObject("bigIslandArea")
+            .getAsJsonObject("imageTextInfoLeft")
             .getAsJsonObject("textInfo")
 
-        assertEquals("步骤 3/8:", textInfo.get("frontTitle").asString)
+        assertEquals("3/8", leftText.get("title").asString)
     }
 
-    /** 没有进度时不应写出空的前置小字。 */
+    /** 没有进度时 A 区不应写出空文本块。 */
     @Test
-    fun missingProgressOmitsFrontTitle() {
-        val textInfo = paramV2Of(state = IslandNotificationSpec.State.RUNNING, progressText = null)
+    fun missingProgressOmitsLeftText() {
+        val leftText = paramV2Of(state = IslandNotificationSpec.State.RUNNING, progressText = null)
             .getAsJsonObject("param_island")
             .getAsJsonObject("bigIslandArea")
+            .getAsJsonObject("imageTextInfoLeft")
             .getAsJsonObject("textInfo")
 
-        assertFalse("无进度时不应有 frontTitle", textInfo.has("frontTitle"))
+        assertFalse("无进度时不应有 title", leftText.has("title"))
     }
 
     /** 没有步骤名时不应写出空的大字位。 */
@@ -172,7 +175,7 @@ class IslandParamsBuilderTest {
      * 避免终态时 B 区出现「只有前置小字、没有大字」的残缺结构。
      */
     @Test
-    fun terminalStatesShowStatusWordInBigTextSlot() {
+    fun terminalStatesShowStatusWordInLeftArea() {
         val expected = mapOf(
             IslandNotificationSpec.State.COMPLETED to "已完成",
             IslandNotificationSpec.State.FAILED to "失败",
@@ -180,29 +183,34 @@ class IslandParamsBuilderTest {
         )
 
         expected.forEach { (state, word) ->
-            val textInfo = paramV2Of(state = state, stepName = null)
+            val leftText = paramV2Of(state = state, stepName = null)
                 .getAsJsonObject("param_island")
                 .getAsJsonObject("bigIslandArea")
+                .getAsJsonObject("imageTextInfoLeft")
                 .getAsJsonObject("textInfo")
 
-            assertEquals("$state 应在 B 区大字位显示状态词", word, textInfo.get("title").asString)
+            assertEquals("$state 应在 A 区显示状态词", word, leftText.get("title").asString)
         }
     }
 
-    /** 终态不应有「步骤 x/y:」前缀（那是执行中的语义）。 */
+    /** 终态 A 区显示状态词，不残留进度（进度是执行中的语义）。 */
     @Test
-    fun terminalStatesHaveNoProgressPrefix() {
+    fun terminalStatesReplaceProgressWithStatusWord() {
         listOf(
             IslandNotificationSpec.State.COMPLETED,
             IslandNotificationSpec.State.FAILED,
             IslandNotificationSpec.State.CANCELLED,
         ).forEach { state ->
-            val textInfo = paramV2Of(state = state, progressText = "3/8")
+            val leftText = paramV2Of(state = state, progressText = "3/8")
                 .getAsJsonObject("param_island")
                 .getAsJsonObject("bigIslandArea")
+                .getAsJsonObject("imageTextInfoLeft")
                 .getAsJsonObject("textInfo")
 
-            assertFalse("$state 不应有进度前缀", textInfo.has("frontTitle"))
+            assertFalse(
+                "$state 的 A 区不应残留进度文本",
+                leftText.get("title").asString.contains("/")
+            )
         }
     }
 
@@ -376,24 +384,20 @@ class IslandParamsBuilderTest {
         assertTrue(paramV2.get("aodPic").asString.isNotBlank())
     }
 
-    /** 工作流名必须出现在标题与 A 区主文本中。 */
+    /**
+     * 工作流名出现在 ticker 与息屏文案中。
+     *
+     * **大岛上不再显示工作流名**——A 区让给了步骤进度、B 区让给了步骤名。
+     * 这是有意的取舍：执行期间用户更关心「跑到哪一步」，
+     * 而自己发起的工作流通常知道是哪个。
+     */
     @Test
-    fun workflowNameAppearsInTitleAndPrimaryText() {
+    fun workflowNameAppearsInTickerAndAod() {
         val name = "到家开灯"
         val paramV2 = paramV2Of(title = name)
 
-        assertTrue(
-            "ticker 应含工作流名",
-            paramV2.get("ticker").asString.contains(name)
-        )
-        assertEquals(
-            name,
-            paramV2.getAsJsonObject("param_island")
-                .getAsJsonObject("bigIslandArea")
-                .getAsJsonObject("imageTextInfoLeft")
-                .getAsJsonObject("textInfo")
-                .get("title").asString
-        )
+        assertTrue("ticker 应含工作流名", paramV2.get("ticker").asString.contains(name))
+        assertTrue("aodTitle 应含工作流名", paramV2.get("aodTitle").asString.contains(name))
     }
 
     /** 各状态产出不同文案，用户能区分。 */

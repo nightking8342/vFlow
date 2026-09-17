@@ -3,6 +3,8 @@ package com.chaomixian.vflow.services.island
 
 import android.app.Notification
 import android.content.Context
+import android.os.Parcelable
+import android.widget.RemoteViews
 import androidx.core.app.NotificationCompat
 import com.chaomixian.vflow.core.logging.DebugLogger
 import kotlinx.coroutines.CoroutineScope
@@ -98,7 +100,9 @@ internal object IslandNotificationDispatcher {
             notification
         } catch (t: Throwable) {
             // 附加失败不应影响通知本身——它已经是一条可用的普通通知了。
-            DebugLogger.w(TAG, "附加岛参数失败，降级为普通通知：${t.message}")
+            // ⚠️ 必须打完整堆栈：此处吞掉的异常会让「部分参数写入成功、部分失败」，
+            // 表现为岛用上了一半功能（如模板生效但 RemoteViews 不生效），极难排查。
+            DebugLogger.w(TAG, "附加岛参数失败，降级为普通通知", t)
             notification
         }
     }
@@ -164,11 +168,21 @@ internal object IslandNotificationDispatcher {
         notification.extras.putParcelable(KEY_FOCUS_RV_TINY, views.tiny)
 
         // 诊断日志：只记录结构与长度，不记录值——岛参数里含工作流名（可能是用户隐私）。
+        //
+        // SystemUI 以 `extras.getParcelable("miui.focus.rv") instanceof RemoteViews`
+        // 决定是否走自定义视图分支（`DynamicIslandUtils.hasCustomFocusView`）。
+        // 这里回读一次，确认写进去的确实是 RemoteViews 而非被序列化成别的东西。
+        val rvReadBack = notification.extras.getParcelable<Parcelable>(KEY_FOCUS_RV)
+        val expandReadBack = notification.extras.getParcelable<Parcelable>(KEY_FOCUS_RV_ISLAND_EXPAND)
         DebugLogger.d(
             TAG,
             "已附加岛参数 state=${spec.state} paramLength=${param.length} " +
                 "titleLength=${spec.title.length} stepNameLength=${spec.stepName?.length ?: 0} " +
-                "progress=${spec.progressPercent}"
+                "progress=${spec.progressPercent} " +
+                "rvType=${rvReadBack?.javaClass?.name ?: "null"} " +
+                "rvIsRemoteViews=${rvReadBack is RemoteViews} " +
+                "expandType=${expandReadBack?.javaClass?.name ?: "null"} " +
+                "extrasKeys=${notification.extras.keySet()}"
         )
     }
 }

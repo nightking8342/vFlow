@@ -62,7 +62,7 @@ internal object IslandRemoteViews {
         val tiny = RemoteViews(pkg, LAYOUT_TINY)
 
         val views = IslandViews(light, dark, islandExpand, tiny)
-        views.update(title, state, moduleName, progressText, progressPercent, chronometerBase, stopIntent, stopLabel)
+        views.update(context, title, state, moduleName, progressText, progressPercent, chronometerBase, stopIntent, stopLabel)
         return views
     }
 }
@@ -89,6 +89,7 @@ internal class IslandViews(
      *（它们的 view id 一致，故可以同一套代码操作）。
      */
     fun update(
+        context: Context,
         title: String,
         state: IslandNotificationSpec.State,
         moduleName: String?,
@@ -99,12 +100,13 @@ internal class IslandViews(
         stopLabel: String,
     ) {
         listOf(light, dark, islandExpand).forEach { rv ->
-            applyToCard(rv, title, state, moduleName, progressText, progressPercent, chronometerBase, stopIntent, stopLabel)
+            applyToCard(context, rv, title, state, moduleName, progressText, progressPercent, chronometerBase, stopIntent, stopLabel)
         }
         applyToTiny(tiny, title, progressText)
     }
 
     private fun applyToCard(
+        context: Context,
         rv: RemoteViews,
         title: String,
         state: IslandNotificationSpec.State,
@@ -123,9 +125,15 @@ internal class IslandViews(
         rv.setTextViewText(R.id.island_chip, chipTextOf(state))
         rv.setInt(R.id.island_chip, "setBackgroundResource", chipBackgroundOf(state, isDark))
         rv.setTextColor(R.id.island_chip, chipTextColorOf(state, isDark))
-        rv.setInt(R.id.island_icon, "setBackgroundResource", iconBackgroundOf(state, isDark))
-        rv.setImageViewResource(R.id.island_icon, iconDrawableOf(state))
-        rv.setTextColor(R.id.island_icon, iconTintOf(state, isDark))
+
+        // 图标用**应用图标**（裁圆位图），与岛摘要态、状态栏 ticker 保持一致，
+        // 让用户一眼认出这条通知来自 vFlow。
+        //
+        // 注意：应用图标本身已是完整图形，**不能再套状态色圆底、也不能着色**——
+        // 否则会盖住图形或把品牌色洗掉。布局里的 background 与 tint 在下面显式清掉。
+        rv.setImageViewBitmap(R.id.island_icon, IslandIcons.appIconBitmap(context))
+        rv.setInt(R.id.island_icon, "setBackgroundResource", 0)
+        rv.setInt(R.id.island_icon, "setColorFilter", 0)
 
         // ---- 进度区 ----
         // 执行中显示进度（3/8），终态显示状态词（让大号数字位承载结果）

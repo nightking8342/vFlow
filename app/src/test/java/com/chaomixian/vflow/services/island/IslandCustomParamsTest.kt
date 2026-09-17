@@ -102,8 +102,9 @@ class IslandCustomParamsTest {
 
         assertEquals(1, left.get("type").asInt)
         assertTrue(left.has("picInfo"))
+        // A 区放**步骤进度**（不是工作流名）——见 IslandParamsBuilder.buildIslandParam。
         assertEquals(
-            "每日签到",
+            "3/8",
             left.getAsJsonObject("textInfo").get("title").asString
         )
     }
@@ -202,21 +203,32 @@ class IslandCustomParamsTest {
         assertTrue(custom.get("aodPic").asString.isNotBlank())
     }
 
-    /** 工作流名应出现在 ticker 与大岛主文本中。 */
+    /**
+     * 工作流名应出现在 ticker 与息屏文案中。
+     *
+     * 大岛上不显示工作流名（A 区放步骤进度、B 区放步骤名），这是有意的取舍。
+     */
     @Test
     fun workflowNameSurvivesIntoCustomParam() {
         val name = "到家开灯"
         val custom = customOf(title = name)
 
-        assertTrue(custom.get("ticker").asString.contains(name))
-        assertEquals(
-            name,
-            custom.getAsJsonObject("param_island")
-                .getAsJsonObject("bigIslandArea")
-                .getAsJsonObject("imageTextInfoLeft")
-                .getAsJsonObject("textInfo")
-                .get("title").asString
-        )
+        assertTrue("ticker 应含工作流名", custom.get("ticker").asString.contains(name))
+        assertTrue("aodTitle 应含工作流名", custom.get("aodTitle").asString.contains(name))
+    }
+
+    /** 与上面的断言配套：确认大岛确实不再承载工作流名。 */
+    @Test
+    fun bigIslandCarriesProgressNotWorkflowName() {
+        val name = "到家开灯"
+        val leftText = customOf(title = name)
+            .getAsJsonObject("param_island")
+            .getAsJsonObject("bigIslandArea")
+            .getAsJsonObject("imageTextInfoLeft")
+            .getAsJsonObject("textInfo")
+            .get("title").asString
+
+        assertFalse("A 区不应是工作流名", leftText == name)
     }
 
     /** 自定义参数 JSON 里不应出现 RemoteViews 键（那是 extras key，不是 JSON 内容）。 */
