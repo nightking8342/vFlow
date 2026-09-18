@@ -173,6 +173,57 @@
     <string name="logcat_notification_channel_desc">采集系统日志时显示进度。可在超级岛上查看计时并随时结束。</string>
     <string name="logcat_capture_island_content">正在采集日志</string>
     <string name="logcat_capture_stop_action">结束</string>
+    <!-- logcat 查看器 -->
+    <string name="logcat_viewer_title">logcat 查看器</string>
+    <string name="logcat_viewer_entry_title">logcat 查看器</string>
+    <string name="logcat_viewer_entry_subtitle">采集与查看系统日志，用于调试触发器</string>
+    <string name="logcat_viewer_export">导出</string>
+    <string name="logcat_viewer_export_text">导出为文本 (.log)</string>
+    <string name="logcat_viewer_export_json">导出为 JSON (.json)</string>
+    <string name="logcat_shell_ready">Shell 已就绪</string>
+    <string name="logcat_shell_not_ready">Shell 未就绪：需要 Shizuku 或 Root 权限才能读取系统日志</string>
+    <string name="logcat_section_capture">采集</string>
+    <string name="logcat_state_capturing">采集中</string>
+    <string name="logcat_state_idle">未在采集</string>
+    <string name="logcat_state_stale">上次采集异常结束</string>
+    <string name="logcat_action_start">开始</string>
+    <string name="logcat_action_stop">停止</string>
+    <string name="logcat_action_clear">清理</string>
+    <string name="logcat_timeout_label">时长上限</string>
+    <string name="logcat_section_filter">过滤</string>
+    <string name="logcat_level_label">级别</string>
+    <string name="logcat_tag_label">TAG</string>
+    <string name="logcat_tag_hint">按 TAG 关键字过滤</string>
+    <string name="logcat_tag_stats">TAG 统计</string>
+    <string name="logcat_show_own_app">显示本应用日志</string>
+    <string name="logcat_line_limit_label">条数</string>
+    <string name="logcat_action_refresh">刷新</string>
+    <string name="logcat_action_clear_list">清空</string>
+    <string name="logcat_refreshing">正在读取…</string>
+    <string name="logcat_tag_stats_title">TAG 统计（共 %1$d 行）</string>
+    <string name="logcat_tag_stats_hint">忽略当前 TAG 过滤（级别过滤保留），点击某项填入过滤框</string>
+    <string name="logcat_tag_stats_empty">没有统计到任何 TAG</string>
+    <string name="logcat_close">关闭</string>
+
+    <!-- 空结果文案：各类原因必须分开说（§4.6） -->
+    <string name="logcat_empty_rotated">未读到日志。logcat 缓冲区可能已轮转，建议开启「采集」后复现问题。</string>
+    <string name="logcat_empty_just_started">采集刚开始，还没有日志产生。</string>
+    <string name="logcat_empty_stale">上次采集异常结束（App 可能被系统回收）。可点「清理」后重新开始。</string>
+    <string name="logcat_empty_shell">需要 Shizuku 或 Root 权限才能读取系统日志。</string>
+    <string name="logcat_empty_timeout">命令超时。可能是日志量过大，试试调小「条数」。</string>
+    <string name="logcat_empty_filtered">读到了 %1$d 行，但都因当前的级别或 TAG 条件被过滤掉了。放宽条件试试。</string>
+    <string name="logcat_empty_no_filter_hint">没有匹配的日志。</string>
+
+    <!-- 底部状态栏 -->
+    <string name="logcat_status_idle">缓冲区 %1$d 行 · 降级 %2$d 行 · %3$d ms</string>
+    <string name="logcat_status_capturing">文件 %1$d 行 · 降级 %2$d 行 · %3$s · %4$d ms</string>
+    <string name="logcat_status_stale">上次采集文件 %1$d 行 · 降级 %2$d 行</string>
+    <string name="logcat_status_no_time_range">无时间范围</string>
+    <string name="logcat_degraded_hint">有 %1$d 行没有 TAG 前缀（多为多行日志的续行），按 message 匹配时可能失配。</string>
+
+    <string name="logcat_toast_exported">已导出 %1$d 行</string>
+    <string name="logcat_toast_export_failed">导出失败：无法写入文件</string>
+    <string name="logcat_toast_nothing_to_export">没有可导出的日志</string>
     <string name="settings_switch_enable_logging">记录调试日志</string>
     <string name="settings_switch_enable_logging_desc">开启后，应用的所有日志将被记录在内存中，直到应用被强制终止。这会略微增加内存占用。</string>
     <string name="settings_switch_enable_telemetry">启用遥测</string>

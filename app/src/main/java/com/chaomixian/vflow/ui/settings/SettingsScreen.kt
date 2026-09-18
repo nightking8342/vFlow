@@ -115,6 +115,7 @@ data class SettingsScreenActions(
     val onClearLogs: () -> Unit,
     val onRunDiagnostic: () -> Unit,
     val onOpenKeyTester: () -> Unit,
+    val onOpenLogcatViewer: () -> Unit,
     val onOpenCoreManagement: () -> Unit,
     val onStartUiInspector: () -> Unit,
     val onOpenAbout: () -> Unit,
@@ -254,6 +255,8 @@ fun SettingsScreen(
     val clearLogsLabel = stringResource(R.string.settings_button_clear_logs)
     val runDiagnosticLabel = stringResource(R.string.settings_button_run_diagnostic)
     val keyTesterLabel = stringResource(R.string.settings_button_key_tester)
+    val logcatViewerTitle = stringResource(R.string.logcat_viewer_entry_title)
+    val logcatViewerSubtitle = stringResource(R.string.logcat_viewer_entry_subtitle)
     val coreManagementLabel = stringResource(R.string.settings_button_core_management)
     val uiInspectorLabel = stringResource(R.string.settings_button_ui_inspector)
 
@@ -313,6 +316,7 @@ fun SettingsScreen(
         crashReportsTitle, crashReportsSubtitle,
         exportLogsLabel, clearLogsLabel,
         runDiagnosticLabel, keyTesterLabel,
+        logcatViewerTitle, logcatViewerSubtitle,
         coreManagementLabel, uiInspectorLabel
     ).any { matchesSearch(normalizedQuery, it) }
     val showAboutSection = matchesSearch(
@@ -683,6 +687,16 @@ fun SettingsScreen(
                     secondaryLabel = keyTesterLabel,
                     onSecondaryClick = actions.onOpenKeyTester,
                     position = SettingsGroupPosition.Middle
+                )
+                NativeEntryRow(
+                    title = logcatViewerTitle,
+                    subtitle = logcatViewerSubtitle,
+                    // Icons.Default.Terminal 只在 material-icons-extended 里，
+                    // 本项目只引了 core，因此沿用调试区已有的 BugReport
+                    icon = Icons.Default.BugReport,
+                    tone = accentTone(),
+                    position = SettingsGroupPosition.Middle,
+                    onClick = actions.onOpenLogcatViewer
                 )
                 SettingsButtonRow(
                     primaryLabel = coreManagementLabel,

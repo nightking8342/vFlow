@@ -390,6 +390,12 @@
             android:theme="@style/Theme.vFlow" />
 
         <activity
+            android:name=".ui.settings.LogcatViewerActivity"
+            android:exported="false"
+            android:label="logcat 查看器"
+            android:theme="@style/Theme.vFlow" />
+
+        <activity
             android:name=".ui.settings.CrashReportsActivity"
             android:exported="false"
             android:label="@string/crash_reports_title"

@@ -173,6 +173,55 @@
     <string name="logcat_notification_channel_desc">Shows progress while capturing system logs. View the timer on the super island and stop at any time.</string>
     <string name="logcat_capture_island_content">Capturing logs</string>
     <string name="logcat_capture_stop_action">Stop</string>
+    <!-- logcat viewer -->
+    <string name="logcat_viewer_title">Logcat Viewer</string>
+    <string name="logcat_viewer_entry_title">Logcat Viewer</string>
+    <string name="logcat_viewer_entry_subtitle">Capture and inspect system logs to debug triggers</string>
+    <string name="logcat_viewer_export">Export</string>
+    <string name="logcat_viewer_export_text">Export as text (.log)</string>
+    <string name="logcat_viewer_export_json">Export as JSON (.json)</string>
+    <string name="logcat_shell_ready">Shell ready</string>
+    <string name="logcat_shell_not_ready">Shell not ready: Shizuku or Root permission is required to read system logs</string>
+    <string name="logcat_section_capture">Capture</string>
+    <string name="logcat_state_capturing">Capturing</string>
+    <string name="logcat_state_idle">Not capturing</string>
+    <string name="logcat_state_stale">Last capture ended abnormally</string>
+    <string name="logcat_action_start">Start</string>
+    <string name="logcat_action_stop">Stop</string>
+    <string name="logcat_action_clear">Clear</string>
+    <string name="logcat_timeout_label">Time limit</string>
+    <string name="logcat_section_filter">Filter</string>
+    <string name="logcat_level_label">Level</string>
+    <string name="logcat_tag_label">TAG</string>
+    <string name="logcat_tag_hint">Filter by TAG substring</string>
+    <string name="logcat_tag_stats">TAG stats</string>
+    <string name="logcat_show_own_app">Show this app logs</string>
+    <string name="logcat_line_limit_label">Lines</string>
+    <string name="logcat_action_refresh">Refresh</string>
+    <string name="logcat_action_clear_list">Clear</string>
+    <string name="logcat_refreshing">Reading…</string>
+    <string name="logcat_tag_stats_title">TAG stats (%1$d lines)</string>
+    <string name="logcat_tag_stats_hint">Ignores the current TAG filter (level filter still applies). Tap an entry to fill the filter box.</string>
+    <string name="logcat_tag_stats_empty">No TAGs found</string>
+    <string name="logcat_close">Close</string>
+
+    <string name="logcat_empty_rotated">No logs read. The logcat buffer may have rotated; start a capture before reproducing the issue.</string>
+    <string name="logcat_empty_just_started">Capture just started, no logs produced yet.</string>
+    <string name="logcat_empty_stale">The last capture ended abnormally (the app may have been reclaimed). Tap Clear to start over.</string>
+    <string name="logcat_empty_shell">Shizuku or Root permission is required to read system logs.</string>
+    <string name="logcat_empty_timeout">The command timed out. The log volume may be too large; try a smaller line count.</string>
+    <string name="logcat_empty_filtered">Read %1$d lines, but all were filtered out by the current level or TAG conditions. Try loosening them.</string>
+    <string name="logcat_empty_no_filter_hint">No matching logs.</string>
+
+    <string name="logcat_status_idle">Buffer %1$d lines · %2$d continuation · %3$d ms</string>
+    <string name="logcat_status_capturing">File %1$d lines · %2$d continuation · %3$s · %4$d ms</string>
+    <string name="logcat_status_stale">Last capture file %1$d lines · %2$d continuation</string>
+    <string name="logcat_status_no_time_range">no time range</string>
+    <string name="logcat_degraded_hint">%1$d lines have no TAG prefix (usually continuations of multi-line logs); matching by message may miss them.</string>
+
+    <string name="logcat_toast_exported">Exported %1$d lines</string>
+    <string name="logcat_toast_export_failed">Export failed: cannot write file</string>
+    <string name="logcat_toast_nothing_to_export">Nothing to export</string>
     <string name="settings_switch_enable_logging">Record Debug Logs</string>
     <string name="settings_switch_enable_logging_desc">When enabled, all app logs will be recorded in memory until the app is force stopped. Slightly increases memory usage.</string>
     <string name="settings_switch_enable_telemetry">Enable telemetry</string>

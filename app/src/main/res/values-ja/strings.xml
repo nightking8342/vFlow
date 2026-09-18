@@ -170,6 +170,55 @@
     <string name="logcat_notification_channel_desc">システムログの収集中に進行状況を表示します。スーパーアイランドでタイマーを確認し、いつでも停止できます。</string>
     <string name="logcat_capture_island_content">ログを収集中</string>
     <string name="logcat_capture_stop_action">終了</string>
+    <!-- logcat ビューア -->
+    <string name="logcat_viewer_title">logcat ビューア</string>
+    <string name="logcat_viewer_entry_title">logcat ビューア</string>
+    <string name="logcat_viewer_entry_subtitle">システムログを収集・表示してトリガーをデバッグします</string>
+    <string name="logcat_viewer_export">エクスポート</string>
+    <string name="logcat_viewer_export_text">テキストで出力 (.log)</string>
+    <string name="logcat_viewer_export_json">JSON で出力 (.json)</string>
+    <string name="logcat_shell_ready">Shell 準備完了</string>
+    <string name="logcat_shell_not_ready">Shell 未準備：システムログの読み取りには Shizuku または Root 権限が必要です</string>
+    <string name="logcat_section_capture">収集</string>
+    <string name="logcat_state_capturing">収集中</string>
+    <string name="logcat_state_idle">収集していません</string>
+    <string name="logcat_state_stale">前回の収集が異常終了しました</string>
+    <string name="logcat_action_start">開始</string>
+    <string name="logcat_action_stop">停止</string>
+    <string name="logcat_action_clear">クリア</string>
+    <string name="logcat_timeout_label">時間上限</string>
+    <string name="logcat_section_filter">フィルタ</string>
+    <string name="logcat_level_label">レベル</string>
+    <string name="logcat_tag_label">TAG</string>
+    <string name="logcat_tag_hint">TAG の部分一致で絞り込み</string>
+    <string name="logcat_tag_stats">TAG 統計</string>
+    <string name="logcat_show_own_app">このアプリのログを表示</string>
+    <string name="logcat_line_limit_label">行数</string>
+    <string name="logcat_action_refresh">更新</string>
+    <string name="logcat_action_clear_list">消去</string>
+    <string name="logcat_refreshing">読み取り中…</string>
+    <string name="logcat_tag_stats_title">TAG 統計（全 %1$d 行）</string>
+    <string name="logcat_tag_stats_hint">現在の TAG フィルタを無視します（レベルフィルタは有効）。項目をタップするとフィルタ欄に入ります。</string>
+    <string name="logcat_tag_stats_empty">TAG が見つかりません</string>
+    <string name="logcat_close">閉じる</string>
+
+    <string name="logcat_empty_rotated">ログを読み取れませんでした。logcat バッファがローテーションした可能性があります。「収集」を開始してから再現してください。</string>
+    <string name="logcat_empty_just_started">収集を開始したばかりで、まだログがありません。</string>
+    <string name="logcat_empty_stale">前回の収集が異常終了しました（アプリが回収された可能性）。「クリア」してから再開してください。</string>
+    <string name="logcat_empty_shell">システムログの読み取りには Shizuku または Root 権限が必要です。</string>
+    <string name="logcat_empty_timeout">コマンドがタイムアウトしました。ログ量が多すぎる可能性があります。「行数」を減らしてみてください。</string>
+    <string name="logcat_empty_filtered">%1$d 行を読み取りましたが、現在のレベルまたは TAG 条件ですべて除外されました。条件を緩めてください。</string>
+    <string name="logcat_empty_no_filter_hint">一致するログはありません。</string>
+
+    <string name="logcat_status_idle">バッファ %1$d 行 · 継続 %2$d 行 · %3$d ms</string>
+    <string name="logcat_status_capturing">ファイル %1$d 行 · 継続 %2$d 行 · %3$s · %4$d ms</string>
+    <string name="logcat_status_stale">前回の収集ファイル %1$d 行 · 継続 %2$d 行</string>
+    <string name="logcat_status_no_time_range">時間範囲なし</string>
+    <string name="logcat_degraded_hint">%1$d 行に TAG プレフィックスがありません（多くは複数行ログの継続行）。message 一致で取りこぼす可能性があります。</string>
+
+    <string name="logcat_toast_exported">%1$d 行をエクスポートしました</string>
+    <string name="logcat_toast_export_failed">エクスポート失敗：ファイルに書き込めません</string>
+    <string name="logcat_toast_nothing_to_export">エクスポートするログがありません</string>
     <string name="settings_switch_enable_logging">デバッグログを記録する</string>
     <string name="settings_switch_enable_logging_desc">有効にすると、アプリケーションが強制終了されるまで、アプリケーションのすべてのログがメモリに記録されます。これにより、メモリ使用量がわずかに増加します。</string>
     <string name="settings_switch_enable_telemetry">テレメトリを有効化</string>

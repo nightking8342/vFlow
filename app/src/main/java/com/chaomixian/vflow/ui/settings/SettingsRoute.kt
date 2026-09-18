@@ -311,6 +311,9 @@ fun SettingsRoute(
             onOpenKeyTester = {
                 context.startActivity(Intent(context, KeyTesterActivity::class.java))
             },
+            onOpenLogcatViewer = {
+                context.startActivity(Intent(context, LogcatViewerActivity::class.java))
+            },
             onOpenCoreManagement = {
                 context.startActivity(Intent(context, CoreManagementActivity::class.java))
             },

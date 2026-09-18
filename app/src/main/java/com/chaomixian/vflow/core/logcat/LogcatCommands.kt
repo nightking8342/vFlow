@@ -208,6 +208,31 @@ object LogcatCommands {
         is CaptureState.Stale -> null
     }
 
+    /**
+     * TAG 统计该跑哪条命令（§4.5）。
+     *
+     * **采样源同样按状态分流**（§4.1.1）：采集态下必须从**采集文件**读，
+     * 而不是缓冲区——否则用户会奇怪「我明明在采集，统计出来怎么没有刚才那条」。
+     *
+     * ⚠️ 与 [buildRefresh] 的关键区别：**这里永远不带 TAG 过滤**。
+     * 用户点「TAG 统计」的动机恰恰是"我不知道该过滤哪个 TAG"，
+     * 用他猜的条件去统计等于让他自己回答自己的问题。
+     * 级别过滤保留（「只看 W 以上有哪些 TAG」是合理诉求）。
+     *
+     * @return 要执行的命令；[CaptureState.Stale] 返回 null（应走提示而非执行）
+     */
+    fun buildTagStats(
+        state: CaptureState,
+        lines: Int = MAX_LINES,
+        minLevel: LogLevel = LogLevel.VERBOSE,
+    ): String? = when (state) {
+        // 采集态只能读文件（App 进程读不到 shell 写的 /sdcard 路径，
+        // 所以统一走 tail 由 shell 读）；文件本身是全量写入的，天然不带 TAG 过滤
+        is CaptureState.Capturing -> buildTail(lines)
+        is CaptureState.Idle -> buildSnapshotForTagStats(lines, minLevel)
+        is CaptureState.Stale -> null
+    }
+
     /** 行数夹取，防调用方传入越界值撞 Binder 上限。 */
     fun clampLines(lines: Int): Int = lines.coerceIn(1, MAX_LINES)
 
