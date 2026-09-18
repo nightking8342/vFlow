@@ -165,6 +165,9 @@
     <string name="model_config_empty_models_title">まだモデルがありません</string>
     <string name="model_config_empty_models_body">最初にモデルを追加すると、サプライヤーをチャットで直接使用できるようになります。</string>
     <string name="settings_section_debugging">デバッグ</string>
+    <!-- logcat デバッグツール -->
+    <string name="logcat_notification_channel_name">ログ収集</string>
+    <string name="logcat_notification_channel_desc">システムログの収集中に進行状況を表示します。スーパーアイランドでタイマーを確認し、いつでも停止できます。</string>
     <string name="settings_switch_enable_logging">デバッグログを記録する</string>
     <string name="settings_switch_enable_logging_desc">有効にすると、アプリケーションが強制終了されるまで、アプリケーションのすべてのログがメモリに記録されます。これにより、メモリ使用量がわずかに増加します。</string>
     <string name="settings_switch_enable_telemetry">テレメトリを有効化</string>

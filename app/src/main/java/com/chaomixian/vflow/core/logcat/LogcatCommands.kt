@@ -33,6 +33,17 @@ object LogcatCommands {
     /** 默认取的行数。 */
     const val DEFAULT_LINES = 1000
 
+    /**
+     * 采集时长上限的默认值（秒）。5 分钟——够复现绝大多数问题，且不会忘关太久。
+     *
+     * 用户可在界面上调整；App 侧计时用于即时反馈，shell 侧 `timeout` 是兜底
+     * （见 [buildStartCapture] 的说明）。
+     */
+    const val DEFAULT_TIMEOUT_SEC = 5 * 60
+
+    /** 可选的时长上限（秒），供界面下拉框使用。 */
+    val TIMEOUT_CHOICES_SEC = listOf(60, 2 * 60, 5 * 60, 10 * 60, 30 * 60)
+
     /** 采集写入的文件。 */
     const val CAPTURE_FILE = "/sdcard/vFlow/logs/logcat_capture.log"
 
@@ -56,11 +67,25 @@ object LogcatCommands {
      * ⚠️ 实测注意：`-n 2` 时实际可能得到 3 个文件（与"保留 2 份"的直觉不符），
      * 所以**不要硬编码文件数**，用 `ls $CAPTURE_FILE*` 动态枚举。
      *
-     * @param rotateKb   单个文件的上限（KB）
-     * @param rotateCount 保留的轮转文件数
+     * ⚠️ **`timeout` 前缀是双保险，不是可有可无的**：
+     * App 侧的"时长上限"计时只在 App 活着时有效。而采集恰恰设计成
+     * **脱离 UI 存活**（用户可以离开 App 去复现问题），此时若 App 被系统杀掉，
+     * App 侧的计时器随之消失 → **logcat 会无限期跑下去**，
+     * 也就是说"防忘记关"的机制在最容易忘记关的场景下失效。
+     * 把它下推到 shell 侧后，无论 App 死活，进程到点自己结束。
+     * `timeout` 是 toybox 自带的（项目内已有用例）。
+     *
+     * @param rotateKb     单个文件的上限（KB）
+     * @param rotateCount  保留的轮转文件数
+     * @param timeoutSec   采集时长上限（秒）；进程到点自动结束
      */
-    fun buildStartCapture(rotateKb: Int = 1024, rotateCount: Int = 3): String =
-        "$LOGCAT $VERBOSITY -r $rotateKb -n $rotateCount -f $CAPTURE_FILE " +
+    fun buildStartCapture(
+        rotateKb: Int = 1024,
+        rotateCount: Int = 3,
+        timeoutSec: Int = DEFAULT_TIMEOUT_SEC,
+    ): String =
+        "timeout ${timeoutSec.coerceAtLeast(1)} " +
+            "$LOGCAT $VERBOSITY -r $rotateKb -n $rotateCount -f $CAPTURE_FILE " +
             ">/dev/null 2>&1 </dev/null & echo \$! > $PID_FILE"
 
     /**

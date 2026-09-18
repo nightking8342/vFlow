@@ -168,6 +168,9 @@
     <string name="model_config_empty_models_body">Add one model first, then this provider can be used directly in chat.</string>
 
     <string name="settings_section_debugging">Debugging</string>
+    <!-- logcat debug tool -->
+    <string name="logcat_notification_channel_name">Log Capture</string>
+    <string name="logcat_notification_channel_desc">Shows progress while capturing system logs. View the timer on the super island and stop at any time.</string>
     <string name="settings_switch_enable_logging">Record Debug Logs</string>
     <string name="settings_switch_enable_logging_desc">When enabled, all app logs will be recorded in memory until the app is force stopped. Slightly increases memory usage.</string>
     <string name="settings_switch_enable_telemetry">Enable telemetry</string>

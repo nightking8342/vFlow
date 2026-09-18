@@ -38,9 +38,11 @@ class LogcatCommandsTest {
 
     @Test
     fun `start capture uses absolute logcat path`() {
-        // app_process / sh 环境的 PATH 不确定，必须用绝对路径
+        // app_process / sh 环境的 PATH 不确定，必须用绝对路径。
+        // 注意命令以 `timeout N` 开头（见下方的超时兜底测试），
+        // 所以这里断言「包含」而非「以 logcat 开头」。
         val cmd = LogcatCommands.buildStartCapture()
-        assertTrue(cmd.startsWith(LogcatCommands.LOGCAT))
+        assertTrue(cmd.contains(LogcatCommands.LOGCAT))
     }
 
     @Test
@@ -228,5 +230,34 @@ class LogcatCommandsTest {
         val cmd = LogcatCommands.buildStartCapture(rotateKb = 1024, rotateCount = 3)
         assertTrue(cmd.contains("-r 1024"))
         assertTrue(cmd.contains("-n 3"))
+    }
+
+    // ── 时长上限的 shell 侧兜底 ────────────────────────────────
+
+    @Test
+    fun `start capture wraps logcat with a shell-side timeout`() {
+        // ⚠️ 这是在补救一个真实漏洞：App 侧计时只在 App 活着时有效，
+        // 而采集设计成脱离 UI 存活——App 被杀时"防忘记关"就失效了，
+        // logcat 会无限期跑下去。下推到 shell 侧后无论 App 死活都会停。
+        val cmd = LogcatCommands.buildStartCapture(timeoutSec = 300)
+
+        assertTrue("必须有 timeout 前缀", cmd.contains("timeout 300"))
+        assertTrue(
+            "timeout 必须在 logcat 之前",
+            cmd.indexOf("timeout 300") < cmd.indexOf(LogcatCommands.LOGCAT)
+        )
+    }
+
+    @Test
+    fun `start capture uses the default timeout when unspecified`() {
+        val cmd = LogcatCommands.buildStartCapture()
+        assertTrue(cmd.contains("timeout ${LogcatCommands.DEFAULT_TIMEOUT_SEC}"))
+    }
+
+    @Test
+    fun `start capture clamps a non-positive timeout to at least one second`() {
+        // timeout 0 在 toybox 里表示"不超时"，与用户意图相反，必须夹取
+        assertTrue(LogcatCommands.buildStartCapture(timeoutSec = 0).contains("timeout 1 "))
+        assertTrue(LogcatCommands.buildStartCapture(timeoutSec = -5).contains("timeout 1 "))
     }
 }

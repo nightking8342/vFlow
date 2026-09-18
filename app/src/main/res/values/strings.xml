@@ -168,6 +168,9 @@
     <string name="model_config_empty_models_body">先添加一个模型，这个供应商就能在聊天里直接使用。</string>
 
     <string name="settings_section_debugging">调试</string>
+    <!-- logcat 调试工具 -->
+    <string name="logcat_notification_channel_name">日志采集</string>
+    <string name="logcat_notification_channel_desc">采集系统日志时显示进度。可在超级岛上查看计时并随时结束。</string>
     <string name="settings_switch_enable_logging">记录调试日志</string>
     <string name="settings_switch_enable_logging_desc">开启后，应用的所有日志将被记录在内存中，直到应用被强制终止。这会略微增加内存占用。</string>
     <string name="settings_switch_enable_telemetry">启用遥测</string>
