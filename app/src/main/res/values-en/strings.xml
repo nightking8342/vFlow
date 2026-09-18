@@ -174,9 +174,19 @@
     <string name="logcat_capture_island_content">Capturing logs</string>
     <string name="logcat_capture_stop_action">Stop</string>
     <string name="logcat_capture_finished_content">Capture finished</string>
+    <string name="logcat_state_completed">Capture finished (source is fixed)</string>
+    <string name="logcat_empty_completed">No matching content in this capture. Loosen the filter or capture again.</string>
+    <string name="logcat_status_completed">Capture file %1$d lines · %2$d continuation · %3$s</string>
+    <string name="logcat_action_rescan">Re-filter</string>
+    <string name="logcat_action_release">Discard</string>
+    <string name="logcat_filter_message_label">Message</string>
+    <string name="logcat_filter_message_hint">Filter by message content</string>
+    <string name="logcat_wrap_on">Wrap: on</string>
+    <string name="logcat_wrap_off">Wrap: off</string>
     <!-- logcat viewer -->
     <string name="logcat_viewer_title">Logcat Debugger</string>
     <string name="logcat_viewer_entry_title">Logcat Debugger</string>
+    <string name="logcat_action_recapture">Capture again</string>
     <string name="logcat_viewer_entry_subtitle">Capture and inspect system logs to debug triggers</string>
     <string name="logcat_viewer_export">Export</string>
     <string name="logcat_viewer_export_text">Export as text (.log)</string>

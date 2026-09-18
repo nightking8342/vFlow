@@ -96,13 +96,15 @@ object LogcatExportRenderer {
 
     /** 数据源的一句话说明，与界面底部文案口径一致（§4.1.2）。 */
     fun sourceDescription(state: CaptureState): String = when (state) {
-        is CaptureState.Capturing -> "采集文件（本次采集区间内的日志）"
+        is CaptureState.Capturing -> "采集文件（本次采集区间内的日志，仍在增长）"
+        is CaptureState.Completed -> "采集文件（本次采集区间内的日志，已固定）"
         is CaptureState.Stale -> "上次异常结束的采集文件"
         is CaptureState.Idle -> "logcat 缓冲区（滚动窗口，两次抓取结果可能不同）"
     }
 
     private fun stateName(state: CaptureState): String = when (state) {
         is CaptureState.Capturing -> "CAPTURING"
+        is CaptureState.Completed -> "COMPLETED"
         is CaptureState.Stale -> "STALE"
         is CaptureState.Idle -> "IDLE"
     }

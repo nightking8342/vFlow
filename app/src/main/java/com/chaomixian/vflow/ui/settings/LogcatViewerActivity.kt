@@ -99,10 +99,40 @@ private fun LogcatViewerScreen(onBack: () -> Unit) {
     // ---- 界面本地状态 ----
     var filter by remember { mutableStateOf(LogcatFilter()) }
     var refreshing by remember { mutableStateOf(false) }
-    var result by remember { mutableStateOf<LogcatViewerResult?>(null) }
     var shellReady by remember { mutableStateOf(false) }
     var tagStats by remember { mutableStateOf<List<Pair<String, Int>>?>(null) }
     var exportMenuOpen by remember { mutableStateOf(false) }
+    var wrapLines by remember { mutableStateOf(false) }
+
+    /**
+     * **未经过滤**的原始行，只由「读数据源」更新。
+     *
+     * ⚠️ 这是「改过滤条件不重跑命令」的关键：数据一旦读进内存，
+     * 改 TAG / 消息 / 级别只是**重新筛一遍内存里的列表**，不再碰 shell。
+     *
+     * 原先的实现在每次过滤条件变化时都调 `refresh()` 重读数据源，
+     * 后果有两个（都是用户报的）：
+     * 1. 采集态下重读没问题（文件不变），但**已完成态会被判成空闲**，
+     *    于是重读的是实时滚动的缓冲区 —— 用户看到的不再是自己采的那批
+     * 2. 每次切 TAG 都要等一次跨进程命令，白等
+     */
+    var rawLines by remember { mutableStateOf<List<LogcatLine>>(emptyList()) }
+    var capturedState by remember { mutableStateOf<CaptureState>(CaptureState.Idle) }
+    var elapsedMs by remember { mutableStateOf(0L) }
+    var shellOk by remember { mutableStateOf(true) }
+
+    // 过滤结果由「原始行 + 当前条件」派生，**不是独立状态** ——
+    // 这样改条件必然触发重算，不可能出现两者不一致
+    val result = remember(rawLines, filter, capturedState, elapsedMs, shellOk) {
+        buildViewerResult(
+            raw = rawLines,
+            filter = filter,
+            state = capturedState,
+            ownPids = ownPidsOf(context),
+            elapsedMs = elapsedMs,
+            shellAvailable = shellOk,
+        )
+    }
 
     // ⚠️ 进入界面必须探测真实状态（§4.2.1 调用时机表）：
     // 采集脱离 UI 存活，用户上次离开时可能正在采，也可能 App 被杀后转入了 STALE。
@@ -124,13 +154,22 @@ private fun LogcatViewerScreen(onBack: () -> Unit) {
 
     val actions = buildViewerActions(session.state, shellReady, refreshing)
 
-    /** 执行一次刷新：读数据源 → 解析 → 过滤 → 组装结果。 */
-    fun refresh() {
-        if (!actions.canRefresh) return
+    /**
+     * 读一次数据源（**唯一会跑 shell 命令的入口**）。
+     *
+     * 过滤条件传空 —— 读回来的是原始数据，筛选交给内存里的 [result] 派生。
+     * 这样"读"与"筛"彻底分开：读一次可以用很多次。
+     */
+    fun loadFromSource() {
         refreshing = true
         scope.launch {
-            val outcome = withContext(Dispatchers.IO) { loadLogs(context, session.state, filter) }
-            result = outcome.result
+            val outcome = withContext(Dispatchers.IO) {
+                loadLogs(context, session.state, LogcatFilter())
+            }
+            rawLines = outcome.rawLines
+            capturedState = session.state
+            elapsedMs = outcome.elapsedMs
+            shellOk = outcome.shellOk
             refreshing = false
             if (outcome.timedOut) {
                 Toast.makeText(
@@ -139,6 +178,44 @@ private fun LogcatViewerScreen(onBack: () -> Unit) {
                     Toast.LENGTH_LONG,
                 ).show()
             }
+        }
+    }
+
+    /**
+     * 采集状态变化时自动读一次数据源（用户报的问题 2）。
+     *
+     * 覆盖两个时刻：
+     * - **刚进入「采集中」**：让用户立刻看到已经有日志进来，而不是空屏等着
+     * - **刚进入「已完成」**：采完自动展示，不必再手动点刷新
+     *
+     * ⚠️ 只在**状态本身变化**时触发，不随过滤条件变化触发 ——
+     * 后者只重筛内存，不重读数据源（用户报的问题 1）。
+     * 这正是把 `key` 设成 state 而不是 filter 的原因。
+     */
+    LaunchedEffect(session.state) {
+        val st = session.state
+        if (st is CaptureState.Completed || st is CaptureState.Capturing) {
+            loadFromSource()
+        }
+    }
+
+
+
+    /**
+     * 采集状态变化时自动读一次数据源（用户报的问题 2）。
+     *
+     * 覆盖两个时刻：
+     * - **刚进入「采集中」**：让用户立刻看到已经有日志进来，而不是空屏等着
+     * - **刚进入「已完成」**：采完自动展示，不必再手动点刷新
+     *
+     * ⚠️ 只在**状态本身变化**时触发，不随过滤条件变化触发 ——
+     * 后者只重筛内存，不重读数据源（用户报的问题 1）。
+     * 这正是把 key 设成 state 而不是 filter 的原因。
+     */
+    LaunchedEffect(session.state) {
+        val st = session.state
+        if (st is CaptureState.Completed || st is CaptureState.Capturing) {
+            loadFromSource()
         }
     }
 
@@ -174,7 +251,7 @@ private fun LogcatViewerScreen(onBack: () -> Unit) {
                 actions = {
                     IconButton(
                         onClick = { exportMenuOpen = true },
-                        enabled = actions.canExport(!result?.lines.isNullOrEmpty()),
+                        enabled = actions.canExport(result.lines.isNotEmpty()),
                     ) {
                         Icon(Icons.Default.Share, contentDescription = stringResource(R.string.logcat_viewer_export))
                     }
@@ -221,24 +298,31 @@ private fun LogcatViewerScreen(onBack: () -> Unit) {
                 enabled = shellReady && !refreshing,
                 actions = actions,
                 onFilterChange = { filter = it },
-                onRefresh = { refresh() },
+                onRefresh = { loadFromSource() },
                 onTagStats = { runTagStats() },
-                onClearList = { result = null },
+                onClearList = {
+                    // 「清空」是清掉当前展示的内容。rawLines 是唯一的数据源，
+                    // 清它即可（result 由它派生）
+                    rawLines = emptyList()
+                },
+                wrapLines = wrapLines,
+                onToggleWrap = { wrapLines = !wrapLines },
             )
 
             HorizontalDivider()
 
             LogcatList(
-                lines = result?.lines.orEmpty(),
-                emptyReason = result?.emptyReason,
-                rawLineCount = result?.rawLineCount ?: 0,
+                lines = result.lines,
+                emptyReason = result.emptyReason,
+                rawLineCount = result.rawLineCount,
                 refreshing = refreshing,
+                wrapLines = wrapLines,
                 modifier = Modifier.weight(1f),
             )
 
-            result?.let {
+            if (rawLines.isNotEmpty() || result.emptyReason != null) {
                 StatusBar(
-                    result = it,
+                    result = result,
                     state = session.state,
                 )
             }
@@ -250,9 +334,11 @@ private fun LogcatViewerScreen(onBack: () -> Unit) {
             stats = stats,
             onDismiss = { tagStats = null },
             onPick = { tag ->
+                // ⚠️ 只改条件，**不重新读数据源** —— 数据已在内存里，
+                // 改 TAG 只是重新筛一遍。原先这里调 refresh() 会重跑一次
+                // shell 命令，而且在「已完成」态下会读到实时缓冲区（用户报的问题 1）
                 filter = filter.copy(tagQuery = tag)
                 tagStats = null
-                refresh()
             },
         )
     }
@@ -260,7 +346,18 @@ private fun LogcatViewerScreen(onBack: () -> Unit) {
 
 // ── 数据加载 ────────────────────────────────────────────────────
 
-private class LoadOutcome(val result: LogcatViewerResult, val timedOut: Boolean)
+/**
+ * 读数据源的结果。
+ *
+ * ⚠️ 返回的是**未过滤**的原始行 —— 过滤交给调用方在内存里做，
+ * 这样"读一次、筛多次"，改条件不必重跑命令。
+ */
+private class LoadOutcome(
+    val rawLines: List<LogcatLine>,
+    val elapsedMs: Long,
+    val shellOk: Boolean,
+    val timedOut: Boolean,
+)
 
 /**
  * 读一次日志。
@@ -275,30 +372,21 @@ private suspend fun loadLogs(
 ): LoadOutcome {
     // STALE 不执行命令，走提示（buildRefresh 返回 null 就是表达这个）
     val cmd = LogcatCommands.buildRefresh(state, filter.lineLimit, filter.tagQuery, filter.minLevel)
-        ?: return LoadOutcome(
-            buildViewerResult(emptyList(), filter, state, emptySet(), 0, shellAvailable = true),
-            timedOut = false,
-        )
+        ?: return LoadOutcome(emptyList(), 0, shellOk = true, timedOut = false)
 
     val startedAt = System.currentTimeMillis()
     val output = runCatching { ShellManager.execShellCommand(context, cmd) }
-        .onFailure { DebugLogger.w(TAG, "刷新失败", it) }
+        .onFailure { DebugLogger.w(TAG, "读取日志失败", it) }
         .getOrDefault("")
     val elapsed = System.currentTimeMillis() - startedAt
 
     // Shell 层失败会以 "Error:" 前缀返回（见 ShellManager.executeShizukuCommand）
     val failed = output.startsWith("Error:")
 
-    val raw = LogcatParser.parseLines(output)
     return LoadOutcome(
-        buildViewerResult(
-            raw = raw,
-            filter = filter,
-            state = state,
-            ownPids = ownPidsOf(context),
-            elapsedMs = elapsed,
-            shellAvailable = !failed,
-        ),
+        rawLines = LogcatParser.parseLines(output),
+        elapsedMs = elapsed,
+        shellOk = !failed,
         timedOut = false,
     )
 }
@@ -406,7 +494,14 @@ private fun CaptureSection(
                 }
             } else {
                 Button(onClick = onStart, enabled = actions.canStart) {
-                    Text(stringResource(R.string.logcat_action_start))
+                    Text(
+                        stringResource(
+                            // 已完成态下「开始」的语义是"再采一批"，
+                            // 文案要跟上，否则用户以为点了会丢掉现在这批
+                            if (actions.completed) R.string.logcat_action_recapture
+                            else R.string.logcat_action_start
+                        )
+                    )
                 }
             }
         }
@@ -468,6 +563,8 @@ private fun FilterSection(
     onRefresh: () -> Unit,
     onTagStats: () -> Unit,
     onClearList: () -> Unit,
+    wrapLines: Boolean,
+    onToggleWrap: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
         Text(
@@ -517,6 +614,25 @@ private fun FilterSection(
             }
         }
 
+        Spacer(Modifier.height(6.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = stringResource(R.string.logcat_filter_message_label),
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.width(52.dp),
+            )
+            OutlinedTextField(
+                value = filter.messageQuery,
+                onValueChange = { onFilterChange(filter.copy(messageQuery = it)) },
+                enabled = enabled,
+                singleLine = true,
+                placeholder = { Text(stringResource(R.string.logcat_filter_message_hint)) },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                textStyle = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.weight(1f),
+            )
+        }
+
         Spacer(Modifier.height(4.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Checkbox(
@@ -561,13 +677,29 @@ private fun FilterSection(
             }
 
             Spacer(Modifier.weight(1f))
-            // ⚠️ 刷新期间禁用而非排队（§4.1.1）：Shizuku 通道同步阻塞，并发会互相干扰
-            Button(onClick = onRefresh, enabled = actions.canRefresh) {
-                Text(stringResource(R.string.logcat_action_refresh))
+            // ⚠️ 采集已完成 / 异常结束时**不显示刷新按钮**：
+            // 数据源是已固定的采集文件，刷新只会读到同一批内容。
+            // 那个按钮在那里只会让人以为"点了会变"，而且它原先真的会去
+            // 重读数据源（在已完成态被判成空闲 → 读到实时缓冲区，用户报的问题 1）。
+            // 要换一批日志应当重新采集，而不是刷新。
+            if (!actions.sourceIsFixed) {
+                Button(onClick = onRefresh, enabled = actions.canRefresh) {
+                    Text(stringResource(R.string.logcat_action_refresh))
+                }
             }
             Spacer(Modifier.width(8.dp))
             TextButton(onClick = onClearList, enabled = enabled) {
                 Text(stringResource(R.string.logcat_action_clear_list))
+            }
+            Spacer(Modifier.width(4.dp))
+            // 换行开关：只影响渲染，不碰数据，因此不受 enabled 约束
+            TextButton(onClick = onToggleWrap) {
+                Text(
+                    text = stringResource(
+                        if (wrapLines) R.string.logcat_wrap_on else R.string.logcat_wrap_off
+                    ),
+                    style = MaterialTheme.typography.labelMedium,
+                )
             }
         }
         Spacer(Modifier.height(8.dp))
@@ -580,6 +712,7 @@ private fun LogcatList(
     emptyReason: LogcatEmptyReason?,
     rawLineCount: Int,
     refreshing: Boolean,
+    wrapLines: Boolean,
     modifier: Modifier = Modifier,
 ) {
     if (refreshing) {
@@ -617,13 +750,13 @@ private fun LogcatList(
         // 这里也确实不需要自定义 key：列表是**整体替换**语义（§4.1.2），
         // 没有移动/重排，默认的位置索引天然唯一且稳定。
         items(lines) { line ->
-            LogcatRow(line)
+            LogcatRow(line, wrapLines)
         }
     }
 }
 
 @Composable
-private fun LogcatRow(line: LogcatLine) {
+private fun LogcatRow(line: LogcatLine, wrapLines: Boolean) {
     // 降级行灰显 + ↳ 前缀：这是本工具最有价值的可视化（§4.4）——
     // 它把"这行没有 TAG 前缀，你的 message 条件可能因此失配"直接摆到用户面前
     val color = when {
@@ -633,13 +766,24 @@ private fun LogcatRow(line: LogcatLine) {
         else -> MaterialTheme.colorScheme.onSurface
     }
 
+    // ⚠️ 两种模式的取舍：
+    // - 不换行 + 横向滚动：保证"一行就是一行"，比对时间戳/对齐时更清楚，
+    //   但长消息要横向拖（用户报的问题 4）
+    // - 换行：长消息完整可见，代价是行与行的视觉对应变弱
+    // 没有哪个绝对更好，所以做成开关让用户按场景选
+    val scrollModifier = if (wrapLines) {
+        Modifier.fillMaxWidth()
+    } else {
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+    }
+
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 12.dp, vertical = 2.dp),
+        modifier = scrollModifier.padding(horizontal = 12.dp, vertical = 2.dp),
     ) {
         Text(
+            // 换行模式下不设 maxLines，Text 会自行折行；
+            // 不换行时靠 horizontalScroll 承载超出部分
+            softWrap = wrapLines,
             text = buildString {
                 if (line.isContinuation) append("↳ ")
                 if (line.timestamp.isNotBlank()) append(line.timestamp).append("  ")
@@ -673,6 +817,8 @@ private fun EmptyHint(reason: LogcatEmptyReason?, rawLineCount: Int, modifier: M
                 LogcatEmptyReason.CommandTimeout -> stringResource(R.string.logcat_empty_timeout)
                 LogcatEmptyReason.FilteredOut ->
                     stringResource(R.string.logcat_empty_filtered, rawLineCount)
+                LogcatEmptyReason.CaptureCompletedEmpty ->
+                    stringResource(R.string.logcat_empty_completed)
                 null -> stringResource(R.string.logcat_empty_no_filter_hint)
             },
             style = MaterialTheme.typography.bodyMedium,
@@ -700,6 +846,13 @@ private fun StatusBar(result: LogcatViewerResult, state: CaptureState) {
                         R.string.logcat_status_stale,
                         result.lines.size,
                         result.continuationCount,
+                    )
+
+                    is CaptureState.Completed -> stringResource(
+                        R.string.logcat_status_completed,
+                        result.lines.size,
+                        result.continuationCount,
+                        result.timeRange ?: stringResource(R.string.logcat_status_no_time_range),
                     )
 
                     is CaptureState.Idle -> stringResource(
@@ -789,6 +942,7 @@ private fun TagStatsSheet(
  */
 private fun stateLabel(state: CaptureState): Int = when (state) {
     is CaptureState.Capturing -> R.string.logcat_state_capturing
+    is CaptureState.Completed -> R.string.logcat_state_completed
     is CaptureState.Stale -> R.string.logcat_state_stale
     is CaptureState.Idle -> R.string.logcat_state_idle
 }

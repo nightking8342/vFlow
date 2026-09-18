@@ -171,9 +171,19 @@
     <string name="logcat_capture_island_content">ログを収集中</string>
     <string name="logcat_capture_stop_action">終了</string>
     <string name="logcat_capture_finished_content">収集が完了しました</string>
+    <string name="logcat_state_completed">収集完了（データソースは固定）</string>
+    <string name="logcat_empty_completed">このログに条件に一致する内容はありません。条件を緩めるか、再収集してください。</string>
+    <string name="logcat_status_completed">収集ファイル %1$d 行 · 継続 %2$d 行 · %3$s</string>
+    <string name="logcat_action_rescan">再フィルタ</string>
+    <string name="logcat_action_release">破棄</string>
+    <string name="logcat_filter_message_label">メッセージ</string>
+    <string name="logcat_filter_message_hint">メッセージ内容で絞り込み</string>
+    <string name="logcat_wrap_on">折り返し：オン</string>
+    <string name="logcat_wrap_off">折り返し：オフ</string>
     <!-- logcat ビューア -->
     <string name="logcat_viewer_title">logcat デバッガー</string>
     <string name="logcat_viewer_entry_title">logcat デバッガー</string>
+    <string name="logcat_action_recapture">再収集</string>
     <string name="logcat_viewer_entry_subtitle">システムログを収集・表示してトリガーをデバッグします</string>
     <string name="logcat_viewer_export">エクスポート</string>
     <string name="logcat_viewer_export_text">テキストで出力 (.log)</string>

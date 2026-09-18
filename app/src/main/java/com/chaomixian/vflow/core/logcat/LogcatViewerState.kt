@@ -46,7 +46,16 @@ data class LogcatViewerActions(
     val refreshing: Boolean,
     val capturing: Boolean,
     val stale: Boolean,
+    val completed: Boolean,
 ) {
+    /**
+     * 数据源是否已固定（采集文件不再变化）。
+     *
+     * 此时「刷新」没有意义——重读一遍得到的是同一批内容。
+     * 界面据此**隐藏刷新按钮**，改过滤条件走内存重筛即可。
+     */
+    val sourceIsFixed: Boolean get() = completed || stale
+
     /** 「刷新」：需要 Shell，且不能有命令在飞。`STALE` 态下不刷新（走提示）。 */
     val canRefresh: Boolean get() = shellReady && !refreshing && !stale
 
@@ -81,6 +90,7 @@ fun buildViewerActions(
     refreshing = refreshing,
     capturing = state is CaptureState.Capturing,
     stale = state is CaptureState.Stale,
+    completed = state is CaptureState.Completed,
 )
 
 /**
@@ -104,13 +114,18 @@ fun buildViewerResult(
         lines = filtered,
         rawLineCount = raw.size,
         continuationCount = LogcatParser.countContinuations(filtered),
-        timeRange = if (state is CaptureState.Capturing) captureTimeRange(filtered) else null,
+        // 采集中与已完成都要显示时间范围：用户据此确认"这批覆盖哪段时间"。
+        // 已完成时更是唯一能说明"这批是什么"的信息
+        timeRange = if (state is CaptureState.Capturing || state is CaptureState.Completed) {
+            captureTimeRange(filtered)
+        } else null,
         elapsedMs = elapsedMs,
         emptyReason = diagnoseEmpty(
             state = state,
             filtered = filtered,
             rawCount = raw.size,
-            filterActive = filter.hasTagQuery || filter.minLevel != LogLevel.VERBOSE,
+            filterActive = filter.hasTagQuery || filter.hasMessageQuery ||
+                filter.minLevel != LogLevel.VERBOSE,
             shellAvailable = shellAvailable,
             timedOut = timedOut,
         ),
@@ -125,7 +140,8 @@ fun buildViewerResult(
  * 采集文件在采集区间内**不变**。不说清楚，用户会以为工具不稳定。
  */
 fun dataSourceLabel(state: CaptureState): String = when (state) {
-    is CaptureState.Capturing -> "采集文件"
-    is CaptureState.Stale -> "上次采集文件"
-    is CaptureState.Idle -> "缓冲区"
+    is CaptureState.Capturing -> "采集文件（采集中）"
+    is CaptureState.Completed -> "采集文件（已固定）"
+    is CaptureState.Stale -> "上次采集文件（异常结束）"
+    is CaptureState.Idle -> "缓冲区（会变化）"
 }

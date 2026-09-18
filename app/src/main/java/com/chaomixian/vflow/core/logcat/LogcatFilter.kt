@@ -24,6 +24,7 @@ package com.chaomixian.vflow.core.logcat
  *
  * @param minLevel 最低级别（含）。占位用的是「至少这么严重」的直觉，与触发器一致。
  * @param tagQuery TAG 关键字。**大小写不敏感的子串匹配**，空串表示不过滤。
+ * @param messageQuery 消息关键字。**大小写不敏感的子串匹配**，空串表示不过滤。
  * @param showOwnApp 是否显示 vFlow 自己的日志。**默认显示**——调试工具里
  *   「看不到东西」比「看到太多」更难排查，且勾掉只是一个开关。
  * @param lineLimit 取多少行。是**上界而非精确值**（§4.4：`-T n` 会多出日志头标记行）。
@@ -31,11 +32,15 @@ package com.chaomixian.vflow.core.logcat
 data class LogcatFilter(
     val minLevel: LogLevel = LogLevel.DEBUG,
     val tagQuery: String = "",
+    val messageQuery: String = "",
     val showOwnApp: Boolean = true,
     val lineLimit: Int = LogcatCommands.DEFAULT_LINES,
 ) {
     /** TAG 条件是否生效。 */
     val hasTagQuery: Boolean get() = tagQuery.isNotBlank()
+
+    /** 消息条件是否生效。 */
+    val hasMessageQuery: Boolean get() = messageQuery.isNotBlank()
 }
 
 /**
@@ -63,13 +68,21 @@ fun applyLogcatFilter(
     filter: LogcatFilter,
     ownPids: Set<Int> = emptySet(),
 ): List<LogcatLine> {
-    val query = filter.tagQuery.trim()
+    val tagQuery = filter.tagQuery.trim()
+    val messageQuery = filter.messageQuery.trim()
+
     return lines.filter { line ->
         if (!line.passesLevel(filter.minLevel)) return@filter false
 
         if (!filter.showOwnApp && line.pid in ownPids) return@filter false
 
-        if (query.isNotEmpty() && !line.tag.contains(query, ignoreCase = true)) {
+        if (tagQuery.isNotEmpty() && !line.tag.contains(tagQuery, ignoreCase = true)) {
+            return@filter false
+        }
+
+        // 消息过滤。降级行的 message 是整行原文，因此它会与母行**分别**参与
+        // 消息匹配 —— 这正是想要的：多行堆栈里某一行含关键字时能单独命中所属的日志块
+        if (messageQuery.isNotEmpty() && !line.message.contains(messageQuery, ignoreCase = true)) {
             return@filter false
         }
 
@@ -93,6 +106,14 @@ enum class LogcatEmptyReason {
 
     /** 采集异常结束（`STALE` 态）。 */
     CaptureStale,
+
+    /**
+     * 采集已完成，但文件里没有符合条件的内容。
+     *
+     * 与 [CaptureJustStarted] 的区别：那时是"还没产生日志"，这里是"产生过、
+     * 但那批里没有你要的"。前者让用户等一等，后者该让用户放宽条件或重新采集。
+     */
+    CaptureCompletedEmpty,
 
     /** Shell 权限未就绪，压根没执行命令。 */
     ShellUnavailable,
@@ -133,6 +154,7 @@ fun diagnoseEmpty(
     return when (state) {
         is CaptureState.Stale -> LogcatEmptyReason.CaptureStale
         is CaptureState.Capturing -> LogcatEmptyReason.CaptureJustStarted
+        is CaptureState.Completed -> LogcatEmptyReason.CaptureCompletedEmpty
         is CaptureState.Idle -> LogcatEmptyReason.BufferRotated
     }
 }

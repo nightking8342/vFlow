@@ -251,6 +251,17 @@ object LogcatCaptureController {
                 showIsland(context, startedAtMs)
             }
 
+            // 已完成：数据源固定为采集文件，不再有进程在跑。
+            // 岛要撤掉（采集结束了），但不报"异常结束"
+            CaptureState.Completed -> {
+                stopTicker()
+                if (delayIslandDismiss && IslandCapability.isAvailable()) {
+                    finishIsland(context, finishedElapsedMs ?: 0L)
+                } else {
+                    cancelIsland(context)
+                }
+            }
+
             CaptureState.Idle, is CaptureState.Stale -> {
                 stopTicker()
                 // 无论之前有没有岛，都尝试取消——cancel 对不存在的通知是安全的，

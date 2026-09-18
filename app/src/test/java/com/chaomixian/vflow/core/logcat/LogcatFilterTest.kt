@@ -270,4 +270,56 @@ class LogcatFilterTest {
         )
         assertEquals("10:00:12–10:01:00", captureTimeRange(lines))
     }
+
+    // ── 消息过滤 ★ ──────────────────────────────────────────────
+
+    @Test
+    fun `message query filters on the message field`() {
+        val lines = listOf(
+            line("A", message = "connection established"),
+            line("B", message = "connection failed"),
+        )
+        val result = applyLogcatFilter(lines, defaultFilter.copy(messageQuery = "failed"))
+        assertEquals(listOf("B"), result.map { it.tag })
+    }
+
+    @Test
+    fun `message matching is case insensitive`() {
+        val lines = listOf(line("A", message = "Connection FAILED"))
+        assertEquals(1, applyLogcatFilter(lines, defaultFilter.copy(messageQuery = "failed")).size)
+    }
+
+    @Test
+    fun `tag and message filters are combined with AND`() {
+        val lines = listOf(
+            line("MyApp", message = "error"),
+            line("Other", message = "error"),
+            line("MyApp", message = "ok"),
+        )
+        val result = applyLogcatFilter(
+            lines,
+            defaultFilter.copy(tagQuery = "MyApp", messageQuery = "error"),
+        )
+        assertEquals(1, result.size)
+    }
+
+    @Test
+    fun `blank message query disables message filtering`() {
+        val lines = listOf(line("A", message = "x"), line("B", message = "y"))
+        assertEquals(2, applyLogcatFilter(lines, defaultFilter.copy(messageQuery = "   ")).size)
+        assertTrue(!defaultFilter.copy(messageQuery = " ").hasMessageQuery)
+    }
+
+    @Test
+    fun `a continuation line is matched on its own message text`() {
+        // ⚠️ 降级行的 message 是**整行原文**，因此它与母行分别参与消息匹配。
+        // 这正是想要的：多行堆栈里关键字出现在续行时，那一行能单独命中所属日志块
+        val lines = listOf(
+            line("MyApp", message = "FATAL EXCEPTION: main"),
+            line("MyApp", message = "  at Foo.bar(NullPointer)", continuation = true),
+        )
+        val result = applyLogcatFilter(lines, defaultFilter.copy(messageQuery = "NullPointer"))
+        assertEquals(1, result.size)
+        assertTrue(result.first().isContinuation)
+    }
 }

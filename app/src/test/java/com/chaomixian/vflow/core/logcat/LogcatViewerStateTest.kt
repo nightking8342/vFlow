@@ -183,17 +183,109 @@ class LogcatViewerStateTest {
     // ── 数据源文案 ★ ────────────────────────────────────────────
 
     @Test
-    fun `data source label differs between the two sources`() {
-        // ⚠️ 两种数据源的语义不同，文案必须写出来（§4.1.2）：
+    fun `every state has a distinct data source label`() {
+        // ⚠️ 数据源的语义不同，文案必须写出来（§4.1.2）：
         // 缓冲区是**会变**的滚动窗口，采集文件在区间内**不变**。
         // 不说清楚，用户会以为工具不稳定——"刚才还有的行怎么没了"。
-        assertEquals("缓冲区", dataSourceLabel(CaptureState.Idle))
-        assertEquals("采集文件", dataSourceLabel(CaptureState.Capturing(1)))
-        assertEquals("上次采集文件", dataSourceLabel(CaptureState.Stale(1)))
+        //
+        // 这里只断言**两两不同**而不写死文案：文案会随本地化变，
+        // 但"四个状态必须能区分开"这个不变量不会变。
+        val labels = listOf(
+            CaptureState.Idle,
+            CaptureState.Capturing(1),
+            CaptureState.Completed,
+            CaptureState.Stale(1),
+        ).map { dataSourceLabel(it) }
+
+        assertEquals("四个状态的文案应当互不相同", labels.size, labels.toSet().size)
+        labels.forEach { assertTrue("文案不该为空", it.isNotBlank()) }
     }
 
     @Test
     fun `idle and capturing labels are distinct`() {
         assertTrue(dataSourceLabel(CaptureState.Idle) != dataSourceLabel(CaptureState.Capturing(1)))
+    }
+
+    @Test
+    fun `completed and capturing labels are distinct`() {
+        // ⚠️ 两者数据源是同一个文件，但"还在增长"与"已固定"对用户
+        // 是完全不同的心智模型——前者可以等更多日志，后者不能
+        assertTrue(
+            dataSourceLabel(CaptureState.Completed) != dataSourceLabel(CaptureState.Capturing(1))
+        )
+    }
+
+    // ── 数据源是否已固定 ★ ──────────────────────────────────────
+
+    @Test
+    fun `refresh is unnecessary when the source is fixed`() {
+        // ⚠️ 已完成态与异常结束态下，采集文件不再变化 —— 刷新按钮没有意义，
+        // 界面据此隐藏它（用户报的问题 1/2 的界面侧落点）
+        assertTrue(buildViewerActions(CaptureState.Completed, true, false).sourceIsFixed)
+        assertTrue(buildViewerActions(CaptureState.Stale(1), true, false).sourceIsFixed)
+    }
+
+    @Test
+    fun `the source is not fixed while idle or capturing`() {
+        // 空闲态读实时缓冲区（会变）；采集态文件还在增长（会变）
+        assertFalse(buildViewerActions(CaptureState.Idle, true, false).sourceIsFixed)
+        assertFalse(buildViewerActions(CaptureState.Capturing(1), true, false).sourceIsFixed)
+    }
+
+    @Test
+    fun `a completed state still allows starting a new capture`() {
+        // 已完成态下用户要能"重新采集" —— canStart 必须为真，
+        // 否则用户卡在这一批里出不去
+        val actions = buildViewerActions(CaptureState.Completed, shellReady = true, refreshing = false)
+        assertTrue(actions.canStart)
+        assertFalse(actions.capturing)
+    }
+
+    // ── 时间范围：已完成态也要显示 ──────────────────────────────
+
+    @Test
+    fun `time range is shown when the capture is completed`() {
+        // 采集完成后，时间范围是**唯一**能说明"这批覆盖哪段时间"的信息，
+        // 比采集中时更需要它
+        val raw = listOf(
+            line("A").copy(timestamp = "09-18 10:00:00.000"),
+            line("B").copy(timestamp = "09-18 10:01:00.000"),
+        )
+        val completed = buildViewerResult(raw, filter, CaptureState.Completed, emptySet(), 1)
+        assertEquals("10:00:00–10:01:00", completed.timeRange)
+    }
+
+    // ── 消息过滤 ★ ──────────────────────────────────────────────
+
+    @Test
+    fun `message filter narrows the result`() {
+        val raw = listOf(
+            line("A").copy(message = "connection established"),
+            line("B").copy(message = "connection failed"),
+        )
+        val result = buildViewerResult(
+            raw = raw,
+            filter = filter.copy(messageQuery = "failed"),
+            state = CaptureState.Idle,
+            ownPids = emptySet(),
+            elapsedMs = 1,
+        )
+        assertEquals(1, result.lines.size)
+        assertEquals("B", result.lines.first().tag)
+        assertEquals("过滤前的行数要保留", 2, result.rawLineCount)
+    }
+
+    @Test
+    fun `a message filter alone counts as an active filter`() {
+        // ⚠️ 若忘了把 message 算进 filterActive，用户配了消息条件却筛出空时
+        // 会看到"没有日志"而不是"被筛没了" —— 误导性完全不同
+        val result = buildViewerResult(
+            raw = listOf(line("A").copy(message = "something else")),
+            filter = filter.copy(messageQuery = "nomatch"),
+            state = CaptureState.Idle,
+            ownPids = emptySet(),
+            elapsedMs = 1,
+        )
+        assertEquals(LogcatEmptyReason.FilteredOut, result.emptyReason)
     }
 }

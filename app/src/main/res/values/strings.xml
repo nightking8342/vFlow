@@ -174,9 +174,19 @@
     <string name="logcat_capture_island_content">正在采集日志</string>
     <string name="logcat_capture_stop_action">结束</string>
     <string name="logcat_capture_finished_content">采集已结束</string>
+    <string name="logcat_state_completed">采集已完成（数据源已固定）</string>
+    <string name="logcat_empty_completed">这批日志里没有符合条件的内容。可以放宽过滤条件，或重新采集。</string>
+    <string name="logcat_status_completed">采集文件 %1$d 行 · 降级 %2$d 行 · %3$s</string>
+    <string name="logcat_action_rescan">重新筛选</string>
+    <string name="logcat_action_release">放弃这批</string>
+    <string name="logcat_filter_message_label">消息</string>
+    <string name="logcat_filter_message_hint">按消息内容过滤</string>
+    <string name="logcat_wrap_on">自动换行：开</string>
+    <string name="logcat_wrap_off">自动换行：关</string>
     <!-- logcat 查看器 -->
     <string name="logcat_viewer_title">logcat 调试器</string>
     <string name="logcat_viewer_entry_title">logcat 调试器</string>
+    <string name="logcat_action_recapture">重新采集</string>
     <string name="logcat_viewer_entry_subtitle">采集与查看系统日志，用于调试触发器</string>
     <string name="logcat_viewer_export">导出</string>
     <string name="logcat_viewer_export_text">导出为文本 (.log)</string>

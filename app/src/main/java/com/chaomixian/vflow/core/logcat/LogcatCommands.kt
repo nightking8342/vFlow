@@ -50,6 +50,21 @@ object LogcatCommands {
     /** 采集进程的 pidfile。 */
     const val PID_FILE = "/sdcard/vFlow/temp/logcat_capture.pid"
 
+    /**
+     * 「采集已完成」的标记文件。
+     *
+     * 停止采集后 pidfile 会被删掉，若只看 pidfile 的存在与否，
+     * 状态会退回 [CaptureState.Idle] —— 而 Idle 的数据源是**实时滚动的缓冲区**，
+     * 于是用户切个 TAG 就会看到"现在的日志"而不是刚采的那批。
+     *
+     * 有了这个标记，「数据源」才能由状态唯一决定：
+     * 有它 = 读采集文件（已固定），没有 = 读缓冲区（滚动）。
+     *
+     * ⚠️ 用**文件**而非内存标志：与 pidfile 同一个理由——
+     * 采集脱离 UI 存活，App 被杀后重进也该看到同一批日志（§4.2.1）。
+     */
+    const val DONE_FILE = "/sdcard/vFlow/temp/logcat_capture.done"
+
     /** 输出格式。`threadtime` 是人类可读的默认格式，见设计文档 §5.2 的取舍。 */
     private const val VERBOSITY = "-v threadtime"
 
@@ -84,8 +99,12 @@ object LogcatCommands {
         rotateCount: Int = 3,
         timeoutSec: Int = DEFAULT_TIMEOUT_SEC,
     ): String =
-        "timeout ${timeoutSec.coerceAtLeast(1)} " +
+        "rm -f $DONE_FILE; " +
+            "timeout ${timeoutSec.coerceAtLeast(1)} " +
             "$LOGCAT $VERBOSITY -r $rotateKb -n $rotateCount -f $CAPTURE_FILE " +
+            // ⚠️ 先删掉上一轮的 done 标记：否则新一轮刚开始时
+            // （pidfile 已写、进程还没起来）探测可能读到旧标记，
+            // 把"采集中"误判成"已完成"
             ">/dev/null 2>&1 </dev/null & echo \$! > $PID_FILE"
 
     /**
@@ -95,7 +114,8 @@ object LogcatCommands {
      * [CaptureState.STALE] 脏状态。
      */
     fun buildStopCapture(): String =
-        "kill \$(cat $PID_FILE) 2>/dev/null; rm -f $PID_FILE"
+        "kill \$(cat $PID_FILE) 2>/dev/null; rm -f $PID_FILE; " +
+            "touch $DONE_FILE"
 
     /**
      * 只清理脏状态（[CaptureState.STALE] 态下用户点「清理」）。
@@ -105,9 +125,21 @@ object LogcatCommands {
     fun buildClearStale(): String = "rm -f $PID_FILE"
 
     /**
+     * 回到空闲（读实时缓冲区）。
+     *
+     * 用户在「已完成」态点「重新采集」之外，也可以主动放弃这批日志 ——
+     * 那时删掉标记，数据源就切回缓冲区。
+     */
+    fun buildClearDone(): String = "rm -f $DONE_FILE"
+
+    /**
      * 判定当前采集状态。输出恒为一行，不会撞 Binder 上限。
      *
-     * 输出格式：`IDLE` / `CAPTURING:<pid>` / `STALE:<pid>`
+     * 输出格式：`IDLE` / `CAPTURING:<pid>` / `STALE:<pid>` / `COMPLETED`
+     *
+     * ⚠️ 判定顺序有讲究：**先看有没有进程，再看标记文件**。
+     * 反过来的话，一次新采集刚开始（pidfile 已写、done 标记还没来得及删）
+     * 会被误判成"已完成"，于是用户看到上次的日志。
      *
      * ⚠️ 用 pidfile 精确匹配而非 `grep logcat`（类注释第 3 条）。
      * `ps -A -o PID=` 的写法参照项目内先例 `services/CoreLauncher.kt:268`。
@@ -117,6 +149,7 @@ object LogcatCommands {
             "pid=\$(cat $PID_FILE); " +
             "if ps -A -o PID= | grep -qw \"\$pid\"; then echo CAPTURING:\$pid; " +
             "else echo STALE:\$pid; fi; " +
+            "elif [ -f $DONE_FILE ]; then echo COMPLETED; " +
             "else echo IDLE; fi"
 
     /**
@@ -126,6 +159,7 @@ object LogcatCommands {
         val s = output.trim().lineSequence().firstOrNull()?.trim().orEmpty()
         return when {
             s == "IDLE" -> CaptureState.Idle
+            s == "COMPLETED" -> CaptureState.Completed
             s.startsWith("CAPTURING:") -> CaptureState.Capturing(s.removePrefix("CAPTURING:").toIntOrNull() ?: -1)
             s.startsWith("STALE:") -> CaptureState.Stale(s.removePrefix("STALE:").toIntOrNull() ?: -1)
             // 无法识别时保守当作空闲——至少不会误报"正在采集"而阻止用户操作
@@ -136,7 +170,10 @@ object LogcatCommands {
     // ── 读取 ─────────────────────────────────────────────────────
 
     /**
-     * 从采集文件尾部有界读取（**采集态**用）。
+     * 从采集文件尾部有界读取。
+     *
+     * [CaptureState.Capturing] 与 [CaptureState.Completed] **都用它**——
+     * 两者的数据源是同一个文件，区别只在于前者还在增长、后者已固定。
      *
      * 结果只有 [lines] 行，天然满足 Binder 上限。
      */
@@ -205,6 +242,10 @@ object LogcatCommands {
         // 采集态：过滤在 App 侧做（采集文件永远全量写入），
         // 这样改过滤条件只需重渲染，不用重跑命令，也支持事后切换
         is CaptureState.Capturing -> buildTail(lines)
+        // 已完成态的数据源与采集态相同，但文件不再变化 ——
+        // 重新读一遍得到的还是同一批内容。界面应隐藏刷新按钮；
+        // 这里仍返回命令只是为了"重新采集后首次加载"这类场景能复用
+        is CaptureState.Completed -> buildTail(lines)
         is CaptureState.Stale -> null
     }
 
@@ -226,9 +267,10 @@ object LogcatCommands {
         lines: Int = MAX_LINES,
         minLevel: LogLevel = LogLevel.VERBOSE,
     ): String? = when (state) {
-        // 采集态只能读文件（App 进程读不到 shell 写的 /sdcard 路径，
+        // 采集态与已完成态都只能读文件（App 进程读不到 shell 写的 /sdcard 路径，
         // 所以统一走 tail 由 shell 读）；文件本身是全量写入的，天然不带 TAG 过滤
         is CaptureState.Capturing -> buildTail(lines)
+        is CaptureState.Completed -> buildTail(lines)
         is CaptureState.Idle -> buildSnapshotForTagStats(lines, minLevel)
         is CaptureState.Stale -> null
     }
@@ -266,6 +308,28 @@ sealed interface CaptureState {
      * **不自动删**——用户可能想先看看那次采集到的日志。
      */
     data class Stale(val pid: Int) : CaptureState
+
+    /**
+     * 采集已完成（用户主动停止，或到点自动停止）。
+     *
+     * ## 为什么需要这个状态
+     *
+     * 停止后 pidfile 被删，若只看 pidfile 就会退回 [Idle] ——
+     * 而 [Idle] 的数据源是**实时滚动的缓冲区**。
+     * 后果是：用户刚采完一批日志，切个 TAG 过滤就变成了读"现在的日志"，
+     * 刚采的那批内容凭空消失。
+     *
+     * 它和 [Idle] 的**唯一区别就是数据源**：
+     *
+     * | 状态 | 数据源 | 会变吗 |
+     * |---|---|---|
+     * | [Idle] | logcat 缓冲区 | ⚠️ 会（滚动窗口） |
+     * | [Completed] | 采集文件 | ❌ 不会（已固定） |
+     *
+     * 「刷新」在 [Completed] 下**没有意义**（文件不再变化），
+     * 因此界面上应当隐藏或禁用那个按钮 —— 改过滤条件只需在内存里重筛。
+     */
+    data object Completed : CaptureState
 }
 
 /**
