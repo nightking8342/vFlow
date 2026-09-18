@@ -37,3 +37,6 @@ __pycache__/
 
 # 原型验证的临时截图（不随仓库分发）
 /*.png
+
+# 临时提交信息文件（git commit -F 用）
+.commitmsg.tmp
