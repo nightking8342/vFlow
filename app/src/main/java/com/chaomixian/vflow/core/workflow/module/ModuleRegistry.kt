@@ -88,6 +88,8 @@ object ModuleRegistry {
         register(LocationTriggerModule(), context)
         register(PoseTriggerModule(), context)
         register(DoNotDisturbTriggerModule(), context)
+        // logcat 触发器（fork 新增）
+        register(LogcatTriggerModule(), context)
         register(VoiceTriggerModule(), context)
 
         // 界面交互

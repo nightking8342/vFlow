@@ -12,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.Closeable
@@ -500,6 +501,16 @@ object VFlowCoreBridge {
         }
     }
 
+    /**
+     * logcat 流的**上行 writer**。
+     *
+     * `StreamingWrapper` 的流建立后这条连接归它独占，而 [updateLogcatTriggers]
+     * 需要从另一个协程往同一个 socket 写控制帧 —— 因此必须把 writer 存下来。
+     * 用锁保护是因为它同时被流协程（登记/清理）与调用方（写入）访问。
+     */
+    private var logcatStreamWriter: PrintWriter? = null
+    private val logcatWriterLock = Any()
+
     // 业务 API 封装
     /**
      * 执行 Shell 命令（使用当前权限模式）
@@ -722,6 +733,113 @@ object VFlowCoreBridge {
                     imageUri = payload.optString("imageUri").takeIf { it.isNotBlank() }
                 )
             )
+        }
+    }
+
+    /**
+     * 订阅 logcat 事件流（**双工**）。
+     *
+     * 与 [streamClipboardEvents] 的区别：这条连接**保持 writer**，
+     * 订阅之后仍可向 Core 发控制帧（条件更新），见 [updateLogcatTriggers]。
+     *
+     * ⚠️ **必须保留 writer 的生命周期**：把 writer 存到 [logcatStreamWriter]，
+     * 供并发的 [updateLogcatTriggers] 使用。这是 `StreamingWrapper` 加 reader
+     * 参数之后新增的能力（见 core 侧 `StreamingWrapper` 的说明）。
+     *
+     * @param conditionArray 初始条件列表。订阅帧自带全量条件 ——
+     *   这样 Core 不必等第二次通信才开始工作，且"重连即重发"的语义天然正确
+     * @param onEvent 每收到一个事件回调一次
+     * @return 流是否曾成功建立（断开时返回 false，由调用方决定是否重连）
+     */
+    suspend fun streamLogcatEvents(
+        conditionArray: JSONArray,
+        onEvent: suspend (JSONObject) -> Unit,
+    ): Boolean = withContext(Dispatchers.IO) {
+        val subscribeRequest = JSONObject()
+            .put("target", "logcat")
+            .put("method", "subscribeLogcatStream")
+            .put("params", JSONObject().put("conditions", conditionArray))
+
+        return@withContext try {
+            if (isUnixSocketEnabled()) {
+                val socketName = getUnixSocketName()
+                LocalSocket(LocalSocket.SOCKET_STREAM).use { streamSocket ->
+                    bindStreamCancellation(streamSocket)
+                    streamSocket.connect(
+                        LocalSocketAddress(socketName, LocalSocketAddress.Namespace.ABSTRACT)
+                    )
+                    streamSocket.soTimeout = 0
+                    val writer = PrintWriter(streamSocket.outputStream, true)
+                    val reader = BufferedReader(InputStreamReader(streamSocket.inputStream))
+                    writer.println(subscribeRequest.toString())
+                    if (writer.checkError()) return@withContext false
+                    consumeLogcatStream(reader, writer, onEvent)
+                }
+            } else {
+                Socket(HOST, PORT).use { streamSocket ->
+                    bindStreamCancellation(streamSocket)
+                    streamSocket.soTimeout = 0
+                    streamSocket.keepAlive = true
+                    streamSocket.tcpNoDelay = true
+                    val writer = PrintWriter(streamSocket.getOutputStream(), true)
+                    val reader = BufferedReader(InputStreamReader(streamSocket.getInputStream()))
+                    writer.println(subscribeRequest.toString())
+                    if (writer.checkError()) return@withContext false
+                    consumeLogcatStream(reader, writer, onEvent)
+                }
+            }
+        } catch (e: Exception) {
+            DebugLogger.w(TAG, "logcat 事件流异常: ${e.javaClass.simpleName} - ${e.message}", e)
+            false
+        } finally {
+            // 无论怎么退出都要清掉 writer，否则 updateLogcatTriggers 会往一个
+            // 已关闭的 socket 上写，且 checkError 不一定会立刻反映出来
+            synchronized(logcatWriterLock) { logcatStreamWriter = null }
+        }
+    }
+
+    private suspend fun consumeLogcatStream(
+        reader: BufferedReader,
+        writer: PrintWriter,
+        onEvent: suspend (JSONObject) -> Unit,
+    ): Boolean {
+        // 先登记 writer，之后 updateLogcatTriggers 才有通道可用
+        synchronized(logcatWriterLock) { logcatStreamWriter = writer }
+
+        while (true) {
+            val line = reader.readLine() ?: return false
+            val payload = try {
+                JSONObject(line)
+            } catch (e: Exception) {
+                DebugLogger.d(TAG, "logcat 流收到非法 JSON，跳过: ${e.message}")
+                continue
+            }
+            if (!payload.optBoolean("success")) return false
+            onEvent(payload)
+        }
+    }
+
+    /**
+     * 向已建立的 logcat 流下发新的条件列表（**全量替换**）。
+     *
+     * ⚠️ **这是双工协议的上行方向**，也是 `StreamingWrapper` 需要 reader 参数的原因。
+     *
+     * @return true 表示已写入；false 表示当前没有活跃的流
+     *   （此时不必重试——App 侧的重连逻辑会带着完整条件重新订阅）
+     */
+    fun updateLogcatTriggers(conditionArray: JSONArray): Boolean {
+        val frame = JSONObject()
+            .put("method", "updateTriggers")
+            .put("conditions", conditionArray)
+
+        val writer = synchronized(logcatWriterLock) { logcatStreamWriter } ?: return false
+
+        return try {
+            writer.println(frame.toString())
+            !writer.checkError()
+        } catch (e: Exception) {
+            DebugLogger.w(TAG, "下发 logcat 条件失败: ${e.message}")
+            false
         }
     }
 

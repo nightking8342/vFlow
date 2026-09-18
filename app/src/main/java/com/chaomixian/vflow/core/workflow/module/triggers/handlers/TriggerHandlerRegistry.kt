@@ -46,6 +46,9 @@ object TriggerHandlerRegistry {
         register(LocationTriggerModule().id) { LocationTriggerHandler() }
         register(PoseTriggerModule().id) { PoseTriggerHandler() }
         register(DoNotDisturbTriggerModule().id) { DoNotDisturbTriggerHandler() }
+        // logcat 触发器（fork 新增）。注意它继承 BaseTriggerHandler 而非
+        // ListeningTriggerHandler —— 见 LogcatTriggerHandler 的类注释
+        register(LogcatTriggerModule().id) { LogcatTriggerHandler() }
 
     }
 
