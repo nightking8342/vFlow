@@ -228,7 +228,7 @@ object WorkflowExecutor {
                             }
                         } catch (e: TimeoutCancellationException) {
                             DebugLogger.e("WorkflowExecutor", "工作流执行超时（最大 ${maxExecutionTime} 秒）")
-                            ExecutionNotificationManager.updateState(workflow, ExecutionNotificationState.Cancelled("执行超时（${maxExecutionTime}秒）"))
+                            ExecutionNotificationManager.updateState(workflow, ExecutionNotificationState.Failed("执行超时（${maxExecutionTime}秒）"))
                             isTimeout = true
 
                             // 在主线程显示 Toast 提示
@@ -323,9 +323,12 @@ object WorkflowExecutor {
                             }
                             DebugLogger.d("WorkflowExecutor", "主工作流 '${workflow.name}' 执行完毕。")
                         }
-                        // 延迟后取消通知，给用户时间查看最终状态
-                        delay(3000)
-                        ExecutionNotificationManager.cancelNotification()
+                        // 失败与超时需要用户处理，保留通知让其常驻（由系统通知超时或用户手动清除）；
+                        // 其余状态（正常完成、用户主动停止）延迟 3 秒后取消，给用户时间查看最终状态。
+                        if (!wasFailureHandled && !isTimeout) {
+                            delay(3000)
+                            ExecutionNotificationManager.cancelNotification(workflow.id)
+                        }
                     }
                 }
             }
@@ -361,8 +364,15 @@ object WorkflowExecutor {
 
         seedTriggerOutputs(workflow, subWorkflowContext, workflow.manualTrigger()?.id)
 
-        // 调用内部执行循环，获取返回值
-        val returnValue = executeWorkflowInternal(workflow, subWorkflowContext, workflow.id)
+        // 调用内部执行循环，获取返回值。
+        // isSubWorkflow = true：子工作流不发通知——它的执行收尾不在主工作流的 finally 里，
+        // 若发了属于它自己的通知就没人清理，会永久残留。
+        val returnValue = executeWorkflowInternal(
+            workflow,
+            subWorkflowContext,
+            workflow.id,
+            isSubWorkflow = true
+        )
 
         // 返回值 + 命名变量
         return SubWorkflowResult(
@@ -420,12 +430,18 @@ object WorkflowExecutor {
      * 核心的工作流执行循环。
      * @param workflow 要执行的工作流。
      * @param initialContext 初始执行上下文。
+     * @param executionInstanceId 本次执行的实例 ID。
+     * @param isSubWorkflow 是否是「被其它工作流通过调用模块唤起」的子工作流。
+     *        子工作流不发通知——通知只反映用户实际触发的那个工作流，内部调用了谁
+     *        属于实现细节。且子工作流的执行收尾在主工作流的 finally 之外，
+     *        若它自己发通知就没有人负责清理，会以 Running 状态永久残留在状态栏。
      * @return 子工作流的返回值，对于主工作流总是返回 null。
      */
     private suspend fun executeWorkflowInternal(
         workflow: Workflow,
         initialContext: ExecutionContext,
-        executionInstanceId: String
+        executionInstanceId: String,
+        isSubWorkflow: Boolean = false
     ): Any? {
         val stepOutputs = initialContext.stepOutputs.toMutableMap()
         val namedVariables = initialContext.namedVariables
@@ -502,10 +518,22 @@ object WorkflowExecutor {
                 )
             )
 
-            // 更新进度通知
+            // 更新进度通知。子工作流不发通知——见 executeWorkflowInternal 的参数说明。
             val progress = (pc * 100) / workflow.steps.size
             val progressMessage = "步骤 ${pc + 1}/${workflow.steps.size}: ${module.metadata.name}"
-            ExecutionNotificationManager.updateState(workflow, ExecutionNotificationState.Running(progress, progressMessage))
+            if (!isSubWorkflow) {
+                // stepName 显式传入：这是「步骤切换」的时刻，岛上的步骤名在此更新。
+                // 模块执行期间自报的进度会覆盖 message，故步骤名不能从 message 解析
+                //（见 ExecutionNotificationState.Running.stepName 的说明）。
+                ExecutionNotificationManager.updateState(
+                    workflow,
+                    ExecutionNotificationState.Running(
+                        progress,
+                        progressMessage,
+                        stepName = module.metadata.name
+                    )
+                )
+            }
 
             // 为当前步骤创建执行上下文
             // 注意：step.parameters 是 Map<String, Any?>，需要转换为 Map<String, VObject>
@@ -570,14 +598,18 @@ object WorkflowExecutor {
                 if (attempt > 0) {
                     DebugLogger.w("WorkflowExecutor", "步骤执行失败，正在进行第 $attempt 次重试 (等待 ${retryInterval}ms)...")
                     // 在模块内部进度更新时，也刷新通知
-                    ExecutionNotificationManager.updateState(workflow, ExecutionNotificationState.Running(progress, "重试 ($attempt/$retryCount): ${module.metadata.name}"))
+                    if (!isSubWorkflow) {
+                        ExecutionNotificationManager.updateState(workflow, ExecutionNotificationState.Running(progress, "重试 ($attempt/$retryCount): ${module.metadata.name}"))
+                    }
                     delay(retryInterval)
                 }
 
                 finalResult = preExecutionFailure ?: try {
                     module.execute(executionContext) { progressUpdate ->
                         DebugLogger.d("WorkflowExecutor", "[进度] ${module.metadata.name}: ${progressUpdate.message}")
-                        ExecutionNotificationManager.updateState(workflow, ExecutionNotificationState.Running(progress, progressUpdate.message))
+                        if (!isSubWorkflow) {
+                            ExecutionNotificationManager.updateState(workflow, ExecutionNotificationState.Running(progress, progressUpdate.message))
+                        }
                     }
                 } catch (e: CancellationException) {
                     throw e
@@ -642,7 +674,7 @@ object WorkflowExecutor {
                         pc++ // 继续下一步
                     } else {
                         // POLICY_STOP (默认) 或 重试耗尽
-                        ExecutionNotificationManager.updateState(workflow, ExecutionNotificationState.Cancelled("失败: ${result.errorMessage}"))
+                        ExecutionNotificationManager.updateState(workflow, ExecutionNotificationState.Failed("失败: ${result.errorMessage}"))
 
                         // 尝试获取 UI 服务并显示错误弹窗
                         // 仅当应用在前台或有悬浮窗权限时，弹窗才会显示（由 ExecutionUIService 处理）

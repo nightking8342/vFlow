@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 超级岛展开态：状态胶囊底（fail）。 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#2EFF5A50" />
+    <corners android:radius="999dp" />
+</shape>

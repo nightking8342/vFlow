@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>vFlow · 超级岛展开态（方案 B 定稿 + 状态文案）</title>
+<style>
+  :root {
+    --page-bg: #F5F6F3;
+    --page-card: #FFFFFF;
+    --page-text: #191D17;
+    --page-text-dim: #5A6058;
+    --page-line: #DFE3DA;
+
+    /* 深色（岛展开态 / rvNight） */
+    --d-bg: #1A1D1A;
+    --d-title: #FFFFFF;
+    --d-text: #B6BCC2;
+    --d-tertiary: #8A9096;
+    --d-track: rgba(255,255,255,.14);
+    --d-accent: #A1D39A;
+    --d-accent-2: #7FB878;
+    --d-summary-bg: rgba(255,255,255,.05);
+    --d-chip-run-bg: rgba(255,255,255,.10);
+    --d-chip-run-fg: #D7DADE;
+    --d-chip-done-bg: rgba(52,199,89,.16);
+    --d-chip-done-fg: #A1D39A;
+    --d-chip-fail-bg: rgba(255,90,80,.18);
+    --d-chip-fail-fg: #FFB4AB;
+    --d-btn-bg: rgba(255,90,80,.20);
+    --d-btn-fg: #FFCFC9;
+
+    /* 浅色（通知栏 rv） */
+    --l-bg: #FFFFFF;
+    --l-title: #1A1A1A;
+    --l-text: #4A4F55;
+    --l-tertiary: #6B7075;
+    --l-track: rgba(0,0,0,.10);
+    --l-accent: #3B6939;
+    --l-accent-2: #4A8A47;
+    --l-summary-bg: rgba(0,0,0,.04);
+    --l-chip-run-bg: rgba(0,0,0,.06);
+    --l-chip-run-fg: #4A4F55;
+    --l-chip-fail-bg: rgba(186,26,26,.10);
+    --l-chip-fail-fg: #BA1A1A;
+    --l-btn-bg: rgba(186,26,26,.10);
+    --l-btn-fg: #BA1A1A;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background: var(--page-bg); color: var(--page-text);
+    line-height: 1.6; padding: 40px 20px 80px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1040px; margin: 0 auto; }
+  h1 { font-size: 25px; font-weight: 700; letter-spacing: -.3px; }
+  h2 { font-size: 17px; margin-top: 40px; }
+  .sub { font-size: 13px; color: var(--page-text-dim); margin-top: 8px; max-width: 780px; }
+  .sub.mb { margin-bottom: 18px; }
+
+  .note {
+    background: #FFF8E6; border: 1px solid #F0DFB0; border-radius: 10px;
+    padding: 12px 16px; font-size: 13px; color: #6B5518;
+    margin-top: 18px; max-width: 840px;
+  }
+  .note b { color: #4A3A0E; }
+  code {
+    background: rgba(0,0,0,.06); padding: 1px 5px; border-radius: 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px;
+  }
+
+  .rows { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 24px; margin-top: 24px; }
+
+  .variant { background: var(--page-card); border: 1px solid var(--page-line); border-radius: 16px; padding: 20px; }
+  .variant.picked { border-color: #A1D39A; box-shadow: 0 0 0 3px rgba(161,211,154,.28); }
+  .v-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+  .v-no { font-size: 11px; font-weight: 700; color: #FFF; background: var(--page-text); border-radius: 5px; padding: 2px 7px; }
+  .v-name { font-size: 16px; font-weight: 700; }
+  .v-desc { font-size: 12.5px; color: var(--page-text-dim); margin-bottom: 16px; min-height: 54px; }
+
+  .stage {
+    background: linear-gradient(160deg, #0E110E 0%, #1D221C 55%, #2A302A 100%);
+    border-radius: 14px; padding: 18px 16px; margin-bottom: 14px;
+    display: flex; justify-content: center; align-items: flex-start;
+  }
+  .stage.l { background: linear-gradient(160deg, #F2F4EF 0%, #E7EBE2 100%); }
+
+  .island { width: 100%; max-width: 340px; border-radius: 18px; padding: 14px 16px 13px; font-size: 13px; border: 1px solid transparent; }
+  .island.d { background: var(--d-bg); color: var(--d-title); border-color: rgba(255,255,255,.07); }
+  .island.l { background: var(--l-bg); color: var(--l-title); border-color: rgba(0,0,0,.06); box-shadow: 0 1px 3px rgba(0,0,0,.07); }
+
+  .row { display: flex; align-items: center; }
+  .spacer { flex: 1; }
+  .icon { width: 34px; height: 34px; border-radius: 50%; flex: 0 0 auto;
+    background: linear-gradient(135deg, #A1D39A, #6FA86B);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 15px; font-weight: 800; color: #0A390F; }
+  .l .icon { background: linear-gradient(135deg, #4A8A47, #3B6939); color: #FFF; }
+
+  .t-main { font-size: 14px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chip { font-size: 10px; font-weight: 700; padding: 3px 9px; border-radius: 999px; flex: 0 0 auto; }
+  .d .chip { background: var(--d-chip-run-bg); color: var(--d-chip-run-fg); }
+  .l .chip { background: var(--l-chip-run-bg); color: var(--l-chip-run-fg); }
+  .d .chip.done { background: var(--d-chip-done-bg); color: var(--d-chip-done-fg); }
+  .d .chip.fail { background: var(--d-chip-fail-bg); color: var(--d-chip-fail-fg); }
+  .l .chip.fail { background: var(--l-chip-fail-bg); color: var(--l-chip-fail-fg); }
+
+  .big { font-size: 22px; font-weight: 800; letter-spacing: -.6px; font-variant-numeric: tabular-nums; }
+
+  .bar { height: 6px; border-radius: 999px; overflow: hidden; }
+  .d .bar { background: var(--d-track); }
+  .l .bar { background: var(--l-track); }
+  .bar > i { display: block; height: 100%; border-radius: 999px; }
+  .d .bar > i { background: linear-gradient(90deg, var(--d-accent-2), var(--d-accent)); }
+  .l .bar > i { background: linear-gradient(90deg, var(--l-accent-2), var(--l-accent)); }
+
+  .meta { font-size: 11px; }
+  .d .meta { color: var(--d-tertiary); }
+  .l .meta { color: var(--l-tertiary); }
+  .timer { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .d .timer { color: var(--d-title); }
+  .l .timer { color: var(--l-title); }
+
+  .btn { border: 0; border-radius: 999px; font-family: inherit;
+    font-size: 11.5px; font-weight: 700; padding: 7px 16px; cursor: pointer; flex: 0 0 auto; }
+  .d .btn { background: var(--d-btn-bg); color: var(--d-btn-fg); }
+  .l .btn { background: var(--l-btn-bg); color: var(--l-btn-fg); }
+
+  .status { font-size: 11.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .d .status { color: var(--d-text); }
+  .l .status { color: var(--l-text); }
+
+  .box { border-radius: 9px; padding: 8px 11px; }
+  .d .box { background: var(--d-summary-bg); }
+  .l .box { background: var(--l-summary-bg); }
+
+  .specs { font-size: 12px; }
+  .spec-row { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; border-bottom: 1px dashed var(--page-line); }
+  .spec-row:last-child { border-bottom: 0; }
+  .spec-k { color: var(--page-text-dim); }
+  .spec-v { font-weight: 600; text-align: right; }
+  .spec-v.good { color: #2F7D32; }
+  .spec-v.warn { color: #B26A00; }
+
+  .pick { margin-top: 14px; width: 100%; border: 1px solid var(--page-line); background: #FFF;
+    border-radius: 9px; padding: 9px; cursor: pointer; font-family: inherit; font-size: 13px; font-weight: 600; color: var(--page-text); }
+  .pick:hover { background: #F0F2EC; }
+
+  table.data { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 14px; }
+  table.data th, table.data td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--page-line); vertical-align: top; }
+  table.data th { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--page-text-dim); font-weight: 700; }
+  table.data tr:last-child td { border-bottom: 0; }
+  table.data td.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+
+  .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid var(--page-line); font-size: 12px; color: var(--page-text-dim); }
+  .footer p + p { margin-top: 8px; }
+  .footer b { color: var(--page-text); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>vFlow · 超级岛展开态（方案 B 定稿 + 状态文案）</h1>
+  <p class="sub">
+    方案 B 已定：进度条独立一行、占满宽度，数值在条的左上方。
+    本页在此基础上决定<b>模块实时状态</b>（<code>message</code>）放在哪里——
+    它比模块名信息量大，之前完全没进岛。
+  </p>
+
+  <div class="note">
+    <b>三个字段的区别：</b>
+    <code>stepName</code> 是模块名（"延迟"），
+    <code>message</code> 是模块自报的实时状态（"正在延迟 6000ms"），
+    <code>progress</code> 是百分比。<br>
+    现在 <code>message</code> 只进了通知栏正文，岛与展开态都没用上——这是本次要补的。
+  </div>
+
+  <div class="rows" id="rows">
+
+    <!-- ============ 状态放摘要行 ============ -->
+    <div class="variant" data-variant="1">
+      <div class="v-head"><span class="v-no">1</span><span class="v-name">状态替换掉「已运行」</span></div>
+      <p class="v-desc">
+        进度条下方那一行原本放计时标签，改为放模块实时状态。<br>
+        步骤名留在上方与数值同行。
+      </p>
+
+      <div class="stage">
+        <div class="island d">
+          <div class="row">
+            <div class="icon">vF</div>
+            <div class="t-main" style="margin-left:10px; flex:1; min-width:0;">打开玩家视界</div>
+            <span class="chip">执行中</span>
+          </div>
+
+          <div class="row" style="margin-top:13px; align-items:baseline;">
+            <span class="big">3/8</span>
+            <span class="meta" style="margin-left:10px; flex:1; min-width:0;
+                  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">延迟</span>
+          </div>
+
+          <div class="bar" style="margin-top:9px;"><i style="width:37.5%"></i></div>
+
+          <div class="row" style="margin-top:11px;">
+            <span class="status" style="flex:1; min-width:0;">正在延迟 6000ms</span>
+            <span class="timer" style="margin-left:8px;">00:42</span>
+            <button class="btn" style="margin-left:10px;">结束</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="specs">
+        <div class="spec-row"><span class="spec-k">行数</span><span class="spec-v">4</span></div>
+        <div class="spec-row"><span class="spec-k">步骤名</span><span class="spec-v good">保留（数值旁）</span></div>
+        <div class="spec-row"><span class="spec-k">实时状态</span><span class="spec-v good">底部行</span></div>
+        <div class="spec-row"><span class="spec-k">状态可见宽度</span><span class="spec-v warn">中等（与计时、按钮同排）</span></div>
+      </div>
+      <button class="pick" data-pick="1">选方案 1</button>
+    </div>
+
+    <!-- ============ 状态独占一行 ============ -->
+    <div class="variant" data-variant="2">
+      <div class="v-head"><span class="v-no">2</span><span class="v-name">状态独占一行</span></div>
+      <p class="v-desc">
+        状态单独占一行、左对齐，宽度最大。<br>
+        计时与按钮移到下一行。状态文案往往较长，独占一行最不易截断。
+      </p>
+
+      <div class="stage">
+        <div class="island d">
+          <div class="row">
+            <div class="icon">vF</div>
+            <div class="t-main" style="margin-left:10px; flex:1; min-width:0;">打开玩家视界</div>
+            <span class="chip">执行中</span>
+          </div>
+
+          <div class="row" style="margin-top:13px; align-items:baseline;">
+            <span class="big">3/8</span>
+            <span class="meta" style="margin-left:10px; flex:1; min-width:0;
+                  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">延迟</span>
+          </div>
+
+          <div class="bar" style="margin-top:9px;"><i style="width:37.5%"></i></div>
+
+          <div class="status" style="margin-top:11px;">正在延迟 6000ms</div>
+
+          <div class="row" style="margin-top:10px;">
+            <span class="timer">00:42</span>
+            <span class="meta" style="margin-left:6px;">已运行</span>
+            <div class="spacer"></div>
+            <button class="btn">结束</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="specs">
+        <div class="spec-row"><span class="spec-k">行数</span><span class="spec-v">5</span></div>
+        <div class="spec-row"><span class="spec-k">步骤名</span><span class="spec-v good">保留（数值旁）</span></div>
+        <div class="spec-row"><span class="spec-k">实时状态</span><span class="spec-v good">独占整行</span></div>
+        <div class="spec-row"><span class="spec-k">状态可见宽度</span><span class="spec-v good">最大</span></div>
+      </div>
+      <button class="pick" data-pick="2">选方案 2</button>
+    </div>
+
+    <!-- ============ 状态做成摘要框 ============ -->
+    <div class="variant" data-variant="3">
+      <div class="v-head"><span class="v-no">3</span><span class="v-name">状态做成浅底摘要框</span></div>
+      <p class="v-desc">
+        状态放在带浅色底的框里，视觉上与其他信息区分开。<br>
+        底部仍是计时 + 按钮。用色块强化「这是当前进展」。
+      </p>
+
+      <div class="stage">
+        <div class="island d">
+          <div class="row">
+            <div class="icon">vF</div>
+            <div class="t-main" style="margin-left:10px; flex:1; min-width:0;">打开玩家视界</div>
+            <span class="chip">执行中</span>
+          </div>
+
+          <div class="row" style="margin-top:13px; align-items:baseline;">
+            <span class="big">3/8</span>
+            <span class="meta" style="margin-left:10px; flex:1; min-width:0;
+                  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">延迟</span>
+          </div>
+
+          <div class="bar" style="margin-top:9px;"><i style="width:37.5%"></i></div>
+
+          <div class="box" style="margin-top:11px;">
+            <span class="status">正在延迟 6000ms</span>
+          </div>
+
+          <div class="row" style="margin-top:10px;">
+            <span class="timer">00:42</span>
+            <div class="spacer"></div>
+            <button class="btn">结束</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="specs">
+        <div class="spec-row"><span class="spec-k">行数</span><span class="spec-v">5</span></div>
+        <div class="spec-row"><span class="spec-k">步骤名</span><span class="spec-v good">保留（数值旁）</span></div>
+        <div class="spec-row"><span class="spec-k">实时状态</span><span class="spec-v warn">摘要框内</span></div>
+        <div class="spec-row"><span class="spec-k">卡片高度</span><span class="spec-v warn">最高</span></div>
+      </div>
+      <button class="pick" data-pick="3">选方案 3</button>
+    </div>
+
+  </div>
+
+  <!-- 摘要态（大岛）改动 -->
+  <h2>摘要态（大岛）同步改动</h2>
+  <p class="sub mb">
+    大岛 B 区现在放的是<b>步骤名</b>。按你的要求改成<b>模块实时状态</b>——
+    步骤名移到 A 区（与进度数值一起），B 区腾给状态文案。
+  </p>
+
+  <div class="stage" style="max-width:460px;">
+    <div style="display:flex; align-items:center; gap:10px; width:100%;
+                background:#1A1D1A; border-radius:16px; padding:11px 14px;
+                border:1px solid rgba(255,255,255,.07);">
+      <div class="icon" style="width:26px;height:26px;font-size:12px;
+           background:linear-gradient(135deg,#A1D39A,#6FA86B); color:#0A390F;">vF</div>
+      <div style="flex:1; min-width:0;">
+        <div style="color:#8A9096; font-size:10px; font-variant-numeric:tabular-nums;">3/8 · 延迟</div>
+        <div style="color:#FFF; font-size:13px; font-weight:700;
+                    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">正在延迟 6000ms</div>
+      </div>
+    </div>
+  </div>
+
+  <table class="data">
+    <thead>
+      <tr><th style="width:22%">区域</th><th style="width:39%">现在</th><th style="width:39%">改后</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>A 区（图文）</td>
+        <td class="mono">title = "3/8"</td>
+        <td class="mono">title = "3/8 · 延迟"<br>（进度 + 步骤名）</td>
+      </tr>
+      <tr>
+        <td>B 区（文本）</td>
+        <td class="mono">title = "延迟"<br>（步骤名）</td>
+        <td class="mono">title = "正在延迟 6000ms"<br>（模块实时状态）</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="note" style="margin-top:20px;">
+    <b>A 区为什么要带步骤名：</b>只写 "3/8" 的话，B 区被状态文案占满后，
+    用户就完全看不出「这是哪个步骤」了。A 区空间虽窄，但 "3/8 · 延迟" 这类短文本放得下。
+    若步骤名过长，A 区会被系统截断——这是可接受的降级。
+  </div>
+
+  <!-- 浅色对照 -->
+  <h2>浅色模式对照（方案 2）</h2>
+  <p class="sub mb">通知栏在浅色模式下复用同一份布局，配色不同。</p>
+  <div class="stage l" style="max-width:420px;">
+    <div class="island l">
+      <div class="row">
+        <div class="icon">vF</div>
+        <div class="t-main" style="margin-left:10px; flex:1; min-width:0;">打开玩家视界</div>
+        <span class="chip">执行中</span>
+      </div>
+      <div class="row" style="margin-top:13px; align-items:baseline;">
+        <span class="big">3/8</span>
+        <span class="meta" style="margin-left:10px; flex:1; min-width:0;
+              white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">延迟</span>
+      </div>
+      <div class="bar" style="margin-top:9px;"><i style="width:37.5%"></i></div>
+      <div class="status" style="margin-top:11px;">正在延迟 6000ms</div>
+      <div class="row" style="margin-top:10px;">
+        <span class="timer">00:42</span>
+        <span class="meta" style="margin-left:6px;">已运行</span>
+        <div class="spacer"></div>
+        <button class="btn">结束</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <p><b>状态文案会频繁变化：</b>模块执行期间可能每秒报几次进度，
+    <code>message</code> 随之变化。所以状态行必须支持单行省略（<code>ellipsize=end</code>），
+    否则文案长短变化会导致卡片高度跳动。</p>
+    <p><b>RemoteViews 约束：</b>三种方案都只用 <code>LinearLayout</code> / <code>ImageView</code> /
+    <code>TextView</code> / <code>Chronometer</code> / <code>ProgressBar</code>。</p>
+    <p><b>终态：</b>完成/失败时状态行改为显示结果摘要（已完成 / 错误信息）。</p>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var buttons = document.querySelectorAll('.pick');
+  Array.prototype.forEach.call(buttons, function (btn) {
+    btn.addEventListener('click', function () {
+      var n = btn.dataset.pick;
+      Array.prototype.forEach.call(document.querySelectorAll('.variant'), function (v) {
+        v.classList.toggle('picked', v.dataset.variant === n);
+      });
+      Array.prototype.forEach.call(buttons, function (b) {
+        b.textContent = b.dataset.pick === n ? '✓ 已选方案 ' + n : '选方案 ' + b.dataset.pick;
+      });
+    });
+  });
+})();
+</script>
+</body>
+</html>
