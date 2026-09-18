@@ -216,6 +216,12 @@ dependencies {
 
     // 测试库
     testImplementation("junit:junit:4.13.2")
+    // 单元测试里的 `org.json` 默认是 Android 桩（android.jar 只有签名，方法体为空），
+    // 一调用就抛 "Method not mocked"。这里引入**与 core 模块同一版本**的真实实现，
+    // 让针对 JSON 编解码的纯函数单测能真正跑起来。
+    //
+    // 版本必须与 `core/build.gradle.kts` 的一致，否则测出来的行为可能与 Core 侧不同。
+    testImplementation("org.json:json:20251224")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
 
