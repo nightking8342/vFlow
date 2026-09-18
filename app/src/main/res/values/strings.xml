@@ -173,9 +173,10 @@
     <string name="logcat_notification_channel_desc">采集系统日志时显示进度。可在超级岛上查看计时并随时结束。</string>
     <string name="logcat_capture_island_content">正在采集日志</string>
     <string name="logcat_capture_stop_action">结束</string>
+    <string name="logcat_capture_finished_content">采集已结束</string>
     <!-- logcat 查看器 -->
-    <string name="logcat_viewer_title">logcat 查看器</string>
-    <string name="logcat_viewer_entry_title">logcat 查看器</string>
+    <string name="logcat_viewer_title">logcat 调试器</string>
+    <string name="logcat_viewer_entry_title">logcat 调试器</string>
     <string name="logcat_viewer_entry_subtitle">采集与查看系统日志，用于调试触发器</string>
     <string name="logcat_viewer_export">导出</string>
     <string name="logcat_viewer_export_text">导出为文本 (.log)</string>
@@ -753,6 +754,7 @@
     <string name="editor_more_advanced_settings">高级设置</string>
     <string name="editor_more_ai_generate">AI 生成</string>
     <string name="editor_more_ui_inspector">UI 检查器</string>
+    <string name="editor_more_logcat_debugger">logcat 调试器</string>
     <string name="add_workflow">添加工作流</string>
 
     <!-- Workflow Metadata -->

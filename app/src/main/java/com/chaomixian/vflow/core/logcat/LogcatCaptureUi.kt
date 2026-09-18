@@ -48,6 +48,17 @@ object LogcatCaptureUi {
         timeoutSec.coerceAtLeast(1) + ISLAND_TIMEOUT_MARGIN_SEC
 
     /**
+     * 结束后岛定格展示的时长（毫秒）。
+     *
+     * 停止采集时**不能立刻 `cancel()`**——那样岛"啪"一下消失，
+     * 用户看不到这次采了多久，也来不及看清是自己停的还是到点停的。
+     * 先切成暂停态定格一会儿，给一个收尾的视觉确认。
+     *
+     * 3 秒是权衡：够看清时间，又不至于让急着再采一次的用户干等。
+     */
+    const val FINISHED_LINGER_MS = 3_000L
+
+    /**
      * 把已采集时长格式化为 `MM:SS`（不足 1 小时）或 `H:MM:SS`。
      *
      * **正计时而非倒计时**：上限可调，倒计时会随改动跳变；

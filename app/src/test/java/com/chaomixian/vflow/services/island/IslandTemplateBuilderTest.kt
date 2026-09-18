@@ -220,7 +220,7 @@ class IslandTemplateBuilderTest {
     fun `writes action key references`() {
         val template = runningTemplate().copy(
             actions = listOf(
-                IslandAction(ActionSlot.PRIMARY, "结束", Intent("test.STOP"))
+                IslandAction(ActionSlot.PRIMARY, "结束", 0, Intent("test.STOP"))
             )
         )
         val actions = parse(template).paramV2().getAsJsonArray("actions")
@@ -242,9 +242,9 @@ class IslandTemplateBuilderTest {
         // 模板只预留两个按钮位置，多余的会被丢弃——显式截断而不是静默丢弃
         val template = runningTemplate().copy(
             actions = listOf(
-                IslandAction(ActionSlot.PRIMARY, "A", Intent("a")),
-                IslandAction(ActionSlot.SECONDARY, "B", Intent("b")),
-                IslandAction(ActionSlot.PRIMARY, "C", Intent("c")),
+                IslandAction(ActionSlot.PRIMARY, "A", 0, Intent("a")),
+                IslandAction(ActionSlot.SECONDARY, "B", 0, Intent("b")),
+                IslandAction(ActionSlot.PRIMARY, "C", 0, Intent("c")),
             )
         )
         val actions = parse(template).paramV2().getAsJsonArray("actions")
@@ -325,5 +325,29 @@ class IslandTemplateBuilderTest {
     fun `enableFloat is false to avoid auto expanding on every update`() {
         // 每次更新都自动展开会很吵——官方运行态模板也是 false
         assertEquals(false, parse(runningTemplate()).paramV2().get("enableFloat").asBoolean)
+    }
+
+    @Test
+    fun `action carries its own icon resource`() {
+        // ⚠️ 回归测试：按钮图标曾经被误当作"未使用的假参数"删掉，
+        // 结果 IslandNotifier 退化成拿应用图标当按钮 —— 用户看到的是一团 logo，
+        // 完全看不出那是"结束"。
+        //
+        // 官方文档 §2.1 的示例是 Icon.createWithResource(this, R.drawable.pausebutton)：
+        // 按钮位就是给功能图标用的。这个字段不能删。
+        val action = IslandAction(ActionSlot.PRIMARY, "结束", 0x7f080001, Intent("test.STOP"))
+        assertEquals(0x7f080001, action.iconRes)
+    }
+
+    @Test
+    fun `action requires an explicit icon rather than defaulting to the app icon`() {
+        // 构造 IslandAction 必须显式给 iconRes，没有默认值可退——
+        // 这样"忘了传图标"会在编译期暴露，而不是在用户手机上暴露
+        val ctor = IslandAction::class.java.declaredConstructors.single()
+        assertEquals(
+            "IslandAction 应保持四个参数（slot/label/iconRes/actionIntent）",
+            4,
+            ctor.parameterTypes.size,
+        )
     }
 }

@@ -173,9 +173,10 @@
     <string name="logcat_notification_channel_desc">Shows progress while capturing system logs. View the timer on the super island and stop at any time.</string>
     <string name="logcat_capture_island_content">Capturing logs</string>
     <string name="logcat_capture_stop_action">Stop</string>
+    <string name="logcat_capture_finished_content">Capture finished</string>
     <!-- logcat viewer -->
-    <string name="logcat_viewer_title">Logcat Viewer</string>
-    <string name="logcat_viewer_entry_title">Logcat Viewer</string>
+    <string name="logcat_viewer_title">Logcat Debugger</string>
+    <string name="logcat_viewer_entry_title">Logcat Debugger</string>
     <string name="logcat_viewer_entry_subtitle">Capture and inspect system logs to debug triggers</string>
     <string name="logcat_viewer_export">Export</string>
     <string name="logcat_viewer_export_text">Export as text (.log)</string>
@@ -751,6 +752,7 @@
     <string name="editor_more_advanced_settings">Advanced Settings</string>
     <string name="editor_more_ai_generate">AI Generate</string>
     <string name="editor_more_ui_inspector">UI Inspector</string>
+    <string name="editor_more_logcat_debugger">Logcat Debugger</string>
     <string name="add_workflow">Add workflow</string>
 
     <!-- Workflow Metadata -->

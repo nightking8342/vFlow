@@ -170,9 +170,15 @@ object LogcatCaptureController {
      * 停止采集。幂等——重复调用（含岛按钮连点）不会出错。
      *
      * ⚠️ **必须幂等**：实测岛按钮连点 5 次会收到 5 次广播（§5b.3 坑 6）。
+     *
+     * 岛的处理分两步（见 [finishIsland]）：先定格展示，隔几秒再撤。
      */
     suspend fun stop(context: Context) {
         val appContext = context.applicationContext
+
+        // 定格要用的总时长，必须在清零状态**之前**取——清零后就没人记得起点了
+        val elapsedMs = _session.value.elapsedMs(System.currentTimeMillis())
+
         runCatching {
             ShellManager.execShellCommand(appContext, LogcatCommands.buildStopCapture())
         }.onFailure {
@@ -181,7 +187,7 @@ object LogcatCaptureController {
         }
         // 无论 kill 成功与否，内存状态都归零：
         // buildStopCapture 会删 pidfile，即使进程已死也不会留下 STALE
-        applyState(CaptureState.Idle, appContext)
+        applyState(CaptureState.Idle, appContext, delayIslandDismiss = true, finishedElapsedMs = elapsedMs)
     }
 
     /**
@@ -211,7 +217,19 @@ object LogcatCaptureController {
      *
      * 所有状态变更都走这里，保证「状态变了但岛没跟上」这种不一致不会发生。
      */
-    private fun applyState(state: CaptureState, context: Context): CaptureSession {
+    private fun applyState(
+        state: CaptureState,
+        context: Context,
+        /**
+         * 是否让岛定格几秒再撤（用户主动停止时用）。
+         *
+         * 到点自动停**不走这条路**——那时用户多半不在看岛，
+         * 让它直接消失更干净。
+         */
+        delayIslandDismiss: Boolean = false,
+        /** 定格态要展示的总时长。仅在 [delayIslandDismiss] 为 true 时有意义。 */
+        finishedElapsedMs: Long? = null,
+    ): CaptureSession {
         val previous = _session.value
         val startedAtMs = when {
             // 仍在对同一个 pid 采集 → 保留原起点，计时不跳回 0
@@ -237,7 +255,11 @@ object LogcatCaptureController {
                 stopTicker()
                 // 无论之前有没有岛，都尝试取消——cancel 对不存在的通知是安全的，
                 // 比"记录一个是否发过岛的标志"更不容易漏
-                IslandNotifier.cancel(context, IslandNotifier.notificationIdFor(LogcatCaptureUi.ISLAND_CACHE_KEY))
+                if (delayIslandDismiss && IslandCapability.isAvailable()) {
+                    finishIsland(context, finishedElapsedMs ?: 0L)
+                } else {
+                    cancelIsland(context)
+                }
                 if (state is CaptureState.Stale) {
                     _message.value = "上次采集异常结束（进程已不存在），可清理后重新开始"
                 }
@@ -363,6 +385,60 @@ object LogcatCaptureController {
     }
 
     /**
+     * 定格展示已停止的岛，隔几秒再撤。
+     *
+     * ## 为什么不能直接 cancel
+     *
+     * 用户点了「结束」，如果岛立刻消失，他**看不到这次采了多久**，
+     * 也分不清是自己停的、还是到点自动停的——两个结果对"这批日志覆盖哪段时间"
+     * 的含义完全不同。定格一个暂停态的秒表是收尾的视觉确认。
+     *
+     * ## 为什么要有"撤"这一步
+     *
+     * 岛通知是 `setOngoing(true)`，**用户划不掉**。若只定格不撤，
+     * 它就会永久占着通知栏——那比"啪一下消失"更糟。
+     *
+     * 用独立的协程延迟取消，是因为调用方（[stop]）可能正在
+     * ticker 协程里，而 ticker 会随状态清零被取消（见 §4.2.3 坑 3）。
+     */
+    private fun finishIsland(context: Context, elapsedMs: Long) {
+        val now = System.currentTimeMillis()
+        val template = IslandTemplate(
+            cacheKey = LogcatCaptureUi.ISLAND_CACHE_KEY,
+            content = context.getString(R.string.logcat_capture_finished_content),
+            // 暂停态：秒表定格在总时长上（`whenMs` 反向推算出起点，让显示值正好等于 elapsedMs）
+            timer = TimerSpec.countUpPaused(now - elapsedMs, now),
+            iconKey = LogcatCaptureUi.ISLAND_ICON_KEY,
+            // 没有按钮——已经停了，再给个"结束"是误导
+            actions = emptyList(),
+            // 存活时长略长于定格时间，避免它在延迟取消之前自己先过期（观感上是闪一下）
+            islandTimeoutSec = (LogcatCaptureUi.FINISHED_LINGER_MS / 1000).toInt() + 10,
+        )
+
+        IslandNotifier.show(
+            context,
+            IslandNotifier.notificationIdFor(LogcatCaptureUi.ISLAND_CACHE_KEY),
+            template,
+        )
+
+        scope.launch {
+            delay(LogcatCaptureUi.FINISHED_LINGER_MS)
+            // 期间用户可能又开了一次采集——那就把岛留给新的那次，不要撤掉
+            if (!_session.value.isCapturing) {
+                cancelIsland(context)
+            }
+        }
+    }
+
+    /** 撤掉岛通知。对不存在的通知是安全的。 */
+    private fun cancelIsland(context: Context) {
+        IslandNotifier.cancel(
+            context,
+            IslandNotifier.notificationIdFor(LogcatCaptureUi.ISLAND_CACHE_KEY),
+        )
+    }
+
+    /**
      * 岛的「结束」按钮。
      *
      * ⚠️ **必须是显式 Component 意图**，指向 Manifest 静态注册的接收器
@@ -373,6 +449,8 @@ object LogcatCaptureController {
     private fun buildStopAction(context: Context): IslandAction = IslandAction(
         slot = ActionSlot.PRIMARY,
         label = context.getString(R.string.logcat_capture_stop_action),
+        // 单色剪影图标，小尺寸下最清晰；**不能用应用图标**（用户看不出那是"结束"）
+        iconRes = R.drawable.rounded_stop_circle_24,
         actionIntent = Intent(context, LogcatActionReceiver::class.java).apply {
             action = LogcatActionReceiver.ACTION_STOP_CAPTURE
         },

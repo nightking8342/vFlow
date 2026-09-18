@@ -170,9 +170,10 @@
     <string name="logcat_notification_channel_desc">システムログの収集中に進行状況を表示します。スーパーアイランドでタイマーを確認し、いつでも停止できます。</string>
     <string name="logcat_capture_island_content">ログを収集中</string>
     <string name="logcat_capture_stop_action">終了</string>
+    <string name="logcat_capture_finished_content">収集が完了しました</string>
     <!-- logcat ビューア -->
-    <string name="logcat_viewer_title">logcat ビューア</string>
-    <string name="logcat_viewer_entry_title">logcat ビューア</string>
+    <string name="logcat_viewer_title">logcat デバッガー</string>
+    <string name="logcat_viewer_entry_title">logcat デバッガー</string>
     <string name="logcat_viewer_entry_subtitle">システムログを収集・表示してトリガーをデバッグします</string>
     <string name="logcat_viewer_export">エクスポート</string>
     <string name="logcat_viewer_export_text">テキストで出力 (.log)</string>
@@ -708,6 +709,7 @@
     <string name="editor_more_advanced_settings">詳細設定</string>
     <string name="editor_more_ai_generate">AIが生成した</string>
     <string name="editor_more_ui_inspector">UI 検査官</string>
+    <string name="editor_more_logcat_debugger">logcat デバッガー</string>
     <string name="add_workflow">ワークフローの追加</string>
     <string name="workflow_metadata">メタデータ</string>
     <string name="workflow_more_metadata">さらなるメタデータ</string>

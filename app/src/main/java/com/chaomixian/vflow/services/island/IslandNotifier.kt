@@ -200,9 +200,9 @@ internal object IslandNotifier {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
 
-            // 图标：暂用应用图标（圆形化）——与岛上的主图标保持一致。
-            // 按钮专属图标待有设计稿后再加，不预留在那个假接口。
-            val icon = Icon.createWithBitmap(IslandIcons.appIconBitmap(context))
+            // ⚠️ 用按钮自己的图标，**不要用应用图标**。
+            // 按钮位是给功能图标（如"结束"）的；塞应用 logo 用户看不出那是干什么的。
+            val icon = Icon.createWithResource(context, action.iconRes)
 
             val notificationAction = Notification.Action.Builder(icon, action.label, pendingIntent)
                 .build()

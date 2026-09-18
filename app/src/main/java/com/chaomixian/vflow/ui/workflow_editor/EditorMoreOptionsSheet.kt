@@ -54,6 +54,7 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
     var workflow: Workflow? = null
     var onAiGenerateClicked: (() -> Unit)? = null
     var onUiInspectorClicked: (() -> Unit)? = null
+    var onLogcatDebuggerClicked: (() -> Unit)? = null
     var onMetadataSaved: ((Workflow) -> Unit)? = null
 
     private lateinit var textWorkflowName: TextView
@@ -73,6 +74,7 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
 
     private lateinit var layoutAiGenerate: MaterialCardView
     private lateinit var layoutUiInspector: MaterialCardView
+    private lateinit var layoutLogcatDebugger: MaterialCardView
     private lateinit var cardMoreMetadata: MaterialCardView
     private lateinit var layoutMoreMetadataHeader: LinearLayout
     private lateinit var layoutMoreMetadataContent: LinearLayout
@@ -147,6 +149,7 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
 
         layoutAiGenerate = view.findViewById(R.id.card_ai_generate)
         layoutUiInspector = view.findViewById(R.id.card_ui_inspector)
+        layoutLogcatDebugger = view.findViewById(R.id.card_logcat_debugger)
         cardMoreMetadata = view.findViewById(R.id.card_more_metadata)
         layoutMoreMetadataHeader = view.findViewById(R.id.layout_more_metadata_header)
         layoutMoreMetadataContent = view.findViewById(R.id.layout_more_metadata_content)
@@ -246,6 +249,10 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
 
         layoutUiInspector.setOnClickListener {
             onUiInspectorClicked?.invoke()
+        }
+
+        layoutLogcatDebugger.setOnClickListener {
+            onLogcatDebuggerClicked?.invoke()
         }
 
         // 折叠/展开更多元数据

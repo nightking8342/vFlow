@@ -63,6 +63,7 @@ import com.chaomixian.vflow.permissions.PermissionManager
 import com.chaomixian.vflow.ui.app_picker.AppPickerMode
 import com.chaomixian.vflow.ui.app_picker.UnifiedAppPickerSheet
 import com.chaomixian.vflow.ui.common.BaseActivity
+import com.chaomixian.vflow.ui.settings.LogcatViewerActivity
 import com.chaomixian.vflow.ui.workflow_editor.inspector.WorkflowInspectorInsertController
 import com.google.android.material.appbar.AppBarLayout
 import com.google.android.material.appbar.MaterialToolbar
@@ -2002,6 +2003,10 @@ class WorkflowEditorActivity : BaseActivity() {
         sheet.onUiInspectorClicked = {
             dismissAllSheets()
             inspectorInsertController.startInspector()
+        }
+        sheet.onLogcatDebuggerClicked = {
+            dismissAllSheets()
+            startActivity(Intent(this, LogcatViewerActivity::class.java))
         }
         sheet.onMetadataSaved = { updatedWorkflow ->
             currentWorkflow = updatedWorkflow

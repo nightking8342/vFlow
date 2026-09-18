@@ -256,6 +256,9 @@ fun SettingsScreen(
     val runDiagnosticLabel = stringResource(R.string.settings_button_run_diagnostic)
     val keyTesterLabel = stringResource(R.string.settings_button_key_tester)
     val logcatViewerTitle = stringResource(R.string.logcat_viewer_entry_title)
+    // ⚠️ 这个副标题**当前没有渲染位置**（logcat 入口已经是按钮，不是列表项），
+    // 但必须保留并留在下面的搜索列表里——否则用户搜「采集日志」这类
+    // 只出现在副标题里的词时，整个「调试」分组会消失（§6.1 易漏点 1）。
     val logcatViewerSubtitle = stringResource(R.string.logcat_viewer_entry_subtitle)
     val coreManagementLabel = stringResource(R.string.settings_button_core_management)
     val uiInspectorLabel = stringResource(R.string.settings_button_ui_inspector)
@@ -688,22 +691,17 @@ fun SettingsScreen(
                     onSecondaryClick = actions.onOpenKeyTester,
                     position = SettingsGroupPosition.Middle
                 )
-                NativeEntryRow(
-                    title = logcatViewerTitle,
-                    subtitle = logcatViewerSubtitle,
-                    // Icons.Default.Terminal 只在 material-icons-extended 里，
-                    // 本项目只引了 core，因此沿用调试区已有的 BugReport
-                    icon = Icons.Default.BugReport,
-                    tone = accentTone(),
-                    position = SettingsGroupPosition.Middle,
-                    onClick = actions.onOpenLogcatViewer
-                )
+                // logcat 调试器与「UI 检查器」同为调试工具，放进同一行按钮，
+                // 而不是单独占一行列表项——两者是并列的工具入口，不该一个用列表项
+                // 一个用按钮，那会让人以为它们不是一类东西
                 SettingsButtonRow(
                     primaryLabel = coreManagementLabel,
                     onPrimaryClick = actions.onOpenCoreManagement,
                     secondaryLabel = uiInspectorLabel,
                     onSecondaryClick = actions.onStartUiInspector,
-                    position = SettingsGroupPosition.Bottom
+                    position = SettingsGroupPosition.Bottom,
+                    tertiaryLabel = logcatViewerTitle,
+                    onTertiaryClick = actions.onOpenLogcatViewer,
                 )
             }
         }
@@ -1129,7 +1127,18 @@ private fun SettingsButtonRow(
     onSecondaryClick: () -> Unit,
     primaryEnabled: Boolean = true,
     secondaryEnabled: Boolean = true,
-    position: SettingsGroupPosition
+    position: SettingsGroupPosition,
+    /**
+     * 可选的第三个按钮。
+     *
+     * 调试区那一行工具入口有三个（核心管理 / UI 检查器 / logcat 调试器），
+     * 用可选参数而不是另写一个三按钮组件——两者的样式必须一致，
+     * 分开写迟早会漂移。
+     *
+     * 默认 null：其余调用点仍是两按钮，行为不变。
+     */
+    tertiaryLabel: String? = null,
+    onTertiaryClick: (() -> Unit)? = null,
 ) {
     SettingsItemSurface(position = position) {
         Row(
@@ -1157,6 +1166,18 @@ private fun SettingsButtonRow(
                 shape = RoundedCornerShape(16.dp)
             ) {
                 Text(text = secondaryLabel)
+            }
+            if (tertiaryLabel != null && onTertiaryClick != null) {
+                FilledTonalButton(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp),
+                    onClick = onTertiaryClick,
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    // 三按钮时每个只有 1/3 宽，长文案需要能换行
+                    Text(text = tertiaryLabel, maxLines = 2)
+                }
             }
         }
     }

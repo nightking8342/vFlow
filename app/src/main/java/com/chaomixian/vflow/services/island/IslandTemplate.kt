@@ -141,7 +141,16 @@ internal data class TimerSpec(
  * 岛上按钮。
  *
  * @param slot 按钮位置（模板预留两个槽位）
- * @param label 按钮文字
+ * @param label 按钮文字（`Notification.Action` 的 title）
+ * @param iconRes 按钮图标的 drawable 资源 id。
+ *
+ * ⚠️ **必须是一个真正的图标，不能用应用图标代替**。
+ * 官方文档 §2.1 的示例是 `Icon.createWithResource(this, R.drawable.pausebutton)` ——
+ * 按钮位就是给功能图标用的；塞一个应用 logo 进去用户根本看不出那是"结束"。
+ *
+ * ⚠️ 图标要选**单色剪影**型（如 Material 的 `rounded_stop_circle_24`）：
+ * 岛按钮的渲染尺寸很小，彩色复杂的图在那里只会糊成一团。
+ *
  * @param actionIntent 点击后触发的 Intent。
  *
  * ⚠️ **必须是显式意图**（`Intent(context, XxxReceiver::class.java)`），
@@ -153,6 +162,7 @@ internal data class TimerSpec(
 internal data class IslandAction(
     val slot: ActionSlot,
     val label: String,
+    val iconRes: Int,
     val actionIntent: android.content.Intent,
 )
 
