@@ -23,12 +23,33 @@
 | 1b | ↳ 命令级真机手测 | ✅ 通过 | 见 §9.1b |
 | 2 | **超级岛通知层** | ✅ **完成** | `services/island/Island{Template,TemplateBuilder,Notifier}.kt` + 24 例单测 |
 | 2b | ↳ 超级岛真机验证 | ✅ 通过 | 见 §5b.4 |
-| 3 | **采集控制器**（状态机 + 计时 + 岛联动） | ⬜ **未做** | 计划：`services/LogcatCaptureController.kt` |
-| 4 | **岛「结束」按钮的 Receiver**（生产版） | ⬜ 未做 | 计划：`services/LogcatActionReceiver.kt`（**Manifest 静态注册**，见 §5b.3 坑 2） |
-| 5 | **查看器 UI** | ⬜ 未做 | 计划：`ui/settings/LogcatViewerActivity.kt`（界面见 §4.1） |
+| 3 | **采集控制器**（状态机 + 计时 + 岛联动） | ✅ **完成** | `services/LogcatCaptureController.kt` + `core/logcat/LogcatCaptureUi.kt`（展示层纯函数）+ `LogcatCaptureUiTest`（19 例） |
+| 4 | **岛「结束」按钮的 Receiver**（生产版） | ✅ **完成** | `services/LogcatActionReceiver.kt`，已在 `AndroidManifest.xml` 静态注册 |
+| 5 | **查看器 UI** | ⬜ **未做** | 计划：`ui/settings/LogcatViewerActivity.kt`（界面见 §4.1） |
 | 6 | 导出 + `StorageManager.exportsDir` | ⬜ 未做 | 见 §5 |
+| 7 | 设置页入口接线 | ⬜ 未做 | 见 §6.1（**含搜索列表，别漏**） |
 
-> **下一步从第 3 步开始**。第 1、2 步的产物都可直接复用，接口见各自文件头注释。
+> **下一步从第 5 步开始**。第 1–4 步的产物都可直接复用：
+> - 界面只需观察 `LogcatCaptureController.session` / `.nowMs` / `.message`
+> - 「刷新」用 `LogcatCommands.buildRefresh(state, …)`，数据源由状态决定（§4.1.1）
+> - 状态判定一律调 `controller.probe(context)`，**不要读内存状态做判断**（§4.2.1）
+>
+> ⚠️ **第 3 步实现时新踩了 3 个坑**（都不报错、只静默失效），
+> 见 §4.2.3——接手前务必先读。
+
+### 0.2 第 3、4 步的实现要点
+
+**新增 `core/logcat/LogcatCaptureUi.kt`** 而不是把常量散在控制器里，
+是因为它们"改错了不报错、只让岛上显示不对"，需要被单测锁住：
+
+| 内容 | 为什么单独测 |
+|---|---|
+| `LogcatCaptureUi.islandTimeoutSec()` | 岛存活必须**比采集上限长**——App 被杀时没人取消岛，这是唯一的自愈手段 |
+| `formatElapsed()` | 时钟回拨要显示 `00:00` 而非负数；999ms 要截断而非四舍五入 |
+| `CaptureSession.hasReachedLimit()` | 无法计时时（App 重启后起点未知）**不能误判为超时**，否则刚开采集就被停 |
+
+`CaptureSession` 刻意只依赖「探测结果 + 开始时刻」，**不依赖内存里的"我正在采集"**——
+它是 §4.2.1「状态必须可重建」的直接落地。
 
 ---
 
@@ -437,6 +458,44 @@ fi
 好处是「可以后台采」，代价是必须**用 pidfile 做状态锚点**。
 **这是与纯快照方案相比新增的复杂度，要认。**
 
+#### 4.2.3 ⚠️ 实现控制器时踩出来的三个坑 ★
+
+> 2026-09-18 实现 `LogcatCaptureController` 时发现。**三条都不报错、只静默失效**，
+> 因此都补了单测或写进了代码注释。
+
+| # | 坑 | 症状 | 正确做法 |
+|---|---|---|---|
+| 1 | **`StateFlow` 用 `equals` 去重** | 用"重复赋 `session` 同一个实例"来驱动界面重算时长 → **正计时停住不动**（赋同一实例不发射） | 时间由**独立的 `nowMs` 流**承载，每秒推一个新值 |
+| 2 | **探到 `STALE` ≠「异常结束」** | shell 侧 `timeout` 到点结束后，pidfile **仍在**（`echo $!` 写的是 `timeout` 自己的 pid，它退出后该 pid 查不到）→ 自然收尾也被报成"上次采集异常结束" | 按**「是否已到自己设的上限」**区分：到了 = 正常收尾，没到却死了 = 异常（被系统杀） |
+| 3 | 自动停止在 ticker 协程里 `cancel()` 自己 | 当前恰好没踩到（cancel 后无挂起点），但**极脆弱**——以后在 `stop()` 后加任何挂起代码都会被静默跳过 | 自动停止**另起协程**执行 |
+
+**坑 2 的推演**（第 2 条最反直觉，值得展开）：
+
+```
+timeout N logcat ... & echo $! > pidfile
+                        └─ 写的是 timeout 的 pid，不是 logcat 的
+
+到点 → timeout 杀掉 logcat、自己也退出 → pidfile 里的 pid 已不存在
+     → 下次探测得 STALE（而不是 IDLE，因为 pidfile 没人删）
+```
+
+若只把 `STALE` 当异常，则**每一次到点自动停止都会留下一条假的「上次异常结束」提示**，
+用户下次进来看到会以为出了问题。所以探测到进程消失后，还要看
+`CaptureSession.hasReachedLimit(now, timeoutSec)`：
+
+| 探测结果 | 已到自己设的上限？ | 判定 | 处理 |
+|---|---|---|---|
+| `IDLE` | — | 用户手动停的（`buildStopCapture` 删了 pidfile） | 静默转出 |
+| `STALE` | ✅ | **正常收尾**（shell 侧 `timeout` 到点） | `stop()` 清掉 pidfile + 提示"已到达时长上限" |
+| `STALE` | ❌ | **异常**（进程被系统杀） | 转 `STALE` 态，提示"上次采集异常结束" |
+
+⚠️ 正常收尾那一路**必须走 `stop()` 而不是直接置 `Idle`**——
+`stop()` 会 `rm` pidfile，而直接置 `Idle` 会把 pidfile 留在盘上，
+下次进界面又探到 `STALE`，假提示卷土重来。
+
+> **附带结论**：`buildStopCapture()` 里的 `rm -f $PID_FILE` 不只是"清理"，\
+> 它还是**收尾与异常的唯一分界线**。不要因为"kill 已经成功了"就把它去掉。
+
 ### 4.3 命令构造（纯函数）
 
 ```kotlin
@@ -747,31 +806,59 @@ timeout 300 /system/bin/logcat -v threadtime -r 1024 -n 3 -f $CAPTURE_FILE \
 各写各的 extras key，通知 id 也分开（本层用 `97100` 起，
 避开工作流的 `[100000, 150000)` 与既有 `97010`）。
 
+### 5b.6 采集侧的接线（2026-09-18 实现）
+
+在 `LogcatCaptureController.applyState()` 里集中联动——**所有状态变更都走这一个出口**，
+避免出现「状态变了但岛没跟上」：
+
+| 状态 | 岛的动作 |
+|---|---|
+| → `CAPTURING` | `show()`：`stopwatch_big` 动图 + 正计时（`COUNT_UP_RUNNING`）+ 「结束」按钮 |
+| → `IDLE` / `STALE` | `cancel()`。**无条件调用**，不记录"是否发过岛"的标志——`cancel` 对不存在的通知是安全的，比维护一个标志更不容易漏 |
+
+**两处刻意的设计选择**：
+
+1. **岛不每秒重发通知**。`timerInfo.timerWhen` 是计时起点，SystemUI 自己往前走。
+   每秒重发纯属浪费，且会让通知栏闪。
+2. **岛存活比采集上限长 60 秒**（`LogcatCaptureUi.islandTimeoutSec`）。
+   理由是自愈：App 若被杀，采集由 shell 侧 `timeout` 结束，
+   但**没有任何人再去取消岛**——让它比上限晚一点自动消失是唯一的手段。
+
+⚠️ 「结束」按钮的 `Intent` **必须是显式 Component**，指向 Manifest 静态注册的
+`LogcatActionReceiver`（§5b.3 坑 2）。接收器内部用 `goAsync()` 延长生命周期——
+`onReceive` 返回后进程可能被回收，而停止采集是一次跨进程 shell 调用。
+按钮幂等由 `LogcatCaptureController.stop()` 保证（实测连点 5 次收到 5 次广播）。
+
 ---
 
 ## 6. 改动清单
 
 | 文件 | 类型 | 说明 | diff 面积 |
 |---|---|---|---|
-| `ui/settings/LogcatViewerActivity.kt` | 新增 | Compose Activity | — |
-| `core/logcat/LogcatLine.kt` | 新增 | 数据模型（LogLevel / LogcatLine / 解析结果） | — |
-| `core/logcat/LogcatParser.kt` | 新增 | 解析 + 降级 + 头标记行 + TAG 聚合（纯函数） | — |
-| `core/logcat/LogcatCommands.kt` | 新增 | 命令构造 + 状态解析 + shell 转义（纯函数） | — |
-| `services/island/IslandTemplate.kt` | 新增 | 通用岛模板数据模型 | — |
-| `services/island/IslandTemplateBuilder.kt` | 新增 | 模板 → `miui.focus.param` JSON（纯函数） | — |
-| `services/island/IslandNotifier.kt` | 新增 | 发送 / 更新 / 取消岛通知 | — |
-| `services/LogcatActionReceiver.kt` | 新增 | 岛「结束」按钮的广播接收器（**Manifest 静态注册**） | 需改 Manifest |
-| `services/LogcatCaptureController.kt` | 新增 | 采集状态机 + 计时 + 岛联动 | — |
-| `core/logging/LogcatParser.kt` | 新增 | 解析 + 降级 + TAG 聚合（纯函数，**触发器复用**） | — |
-| `core/utils/StorageManager.kt` | **改** | 追加 `exportsDir` | 追加 ~3 行 |
-| `ui/settings/SettingsRoute.kt` | **改** | 追加 `onOpenLogcatViewer` 回调 | 追加 3 行 |
-| `ui/settings/SettingsScreen.kt` | **改** | 追加按钮 + 文案变量 + 搜索列表 | 追加 ~5 行 |
-| `AndroidManifest.xml` | **改** | 追加 Activity 声明 | 追加 1 段 |
-| `res/values{,-en,-ja}/strings.xml` | **改** | 追加文案 | 追加条目 |
-| `app/src/test/.../LogcatParserTest.kt` | 新增 | 纯函数单测 | — |
-| `app/src/test/.../LogcatCommandsTest.kt` | 新增 | 命令构造单测 | — |
+| `ui/settings/LogcatViewerActivity.kt` | ⬜ 待做 | Compose Activity | — |
+| `core/logcat/LogcatLine.kt` | ✅ 新增 | 数据模型（LogLevel / LogcatLine / 解析结果） | — |
+| `core/logcat/LogcatParser.kt` | ✅ 新增 | 解析 + 降级 + 头标记行 + TAG 聚合（纯函数，**触发器复用**） | — |
+| `core/logcat/LogcatCommands.kt` | ✅ 新增 | 命令构造 + 状态解析 + shell 转义 + `CaptureSession`（纯函数） | — |
+| `core/logcat/LogcatCaptureUi.kt` | ✅ 新增 | 展示层纯函数：岛参数常量、计时/时长格式化 | — |
+| `services/island/IslandTemplate.kt` | ✅ 新增 | 通用岛模板数据模型 | — |
+| `services/island/IslandTemplateBuilder.kt` | ✅ 新增 | 模板 → `miui.focus.param` JSON（纯函数） | — |
+| `services/island/IslandNotifier.kt` | ✅ 新增 | 发送 / 更新 / 取消岛通知 | — |
+| `services/LogcatActionReceiver.kt` | ✅ 新增 | 岛「结束」按钮的广播接收器（**Manifest 静态注册**） | — |
+| `services/LogcatCaptureController.kt` | ✅ 新增 | 采集状态机 + 计时 + 岛联动 | — |
+| `AndroidManifest.xml` | ✅ **改** | 追加 `LogcatActionReceiver` 声明（1 段） | 追加 1 段 |
+| `res/values{,-en,-ja}/strings.xml` | ✅ **改** | 追加岛文案 2 条 ×3 语言 | 追加条目 |
+| `core/utils/StorageManager.kt` | ⬜ **改** | 追加 `exportsDir` | 追加 ~3 行 |
+| `ui/settings/SettingsRoute.kt` | ⬜ **改** | 追加 `onOpenLogcatViewer` 回调 | 追加 3 行 |
+| `ui/settings/SettingsScreen.kt` | ⬜ **改** | 追加按钮 + 文案变量 + 搜索列表 | 追加 ~5 行 |
+| `AndroidManifest.xml` | ⬜ **改** | 追加 `LogcatViewerActivity` 声明 | 追加 1 段 |
+| `res/values{,-en,-ja}/strings.xml` | ⬜ **改** | 追加查看器文案 | 追加条目 |
+| `app/src/test/.../LogcatParserTest.kt` | ✅ 新增 | 纯函数单测（18 例） | — |
+| `app/src/test/.../LogcatCommandsTest.kt` | ✅ 新增 | 命令构造单测（31 例） | — |
+| `app/src/test/.../LogcatCaptureUiTest.kt` | ✅ 新增 | 展示层纯函数单测（19 例） | — |
+| `app/src/test/.../IslandTemplateBuilderTest.kt` | ✅ 新增 | 岛模板装配单测（24 例） | — |
 
-**上游文件只碰 5 处、全是追加**，符合 fork「控制 diff 面积」原则。
+**上游文件只碰 5 处、全是追加**（Manifest ×2 段、三份 strings），符合 fork「控制 diff 面积」原则。
+目前已碰 4 处，剩 Activity 声明与查看器文案待第 5 步。
 
 ### 6.1 ⚠️ 挂载时的两个易漏点
 
