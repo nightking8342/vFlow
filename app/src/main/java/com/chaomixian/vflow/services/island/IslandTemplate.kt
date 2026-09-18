@@ -142,15 +142,17 @@ internal data class TimerSpec(
  *
  * @param slot 按钮位置（模板预留两个槽位）
  * @param label 按钮文字
- * @param iconKey 按钮图标（`miui.focus.pics` 里的 key）；null 用系统默认
  * @param actionIntent 点击后触发的 Intent。
- *                     ⚠️ 若是广播，**必须带 `Intent.FLAG_RECEIVER_FOREGROUND`**
- *                     （官方接入文档明确要求）。
+ *
+ * ⚠️ **必须是显式意图**（`Intent(context, XxxReceiver::class.java)`），
+ * 指向 **Manifest 静态注册**的组件。原因：岛按钮可能在通知发出后很久才被点击，
+ * 此时应用的动态注册接收器早已注销。先例见 `WorkflowActionReceiver`。
+ *
+ * `FLAG_RECEIVER_FOREGROUND` 由 [IslandNotifier] 统一添加，调用方不必管。
  */
 internal data class IslandAction(
     val slot: ActionSlot,
     val label: String,
-    val iconKey: String? = null,
     val actionIntent: android.content.Intent,
 )
 

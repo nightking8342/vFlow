@@ -178,28 +178,31 @@ internal object IslandNotifier {
      *
      * ⚠️ 广播型 PendingIntent **必须带 `FLAG_RECEIVER_FOREGROUND`**
      * ——官方接入文档明确要求；否则在后台可能被延迟投递。
+     *
+     * ⚠️ **隐式广播不适用于岛按钮**：`PendingIntent.getBroadcast` 发出的广播
+     * 在岛被点击时，应用的动态注册接收器通常已经注销（用户可能几分钟后才点），
+     * 因此接收方**必须是 Manifest 静态注册的显式 Component**
+     * （先例见 `WorkflowActionReceiver`）。
+     * 本方法只负责包装，`action.actionIntent` 必须已带 Component。
      */
     private fun buildActionsBundle(
         context: Context,
         template: IslandTemplate,
     ): android.os.Bundle = android.os.Bundle().apply {
         template.actions.take(IslandTemplate.MAX_ACTIONS).forEach { action ->
-            val flags = if (action.actionIntent.action != null) {
-                action.actionIntent.addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
-            } else {
-                action.actionIntent
-            }
+            // 触发广播的 PendingIntent 需要 FLAG_RECEIVER_FOREGROUND（官方要求）
+            action.actionIntent.addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
 
             val pendingIntent = PendingIntent.getBroadcast(
                 context,
                 action.slot.ordinal,
-                flags,
+                action.actionIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
 
-            val icon = action.iconKey
-                ?.let { Icon.createWithResource(context, R.drawable.rounded_terminal_24) }
-                ?: Icon.createWithResource(context, R.drawable.rounded_terminal_24)
+            // 图标：暂用应用图标（圆形化）——与岛上的主图标保持一致。
+            // 按钮专属图标待有设计稿后再加，不预留在那个假接口。
+            val icon = Icon.createWithBitmap(IslandIcons.appIconBitmap(context))
 
             val notificationAction = Notification.Action.Builder(icon, action.label, pendingIntent)
                 .build()

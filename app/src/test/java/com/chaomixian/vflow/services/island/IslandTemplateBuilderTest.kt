@@ -220,7 +220,7 @@ class IslandTemplateBuilderTest {
     fun `writes action key references`() {
         val template = runningTemplate().copy(
             actions = listOf(
-                IslandAction(ActionSlot.PRIMARY, "结束", null, Intent("test.STOP"))
+                IslandAction(ActionSlot.PRIMARY, "结束", Intent("test.STOP"))
             )
         )
         val actions = parse(template).paramV2().getAsJsonArray("actions")
@@ -242,9 +242,9 @@ class IslandTemplateBuilderTest {
         // 模板只预留两个按钮位置，多余的会被丢弃——显式截断而不是静默丢弃
         val template = runningTemplate().copy(
             actions = listOf(
-                IslandAction(ActionSlot.PRIMARY, "A", null, Intent("a")),
-                IslandAction(ActionSlot.SECONDARY, "B", null, Intent("b")),
-                IslandAction(ActionSlot.PRIMARY, "C", null, Intent("c")),
+                IslandAction(ActionSlot.PRIMARY, "A", Intent("a")),
+                IslandAction(ActionSlot.SECONDARY, "B", Intent("b")),
+                IslandAction(ActionSlot.PRIMARY, "C", Intent("c")),
             )
         )
         val actions = parse(template).paramV2().getAsJsonArray("actions")
