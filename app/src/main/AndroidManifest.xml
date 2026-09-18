@@ -302,6 +302,18 @@
             </intent-filter>
         </receiver>
 
+        <!--
+          logcat 采集的超级岛「结束」按钮。
+
+          ⚠️ 必须静态注册：岛按钮可能在通知发出后很久才被点击，
+          届时动态注册的接收器早已注销——表现是「按钮渲染正常、点着没反应」。
+          详见 docs/fork/logcat-debug-tool.md §5b.3 坑 2。
+          调用方走显式 Component 意图，故无 intent-filter。
+        -->
+        <receiver
+            android:name=".services.LogcatActionReceiver"
+            android:exported="false" />
+
         <receiver
             android:name=".extension.ExternalModulePackageReceiver"
             android:exported="false">

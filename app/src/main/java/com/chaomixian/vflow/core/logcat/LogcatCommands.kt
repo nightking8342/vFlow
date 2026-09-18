@@ -242,3 +242,55 @@ sealed interface CaptureState {
      */
     data class Stale(val pid: Int) : CaptureState
 }
+
+/**
+ * 一次采集会话的**可重建状态**。
+ *
+ * ⚠️ 这个模型的全部意义在于：**它只依赖 pidfile 探测结果与开始时刻，
+ * 不依赖任何内存里"我正在采集"的标志**。
+ * App 被杀后日志还在采（调试工具文档 §4.2 边界 2），
+ * 因此状态必须能从外部重建，而不能藏在内存的 `StateFlow` 里（§4.2.1）。
+ *
+ * @param state 当前状态（由 [LogcatCommands.parseProbeState] 得出）
+ * @param startedAtMs 计时起点（毫秒）。**只在本次会话内有效**——
+ *   pidfile 里没有开始时间，因此 App 重启后
+ *   [CaptureState.Capturing] 而 [startedAtMs] 为 null 是**正常情况**，
+ *   此时不显示计时，而不是显示一个错的时间。
+ */
+data class CaptureSession(
+    val state: CaptureState,
+    val startedAtMs: Long? = null,
+) {
+    /** 是否正在采集。 */
+    val isCapturing: Boolean get() = state is CaptureState.Capturing
+
+    /**
+     * 已采集时长（毫秒）；无法计时时返回 null。
+     *
+     * 时钟回拨导致的负值也返回 null——显示 `00:00` 会让人以为刚开，
+     * 显示负数则更糟。
+     */
+    fun elapsedMs(nowMs: Long): Long? {
+        val start = startedAtMs ?: return null
+        val elapsed = nowMs - start
+        return if (elapsed >= 0) elapsed else null
+    }
+
+    /**
+     * 是否已到时长上限，该由 App 侧主动停了。
+     *
+     * ⚠️ 这只是**双保险的第一层**。真正的兜底在 shell 侧（`timeout` 前缀）：
+     * App 侧计时器会随 App 一起被杀，而采集恰恰设计成脱离 UI 存活。
+     * 两层都不冲突——App 侧负责 UI 即时反馈，shell 侧负责无论死活都停
+     * （见调试工具文档 §4.7）。
+     */
+    fun hasReachedLimit(nowMs: Long, timeoutSec: Int): Boolean {
+        val elapsed = elapsedMs(nowMs) ?: return false
+        return elapsed >= timeoutSec.coerceAtLeast(1) * 1000L
+    }
+
+    companion object {
+        /** 空闲会话。 */
+        val Idle = CaptureSession(CaptureState.Idle)
+    }
+}
