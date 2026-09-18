@@ -260,4 +260,70 @@ class LogcatCommandsTest {
         assertTrue(LogcatCommands.buildStartCapture(timeoutSec = 0).contains("timeout 1 "))
         assertTrue(LogcatCommands.buildStartCapture(timeoutSec = -5).contains("timeout 1 "))
     }
+
+    // ── 采集完成标记 ★ ──────────────────────────────────────────
+
+    @Test
+    fun `stopping a capture writes the completion marker`() {
+        // ⚠️ 这个标记是「数据源是否已固定」的唯一依据。
+        // 漏了它的话，停止采集后状态会退回 Idle —— 而 Idle 读的是
+        // **实时滚动的缓冲区**，用户切个过滤就看到"现在的日志"而不是刚采的那批
+        val cmd = LogcatCommands.buildStopCapture()
+        assertTrue("停止时必须写下完成标记", cmd.contains("touch ${LogcatCommands.DONE_FILE}"))
+    }
+
+    @Test
+    fun `stopping a capture still clears the pidfile`() {
+        val cmd = LogcatCommands.buildStopCapture()
+        assertTrue("pidfile 仍要删（否则留下 STALE）", cmd.contains("rm -f ${LogcatCommands.PID_FILE}"))
+    }
+
+    @Test
+    fun `starting a capture clears a stale completion marker`() {
+        // ⚠️ 顺序关键：新采集启动时若不删旧标记，
+        // "pidfile 已写、进程还没起来"的那个瞬间会被探测成"已完成"，
+        // 用户看到的就是上一批日志
+        val cmd = LogcatCommands.buildStartCapture()
+        assertTrue("开始采集时应清掉上一轮的完成标记", cmd.contains("rm -f ${LogcatCommands.DONE_FILE}"))
+    }
+
+    @Test
+    fun `probe checks the process before the completion marker`() {
+        // ⚠️ 判定顺序有讲究：**先看进程，再看标记**。
+        // 反过来的话，采集中（pidfile 在、进程活着）却带着旧标记时
+        // 会被判成 COMPLETED
+        val cmd = LogcatCommands.buildProbeState()
+        val pidCheck = cmd.indexOf("ps -A -o PID=")
+        val doneCheck = cmd.indexOf(LogcatCommands.DONE_FILE)
+        assertTrue("两处都要有", pidCheck >= 0 && doneCheck >= 0)
+        assertTrue("进程判定必须在标记判定之前", pidCheck < doneCheck)
+    }
+
+    @Test
+    fun `parses the completed state`() {
+        assertEquals(CaptureState.Completed, LogcatCommands.parseProbeState("COMPLETED"))
+    }
+
+    @Test
+    fun `clearing the completion marker is a separate command`() {
+        // 放弃这批日志 = 删标记（回到缓冲区）。
+        // 与清理 STALE（删 pidfile）是两个不同的动作，不能混用
+        assertEquals("rm -f ${LogcatCommands.DONE_FILE}", LogcatCommands.buildClearDone())
+        assertTrue(!LogcatCommands.buildClearDone().contains(LogcatCommands.PID_FILE))
+    }
+
+    @Test
+    fun `a completed state refreshes from the capture file`() {
+        // 已完成态的数据源是采集文件（不是缓冲区）
+        val cmd = LogcatCommands.buildRefresh(CaptureState.Completed)
+        assertTrue(cmd!!.contains("tail"))
+        assertTrue(cmd.contains(LogcatCommands.CAPTURE_FILE))
+        assertTrue("已完成态不该读缓冲区", !cmd.contains("logcat -d"))
+    }
+
+    @Test
+    fun `tag stats on a completed state also read the capture file`() {
+        val cmd = LogcatCommands.buildTagStats(CaptureState.Completed)
+        assertTrue(cmd!!.contains(LogcatCommands.CAPTURE_FILE))
+    }
 }

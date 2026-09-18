@@ -176,6 +176,7 @@
     <string name="logcat_status_completed">収集ファイル %1$d 行 · 継続 %2$d 行 · %3$s</string>
     <string name="logcat_action_rescan">再フィルタ</string>
     <string name="logcat_action_release">破棄</string>
+    <string name="logcat_completed_hint">このログは固定されています。フィルタを変えても内容は変わりません。</string>
     <string name="logcat_filter_message_label">メッセージ</string>
     <string name="logcat_filter_message_hint">メッセージ内容で絞り込み</string>
     <string name="logcat_wrap_on">折り返し：オン</string>

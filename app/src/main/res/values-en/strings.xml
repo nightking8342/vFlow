@@ -179,6 +179,7 @@
     <string name="logcat_status_completed">Capture file %1$d lines · %2$d continuation · %3$s</string>
     <string name="logcat_action_rescan">Re-filter</string>
     <string name="logcat_action_release">Discard</string>
+    <string name="logcat_completed_hint">This capture is fixed; changing filters will not alter its contents.</string>
     <string name="logcat_filter_message_label">Message</string>
     <string name="logcat_filter_message_hint">Filter by message content</string>
     <string name="logcat_wrap_on">Wrap: on</string>

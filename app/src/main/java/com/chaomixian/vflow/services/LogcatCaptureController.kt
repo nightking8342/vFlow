@@ -185,9 +185,39 @@ object LogcatCaptureController {
             DebugLogger.w(TAG, "停止采集失败", it)
             _message.value = "停止失败：${it.message ?: "未知错误"}"
         }
-        // 无论 kill 成功与否，内存状态都归零：
-        // buildStopCapture 会删 pidfile，即使进程已死也不会留下 STALE
-        applyState(CaptureState.Idle, appContext, delayIslandDismiss = true, finishedElapsedMs = elapsedMs)
+        // ⚠️ 置 **Completed 而不是 Idle**。
+        //
+        // `buildStopCapture` 会 `touch` 标记文件，磁盘上的真实状态就是"已完成"。
+        // 若这里置成 Idle，内存与磁盘矛盾，而且后果很具体：
+        // Idle 的数据源是**实时滚动的缓冲区**，于是刚停下这一小段时间里
+        // 界面会去读缓冲区 —— 用户看到的不是自己刚采的那批。
+        // （下一次探测会纠正成 Completed，但那个窗口里的首屏已经错了。）
+        applyState(
+            CaptureState.Completed,
+            appContext,
+            delayIslandDismiss = true,
+            finishedElapsedMs = elapsedMs,
+        )
+    }
+
+    /**
+     * 放弃当前这批日志，回到空闲（读实时缓冲区）。
+     *
+     * [CaptureState.Completed] 态下用户点「放弃这批」时调用 ——
+     * 删掉标记文件，数据源就切回缓冲区。
+     *
+     * 与 [clearStale] 的区别：那个是清理异常残留的 pidfile，
+     * 这个是主动扔掉一份**完整的**采集结果。两者都把状态归到 Idle，
+     * 但删的文件不同。
+     */
+    suspend fun releaseCapture(context: Context) {
+        val appContext = context.applicationContext
+        runCatching {
+            ShellManager.execShellCommand(appContext, LogcatCommands.buildClearDone())
+        }.onFailure {
+            DebugLogger.w(TAG, "放弃采集结果失败", it)
+        }
+        applyState(CaptureState.Idle, appContext)
     }
 
     /**

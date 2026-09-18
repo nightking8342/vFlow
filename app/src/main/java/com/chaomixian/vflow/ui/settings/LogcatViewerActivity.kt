@@ -291,6 +291,13 @@ private fun LogcatViewerScreen(onBack: () -> Unit) {
                 onStart = { scope.launch { LogcatCaptureController.start(context) } },
                 onStop = { scope.launch { LogcatCaptureController.stop(context) } },
                 onClearStale = { scope.launch { LogcatCaptureController.clearStale(context) } },
+                onRelease = {
+                    scope.launch {
+                        LogcatCaptureController.releaseCapture(context)
+                        // 数据源切回缓冲区，内存里的这批也就不再对应任何东西
+                        rawLines = emptyList()
+                    }
+                },
             )
 
             FilterSection(
@@ -464,6 +471,7 @@ private fun CaptureSection(
     onStart: () -> Unit,
     onStop: () -> Unit,
     onClearStale: () -> Unit,
+    onRelease: () -> Unit,
 ) {
     var timeoutMenuOpen by remember { mutableStateOf(false) }
 
@@ -535,6 +543,21 @@ private fun CaptureSection(
                         },
                     )
                 }
+            }
+        }
+
+        // 已完成态：给一个"放弃这批"的出口。
+        // 没有它的话用户只能靠"重新采集"来覆盖，而如果只是想回到
+        // 实时缓冲区看看，重新采集是多此一举
+        if (actions.completed) {
+            Text(
+                text = stringResource(R.string.logcat_completed_hint),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(4.dp))
+            OutlinedButton(onClick = onRelease, enabled = !actions.refreshing) {
+                Text(stringResource(R.string.logcat_action_release))
             }
         }
 

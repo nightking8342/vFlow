@@ -179,6 +179,7 @@
     <string name="logcat_status_completed">采集文件 %1$d 行 · 降级 %2$d 行 · %3$s</string>
     <string name="logcat_action_rescan">重新筛选</string>
     <string name="logcat_action_release">放弃这批</string>
+    <string name="logcat_completed_hint">这批日志已固定，切换过滤不会改变内容。</string>
     <string name="logcat_filter_message_label">消息</string>
     <string name="logcat_filter_message_hint">按消息内容过滤</string>
     <string name="logcat_wrap_on">自动换行：开</string>
