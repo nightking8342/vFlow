@@ -9,6 +9,7 @@ import com.chaomixian.vflow.server.common.FakeContext
 import com.chaomixian.vflow.server.wrappers.ServiceWrapper
 import com.chaomixian.vflow.server.wrappers.StreamingWrapper
 import org.json.JSONObject
+import java.io.BufferedReader
 import java.io.PrintWriter
 import java.lang.reflect.Method
 
@@ -77,7 +78,18 @@ class IClipboardWrapper : ServiceWrapper("clipboard", "android.content.IClipboar
         return result
     }
 
-    override fun handleStream(method: String, params: JSONObject, writer: PrintWriter): Boolean {
+    /**
+     * 剪贴板事件流是**纯推送**的：App 订阅后不需要再发任何东西，
+     * 因此这里**忽略 reader**（接口加它是为了 logcat 那种需要中途改条件的流）。
+     * 断流靠后续 `writer.checkError()` 感知。
+     */
+    @Suppress("UNUSED_PARAMETER")
+    override fun handleStream(
+        method: String,
+        params: JSONObject,
+        writer: PrintWriter,
+        reader: BufferedReader,
+    ): Boolean {
         if (method != "subscribeClipboardStream") {
             return false
         }

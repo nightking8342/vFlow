@@ -20,6 +20,10 @@ class ShellWorker(
     override fun registerWrappers() {
         // 注册所有 Shell 级别的 ServiceWrappers
         serviceWrappers["clipboard"] = IClipboardWrapper()
+        // logcat 触发器（fork 新增）。注意它不包装任何系统服务，
+        // 继承 ServiceWrapper 只是为了进 serviceWrappers 这张流式路由表 ——
+        // 见 LogcatStreamWrapper 的类注释与设计文档 §6.3
+        serviceWrappers["logcat"] = LogcatStreamWrapper()
         serviceWrappers["input"] = IInputManagerWrapper()
         serviceWrappers["audio"] = IAudioManagerWrapper()
         serviceWrappers["wifi"] = IWifiManagerWrapper()

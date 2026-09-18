@@ -166,6 +166,14 @@ dependencies {
     // JSON 解析库 (运行时需要，会被打入 dex)
     implementation("org.json:json:20251224")
 
+    // 单元测试。core 是纯 JVM 模块（java-library + kotlin jvm），
+    // 因此可以直接放 src/test 跑 JUnit —— 不需要 Android 环境。
+    //
+    // 能测的范围是 logcat 触发器的**纯函数部分**（解析 / 匹配 / 编解码）：
+    // 它们是热路径，且失败模式是「触发器静默不触发」，必须有测试保护。
+    // 流式 wrapper 本身与进程/线程相关，仍只能靠真机验证。
+    testImplementation("junit:junit:4.13.2")
+
     add(r8Configuration.name, "com.android.tools:r8:${r8Version.get()}")
 }
 
