@@ -1,8 +1,9 @@
 # logcat 调试工具设计文档
 
 > **目录归属**：fork 独有功能文档（冲突归我方），上游无此文件。
-> **分支/日期**：`session-0915-01`，2026-09-17。
-> **状态**：设计定稿，**尚未实现**。
+> **分支/日期**：`session-0915-01`，2026-09-17 首版 / **2026-09-18 更新**。
+> **状态**：**部分实现**——底层两块（纯函数层、超级岛通知层）已完成并真机验证；
+> UI 与采集控制器**尚未实现**。进度见 §0.1。
 > **前置依赖**：shell 能力已实测可行，见 [`surveys/logcat-readability-survey.md`](surveys/logcat-readability-survey.md)。
 > **下游关系**：本工具是 [`logcat-trigger-design.md`](logcat-trigger-design.md)（logcat 触发器）的**前置**——
 > 它的解析层就是触发器要用的那一份，先做本工具可以把触发器设计的最高风险项探掉一半（见 §8）。
@@ -13,6 +14,23 @@
 ## 0. 一句话方案
 
 **做一个「logcat 查看器」：开关式后台采集（shell 侧写文件）+ 快照兜底，数据经普通 `exec` 出入，全程不碰流式协议。**
+
+### 0.1 实现进度
+
+| # | 内容 | 状态 | 产出 |
+|---|---|---|---|
+| 1 | **纯函数层** | ✅ **完成** | `core/logcat/` 三个文件 + `LogcatParserTest` / `LogcatCommandsTest`（49 例） |
+| 1b | ↳ 命令级真机手测 | ✅ 通过 | 见 §9.1b |
+| 2 | **超级岛通知层** | ✅ **完成** | `services/island/Island{Template,TemplateBuilder,Notifier}.kt` + 24 例单测 |
+| 2b | ↳ 超级岛真机验证 | ✅ 通过 | 见 §5b.4 |
+| 3 | **采集控制器**（状态机 + 计时 + 岛联动） | ⬜ **未做** | 计划：`services/LogcatCaptureController.kt` |
+| 4 | **岛「结束」按钮的 Receiver**（生产版） | ⬜ 未做 | 计划：`services/LogcatActionReceiver.kt`（**Manifest 静态注册**，见 §5b.3 坑 2） |
+| 5 | **查看器 UI** | ⬜ 未做 | 计划：`ui/settings/LogcatViewerActivity.kt`（界面见 §4.1） |
+| 6 | 导出 + `StorageManager.exportsDir` | ⬜ 未做 | 见 §5 |
+
+> **下一步从第 3 步开始**。第 1、2 步的产物都可直接复用，接口见各自文件头注释。
+
+---
 
 ---
 
@@ -667,12 +685,83 @@ timeout 300 /system/bin/logcat -v threadtime -r 1024 -n 3 -f $CAPTURE_FILE \
 
 ---
 
+## 5b. 超级岛通知（采集进行中的状态展示）
+
+> ✅ **2026-09-18 已实现并真机验证通过。** 实现在 `services/island/` 的
+> `IslandTemplate.kt` / `IslandTemplateBuilder.kt` / `IslandNotifier.kt`，
+> 单测 `IslandTemplateBuilderTest.kt`（24 例）。
+
+### 5b.1 需求
+
+采集是**脱离 UI 存活**的（用户可以离开 App 去复现问题），
+因此需要一条**离开 App 也能看见**的状态展示：
+
+- 岛上有**正计时**（已采集多久）
+- **计时器动图**（秒表动画）
+- **结束按钮**（不用回 App 就能停）
+
+### 5b.2 两条通道：不是两套体系，是同一份内容的两种投递
+
+| 方式 | extras key | 结构 | 视图来源 |
+|---|---|---|---|
+| **模板** ← 本功能用这条 | `miui.focus.param` | `param_v2` 包裹 | SystemUI 按官方模板渲染 |
+| 自定义 | `miui.focus.param.custom` | 扁平 | 应用提供的 `miui.focus.rv` |
+
+**选择模板通道的理由**：只有它提供**系统原生计时器**（`timerInfo`）
+和**内置 Lottie 动画**。RemoteViews 通道给不了这两样
+（mindfs 曾在 rv 里放自定义动画，实测 SystemUI 只取静态首帧）。
+
+⚠️ **本功能只写 `miui.focus.param`，不写 `param.custom`、不写 `rv`**——
+一旦写了 rv，SystemUI 会走自定义视图分支，计时器与动图都不会渲染。
+
+### 5b.3 ⚠️ 踩出来的坑（每条都不报错、只是静默失效）
+
+| # | 坑 | 症状 | 正确做法 |
+|---|---|---|---|
+| 1 | **`autoplay` 默认 false** | 图标出来了但是**静止的** | 显式写 `"autoplay": true`（运行态），暂停态写 `false` |
+| 2 | **岛按钮的接收器必须静态注册** | 按钮渲染正常、点着没反应 | `AndroidManifest.xml` 静态注册 + **显式 Component 意图**（照 `WorkflowActionReceiver`）。动态注册的接收器在用户点击时早已注销 |
+| 3 | **`timerInfo` 要写三处** | 某处不显示计时 | `highlightInfo` / `sameWidthDigitInfo` / `animTextInfo` 各写一份，**不要"优化"成一处**——SystemUI 读哪处未经证实 |
+| 4 | `islandTimeout` 单位是**秒**，通知 `timeout` 是**分钟** | 岛提前消失 | 别弄混 |
+| 5 | 按钮广播需 `FLAG_RECEIVER_FOREGROUND` | 后台可能延迟投递 | 官方要求；`IslandNotifier` 内部统一加，调用方不必管 |
+| 6 | **按钮要幂等** | 用户连点 5 次触发 5 次 | 实机验证时连点确实收到 5 次广播，生产实现需容忍重复触发 |
+
+### 5b.4 真机验证结论（2026-09-18）
+
+| 验证项 | 结果 |
+|---|---|
+| 岛出现、图标显示 | ✅ |
+| 秒表动图播放 | ✅ **内置 Lottie 在第三方可用**（文档原标注「未验证」） |
+| 正计时走动（`timerType=1`） | ✅ |
+| 暂停态定格（`timerType=2` + `autoplay=false`） | ✅ |
+| 结束按钮渲染 | ✅ |
+| **结束按钮点击回传** | ✅ 修正坑 2 后（连点 5 次收到 5 次广播） |
+
+### 5b.5 通用性设计
+
+`IslandTemplate` **不含任何业务语义**（没有 workflow / logcat 字段），
+只有「图标 + 文本 + 计时器 + 按钮」。将来任何需要"岛上走动的计时器"的
+功能（某个耗时模块、录音类功能）都可直接复用，
+只需填一个 `IslandTemplate` 调 `IslandNotifier.show()`。
+
+**与工作流执行通知互不干扰**：后者走自定义通道（rv），本层走模板通道，
+各写各的 extras key，通知 id 也分开（本层用 `97100` 起，
+避开工作流的 `[100000, 150000)` 与既有 `97010`）。
+
+---
+
 ## 6. 改动清单
 
 | 文件 | 类型 | 说明 | diff 面积 |
 |---|---|---|---|
 | `ui/settings/LogcatViewerActivity.kt` | 新增 | Compose Activity | — |
-| `core/logging/LogcatCommands.kt` | 新增 | 命令构造（纯函数） | — |
+| `core/logcat/LogcatLine.kt` | 新增 | 数据模型（LogLevel / LogcatLine / 解析结果） | — |
+| `core/logcat/LogcatParser.kt` | 新增 | 解析 + 降级 + 头标记行 + TAG 聚合（纯函数） | — |
+| `core/logcat/LogcatCommands.kt` | 新增 | 命令构造 + 状态解析 + shell 转义（纯函数） | — |
+| `services/island/IslandTemplate.kt` | 新增 | 通用岛模板数据模型 | — |
+| `services/island/IslandTemplateBuilder.kt` | 新增 | 模板 → `miui.focus.param` JSON（纯函数） | — |
+| `services/island/IslandNotifier.kt` | 新增 | 发送 / 更新 / 取消岛通知 | — |
+| `services/LogcatActionReceiver.kt` | 新增 | 岛「结束」按钮的广播接收器（**Manifest 静态注册**） | 需改 Manifest |
+| `services/LogcatCaptureController.kt` | 新增 | 采集状态机 + 计时 + 岛联动 | — |
 | `core/logging/LogcatParser.kt` | 新增 | 解析 + 降级 + TAG 聚合（纯函数，**触发器复用**） | — |
 | `core/utils/StorageManager.kt` | **改** | 追加 `exportsDir` | 追加 ~3 行 |
 | `ui/settings/SettingsRoute.kt` | **改** | 追加 `onOpenLogcatViewer` 回调 | 追加 3 行 |
