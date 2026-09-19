@@ -1,6 +1,7 @@
 package com.chaomixian.vflow.server.wrappers.shell
 
 import com.chaomixian.vflow.server.logcat.LogcatCondition
+import com.chaomixian.vflow.server.logcat.LogcatEventQueue
 import com.chaomixian.vflow.server.logcat.LogcatConditionCodec
 import com.chaomixian.vflow.server.logcat.LogcatLineParser
 import com.chaomixian.vflow.server.logcat.LogcatMatcher
@@ -9,6 +10,7 @@ import com.chaomixian.vflow.server.wrappers.StreamingWrapper
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.PrintWriter
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
@@ -80,6 +82,36 @@ class LogcatStreamWrapper :
 
         /** 条件列表在帧里的字段名。**必须与 app 侧 LogcatConditionWire 一致**。 */
         private const val KEY_CONDITIONS = "conditions"
+
+        /**
+         * 待发送事件队列的容量。
+         *
+         * ## 为什么需要它
+         *
+         * 原实现是"泵线程读到命中就地 `writer.println`"。这条链的隐患是：
+         *
+         * ```
+         * App 消费慢 → socket 发送缓冲满 → println 阻塞
+         *   → 泵线程停止读 logcat stdout
+         *   → 管道缓冲满 → **logcat 自己丢日志**
+         * ```
+         *
+         * 也就是说：**丢日志这件事由内核替我们决定了，而且完全静默** ——
+         * 用户配的触发器没触发，却没有任何地方告诉他"丢过多少"。
+         *
+         * 插入有界队列后，读与写解耦：写慢了只会让**我们的**队列积压，
+         * 而丢弃由我们按明确策略处理并计数，可上报给 App。
+         *
+         * ## 深度取舍
+         *
+         * 1000 条在内存里很小，但足以吸收正常的突发（一次异常刷几十行）。
+         * 再深无益：积压越多，用户看到的事件越滞后，而"迟到的触发"比"丢了"
+         * 更难理解。
+         */
+        private const val QUEUE_CAPACITY = 1000
+
+        /** 统计上报的间隔（毫秒）。太频繁会自己成为噪音。 */
+        private const val STATS_INTERVAL_MS = 5_000L
     }
 
     /** 当前条件列表。**整体替换**，不做部分更新（§6.5.2）。 */
@@ -89,7 +121,16 @@ class LogcatStreamWrapper :
     private var running = false
 
     private var pumpThread: Thread? = null
+    private var writeThread: Thread? = null
     private var logcatProcess: Process? = null
+
+    /**
+     * 待发送事件的有界队列。丢弃策略与计数都在它内部（独立类，有单测）。
+     */
+    private var queue: LogcatEventQueue? = null
+
+    /** 已成功发出的事件数。用于让用户看到"实际推了多少"。 */
+    private val sentCount = java.util.concurrent.atomic.AtomicLong(0)
 
     /**
      * 不包装任何系统服务，因此**没有"连接成功"这回事**。
@@ -199,6 +240,10 @@ class LogcatStreamWrapper :
     private fun startPump(writer: PrintWriter) {
         if (pumpThread?.isAlive == true) return
 
+        // 队列与写线程必须一起起 —— 泵线程只管入队，不碰 socket
+        if (queue == null) queue = LogcatEventQueue(QUEUE_CAPACITY)
+        startWriter(writer)
+
         pumpThread = thread(name = "vflow-logcat-pump", isDaemon = true) {
             // 照 VoiceTriggerHandler 的重试模式（文档 §6.4）：
             // logcat 意外退出时重启，而不是让整条流就此死掉
@@ -226,6 +271,92 @@ class LogcatStreamWrapper :
         runCatching { logcatProcess?.destroy() }
         logcatProcess = null
         pumpThread = null
+        // 写线程靠 running 标志与队列中断退出；唤醒它以免卡在 take() 上
+        writeThread?.interrupt()
+        writeThread = null
+    }
+
+    // ── 队列与写线程 ─────────────────────────────────────────────
+
+    /**
+     * 入队一个待发送事件。
+     *
+     * ## 丢弃策略：丢**最新**的
+     *
+     * 队列满时丢掉刚到的这条，而不是队首那条。理由：
+     *
+     * | 策略 | 效果 |
+     * |---|---|
+     * | 丢队首（FIFO 淘汰） | 保留最新事件，但**顺序错乱**——用户看到的事件时间戳会跳跃 |
+     * | **丢最新**（本实现） | 保留一段**连续**的早期事件，之后的事件整段丢失 |
+     *
+     * 后者更容易理解：用户看到的是"某段时间之后就没有触发了"，
+     * 而不是"触发记录中间莫名缺了几条"。日志本来就是时间序的，
+     * 连续缺失比随机缺失好判断得多。
+     *
+     * ⚠️ **满时不能阻塞**：这个方法运行在泵线程上，一旦阻塞就会停止读
+     * logcat stdout → 管道满 → 内核丢日志。那样丢弃就重新变成不可控的了。
+     */
+    private fun enqueue(payload: String) {
+        // 丢弃策略与计数都在 LogcatEventQueue 内部（见其类注释）
+        queue?.offer(payload)
+    }
+
+    /**
+     * 写线程：从队列取事件发往 socket。
+     *
+     * 与泵线程分离，这样**写慢不会反压到读**。
+     * 唯一的耦合点是队列，而队列满的处理是明确的丢弃 + 计数。
+     */
+    private fun startWriter(writer: PrintWriter) {
+        if (writeThread?.isAlive == true) return
+
+        writeThread = thread(name = "vflow-logcat-writer", isDaemon = true) {
+            var lastStatsAt = System.currentTimeMillis()
+
+            while (running) {
+                // 带超时地取，这样既能及时响应停止，又能定期上报统计
+                val payload = queue?.poll(STATS_INTERVAL_MS)
+
+                if (payload != null) {
+                    writer.println(payload)
+                    if (writer.checkError()) break
+                    sentCount.incrementAndGet()
+                }
+
+                // 定期上报丢弃统计。
+                // ⚠️ 这是本层存在的**核心价值**：原实现丢日志由内核决定且完全静默，
+                // 用户只会看到"触发器没反应"。现在至少能知道"丢过 N 条"
+                val now = System.currentTimeMillis()
+                if (now - lastStatsAt >= STATS_INTERVAL_MS) {
+                    lastStatsAt = now
+                    reportStats(writer)
+                }
+            }
+
+            // 退出前再报一次，免得最后的丢弃数没送到
+            reportStats(writer)
+        }
+    }
+
+    /**
+     * 上报累计统计。
+     *
+     * **只在有丢弃时上报** —— 没丢过就报数字只会成为噪音，
+     * 而"一切都好"是用户的默认预期，不需要反复确认。
+     */
+    private fun reportStats(writer: PrintWriter) {
+        val dropped = queue?.drainDropped() ?: 0
+        if (dropped <= 0) return
+
+        writer.println(
+            JSONObject()
+                .put("success", true)
+                .put("event", "logcatOverflow")
+                .put("dropped", dropped)
+                .put("sent", sentCount.get())
+                .toString()
+        )
     }
 
     private fun runLogcat(writer: PrintWriter) {
@@ -258,21 +389,19 @@ class LogcatStreamWrapper :
                     if (hits.isEmpty()) continue
 
                     for (condition in hits) {
-                        writer.println(
-                            JSONObject()
-                                .put("success", true)
-                                .put("event", "logcatMatch")
-                                .put("triggerId", condition.triggerId)
-                                .put("tag", parsed.tag)
-                                .put("message", parsed.message)
-                                .put("level", parsed.level.toString())
-                                .put("pid", parsed.pid)
-                                .put("raw", line)
-                                .toString()
-                        )
-                    }
+                        val payload = JSONObject()
+                            .put("success", true)
+                            .put("event", "logcatMatch")
+                            .put("triggerId", condition.triggerId)
+                            .put("tag", parsed.tag)
+                            .put("message", parsed.message)
+                            .put("level", parsed.level.toString())
+                            .put("pid", parsed.pid)
+                            .put("raw", line)
+                            .toString()
 
-                    if (writer.checkError()) return
+                        enqueue(payload)
+                    }
                 }
             }
         } finally {

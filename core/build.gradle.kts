@@ -127,8 +127,11 @@ plugins {
  *
  * 19 → 20：新增 logcat 触发器的 Core 侧实现（LogcatStreamWrapper 等）
  *           与 StreamingWrapper 的双工协议扩展
+ * 20 → 21：logcat 事件改为有界队列 + 独立写线程，并上报丢弃统计
+ *           （原先写阻塞会反压到读 logcat，导致内核静默丢日志）
+ * 21 → 22：注册 Config.ROUTING_TABLE["logcat"]（漏了它请求会回 "No route"）
  */
-val vflowCoreVersion = 20
+val vflowCoreVersion = 22
 
 val localProperties = Properties()
 val localPropertiesFile = rootProject.file("local.properties")

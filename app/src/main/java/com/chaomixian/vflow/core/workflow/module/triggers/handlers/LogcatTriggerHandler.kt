@@ -239,6 +239,22 @@ class LogcatTriggerHandler : BaseTriggerHandler() {
      * ——条件下发与事件到达之间有窗口期，期间用户可能已经删掉了那个触发器。
      */
     private suspend fun handleCoreEvent(event: JSONObject) {
+        // 过载统计：Core 侧因队列积压丢弃了事件。
+        // ⚠️ **必须显式告知用户**，否则他只会看到"触发器偶尔没反应"，
+        // 而这正是最难查的那类问题 —— 日志明明打了、触发器却没跑，
+        // 且没有任何线索指向"丢了"（设计文档 §6.5.4）
+        if (event.optString("event") == "logcatOverflow") {
+            val dropped = event.optLong("dropped", 0)
+            if (dropped > 0) {
+                DebugLogger.w(
+                    TAG,
+                    "logcat 事件过载：已丢弃 $dropped 条（累计推送 ${event.optLong("sent", 0)} 条）。" +
+                        "日志量或命中率过高，考虑收窄触发条件或加长冷却。"
+                )
+            }
+            return
+        }
+
         if (event.optString("event") != "logcatMatch") return
 
         val triggerId = event.optString("triggerId").takeIf { it.isNotBlank() } ?: return

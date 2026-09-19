@@ -17,6 +17,14 @@
 
 | 文件 / 范围 | 分歧内容 | 冲突归属 |
 |---|---|---|
+| `core/src/main/java/.../server/logcat/`（`LogcatLineParser.kt` + `LogcatMatcher.kt` + `LogcatConditionCodec.kt` + `LogcatEventQueue.kt`，均新增） | fork 独有：**logcat 触发器的 Core 侧纯函数层**（解析 / 匹配 / 条件解码 / 有界事件队列）。是 app 侧同名纯函数的移植版——Core 没有测试目录的说法已不成立（见下），两份实现各自有测试保护。⚠️ **任何语义改动必须同时改两处，且以 app 侧为准**；不一致的表现是「调试工具里看着能匹配的日志，触发器匹配不到」 | 我方 |
+| `core/src/main/java/.../server/wrappers/shell/LogcatStreamWrapper.kt`（新增） | fork 独有：logcat 触发器的 Core 侧流式实现（长驻 `logcat -T 1` + 双线程：泵线程读 stdout 解析匹配、主线程读控制帧）。走文档 §6.3 方案 A 注册进 `serviceWrappers`（不包装系统服务）。含背压保护：有界队列 + 独立写线程，丢弃计数定期上报 | 我方 |
+| `core/src/main/java/.../server/wrappers/StreamingWrapper.kt`（改） | `handleStream` 增加 `reader` 参数，把单向推送升级为**双工**。原先只有 writer，流建立后这条连接再无上行数据，`updateTriggers` 无处投递。唯一既有实现 `IClipboardWrapper` 忽略该参数 | **手动合并**（签名变更，上游若加新的 StreamingWrapper 实现需同步） |
+| `core/src/main/java/.../server/worker/BaseWorker.kt`（改） | `tryHandleStreamRequest` 透传 `reader` 给 `handleStream` | **手动合并**（1 行） |
+| `core/src/main/java/.../server/common/Config.kt`（改） | `ROUTING_TABLE` 追加 `"logcat" to WorkerType.SHELL`。⚠️ **只注册 `serviceWrappers` 不够**——那张表是"谁能处理"，这张才是"转发给谁"；漏了请求会回 `{"error":"No route"}` 且流建立不起来（已实际踩过） | **手动合并**（追加一行） |
+| `core/src/main/java/.../server/worker/ShellWorker.kt`（改） | 追加 `serviceWrappers["logcat"] = LogcatStreamWrapper()` | **手动合并**（追加一行） |
+| `core/build.gradle.kts`（改） | ① 加 `testImplementation("junit:junit:4.13.2")`——**core 是纯 JVM 模块（java-library + kotlin jvm），可以放 src/test 跑 JUnit**，文档里"core 没有测试目录"只是现状描述而非限制。② `vflowCoreVersion` 19 → 22（见下方敏感点） | **手动合并** |
+| `core/src/test/java/.../server/logcat/`（新增） | fork 独有：**本仓库 core 模块的首个测试目录**（66 例）。覆盖索引扫描解析、条件匹配与级别位掩码、条件编解码、有界事件队列的丢弃策略。这些类跑在热路径上且失败模式是"触发器静默不触发"，必须有测试 | 我方 |
 | `FORK.md`、`AGENTS.md`、`CLAUDE.md` | fork 独有文件，上游没有 | 我方 |
 | `docs/fork/function-workflow.md`、`docs/fork/function-workflow-ui.html` | fork 独有：函数工作流需求文档 + 可交互 UI 原型（上游无此文件） | 我方 |
 | `docs/fork/do-not-disturb-trigger.md` | fork 独有：**免打扰模式触发器**功能文档（需求/设计决策/实现状态/真机验证待办/自触发环风险）。含 AOSP 源码核实的 API 选型结论，上游无此文件 | 我方 |
