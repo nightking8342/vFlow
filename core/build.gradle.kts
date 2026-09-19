@@ -138,7 +138,7 @@ plugins {
  * 19 → 20 → 22 这段历史是早期误用版本号担当"需要重启"信号留下的，
  * 现在职责已移交指纹机制，此处不再需要跟着每次改动递增。
  */
-val vflowCoreVersion = 22
+val vflowCoreVersion = 23
 
 val localProperties = Properties()
 val localPropertiesFile = rootProject.file("local.properties")

@@ -331,12 +331,18 @@ object VFlowCore {
         }
     }
 
+    /**
+     * 订阅方法名 → target 的表。
+     *
+     * 表本身在 [Config.STREAM_METHODS]（与 `ROUTING_TABLE` 放在一起，
+     * 并有启动期一致性校验）。两条路径的区别、以及只改一处会怎样，见那里。
+     */
     private fun tryRouteStreamRequest(req: JSONObject, requestStr: String, clientWriter: PrintWriter): Boolean {
-        val target = req.optString("target")
         val method = req.optString("method")
-        if (target != "clipboard" || method != "subscribeClipboardStream") {
-            return false
-        }
+
+        // 只有明确登记过的订阅方法才走流式路径（用白名单而非"带 subscribe 前缀"，
+        // 避免把未知请求误当成流式、占住连接不放）
+        val target = Config.STREAM_METHODS[method] ?: return false
 
         val workerType = Config.ROUTING_TABLE[target] ?: return false
         relayStreamRequestToWorker(workerType, requestStr, clientWriter)
