@@ -21,6 +21,14 @@
 | `core/src/main/java/.../server/wrappers/shell/LogcatStreamWrapper.kt`（新增） | fork 独有：logcat 触发器的 Core 侧流式实现（长驻 `logcat -T 1` + 双线程：泵线程读 stdout 解析匹配、主线程读控制帧）。走文档 §6.3 方案 A 注册进 `serviceWrappers`（不包装系统服务）。含背压保护：有界队列 + 独立写线程，丢弃计数定期上报 | 我方 |
 | `core/src/main/java/.../server/wrappers/StreamingWrapper.kt`（改） | `handleStream` 增加 `reader` 参数，把单向推送升级为**双工**。原先只有 writer，流建立后这条连接再无上行数据，`updateTriggers` 无处投递。唯一既有实现 `IClipboardWrapper` 忽略该参数 | **手动合并**（签名变更，上游若加新的 StreamingWrapper 实现需同步） |
 | `core/src/main/java/.../server/worker/BaseWorker.kt`（改） | `tryHandleStreamRequest` 透传 `reader` 给 `handleStream` | **手动合并**（1 行） |
+| `services/VFlowCoreBridge.kt`（改） | 新增 logcat 流式 API（`streamLogcatEvents` + `updateLogcatTriggers`）与 **dex 指纹机制**（`packagedDexFingerprint` / `isCoreDexNewerThanRunning` / `recordLaunchedDexFingerprint` + 顶层纯函数 `coreDexFingerprint` / `shouldPromptCoreRestart`）。流式 API 的关键是**保留 writer** 供后续控制帧使用（双工） | **手动合并**（新增方法为主） |
+| `services/CoreLauncher.kt`（改） | `deployDex` 成功后调用 `recordLaunchedDexFingerprint(context)` —— 这是"改了 core 需重启"判据的另一半。⚠️ 必须在**部署成功之后**调用，提前记录的话部署失败就再也不会提示 | **手动合并**（新增 1 行） |
+| `ui/home/HomeScreen.kt`、`ui/settings/CoreManagementActivity.kt`（改） | `coreNeedsUpdate` 的判据由"版本号落后"改为 **dex 指纹变化**（`versionStatus.needsUpdate \|\| isCoreDexNewerThanRunning()`） | **手动合并**（各 1 处判断 + 文案） |
+| `core/build.gradle.kts`（改） | ① 加 `testImplementation("junit:junit:4.13.2")` —— **core 是纯 JVM 模块，可以放 src/test 跑 JUnit**（文档里"core 没有测试目录"只是现状描述）；② `vflowCoreVersion` 注释重写，明确 **🚫 不要在开发过程中改它**（只在发版时改） | **手动合并** |
+| `test/services/CoreDexFingerprintTest.kt`（新增） | fork 独有：13 例。锁住"该提示却返回 false"（会让用户静默跑旧代码）与"不该提示却返回 true"（提示不可信）两个方向 | 我方 |
+| `core/src/main/java/.../server/VFlowCore.kt`（改） | `tryRouteStreamRequest` 的流式白名单由**硬编码 clipboard** 改为查 `Config.STREAM_METHODS`。⚠️ 这是上游核心文件，且坑很深：Core 有**两条路由路径**（普通请求查 `ROUTING_TABLE`、流式请求查这张白名单），只改前者时流式请求会被拦下后**落到普通路径转发**，而那条路承载不了长连接 —— 表现为 `ping` 正常但流报 `ECONNREFUSED`（已实际踩过） | **手动合并**（改动集中在 `tryRouteStreamRequest` 一个方法） |
+| `core/src/main/java/.../server/common/Config.kt`（改） | ① `ROUTING_TABLE` 追加 `"logcat" to WorkerType.SHELL`；② 新增 `STREAM_METHODS`（流式订阅方法 → target，与 `ROUTING_TABLE` 同桌以便同时看到）；③ `init` 加一致性校验 —— 流式表里的 target 必须在路由表里，否则启动时报错 | **手动合并**（追加） |
+| `core/src/test/java/.../server/common/RoutingTableConsistencyTest.kt`（新增） | fork 独有：**在构建期**拦住"新增流式能力漏改一张表"（5 例）。这类错误的表现是流静默建立不起来，靠读代码很难发现 | 我方 |
 | `core/src/main/java/.../server/common/Config.kt`（改） | `ROUTING_TABLE` 追加 `"logcat" to WorkerType.SHELL`。⚠️ **只注册 `serviceWrappers` 不够**——那张表是"谁能处理"，这张才是"转发给谁"；漏了请求会回 `{"error":"No route"}` 且流建立不起来（已实际踩过） | **手动合并**（追加一行） |
 | `core/src/main/java/.../server/worker/ShellWorker.kt`（改） | 追加 `serviceWrappers["logcat"] = LogcatStreamWrapper()` | **手动合并**（追加一行） |
 | `core/build.gradle.kts`（改） | ① 加 `testImplementation("junit:junit:4.13.2")`——**core 是纯 JVM 模块（java-library + kotlin jvm），可以放 src/test 跑 JUnit**，文档里"core 没有测试目录"只是现状描述而非限制。② `vflowCoreVersion` 19 → 22（见下方敏感点） | **手动合并** |

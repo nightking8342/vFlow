@@ -1,8 +1,9 @@
 # logcat 触发器设计文档
 
 > **目录归属**：fork 独有功能文档（冲突归我方），上游无此文件。
-> **分支/日期**：`session-0915-01`，2026-09-16 首版 / **2026-09-17 修订**。
-> **状态**：设计定稿，**尚未实现**。
+> **分支/日期**：`session-0915-01`，2026-09-16 首版 / 2026-09-17 修订 / **2026-09-19 完成实现**。
+> **状态**：✅ **已实现并真机验证**（§12 的第 1、2 步全部完成 + 背压保护）。
+> 真机证据：触发日志反复出现 `触发工作流 '测试'（tag=sensors-hal）`。
 > **前置调研**：可行性已真机实测，见 [`surveys/logcat-readability-survey.md`](surveys/logcat-readability-survey.md)。
 > **前置工具**：实现本功能前**先做** [`logcat-debug-tool.md`](logcat-debug-tool.md)（logcat 调试工具）。
 > 它的 `LogcatParser` 就是本文 §5.1 要用的那一份，且能提前验证 §6.4 的缓冲问题与 §9 风险 3（长驻进程存活）。
@@ -756,6 +757,71 @@ uid=2000(shell) groups=...,1007(log),...
    = 匹配全部日志。倾向**允许但警告**（有人确实想做全量统计），并在文案里说明性能风险。
 
 ---
+
+## 11.5 实现完成情况（2026-09-19）
+
+| 层 | 产出 | 测试 |
+|---|---|---|
+| **App 纯函数** | `core/logcat/LogcatMatch.kt` / `LogcatCooldown.kt` / `LogcatConditionWire.kt` | 62 例 |
+| **Core 纯函数** | `core/src/.../server/logcat/LogcatLineParser.kt` / `LogcatMatcher.kt` / `LogcatConditionCodec.kt` / `LogcatEventQueue.kt` | 71 例 |
+| **Core wrapper** | `core/src/.../server/wrappers/shell/LogcatStreamWrapper.kt` | — |
+| **App 接线** | `triggers/LogcatTriggerModule.kt` + `handlers/LogcatTriggerHandler.kt` | 12 例 |
+| **协议扩展** | `StreamingWrapper.handleStream` 加 `reader`（双工） | — |
+| **背压保护** | 有界队列 + 独立写线程 + 丢弃计数上报 | 14 例 |
+
+### ⚠️ core 模块**可以**放测试（本文档旧说法的纠正）
+
+文档 §10 原写「Core 模块没有测试目录，因此纯函数必须放 app 模块」。
+**那是现状描述，不是限制** —— `core` 是 `java-library` + `kotlin("jvm")`，
+一个纯 JVM 模块，加一行 `testImplementation("junit:junit:4.13.2")` 就能跑
+`core/src/test/`。
+
+已建 `core/src/test/`（本仓库 core 模块的首个测试目录）。
+那三个类跑在热路径上、失败模式是"触发器静默不触发"，必须有测试。
+
+### ⚠️ 三处实现期踩的坑（都不报错、只静默失效）
+
+| # | 坑 | 症状 | 修法 |
+|---|---|---|---|
+| 1 | **Core 有两条路由路径** | 只注册 `serviceWrappers` 不够，请求被流式白名单拦下 | 见下 |
+| 2 | **Core 版本号被误用** | 见下 | 改用 dex 指纹 |
+| 3 | **写阻塞反压到读** | 命中率高时内核静默丢日志 | 有界队列 + 计数上报 |
+
+**坑 1 展开 —— 两张路由表**：
+
+| | 普通请求 | 流式请求 |
+|---|---|---|
+| 查哪张表 | `Config.ROUTING_TABLE` | `Master` 里的**流式白名单** |
+| 转发方式 | 一问一答 | 独占连接，持续推流 |
+
+只改前者而漏了后者时，流式请求被拦下后**落到普通路径去转发** ——
+而那条路承载不了长连接。日志里表现为：
+
+```
+ping: 成功, uid=2000                              ← Master 活着（ping 不经 Worker）
+logcat 流被 Core 拒绝: ... 20001 ECONNREFUSED     ← 看起来像 Worker 挂了
+```
+
+已经实际踩过。修法：白名单移到 `Config.STREAM_METHODS`（与 `ROUTING_TABLE`
+同桌，改一张时很难看不见另一张）+ `Config.init` 一致性校验 + 新增
+`RoutingTableConsistencyTest` 在构建期拦住同类错误。
+
+**坑 2 展开 —— 版本号不触发重启**：
+
+`vflowCoreVersion` 是手写常量，而 `MainActivity.checkCoreAutoStart()`
+**只判断"Core 活没活"，不看版本号**。所以：
+
+| 场景 | 结果 |
+|---|---|
+| 装新 apk，Core 进程还活着 | ❌ 继续跑旧代码，新功能完全无效且**无法察觉** |
+| Core 被杀 / 手机重启 | ✅ 启动时自然加载新 dex |
+
+踩过两次。**修法：用 dex 内容指纹判定**（`VFlowCoreBridge.isCoreDexNewerThanRunning`），
+首页与管理页据此提示用户**手动重启**。
+版本号回归它本来的职责 —— 只在发版时改（`🚫 不要在开发过程中改它`）。
+
+> ✅ 已验证 `:core:buildDex` 是**确定性**的（同样源码产出字节相同的 dex），
+> 所以重复构建不会误报。用指纹而非时间戳的好处：改 app 代码不触发提示。
 
 ## 12. 实现顺序建议（**已调整**）
 

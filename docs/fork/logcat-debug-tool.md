@@ -1,9 +1,8 @@
 # logcat 调试工具设计文档
 
 > **目录归属**：fork 独有功能文档（冲突归我方），上游无此文件。
-> **分支/日期**：`session-0915-01`，2026-09-17 首版 / **2026-09-18 更新**。
-> **状态**：**部分实现**——底层两块（纯函数层、超级岛通知层）已完成并真机验证；
-> UI 与采集控制器**尚未实现**。进度见 §0.1。
+> **分支/日期**：`session-0915-01`，2026-09-17 首版 / **2026-09-19 更新**。
+> **状态**：✅ **已实现并真机使用**（全部 7 步完成）。进度见 §0.1。
 > **前置依赖**：shell 能力已实测可行，见 [`surveys/logcat-readability-survey.md`](surveys/logcat-readability-survey.md)。
 > **下游关系**：本工具是 [`logcat-trigger-design.md`](logcat-trigger-design.md)（logcat 触发器）的**前置**——
 > 它的解析层就是触发器要用的那一份，先做本工具可以把触发器设计的最高风险项探掉一半（见 §8）。
@@ -19,23 +18,24 @@
 
 | # | 内容 | 状态 | 产出 |
 |---|---|---|---|
-| 1 | **纯函数层** | ✅ **完成** | `core/logcat/` 三个文件 + `LogcatParserTest` / `LogcatCommandsTest`（49 例） |
-| 1b | ↳ 命令级真机手测 | ✅ 通过 | 见 §9.1b |
-| 2 | **超级岛通知层** | ✅ **完成** | `services/island/Island{Template,TemplateBuilder,Notifier}.kt` + 24 例单测 |
-| 2b | ↳ 超级岛真机验证 | ✅ 通过 | 见 §5b.4 |
-| 3 | **采集控制器**（状态机 + 计时 + 岛联动） | ✅ **完成** | `services/LogcatCaptureController.kt` + `core/logcat/LogcatCaptureUi.kt`（展示层纯函数）+ `LogcatCaptureUiTest`（19 例） |
-| 4 | **岛「结束」按钮的 Receiver**（生产版） | ✅ **完成** | `services/LogcatActionReceiver.kt`，已在 `AndroidManifest.xml` 静态注册 |
-| 5 | **查看器 UI** | ⬜ **未做** | 计划：`ui/settings/LogcatViewerActivity.kt`（界面见 §4.1） |
-| 6 | 导出 + `StorageManager.exportsDir` | ⬜ 未做 | 见 §5 |
-| 7 | 设置页入口接线 | ⬜ 未做 | 见 §6.1（**含搜索列表，别漏**） |
+| 1 | **纯函数层** | ✅ 完成 | `core/logcat/`（Line/Parser/Commands/Filter/ViewerState/ExportRenderer）+ 单测 |
+| 2 | **超级岛通知层** | ✅ 完成 | `services/island/Island{Template,TemplateBuilder,Notifier}.kt` + 24 例 |
+| 2b | ↳ 真机验证 | ✅ 通过 | 见 §5b.4 |
+| 3 | **采集控制器** | ✅ 完成 | `services/LogcatCaptureController.kt` + `core/logcat/LogcatCaptureUi.kt` |
+| 4 | **岛「结束」按钮 Receiver** | ✅ 完成 | `services/LogcatActionReceiver.kt`（Manifest 静态注册） |
+| 5 | **查看器 UI** | ✅ 完成 | `ui/settings/LogcatViewerActivity.kt` |
+| 6 | **导出** | ✅ 完成 | `services/LogcatExportManager.kt` + `StorageManager.exportsDir` |
+| 7 | **入口接线** | ✅ 完成 | 设置页按钮行 + 工作流编辑器「更多选项」+ 三语言文案 |
 
-> **下一步从第 5 步开始**。第 1–4 步的产物都可直接复用：
-> - 界面只需观察 `LogcatCaptureController.session` / `.nowMs` / `.message`
-> - 「刷新」用 `LogcatCommands.buildRefresh(state, …)`，数据源由状态决定（§4.1.1）
-> - 状态判定一律调 `controller.probe(context)`，**不要读内存状态做判断**（§4.2.1）
->
-> ⚠️ **第 3 步实现时新踩了 3 个坑**（都不报错、只静默失效），
-> 见 §4.2.3——接手前务必先读。
+**后续修复轮次**（每次都由真机反馈驱动，详见各节）：
+
+| 轮次 | 问题 | 修法 | 见 |
+|---|---|---|---|
+| 1 | 切 TAG 时读到非采集期间的日志 | 加 `Completed` 状态（标记文件持久化），数据源由状态唯一决定 | §4.2.4 |
+| 2 | 停止后要手动点刷新 | 状态变化自动加载 + 已完成态隐藏刷新按钮 | §4.1.4 |
+| 3 | **采集不到日志**（`tap_dbtap` 那个） | 读取由「末尾 N 行」改为**全文件 grep 检索** + 容量 1MB→64MB | §4.1.3 |
+| 4 | **检索永远搜不到** | grep 缺 `-E`，ERE 语法被当成了 BRE | §4.1.5 |
+| 5 | **点开始后界面卡死** | `cat $(ls …)` 无匹配时变裸 `cat` 读 stdin → 永挂 | §4.1.6 |
 
 ### 0.2 第 3、4 步的实现要点
 
@@ -438,6 +438,87 @@ tail -n 2000 /sdcard/vFlow/logs/capture.log
 **列表用「替换」而非「累积」**：每次刷新显示数据源的完整快照。
 累积在此处毫无价值（采集态数据本来就不变；快照态想凑更长窗口应直接调大条数），
 反而会让用户困惑「这行怎么出现了两次」。
+
+##### 4.1.4 ⚠️ 采集完成后不能再读缓冲区 ★
+
+> 🔴 **2026-09-19 修订。** 用户报：「点不同 TAG 切换过滤时，刷新到了非采集期间的日志。」
+
+**根因**：三态机（`IDLE`/`CAPTURING`/`STALE`）里**缺一个「采集已完成」状态**。
+停止采集后 `buildStopCapture` 删掉 pidfile → 状态判定退回 `IDLE` →
+而 `IDLE` 的数据源是**实时滚动的缓冲区**。采集文件还在盘上，但已经没人读了。
+
+于是用户切 TAG 触发的刷新，读到的是"现在"的日志，不是刚采的那批。
+
+**修法**：加 `CaptureState.Completed`，用**标记文件**（`logcat_capture.done`）持久化。
+
+| 状态 | 数据源 | 会变吗 | 刷新按钮 |
+|---|---|---|---|
+| `IDLE` | logcat 缓冲区 | ⚠️ 会（滚动窗口） | 需要 |
+| `CAPTURING` | 采集文件 | ⚠️ 会（在增长） | 需要 |
+| **`COMPLETED`** | 采集文件 | ❌ **不会（已固定）** | **隐藏** |
+| `STALE` | 上次采集文件 | ❌ 不会 | **隐藏** |
+
+⚠️ **用文件而非内存标志**：与 pidfile 同一个理由 ——
+采集脱离 UI 存活，App 被杀后重进也该看到同一批（§4.2.1）。
+
+⚠️ **探测顺序：先看进程，再看标记**。反过来的话，一次新采集刚开始
+（pidfile 已写、done 标记还没来得及删）会被误判成"已完成"，
+用户看到的是上一批日志。所以 `buildStartCapture` 里也加了 `rm -f $DONE_FILE`。
+
+##### 4.1.5 ⚠️ grep 必须带 `-E` ★
+
+> 🔴 **2026-09-19 修订。** 用户报：「采集不到日志，但别的工具能看到有」
+
+`buildSearchPattern` 产出的 pattern 用的是 **ERE 语法**（`[ ]+`、`.*`、`|`），
+而拼出的命令是 `grep -ai -e '...'` —— **没有 `-E`**。
+
+在基本正则（BRE，grep 默认）下 **`+` 是字面字符而不是量词**，
+所以 `[ ]+` 去匹配"一个空格后跟一个加号"，**永远匹配不到任何行**。
+
+实测：
+
+| 命令 | 结果 |
+|---|---|
+| `grep -ai -e '[ ]+[IWEF][ ]+...'` | 退出码 1，未命中 |
+| `grep -aEi -e '...'` | 命中 |
+
+**这个失败模式极其误导**：采集文件好好地写着日志、命令正常返回、
+**没有任何报错**，只是永远搜不到东西。看起来完全像"采集没工作"。
+
+**为什么旧测试没拦住**：原断言只检查了 `grep -a`（那是为二进制字节问题加的），
+**没检查 `-E`**。已补两条断言。
+
+##### 4.1.6 ⚠️ `cat $(ls …)` 无匹配时会挂死 ★★
+
+> 🔴 **2026-09-19 修订。** 用户报：「点开始后界面一直显示刷新中，
+> 连停止按钮都变灰点不动，必须退出重进。」
+
+**这是本条链路里最严重的一个，因为它会让整个界面失去响应。**
+
+检索命令是：
+
+```bash
+cat $(ls -tr $CAPTURE_GLOB 2>/dev/null) | grep ...
+```
+
+当通配符**无匹配**时，`$(...)` 展开为**空串**，命令退化成**裸 `cat`**。
+而 `cat` 不带文件参数时**读标准输入** —— 在 `exec` 通道下 stdin 不关闭，
+于是**命令永不返回**。
+
+**触发时机**：刚点「开始采集」时。`buildStartCapture` 会先执行
+`rm -f $DONE_FILE $CAPTURE_GLOB`（清理上一轮），而 logcat 还没创建新文件 ——
+那一刻检索正是无匹配。
+
+**连锁反应**：`refreshing` 永真 → 界面一直"刷新中" →
+`canStop` 里检查了 `refreshing` → **停止按钮变灰** → 退出重进才恢复。
+
+**修法**：`cat $sources </dev/null`。裸 cat 立刻读到 EOF 返回空。
+同类问题一并修了 `buildCaptureSize`（无匹配时 `du` 也会读 stdin）。
+
+> ⚠️ **两个改动叠加才出现**：`rm -f $CAPTURE_GLOB`（清理旧轮转份）
+> 与 `cat $(ls …)`（检索）单独任何一个都不会触发。
+> 这类"只在特定时序下出现"的 bug，靠读代码很难发现 ——
+> 要问「这个命令在最坏输入下会怎样」。
 
 ### 4.2 采集状态机
 
