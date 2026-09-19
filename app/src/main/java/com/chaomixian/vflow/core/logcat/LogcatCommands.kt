@@ -133,7 +133,14 @@ object LogcatCommands {
         rotateCount: Int = ROTATE_COUNT,
         timeoutSec: Int = DEFAULT_TIMEOUT_SEC,
     ): String =
-        "rm -f $DONE_FILE; " +
+        // ⚠️ 三件事的顺序有讲究：
+        // 1. 先删 done 标记：否则新一轮刚开始时（pidfile 已写、进程还没起来），
+        //    探测可能读到旧标记，把"采集中"误判成"已完成"
+        // 2. 再删上一轮的**全部轮转文件**：否则新采集只覆盖主文件，
+        //    `.1` `.2` … 里还是上一批的内容，检索时会把两批混在一起
+        //    （实测踩过：`.4` 的时间比主文件早了 7 分钟）
+        // 3. 最后启动
+        "rm -f $DONE_FILE $CAPTURE_GLOB; " +
             "timeout ${timeoutSec.coerceAtLeast(1)} " +
             "$LOGCAT $VERBOSITY -r $rotateKb -n $rotateCount -f $CAPTURE_FILE " +
             // ⚠️ 先删掉上一轮的 done 标记：否则新一轮刚开始时
@@ -157,6 +164,30 @@ object LogcatCommands {
      * 设计上**不自动清理**——用户可能想先看看那次异常结束前采集到的日志。
      */
     fun buildClearStale(): String = "rm -f $PID_FILE"
+
+    /**
+     * 删除采集文件（含轮转出来的历史份）。
+     *
+     * 用户主动清理时用。**不做自动定时清理** —— 采集文件是用户特意采下来
+     * 排查问题的，有保留价值；只有在**下一次开始采集**时才会清掉上一轮
+     * （见 [buildStartCapture]），那时旧数据已经没用了。
+     *
+     * ⚠️ 同时删 done 标记：文件没了却留着"已完成"标记的话，
+     * 界面会停在一个空的已采集态，而用户以为还能看到内容。
+     */
+    fun buildDeleteCaptureFiles(): String =
+        "rm -f $CAPTURE_GLOB $DONE_FILE"
+
+    /**
+     * 采集文件的当前占用（字节）。
+     *
+     * ⚠️ 用 `du -sk` 汇总而不是 `ls` —— 要算的是**所有轮转份之和**，
+     * 只看主文件会低估（实测总量可达主文件的数倍）。
+     *
+     * @return 形如 `12345` 的 KB 数；失败时为 0
+     */
+    fun buildCaptureSize(): String =
+        "du -sk $CAPTURE_GLOB 2>/dev/null | awk '{s+=\$1} END {print s+0}'"
 
     /**
      * 回到空闲（读实时缓冲区）。

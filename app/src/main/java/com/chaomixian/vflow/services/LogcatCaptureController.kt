@@ -221,6 +221,26 @@ object LogcatCaptureController {
     }
 
     /**
+     * 删除采集文件（含轮转历史份），回到空闲态。
+     *
+     * 用户主动清理时调用。
+     *
+     * ⚠️ **不做定时自动清理**：采集文件是用户特意采下来排查问题的，
+     * 有保留价值。只在**下一次开始采集**时清掉上一轮（见 `buildStartCapture`），
+     * 那时旧数据确实没用了。
+     */
+    suspend fun deleteCaptureFiles(context: Context) {
+        val appContext = context.applicationContext
+        runCatching {
+            ShellManager.execShellCommand(appContext, LogcatCommands.buildDeleteCaptureFiles())
+        }.onFailure {
+            DebugLogger.w(TAG, "删除采集文件失败", it)
+            _message.value = "删除失败：${it.message ?: "未知错误"}"
+        }
+        applyState(CaptureState.Idle, appContext)
+    }
+
+    /**
      * 清理脏状态（[CaptureState.Stale] 态下用户点「清理」）。
      *
      * 设计上**不自动清理**——用户可能想先看看那次异常结束前采集到的日志（§10 决策 2）。

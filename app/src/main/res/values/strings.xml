@@ -179,6 +179,10 @@
     <string name="logcat_status_completed">采集文件 %1$d 行 · 降级 %2$d 行 · %3$s</string>
     <string name="logcat_action_rescan">重新筛选</string>
     <string name="logcat_action_release">放弃这批</string>
+    <string name="logcat_find_hint">查找（高亮，不改动结果）</string>
+    <string name="logcat_find_prev">上一个</string>
+    <string name="logcat_find_next">下一个</string>
+    <string name="logcat_action_delete_files">删除采集文件</string>
     <string name="logcat_completed_hint">这批日志已固定，切换过滤不会改变内容。</string>
     <string name="logcat_coverage_range">实际覆盖 %1$s</string>
     <string name="logcat_coverage_truncated">结果已达行数上限，后面还有更多；调大「条数」或缩小过滤范围可看到更早的内容。</string>

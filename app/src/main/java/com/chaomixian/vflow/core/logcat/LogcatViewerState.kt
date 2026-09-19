@@ -210,3 +210,90 @@ fun buildCoverage(lines: List<LogcatLine>, limit: Int): CaptureCoverage {
         truncatedByLimit = lines.size >= limit,
     )
 }
+
+// ── 查找（与筛选不同）────────────────────────────────────────────
+
+/**
+ * 查找模式：**不改动结果集，只标出匹配的行**。
+ *
+ * ## 与「消息筛选」的区别
+ *
+ * | | 筛选 | 查找 |
+ * |---|---|---|
+ * | 不匹配的行 | **消失** | 保留 |
+ * | 能否看到上下文 | ❌ 看不到 | ✅ 看得到 |
+ * | 能否下推 shell | ✅ 能（grep） | ❌ 不能 |
+ *
+ * 这两个诉求是**互斥**的，而**上下文恰恰是 logcat 调试的核心**——
+ * 一个崩溃堆栈，看 `NullPointerException` 那一行没用，
+ * 要看它前后发生了什么。所以两者都要，但必须分开。
+ *
+ * ⚠️ 因此查找**不下推 grep**（下推了不匹配的行就没了），
+ * 只在已加载的结果内做，快且不跑命令。
+ */
+data class LogcatSearch(
+    /** 查找关键字；空串表示未启用查找 */
+    val query: String = "",
+    /** 大小写敏感？默认不敏感，与筛选口径一致 */
+    val caseSensitive: Boolean = false,
+) {
+    val isActive: Boolean get() = query.isNotBlank()
+
+    /** 该行是否命中查找。 */
+    fun matches(line: LogcatLine): Boolean =
+        isActive && line.raw.contains(query, ignoreCase = !caseSensitive)
+}
+
+/**
+ * 查找的结果摘要。
+ *
+ * @param matchIndices 命中行在列表中的下标（用于跳转）
+ * @param currentIndex 当前定位到第几个命中（从 0 起）；无命中时为 -1
+ */
+data class LogcatSearchResult(
+    val matchIndices: List<Int>,
+    val currentIndex: Int,
+) {
+    val matchCount: Int get() = matchIndices.size
+    val hasMatches: Boolean get() = matchIndices.isNotEmpty()
+
+    /** 当前命中在列表中的行下标；无命中时为 null */
+    val currentLineIndex: Int?
+        get() = matchIndices.getOrNull(currentIndex)
+
+    /** 展示用，如 `3/17`。 */
+    fun positionLabel(): String =
+        if (hasMatches) "${currentIndex + 1}/$matchCount" else ""
+}
+
+/**
+ * 在结果集里执行查找。
+ *
+ * @param lines 当前展示的行（查找**不改变**它，只标出命中）
+ * @param currentIndex 上次定位的位置；切换关键字时应重置为 0
+ */
+fun runLogcatSearch(
+    lines: List<LogcatLine>,
+    search: LogcatSearch,
+    currentIndex: Int = 0,
+): LogcatSearchResult {
+    if (!search.isActive) return LogcatSearchResult(emptyList(), -1)
+
+    val indices = lines.indices.filter { search.matches(lines[it]) }
+    if (indices.isEmpty()) return LogcatSearchResult(emptyList(), -1)
+
+    // 越界时夹回范围内 —— 换关键字后行数变少，旧的 index 可能失效
+    return LogcatSearchResult(indices, currentIndex.coerceIn(0, indices.size - 1))
+}
+
+/**
+ * 查找里跳到下一个/上一个命中。
+ *
+ * **循环跳转**：走到末尾再点会回到第一个。比"到底了就停住"更好用 ——
+ * 用户不需要知道自己在第几个，一直点总能找到想看的。
+ */
+fun LogcatSearchResult.advance(step: Int): LogcatSearchResult {
+    if (!hasMatches) return this
+    val next = (currentIndex + step).mod(matchCount)   // mod 保证负数也落回正区间
+    return copy(currentIndex = next)
+}

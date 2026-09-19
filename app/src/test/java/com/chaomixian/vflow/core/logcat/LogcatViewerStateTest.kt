@@ -2,6 +2,7 @@ package com.chaomixian.vflow.core.logcat
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -287,5 +288,132 @@ class LogcatViewerStateTest {
             elapsedMs = 1,
         )
         assertEquals(LogcatEmptyReason.FilteredOut, result.emptyReason)
+    }
+
+    // ── 查找（与筛选的区别）★ ──────────────────────────────────
+
+    @Test
+    fun `search does not remove non-matching rows`() {
+        // ⚠️ 这是查找与筛选的**本质区别**，也是它存在的理由：
+        // 不匹配的行必须保留，否则看不到上下文。
+        // 而上下文恰恰是 logcat 调试的核心 —— 一个崩溃堆栈，
+        // 只看 NullPointerException 那一行没有意义，要看它前后发生了什么
+        val lines = listOf(
+            line("A").copy(raw = "start"),
+            line("B").copy(raw = "NullPointerException here"),
+            line("C").copy(raw = "end"),
+        )
+        val result = runLogcatSearch(lines, LogcatSearch(query = "NullPointer"))
+
+        assertEquals("命中数", 1, result.matchCount)
+        assertEquals("应定位到第 1 行（0 起）", 1, result.currentLineIndex)
+        assertEquals("查找**不改动**结果集本身", 3, lines.size)
+    }
+
+    @Test
+    fun `search is case insensitive by default`() {
+        val lines = listOf(line("A").copy(raw = "NullPointerException"))
+        assertEquals(1, runLogcatSearch(lines, LogcatSearch(query = "nullpointer")).matchCount)
+    }
+
+    @Test
+    fun `search can be made case sensitive`() {
+        val lines = listOf(line("A").copy(raw = "NullPointerException"))
+        assertEquals(
+            0,
+            runLogcatSearch(lines, LogcatSearch(query = "nullpointer", caseSensitive = true)).matchCount
+        )
+        assertEquals(
+            1,
+            runLogcatSearch(lines, LogcatSearch(query = "NullPointer", caseSensitive = true)).matchCount
+        )
+    }
+
+    @Test
+    fun `an empty query disables search`() {
+        val lines = listOf(line("A"))
+        val r = runLogcatSearch(lines, LogcatSearch())
+        assertEquals(0, r.matchCount)
+        assertFalse(r.hasMatches)
+        assertNull(r.currentLineIndex)
+        assertTrue("未启用时不该有位置标签", r.positionLabel().isEmpty())
+    }
+
+    @Test
+    fun `all matches are collected not just the first`() {
+        val lines = listOf(
+            line("A").copy(raw = "err"),
+            line("B").copy(raw = "ok"),
+            line("C").copy(raw = "err again"),
+        )
+        val r = runLogcatSearch(lines, LogcatSearch(query = "err"))
+        assertEquals(listOf(0, 2), r.matchIndices)
+        assertEquals("1/2", r.positionLabel())
+    }
+
+    @Test
+    fun `no match yields an empty result`() {
+        val r = runLogcatSearch(listOf(line("A").copy(raw = "x")), LogcatSearch(query = "zzz"))
+        assertFalse(r.hasMatches)
+        assertEquals(-1, r.currentIndex)
+        assertNull(r.currentLineIndex)
+    }
+
+    // ── 跳转 ────────────────────────────────────────────────────
+
+    @Test
+    fun `advance moves to the next match`() {
+        val lines = List(5) { line("T$it").copy(raw = "err$it") }
+        val r = runLogcatSearch(lines, LogcatSearch(query = "err"))
+        assertEquals(0, r.currentIndex)
+        assertEquals(1, r.advance(1).currentIndex)
+        assertEquals(2, r.advance(1).advance(1).currentIndex)
+    }
+
+    @Test
+    fun `advance wraps around at both ends`() {
+        // ⚠️ 循环跳转：到底了再点回到第一个。
+        // 比"到底就停住"更好用 —— 用户不需要知道自己在第几个，一直点总能找到
+        val lines = List(3) { line("T$it").copy(raw = "err") }
+        val r = runLogcatSearch(lines, LogcatSearch(query = "err"))
+
+        assertEquals("末尾再下一个应回到第一个", 0, r.copy(currentIndex = 2).advance(1).currentIndex)
+        assertEquals("第一个往上应到末尾", 2, r.copy(currentIndex = 0).advance(-1).currentIndex)
+    }
+
+    @Test
+    fun `advance on an empty result is a no-op`() {
+        val r = runLogcatSearch(listOf(line("A").copy(raw = "x")), LogcatSearch(query = "zzz"))
+        assertEquals(r, r.advance(1))
+        assertEquals(r, r.advance(-1))
+    }
+
+    @Test
+    fun `a stale index is clamped when the result set shrinks`() {
+        // 换关键字后命中数变少，旧的 currentIndex 可能越界。
+        // 不夹取的话 currentLineIndex 会返回 null，界面表现为"跳转失效"
+        val lines = List(10) { line("T$it").copy(raw = "err") }
+        val r = runLogcatSearch(lines, LogcatSearch(query = "err"), currentIndex = 9)
+
+        assertEquals("越界应被夹到最后一个", 9, r.currentIndex)
+
+        val fewer = List(2) { line("T$it").copy(raw = "err") }
+        val r2 = runLogcatSearch(fewer, LogcatSearch(query = "err"), currentIndex = 9)
+        assertEquals("命中只剩 2 个时应夹到 1", 1, r2.currentIndex)
+    }
+
+    @Test
+    fun `position label reports one-based position`() {
+        // 用户看到的是 `1/17` 而不是 `0/17`
+        val lines = List(17) { line("T$it").copy(raw = "err") }
+        assertEquals("1/17", runLogcatSearch(lines, LogcatSearch(query = "err")).positionLabel())
+    }
+
+    @Test
+    fun `search matches on the raw line so continuations are searchable`() {
+        // 用 raw 而非 message：降级行的 raw 是整行原文，
+        // 用户想找的往往是"这一行在不在"而不是"这条消息的正文是什么"
+        val lines = listOf(line("A", continuation = true).copy(raw = "   at Foo.bar(Foo.kt:42)"))
+        assertEquals(1, runLogcatSearch(lines, LogcatSearch(query = "Foo.kt")).matchCount)
     }
 }

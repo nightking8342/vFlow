@@ -6,10 +6,12 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -23,7 +25,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -104,6 +109,18 @@ private fun LogcatViewerScreen(onBack: () -> Unit) {
     var tagStats by remember { mutableStateOf<List<Pair<String, Int>>?>(null) }
     var exportMenuOpen by remember { mutableStateOf(false) }
     var wrapLines by remember { mutableStateOf(false) }
+
+    /**
+     * 过滤区是否展开。
+     *
+     * 默认**收起** —— 日志区才是主界面，过滤条件是偶尔调的。
+     * 收起来后日志区立刻多出约 200dp 高度，不用先滚一下才看得到内容。
+     */
+    var filterExpanded by remember { mutableStateOf(false) }
+
+    /** 查找条件（只标出命中，**不改动结果集**，见 LogcatSearch 的说明）。 */
+    var search by remember { mutableStateOf(LogcatSearch()) }
+    var searchIndex by remember { mutableStateOf(0) }
 
     /**
      * **未经过滤**的原始行，只由「读数据源」更新。
@@ -247,6 +264,13 @@ private fun LogcatViewerScreen(onBack: () -> Unit) {
         }
     }
 
+    // 查找在**筛选之后**的结果上做：用户看到的行就是可搜的行，
+    // 否则会出现"搜到了但看不见"（那行被筛选掉了）。
+    // 而查找**不下推 shell** —— 下推了不匹配的行就没了，看不到上下文
+    val searchResult = remember(result.lines, search, searchIndex) {
+        runLogcatSearch(result.lines, search, searchIndex)
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -308,10 +332,23 @@ private fun LogcatViewerScreen(onBack: () -> Unit) {
                 },
             )
 
+            FindBar(
+                search = search,
+                searchResult = searchResult,
+                enabled = result.lines.isNotEmpty(),
+                onSearchChange = {
+                    search = it
+                    searchIndex = 0          // 换关键字要回到第一个命中
+                },
+                onNavigate = { step -> searchResult.advance(step).currentIndex.let { searchIndex = it } },
+            )
+
             FilterSection(
                 filter = filter,
                 enabled = shellReady && !refreshing,
                 actions = actions,
+                expanded = filterExpanded,
+                onToggleExpand = { filterExpanded = !filterExpanded },
                 onFilterChange = { filter = it },
                 onRefresh = { loadFromSource() },
                 onTagStats = { runTagStats() },
@@ -322,6 +359,12 @@ private fun LogcatViewerScreen(onBack: () -> Unit) {
                 },
                 wrapLines = wrapLines,
                 onToggleWrap = { wrapLines = !wrapLines },
+                onDeleteFiles = {
+                    scope.launch {
+                        LogcatCaptureController.deleteCaptureFiles(context)
+                        rawLines = emptyList()
+                    }
+                },
             )
 
             HorizontalDivider()
@@ -332,16 +375,20 @@ private fun LogcatViewerScreen(onBack: () -> Unit) {
                 rawLineCount = result.rawLineCount,
                 refreshing = refreshing,
                 wrapLines = wrapLines,
+                search = search,
+                currentMatchLineIndex = searchResult.currentLineIndex,
+                onNavigateHandled = { searchIndex = searchResult.currentIndex },
                 modifier = Modifier.weight(1f),
             )
 
-            if (rawLines.isNotEmpty() || result.emptyReason != null) {
-                StatusBar(
-                    result = result,
-                    filterLineLimit = filter.lineLimit,
-                    state = session.state,
-                )
-            }
+            // ⚠️ 状态栏**常驻**（原先是"有内容才显示"，导致刚进界面时
+            // 覆盖范围那行看不到 —— 而那正是用户最需要知道的"这批是什么"）。
+            // 它固定在底部，不在滚动区内，所以不占日志区的高度
+            StatusBar(
+                result = result,
+                filterLineLimit = filter.lineLimit,
+                state = session.state,
+            )
         }
     }
 
@@ -602,23 +649,140 @@ private fun CaptureSection(
     }
 }
 
+/**
+ * 过滤条件的一句话摘要（折叠时显示）。
+ *
+ * 折叠本身是为了给日志区腾高度，但**不能让人忘记筛选还在生效** ——
+ * 否则用户会奇怪"为什么只有这几行"。所以收起时也要能看到条件。
+ */
+private fun filterSummary(filter: LogcatFilter): String {
+    val parts = mutableListOf<String>()
+    parts.add(filter.minLevel.char.toString())
+    if (filter.hasTagQuery) parts.add("TAG:${filter.tagQuery}")
+    if (filter.hasMessageQuery) parts.add("消息:${filter.messageQuery}")
+    if (!filter.showOwnApp) parts.add("排除本应用")
+    return parts.joinToString(" · ")
+}
+
+/**
+ * 查找栏。
+ *
+ * ## 与「消息筛选」的分工（重要）
+ *
+ * | | 消息筛选 | 本栏 |
+ * |---|---|---|
+ * | 不匹配的行 | **消失** | 保留 |
+ * | 上下文 | ❌ 看不到 | ✅ 看得到 |
+ * | 下推 shell | ✅ | ❌（下推了上下文就没了） |
+ *
+ * **上下文是 logcat 调试的核心**：一个崩溃堆栈，只看到
+ * `NullPointerException` 那一行没有意义，要看它前后发生了什么。
+ * 所以两者都要，但不能合并成一个控件。
+ */
+@Composable
+private fun FindBar(
+    search: LogcatSearch,
+    searchResult: LogcatSearchResult,
+    enabled: Boolean,
+    onSearchChange: (LogcatSearch) -> Unit,
+    onNavigate: (Int) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        OutlinedTextField(
+            value = search.query,
+            onValueChange = { onSearchChange(search.copy(query = it)) },
+            enabled = enabled,
+            singleLine = true,
+            placeholder = { Text(stringResource(R.string.logcat_find_hint)) },
+            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            textStyle = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.weight(1f),
+        )
+
+        if (search.isActive) {
+            // 命中计数：`3/17`。没有它用户不知道还有没有更多
+            Text(
+                text = searchResult.positionLabel(),
+                style = MaterialTheme.typography.labelMedium,
+                fontFamily = FontFamily.Monospace,
+                color = if (searchResult.hasMatches) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.error
+                },
+                modifier = Modifier.padding(horizontal = 6.dp),
+            )
+            IconButton(
+                onClick = { onNavigate(-1) },
+                enabled = searchResult.hasMatches,
+            ) {
+                Icon(Icons.Default.KeyboardArrowUp, contentDescription = stringResource(R.string.logcat_find_prev))
+            }
+            IconButton(
+                onClick = { onNavigate(1) },
+                enabled = searchResult.hasMatches,
+            ) {
+                Icon(Icons.Default.KeyboardArrowDown, contentDescription = stringResource(R.string.logcat_find_next))
+            }
+            IconButton(onClick = { onSearchChange(LogcatSearch()) }) {
+                Icon(Icons.Default.Close, contentDescription = stringResource(R.string.logcat_close))
+            }
+        }
+    }
+}
+
 @Composable
 private fun FilterSection(
     filter: LogcatFilter,
     enabled: Boolean,
     actions: LogcatViewerActions,
+    expanded: Boolean,
+    onToggleExpand: () -> Unit,
     onFilterChange: (LogcatFilter) -> Unit,
     onRefresh: () -> Unit,
     onTagStats: () -> Unit,
     onClearList: () -> Unit,
     wrapLines: Boolean,
     onToggleWrap: () -> Unit,
+    onDeleteFiles: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-        Text(
-            text = stringResource(R.string.logcat_section_filter),
-            style = MaterialTheme.typography.titleSmall,
-        )
+        // 标题行**永远可见**，兼作折叠开关。
+        // 收起后仍能看到"过滤"二字 + 当前条件摘要，不会失去方向感
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onToggleExpand() },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = stringResource(R.string.logcat_section_filter),
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.weight(1f),
+            )
+            // 收起时把当前条件摘一下，否则用户不知道筛选是否生效
+            if (!expanded) {
+                Text(
+                    text = filterSummary(filter),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.width(6.dp))
+            }
+            Icon(
+                imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        if (!expanded) return@Column
 
         Spacer(Modifier.height(6.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -740,6 +904,18 @@ private fun FilterSection(
                 Text(stringResource(R.string.logcat_action_clear_list))
             }
             Spacer(Modifier.width(4.dp))
+            // 删除采集文件：清掉磁盘上的日志（含轮转历史份）。
+            // 只在有采集文件时有意义（空闲态读的是缓冲区，没有文件）
+            if (actions.completed || actions.capturing || actions.stale) {
+                TextButton(onClick = onDeleteFiles, enabled = !actions.refreshing) {
+                    Text(
+                        text = stringResource(R.string.logcat_action_delete_files),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+            Spacer(Modifier.width(4.dp))
             // 换行开关：只影响渲染，不碰数据，因此不受 enabled 约束
             TextButton(onClick = onToggleWrap) {
                 Text(
@@ -761,6 +937,9 @@ private fun LogcatList(
     rawLineCount: Int,
     refreshing: Boolean,
     wrapLines: Boolean,
+    search: LogcatSearch,
+    currentMatchLineIndex: Int?,
+    onNavigateHandled: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     if (refreshing) {
@@ -800,15 +979,65 @@ private fun LogcatList(
         //
         // 这里也确实不需要自定义 key：列表是**整体替换**语义（§4.1.2），
         // 没有移动/重排，默认的位置索引天然唯一且稳定。
-            items(lines) { line ->
-                LogcatRow(line, wrapLines)
+            // ⚠️ 用 itemsIndexed 而非 items + `lines.indexOf(line)`：
+            // 后者是 O(n²)，几千行时每帧都要全表扫描，会明显卡顿
+            itemsIndexed(lines) { index, line ->
+                LogcatRow(
+                    line = line,
+                    wrapLines = wrapLines,
+                    search = search,
+                    // 当前定位的那一条给更强的高亮，便于在多个命中里认出来
+                    isCurrentMatch = currentMatchLineIndex == index,
+                )
             }
         }
     }
 }
 
+/**
+ * 构造带高亮的文本。
+ *
+ * ⚠️ **大小写不敏感时必须逐个找原文区间**，不能把文本小写后再 `indexOf` 取下标 ——
+ * 某些字符转小写后长度会变（如 `İ` → `i̇`），下标就会错位，
+ * 表现是高亮**标在错误的位置**上。
+ *
+ * 这里改用 `indexOf(ignoreCase = true)`，它返回的是**原文**里的下标，天然正确。
+ */
+private fun buildAnnotatedStringWithHighlight(
+    text: String,
+    query: String,
+    caseSensitive: Boolean,
+    highlightColor: androidx.compose.ui.graphics.Color,
+): androidx.compose.ui.text.AnnotatedString {
+    if (query.isBlank()) return androidx.compose.ui.text.AnnotatedString(text)
+
+    return androidx.compose.ui.text.buildAnnotatedString {
+        var cursor = 0
+        while (cursor <= text.length - query.length) {
+            val found = text.indexOf(query, cursor, ignoreCase = !caseSensitive)
+            if (found < 0) break
+
+            // 命中前的正常段
+            append(text.substring(cursor, found))
+            // 命中段
+            withStyle(
+                androidx.compose.ui.text.SpanStyle(background = highlightColor)
+            ) {
+                append(text.substring(found, found + query.length))
+            }
+            cursor = found + query.length
+        }
+        if (cursor < text.length) append(text.substring(cursor))
+    }
+}
+
 @Composable
-private fun LogcatRow(line: LogcatLine, wrapLines: Boolean) {
+private fun LogcatRow(
+    line: LogcatLine,
+    wrapLines: Boolean,
+    search: LogcatSearch,
+    isCurrentMatch: Boolean,
+) {
     // 降级行灰显 + ↳ 前缀：这是本工具最有价值的可视化（§4.4）——
     // 它把"这行没有 TAG 前缀，你的 message 条件可能因此失配"直接摆到用户面前
     val color = when {
@@ -829,25 +1058,61 @@ private fun LogcatRow(line: LogcatLine, wrapLines: Boolean) {
         Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
     }
 
-    Row(
-        modifier = scrollModifier.padding(horizontal = 12.dp, vertical = 2.dp),
-    ) {
-        Text(
-            // 换行模式下不设 maxLines，Text 会自行折行；
-            // 不换行时靠 horizontalScroll 承载超出部分
-            softWrap = wrapLines,
-            text = buildString {
-                if (line.isContinuation) append("↳ ")
-                if (line.timestamp.isNotBlank()) append(line.timestamp).append("  ")
-                if (line.pid >= 0) append(line.pid).append(" ").append(line.tid).append(" ")
-                append(line.level.char).append(" ")
-                if (line.tag.isNotBlank()) append(line.tag).append(": ")
-                append(line.message)
-            },
-            fontFamily = FontFamily.Monospace,
-            fontSize = 11.sp,
-            color = color,
+    val fullText = buildString {
+        if (line.isContinuation) append("↳ ")
+        if (line.timestamp.isNotBlank()) append(line.timestamp).append("  ")
+        if (line.pid >= 0) append(line.pid).append(" ").append(line.tid).append(" ")
+        append(line.level.char).append(" ")
+        if (line.tag.isNotBlank()) append(line.tag).append(": ")
+        append(line.message)
+    }
+
+    // ⚠️ 高亮用 AnnotatedString 标在**同一条 Text 上**，而不是把行拆成多个 Text 拼接：
+    // 拆分会让换行/横向滚动的排版散掉，且中文与等宽字体混排时对不齐。
+    //
+    // 高亮当前命中的那条用更强的背景色 —— 否则在一片黄底里认不出
+    // "我现在跳到哪一条了"（尤其命中很多时）
+    val textContent = if (search.isActive) {
+        buildAnnotatedStringWithHighlight(
+            text = fullText,
+            query = search.query,
+            caseSensitive = search.caseSensitive,
+            highlightColor = MaterialTheme.colorScheme.tertiaryContainer,
         )
+    } else {
+        null
+    }
+
+    Row(
+        modifier = scrollModifier
+            .then(
+                if (isCurrentMatch) {
+                    Modifier.background(MaterialTheme.colorScheme.primaryContainer)
+                } else {
+                    Modifier
+                }
+            )
+            .padding(horizontal = 12.dp, vertical = 2.dp),
+    ) {
+        if (textContent != null) {
+            Text(
+                text = textContent,
+                softWrap = wrapLines,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 11.sp,
+                color = color,
+            )
+        } else {
+            Text(
+                // 换行模式下不设 maxLines，Text 会自行折行；
+                // 不换行时靠 horizontalScroll 承载超出部分
+                softWrap = wrapLines,
+                text = fullText,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 11.sp,
+                color = color,
+            )
+        }
     }
 }
 

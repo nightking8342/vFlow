@@ -179,6 +179,10 @@
     <string name="logcat_status_completed">Capture file %1$d lines · %2$d continuation · %3$s</string>
     <string name="logcat_action_rescan">Re-filter</string>
     <string name="logcat_action_release">Discard</string>
+    <string name="logcat_find_hint">Find (highlight, keeps all rows)</string>
+    <string name="logcat_find_prev">Previous</string>
+    <string name="logcat_find_next">Next</string>
+    <string name="logcat_action_delete_files">Delete capture files</string>
     <string name="logcat_completed_hint">This capture is fixed; changing filters will not alter its contents.</string>
     <string name="logcat_coverage_range">Actual coverage %1$s</string>
     <string name="logcat_coverage_truncated">Result hit the line limit; more remains. Increase Lines or narrow the filter to see earlier content.</string>
