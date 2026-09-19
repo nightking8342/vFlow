@@ -34,6 +34,41 @@ object VFlowCoreBridge {
     private const val TAG = "VFlowCoreBridge"
     private const val PREFS_NAME = "vFlowPrefs"
     private const val PREF_UNIX_SOCKET_ENABLED = "core_unix_socket_enabled"
+
+    /**
+     * 记录「上次**启动 Core 时**，包里的 dex 指纹是什么」。
+     *
+     * ## 它解决什么问题
+     *
+     * `MainActivity.checkCoreAutoStart()` 只判断"Core 活没活"，
+     * 不判断"跑的是不是新代码"。所以改了 `core/src` 之后：
+     *
+     * | 场景 | 结果 |
+     * |---|---|
+     * | 装新 apk，Core 进程还活着 | ❌ 继续跑**旧代码**，新功能完全无效且无任何提示 |
+     * | Core 被杀 / 手机重启 | ✅ 启动时自然加载新 dex |
+     *
+     * 这个坑实际踩过两次（logcat 触发器的 Core 侧实现、路由表注册），
+     * 两次都是"代码明明写了却不生效"，排查成本很高。
+     *
+     * ## 为什么不靠版本号
+     *
+     * `vflowCoreVersion` 是手写常量，只在**功能稳定、要发版**时才该动它；
+     * 而"改了 core 就该重启"是开发期的高频需求，两者节奏不同。
+     * 用它当依据的话，要么频繁改版本号，要么就一直忘了改（实际就是这样）。
+     *
+     * ## 为什么用 dex 指纹而不是时间戳
+     *
+     * 指纹只在 **core 源码真的变了** 时才变。用构建时间戳的话，
+     * 改一行 app 代码也会触发"core 有更新"的误报。
+     *
+     * ✅ 已验证 `:core:buildDex` 是**确定性**的：同样源码产出字节相同的 dex，
+     * 所以不会因为重复构建而产生假变化。
+     */
+    private const val PREF_LAST_LAUNCHED_DEX_FINGERPRINT = "core_last_launched_dex_fingerprint"
+
+    /** core dex 在 assets 里的名字。 */
+    private const val CORE_DEX_ASSET = "vFlowCore.dex"
     private const val HOST = "127.0.0.1"
     private const val PORT = 19999
     private const val CORE_VERSION_ASSET = "vFlowCore.version"
@@ -166,6 +201,53 @@ object VFlowCoreBridge {
         } else {
             null
         }
+
+    /**
+     * 当前 **apk 里**的 core dex 指纹。
+     *
+     * @return 16 位十六进制摘要；读取失败返回 null
+     */
+    fun packagedDexFingerprint(): String? {
+        val appContext = resolveAppContext() ?: return null
+        return runCatching {
+            appContext.assets.open(CORE_DEX_ASSET).use { coreDexFingerprint(it) }
+        }.onFailure {
+            DebugLogger.d(TAG, "读取 core dex 指纹失败: ${it.message}")
+        }.getOrNull()
+    }
+
+    /**
+     * **包里的 core dex 是否比"上次启动时用的"更新**。
+     *
+     * 这是"改了 core 需要重启"的判据，**与版本号无关** ——
+     * 只有 core 源码真的变了才为 true，改 app 代码不会误报。
+     *
+     * 首次安装（没有记录）返回 false：那时 Core 本来就会被启动，
+     * 不需要额外提示。
+     */
+    fun isCoreDexNewerThanRunning(): Boolean {
+        val appContext = resolveAppContext() ?: return false
+        val lastLaunched = appContext
+            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(PREF_LAST_LAUNCHED_DEX_FINGERPRINT, null)
+
+        return shouldPromptCoreRestart(packagedDexFingerprint(), lastLaunched)
+    }
+
+    /**
+     * 记录"本次启动 Core 用的是这个指纹"。
+     *
+     * ⚠️ **必须在真正部署 dex 之后调用**（见 `CoreLauncher.deployDex`）——
+     * 提前记录的话，若部署失败，下次就不会再提示了。
+     */
+    fun recordLaunchedDexFingerprint(context: Context) {
+        val fingerprint = packagedDexFingerprint() ?: return
+        context.applicationContext
+            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(PREF_LAST_LAUNCHED_DEX_FINGERPRINT, fingerprint)
+            .apply()
+    }
 
     fun getCoreVersionStatus(): CoreVersionStatus {
         val packaged = packagedVersionInfo
@@ -1251,4 +1333,52 @@ object VFlowCoreBridge {
             })
         return sendRaw(req)?.optBoolean("success") ?: false
     }
+}
+
+/**
+ * 算一个输入流的**内容指纹**（SHA-256 前 16 位十六进制）。
+ *
+ * 抽成顶层函数是为了**可单测** —— 指纹算错的表现是
+ * 「改了 core 却不提示重启」，用户会继续跑旧代码且毫无察觉。
+ *
+ * ⚠️ 必须**逐块读**而不是 `readBytes()`：dex 有 2.7MB，
+ * 整个读进内存在低端设备上不划算。
+ */
+internal fun coreDexFingerprint(input: java.io.InputStream): String {
+    val digest = java.security.MessageDigest.getInstance("SHA-256")
+    val buf = ByteArray(64 * 1024)
+    while (true) {
+        val n = input.read(buf)
+        if (n <= 0) break
+        digest.update(buf, 0, n)
+    }
+    return digest.digest().joinToString("") { "%02x".format(it) }.take(16)
+}
+
+/**
+ * 判定「是否需要提示重启 Core」。
+ *
+ * ## 为什么独立成纯函数
+ *
+ * 这是本机制的核心判断，逻辑简单但**错法很隐蔽**：
+ * 返回错的 false 会让用户静默地继续跑旧代码（这个坑已实际踩过两次），
+ * 返回错的 true 会让提示变得不可信、最终被无视。
+ *
+ * @param currentFingerprint apk 里 dex 的指纹；null 表示读取失败
+ * @param lastLaunchedFingerprint 上次启动 Core 时记录的指纹；null 表示从未记录
+ * @return true = 应当提示重启
+ */
+internal fun shouldPromptCoreRestart(
+    currentFingerprint: String?,
+    lastLaunchedFingerprint: String?,
+): Boolean {
+    // 读不出当前指纹：不提示。提示了也没法让用户判断真假，
+    // 而"提示不可信"比"没提示"更糟
+    if (currentFingerprint.isNullOrBlank()) return false
+
+    // 从未记录（首次安装 / 刚从更早的版本升级上来）：
+    // 不提示 —— 那时 Core 本来就会被启动，不需要额外提醒
+    if (lastLaunchedFingerprint.isNullOrBlank()) return false
+
+    return currentFingerprint != lastLaunchedFingerprint
 }

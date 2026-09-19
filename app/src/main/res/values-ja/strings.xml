@@ -396,8 +396,8 @@
     <string name="home_total_workflows">ワークフローの総数</string>
     <string name="home_auto_tasks">タスクを自動化する</string>
     <string name="home_permission_health">権限のヘルスチェック</string>
-    <string name="home_core_update_title">Core 更新リマインダー</string>
-    <string name="home_core_update_desc">新しい Core バージョンが検出されました。現在実行中: %1$s、組み込みバージョン: %2$s。クリックして管理ページに入り、更新します。</string>
+    <string name="home_core_update_title">Core の再起動が必要です</string>
+    <string name="home_core_update_desc">Core のコードが変更されましたが、実行中のプロセスは古いビルドのままです。タップして管理ページで再起動してください。</string>
     <string name="home_permission_good">ステータス: 良好、すべての権限が付与されています</string>
     <string name="home_permission_missing">ステータス: %d 個の権限が不足しています</string>
     <string name="home_recent_logs">最近のログ</string>
@@ -1185,7 +1185,7 @@
     <string name="core_version_summary">現在実行中: %1$s 組み込みバージョン: %2$s</string>
     <string name="core_version_summary_legacy">現在実行中: 古いバージョン Core (報告されていないバージョン) 組み込みバージョン: %1$s</string>
     <string name="core_version_summary_not_running">Core は組み込みバージョンを実行していません: %1$s</string>
-    <string name="core_update_available_hint">更新可能な Core が検出されました。下の [Core を更新] をクリックして新しいバージョンをロードします。</string>
+    <string name="core_update_available_hint">Core のコードが変更されました。下のボタンで再起動して新しいビルドを読み込んでください。</string>
     <string name="mode_root">Root</string>
     <string name="mode_shell">Shell</string>
     <string name="status_not_connected">接続されていません</string>

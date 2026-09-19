@@ -327,7 +327,14 @@ private fun CoreManagementScreen(
                 versionStatus.packaged.versionName
             )
         }
-        coreUpdateAvailable = isRunning == true && versionStatus.needsUpdate
+        // ⚠️ 判据是 **dex 指纹变化**，不是版本号。
+        //
+        // 版本号（`vflowCoreVersion`）只在功能稳定、要发版时才动；
+        // 而"改了 core 就该重启"是开发期的高频需求。
+        // 用指纹的另一个好处：改 app 代码不会误报，只有 core 真的变了才提示。
+        coreUpdateAvailable = isRunning == true && (
+            versionStatus.needsUpdate || VFlowCoreBridge.isCoreDexNewerThanRunning()
+            )
     }
 
     // 初始加载和自动启动

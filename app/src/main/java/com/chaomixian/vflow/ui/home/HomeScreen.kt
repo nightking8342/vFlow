@@ -291,11 +291,9 @@ fun HomeScreen(
                         onClick = openCoreManagement,
                         leadingIconRes = R.drawable.rounded_system_update_alt_24,
                         title = stringResource(R.string.home_core_update_title),
-                        description = stringResource(
-                            R.string.home_core_update_desc,
-                            uiState.coreRunningVersionName ?: stringResource(R.string.core_version_unknown),
-                            uiState.corePackagedVersionName ?: stringResource(R.string.core_version_unknown)
-                        ),
+                        // 文案不再引用版本号：指纹变化时两个版本号是**相同**的，
+                        // 显示"当前 22 / 内置 22"会读成"没更新"，反而误导
+                        description = stringResource(R.string.home_core_update_desc),
                     )
                 }
             }
@@ -440,7 +438,13 @@ private fun loadCoreState(): CoreStateSnapshot {
     return CoreStateSnapshot(
         coreConnected = isConnected,
         corePrivilegeMode = privilegeMode,
-        coreNeedsUpdate = isConnected && versionStatus.needsUpdate,
+        // ⚠️ 判据是 **dex 指纹变化**，不是版本号 —— 理由见
+        // VFlowCoreBridge.isCoreDexNewerThanRunning 的注释。
+        // 简言之：版本号只在发版时动，而"改了 core 要重启"是开发期的高频需求，
+        // 两者节奏不同；用指纹还能避免改 app 代码时的误报
+        coreNeedsUpdate = isConnected && (
+            versionStatus.needsUpdate || VFlowCoreBridge.isCoreDexNewerThanRunning()
+            ),
         coreRunningVersionName = versionStatus.running?.versionName,
         corePackagedVersionName = versionStatus.packaged.versionName,
     )

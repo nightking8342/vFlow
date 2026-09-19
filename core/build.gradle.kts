@@ -113,23 +113,30 @@ plugins {
 }
 
 /**
- * Core 的版本号。
+ * Core 的**对外**版本号。
  *
- * ⚠️ **改动了 core/src 下任何会影响运行行为的代码，就必须把这个数加一。**
+ * ## 什么时候该改它
  *
- * 原因：`VFlowCoreBridge.getCoreVersionStatus()` 靠
- * `packaged.versionCode > running.versionCode` 判断"要不要重启 Core 进程"。
- * 这个数不变的话，即使 apk 里的 dex 已经更新，正在跑的**旧进程也不会被重启**——
- * 于是一直在用旧代码，表现为新功能"完全不工作"且**没有任何错误**。
+ * **只在功能稳定、准备发版时改。** 日常开发改了 `core/src` **不需要动它**。
  *
- * 这个坑已实际踩过：进程仍是加 logcat 之前的版本，
- * `subscribeLogcatStream` 请求被它当成未知方法，流建立不起来。
+ * ## 那"改了 core 但没重启，跑的还是旧代码"怎么办
  *
- * 19 → 20：新增 logcat 触发器的 Core 侧实现（LogcatStreamWrapper 等）
- *           与 StreamingWrapper 的双工协议扩展
- * 20 → 21：logcat 事件改为有界队列 + 独立写线程，并上报丢弃统计
- *           （原先写阻塞会反压到读 logcat，导致内核静默丢日志）
- * 21 → 22：注册 Config.ROUTING_TABLE["logcat"]（漏了它请求会回 "No route"）
+ * 由**另一套机制**解决，与这个版本号无关：
+ * `VFlowCoreBridge.isCoreDexNewerThanRunning()` 比较「apk 里的 dex 指纹」
+ * 与「上次启动 Core 时用的指纹」，不一致就在 Core 管理页提示重启。
+ *
+ * 用指纹而非版本号的原因：两者的**节奏不同** ——
+ * "改了 core 要重启"是开发期的高频需求，而版本号只在发版时动。
+ * 用版本号当判据的话，要么频繁改、要么一直忘改（实际就忘过两次）。
+ *
+ * ## ⚠️ 注意它**不能**自动触发重启
+ *
+ * `getCoreVersionStatus().needsUpdate` 只被两处 UI 用到（首页与管理页的提示），
+ * 而 `MainActivity.checkCoreAutoStart()` 只判断"Core 活没活"，不看版本。
+ * 也就是说：**改了版本号也不会让旧进程自动重启，仍然需要手动重启一次。**
+ *
+ * 19 → 20 → 22 这段历史是早期误用版本号担当"需要重启"信号留下的，
+ * 现在职责已移交指纹机制，此处不再需要跟着每次改动递增。
  */
 val vflowCoreVersion = 22
 

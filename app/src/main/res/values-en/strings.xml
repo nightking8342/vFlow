@@ -412,8 +412,8 @@
     <string name="home_total_workflows">Total Workflows</string>
     <string name="home_auto_tasks">Automated Tasks</string>
     <string name="home_permission_health">Permission Health Check</string>
-    <string name="home_core_update_title">Core Update Available</string>
-    <string name="home_core_update_desc">A newer Core is bundled. Running: %1$s, bundled: %2$s. Tap to open Core Management and update.</string>
+    <string name="home_core_update_title">Core Needs Restart</string>
+    <string name="home_core_update_desc">Core code changed but the running process is still on the old build. Tap to open Core Management and restart.</string>
     <string name="home_permission_good">Status: Good, all permissions granted</string>
     <string name="home_permission_missing">Status: %d missing permissions</string>
     <string name="home_recent_logs">Recent Logs</string>
@@ -1243,7 +1243,7 @@
     <string name="core_version_summary">Running: %1$s  Bundled: %2$s</string>
     <string name="core_version_summary_legacy">Running: legacy Core without version info  Bundled: %1$s</string>
     <string name="core_version_summary_not_running">Core not running  Bundled: %1$s</string>
-    <string name="core_update_available_hint">A newer bundled Core is available. Tap “Update Core” below to load it.</string>
+    <string name="core_update_available_hint">Core code changed. Tap the button below to restart and load the new build.</string>
     <string name="mode_root">Root</string>
     <string name="mode_shell">Shell</string>
     <string name="status_not_connected">Not connected</string>
