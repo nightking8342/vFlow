@@ -12,8 +12,10 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -88,6 +90,13 @@ class LogcatViewerActivity : ComponentActivity() {
 
 private const val TAG = "LogcatViewer"
 
+/**
+ * TAG 行右侧「TAG 统计」按钮的近似宽度。
+ *
+ * 消息行用它做等宽占位，让两个输入框的右边缘对齐（视觉上成一组）。
+ */
+private val MESSAGE_ROW_ALIGN_WIDTH = 96.dp
+
 /** 可选的条数（上界，非精确值——§4.4）。 */
 private val LINE_LIMIT_CHOICES = listOf(200, 500, 1000, 2000)
 
@@ -111,16 +120,24 @@ private fun LogcatViewerScreen(onBack: () -> Unit) {
     var wrapLines by remember { mutableStateOf(false) }
 
     /**
-     * 过滤区是否展开。
+     * 查找栏是否展开。
      *
-     * 默认**收起** —— 日志区才是主界面，过滤条件是偶尔调的。
-     * 收起来后日志区立刻多出约 200dp 高度，不用先滚一下才看得到内容。
+     * 默认**隐藏**，点标题栏的搜索图标才出现 —— 查找是偶发操作，
+     * 却要常年占掉一行高度（约 56dp）。
+     *
+     * ⚠️ 折叠过滤区那条路走过一次，**效果不好**（用户反馈"日志区更小了"）：
+     * 折叠后条件摘要那行还在，省下的高度有限，却让常用条件多了一次点击。
+     * 所以过滤区改为**常驻**，靠整页滚动来让日志区拿到足够高度。
      */
-    var filterExpanded by remember { mutableStateOf(false) }
+    var searchBarVisible by remember { mutableStateOf(false) }
 
     /** 查找条件（只标出命中，**不改动结果集**，见 LogcatSearch 的说明）。 */
     var search by remember { mutableStateOf(LogcatSearch()) }
     var searchIndex by remember { mutableStateOf(0) }
+
+    /** 日志列表的滚动状态。查找跳转要用它滚到目标行。 */
+    val listState = rememberLazyListState()
+    val scopeForScroll = rememberCoroutineScope()
 
     /**
      * **未经过滤**的原始行，只由「读数据源」更新。
@@ -281,6 +298,22 @@ private fun LogcatViewerScreen(onBack: () -> Unit) {
                     }
                 },
                 actions = {
+                    // 查找入口。放在标题栏而不是常驻一行 ——
+                    // 查找是偶发操作，却要常年占掉约 56dp 高度
+                    IconButton(onClick = {
+                        searchBarVisible = !searchBarVisible
+                        if (!searchBarVisible) search = LogcatSearch()   // 收起时清掉高亮
+                    }) {
+                        Icon(
+                            Icons.Default.Search,
+                            contentDescription = stringResource(R.string.logcat_find_hint),
+                            tint = if (searchBarVisible) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                    }
                     IconButton(
                         onClick = { exportMenuOpen = true },
                         enabled = actions.canExport(result.lines.isNotEmpty()),
@@ -312,62 +345,93 @@ private fun LogcatViewerScreen(onBack: () -> Unit) {
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
 
-            ShellStatusBar(shellReady)
+            /**
+             * 上方信息区：**可滚动**。
+             *
+             * 原先它是固定的 Column、日志列表用 `weight(1f)` 占剩余空间 ——
+             * 结果是上方内容越多，日志区越小（过滤区展开后尤其明显）。
+             *
+             * 现在整页可滚：往上滚时这些内容会滚出去，
+             * 滚到「条数 / 清空 / 自动换行」那一行**贴住顶部**为止，
+             * 之后日志列表才开始滚动。这样日志区能拿到尽可能多的高度。
+             *
+             * `weight(1f, fill = false)` 是关键：它让本区按内容高度参与布局，
+             * 但**允许被压缩**到 0（滚出屏幕），而不是把日志区挤扁。
+             */
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .weight(1f, fill = false),
+            ) {
+                ShellStatusBar(shellReady)
 
-            CaptureSection(
-                session = session,
-                nowMs = nowMs,
-                actions = actions,
-                timeoutSec = LogcatCaptureController.timeoutSec,
-                onTimeoutChange = { LogcatCaptureController.timeoutSec = it },
-                onStart = { scope.launch { LogcatCaptureController.start(context) } },
-                onStop = { scope.launch { LogcatCaptureController.stop(context) } },
-                onClearStale = { scope.launch { LogcatCaptureController.clearStale(context) } },
-                onRelease = {
-                    scope.launch {
-                        LogcatCaptureController.releaseCapture(context)
-                        // 数据源切回缓冲区，内存里的这批也就不再对应任何东西
-                        rawLines = emptyList()
-                    }
-                },
-            )
+                CaptureSection(
+                    session = session,
+                    nowMs = nowMs,
+                    actions = actions,
+                    timeoutSec = LogcatCaptureController.timeoutSec,
+                    onTimeoutChange = { LogcatCaptureController.timeoutSec = it },
+                    onStart = { scope.launch { LogcatCaptureController.start(context) } },
+                    onStop = { scope.launch { LogcatCaptureController.stop(context) } },
+                    onClearStale = { scope.launch { LogcatCaptureController.clearStale(context) } },
+                    onRelease = {
+                        scope.launch {
+                            LogcatCaptureController.releaseCapture(context)
+                            // 数据源切回缓冲区，内存里的这批也就不再对应任何东西
+                            rawLines = emptyList()
+                        }
+                    },
+                )
 
-            FindBar(
-                search = search,
-                searchResult = searchResult,
-                enabled = result.lines.isNotEmpty(),
-                onSearchChange = {
-                    search = it
-                    searchIndex = 0          // 换关键字要回到第一个命中
-                },
-                onNavigate = { step -> searchResult.advance(step).currentIndex.let { searchIndex = it } },
-            )
+                // 查找栏：点标题栏的搜索图标才出现。
+                // 它只在展开时占高度，收起时不占 —— 这是"少占一行"的正确做法，
+                // 比折叠过滤区有效（折叠后摘要行还在，省不下多少）
+                if (searchBarVisible || search.isActive) {
+                    FindBar(
+                        search = search,
+                        searchResult = searchResult,
+                        enabled = result.lines.isNotEmpty(),
+                        onSearchChange = {
+                            search = it
+                            searchIndex = 0
+                        },
+                        onNavigate = { step ->
+                            val next = searchResult.advance(step)
+                            searchIndex = next.currentIndex
+                            // ⚠️ 滚到目标行。原先只改 index 不滚动，
+                            // 用户点"下一个"看不到任何变化（除非目标恰好在屏幕内）
+                            next.currentLineIndex?.let { lineIndex ->
+                                scopeForScroll.launch { listState.animateScrollToItem(lineIndex) }
+                            }
+                        },
+                        onClose = {
+                            searchBarVisible = false
+                            search = LogcatSearch()      // 关掉时一并清掉高亮
+                        },
+                    )
+                }
 
-            FilterSection(
-                filter = filter,
-                enabled = shellReady && !refreshing,
-                actions = actions,
-                expanded = filterExpanded,
-                onToggleExpand = { filterExpanded = !filterExpanded },
-                onFilterChange = { filter = it },
-                onRefresh = { loadFromSource() },
-                onTagStats = { runTagStats() },
-                onClearList = {
-                    // 「清空」是清掉当前展示的内容。rawLines 是唯一的数据源，
-                    // 清它即可（result 由它派生）
-                    rawLines = emptyList()
-                },
-                wrapLines = wrapLines,
-                onToggleWrap = { wrapLines = !wrapLines },
-                onDeleteFiles = {
-                    scope.launch {
-                        LogcatCaptureController.deleteCaptureFiles(context)
-                        rawLines = emptyList()
-                    }
-                },
-            )
+                FilterSection(
+                    filter = filter,
+                    enabled = shellReady && !refreshing,
+                    actions = actions,
+                    onFilterChange = { filter = it },
+                    onRefresh = { loadFromSource() },
+                    onTagStats = { runTagStats() },
+                    onClearList = { rawLines = emptyList() },
+                    wrapLines = wrapLines,
+                    onToggleWrap = { wrapLines = !wrapLines },
+                    onDeleteFiles = {
+                        scope.launch {
+                            LogcatCaptureController.deleteCaptureFiles(context)
+                            rawLines = emptyList()
+                        }
+                    },
+                )
 
-            HorizontalDivider()
+                HorizontalDivider()
+            }
 
             LogcatList(
                 lines = result.lines,
@@ -377,17 +441,17 @@ private fun LogcatViewerScreen(onBack: () -> Unit) {
                 wrapLines = wrapLines,
                 search = search,
                 currentMatchLineIndex = searchResult.currentLineIndex,
-                onNavigateHandled = { searchIndex = searchResult.currentIndex },
+                listState = listState,
                 modifier = Modifier.weight(1f),
             )
 
-            // ⚠️ 状态栏**常驻**（原先是"有内容才显示"，导致刚进界面时
-            // 覆盖范围那行看不到 —— 而那正是用户最需要知道的"这批是什么"）。
-            // 它固定在底部，不在滚动区内，所以不占日志区的高度
+            // ⚠️ 状态栏固定在底部、不在滚动区内 —— 覆盖范围必须**始终可见**，
+            // 它是"这批日志是什么"的唯一说明
             StatusBar(
                 result = result,
                 filterLineLimit = filter.lineLimit,
                 state = session.state,
+                rawLines = rawLines,
             )
         }
     }
@@ -686,6 +750,7 @@ private fun FindBar(
     enabled: Boolean,
     onSearchChange: (LogcatSearch) -> Unit,
     onNavigate: (Int) -> Unit,
+    onClose: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -730,7 +795,7 @@ private fun FindBar(
             ) {
                 Icon(Icons.Default.KeyboardArrowDown, contentDescription = stringResource(R.string.logcat_find_next))
             }
-            IconButton(onClick = { onSearchChange(LogcatSearch()) }) {
+            IconButton(onClick = onClose) {
                 Icon(Icons.Default.Close, contentDescription = stringResource(R.string.logcat_close))
             }
         }
@@ -742,8 +807,6 @@ private fun FilterSection(
     filter: LogcatFilter,
     enabled: Boolean,
     actions: LogcatViewerActions,
-    expanded: Boolean,
-    onToggleExpand: () -> Unit,
     onFilterChange: (LogcatFilter) -> Unit,
     onRefresh: () -> Unit,
     onTagStats: () -> Unit,
@@ -753,36 +816,14 @@ private fun FilterSection(
     onDeleteFiles: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-        // 标题行**永远可见**，兼作折叠开关。
-        // 收起后仍能看到"过滤"二字 + 当前条件摘要，不会失去方向感
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { onToggleExpand() },
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = stringResource(R.string.logcat_section_filter),
-                style = MaterialTheme.typography.titleSmall,
-                modifier = Modifier.weight(1f),
-            )
-            // 收起时把当前条件摘一下，否则用户不知道筛选是否生效
-            if (!expanded) {
-                Text(
-                    text = filterSummary(filter),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.width(6.dp))
-            }
-            Icon(
-                imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-
-        if (!expanded) return@Column
+        // ⚠️ 过滤区**常驻、不折叠**。
+        // 折叠方案试过，用户反馈"日志区更小了"—— 因为条件摘要那行还在，
+        // 省下的高度有限，却让常用条件多了一次点击。
+        // 现在靠整页滚动来给日志区腾高度（见主布局的注释）
+        Text(
+            text = stringResource(R.string.logcat_section_filter),
+            style = MaterialTheme.typography.titleSmall,
+        )
 
         Spacer(Modifier.height(6.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -843,6 +884,12 @@ private fun FilterSection(
                 textStyle = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.weight(1f),
             )
+            Spacer(Modifier.width(8.dp))
+            // 与 TAG 行的「TAG 统计」按钮对齐。
+            // 这里**故意放一个等宽的空占位**而不是加个真按钮 ——
+            // 消息过滤没有对应的"统计"功能，硬凑一个按钮反而是误导。
+            // 用 Spacer 是为了让两个输入框右边缘齐平，视觉上成一组
+            Spacer(modifier = Modifier.width(MESSAGE_ROW_ALIGN_WIDTH))
         }
 
         Spacer(Modifier.height(4.dp))
@@ -894,8 +941,11 @@ private fun FilterSection(
             // 那个按钮在那里只会让人以为"点了会变"，而且它原先真的会去
             // 重读数据源（在已完成态被判成空闲 → 读到实时缓冲区，用户报的问题 1）。
             // 要换一批日志应当重新采集，而不是刷新。
+            // 样式与「清空」「自动换行」保持一致（都是 TextButton）。
+            // 原先它是 Button（实心填充），在一排文字按钮里显得突兀，
+            // 也容易被误认为是页面的主操作
             if (!actions.sourceIsFixed) {
-                Button(onClick = onRefresh, enabled = actions.canRefresh) {
+                TextButton(onClick = onRefresh, enabled = actions.canRefresh) {
                     Text(stringResource(R.string.logcat_action_refresh))
                 }
             }
@@ -908,9 +958,11 @@ private fun FilterSection(
             // 只在有采集文件时有意义（空闲态读的是缓冲区，没有文件）
             if (actions.completed || actions.capturing || actions.stale) {
                 TextButton(onClick = onDeleteFiles, enabled = !actions.refreshing) {
+                    // ⚠️ 不显式设 style：要与其他按钮一样用 TextButton 的默认字号。
+                    // 之前这里写了 labelMedium（比默认小一号），
+                    // 一排按钮里字体大小不一致，看起来像没对齐
                     Text(
                         text = stringResource(R.string.logcat_action_delete_files),
-                        style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
@@ -918,11 +970,11 @@ private fun FilterSection(
             Spacer(Modifier.width(4.dp))
             // 换行开关：只影响渲染，不碰数据，因此不受 enabled 约束
             TextButton(onClick = onToggleWrap) {
+                // 同上：不设 style，与相邻按钮同字号
                 Text(
                     text = stringResource(
                         if (wrapLines) R.string.logcat_wrap_on else R.string.logcat_wrap_off
-                    ),
-                    style = MaterialTheme.typography.labelMedium,
+                    )
                 )
             }
         }
@@ -939,7 +991,11 @@ private fun LogcatList(
     wrapLines: Boolean,
     search: LogcatSearch,
     currentMatchLineIndex: Int?,
-    onNavigateHandled: () -> Unit,
+    /**
+     * 列表滚动状态。由调用方持有，因为**查找跳转要滚到目标行** ——
+     * 状态放在这里的话，外层拿不到它就滚不动。
+     */
+    listState: LazyListState,
     modifier: Modifier = Modifier,
 ) {
     if (refreshing) {
@@ -957,8 +1013,6 @@ private fun LogcatList(
         EmptyHint(emptyReason, rawLineCount, modifier)
         return
     }
-
-    val listState = rememberLazyListState()
 
     // 新日志在尾部，刷新后默认滚到底更符合"看最近发生了什么"。
     // ⚠️ LaunchedEffect 必须放在 LazyColumn **之外**——
@@ -1146,7 +1200,20 @@ private fun EmptyHint(reason: LogcatEmptyReason?, rawLineCount: Int, modifier: M
 }
 
 @Composable
-private fun StatusBar(result: LogcatViewerResult, state: CaptureState, filterLineLimit: Int) {
+private fun StatusBar(
+    result: LogcatViewerResult,
+    state: CaptureState,
+    filterLineLimit: Int,
+    /**
+     * 未经过滤的原始行。
+     *
+     * ⚠️ 覆盖范围要从**它**算，不是从 `result.lines` ——
+     * 覆盖范围描述的是"这批采集留下了哪一段"，不该因为此刻的过滤条件而变化。
+     * 从过滤后的行算会踩到这个坑：筛选后只剩降级行时时间戳为空，
+     * `rangeText` 返回 null，界面上的覆盖范围**整行消失**，看起来像没有这个功能。
+     */
+    rawLines: List<LogcatLine>,
+) {
     Surface(color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
             Text(
@@ -1186,7 +1253,7 @@ private fun StatusBar(result: LogcatViewerResult, state: CaptureState, filterLin
             // ⚠️ 覆盖范围必须显示：用户会默认"这批日志覆盖了我采集的整段时间"，
             // 而高频日志下轮转可能只留下最后十几秒。
             // 不说出来的话，他只会得出"这工具漏日志"的结论（这正是用户报的问题 2）
-            val coverage = buildCoverage(result.lines, filterLineLimit)
+            val coverage = buildCoverage(rawLines, filterLineLimit)
             coverage.rangeText?.let { range ->
                 Spacer(Modifier.height(2.dp))
                 Text(

@@ -187,7 +187,8 @@ object LogcatCommands {
      * @return 形如 `12345` 的 KB 数；失败时为 0
      */
     fun buildCaptureSize(): String =
-        "du -sk $CAPTURE_GLOB 2>/dev/null | awk '{s+=\$1} END {print s+0}'"
+        // `</dev/null` 同理：无匹配时 du 无参数会读 stdin 而挂住
+        "du -sk $CAPTURE_GLOB 2>/dev/null </dev/null | awk '{s+=\$1} END {print s+0}'"
 
     /**
      * 回到空闲（读实时缓冲区）。
@@ -286,7 +287,21 @@ object LogcatCommands {
     ): String {
         val pattern = buildSearchPattern(tagQuery, messageQuery, minLevel)
 
-        // `ls -tr` 按时间正序（最旧在前），这样 grep 的输出天然是时间序
+        // ⚠️⚠️ **`cat` 必须显式重定向 stdin，否则会永久挂起。**
+        //
+        // 当通配符**无匹配**时，`$(ls -tr ... 2>/dev/null)` 展开为空串，
+        // 命令就变成裸 `cat` —— 而 `cat` 不带文件参数时**读标准输入**。
+        // 在 `exec` 通道下 stdin 不关闭，于是**命令永不返回**。
+        //
+        // 什么情况下会无匹配：刚点「开始采集」时，`buildStartCapture` 先执行了
+        // `rm -f ... $CAPTURE_GLOB`，而 logcat 还没创建新文件。
+        // 症状是「点开始后一直显示刷新中，连停止按钮都变灰点不动」——
+        // 因为 in-flight 标志被这个永不返回的命令卡住了。
+        // 已实际踩过（用户报的严重 bug）。
+        //
+        // `</dev/null` 让裸 cat 立刻读到 EOF 并返回空，问题消失。
+        //
+        // `ls -tr` 按时间正序（最旧在前），这样 grep 的输出天然是时间序。
         val sources = "\$(ls -tr $CAPTURE_GLOB 2>/dev/null)"
 
         // ⚠️ `-E` **不是可选的**：pattern 里用了 `[ ]+`、`|`、`.*` 等 ERE 语法，
@@ -296,7 +311,7 @@ object LogcatCommands {
         // 症状极其误导：采集文件好好地写着日志、命令也正常返回，
         // 只是**永远搜不到东西**，看起来像"采集不到日志"。
         // 已实际踩过（用户报「采集不到日志」）。
-        return "cat $sources | grep -aE${pattern.grepFlags} -e ${shellQuote(pattern.regex)} " +
+        return "cat $sources </dev/null | grep -aE${pattern.grepFlags} -e ${shellQuote(pattern.regex)} " +
             "| tail -n ${clampLines(limit)}"
     }
 

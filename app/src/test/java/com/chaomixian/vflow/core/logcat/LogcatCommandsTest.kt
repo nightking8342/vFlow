@@ -466,4 +466,42 @@ class LogcatCommandsTest {
         assertTrue(cmd.contains("-r ${LogcatCommands.ROTATE_KB}"))
         assertTrue(cmd.contains("-n ${LogcatCommands.ROTATE_COUNT}"))
     }
+
+    // ── cat 必须切断 stdin ★（挂死级 bug）──────────────────────
+
+    @Test
+    fun `search redirects stdin so a bare cat cannot hang`() {
+        // ⚠️⚠️ **本测试保护的是一个会导致界面卡死的 bug。**
+        //
+        // 当通配符无匹配时（刚点「开始采集」——`buildStartCapture` 会先
+        // `rm -f ... $CAPTURE_GLOB`，而 logcat 还没创建新文件），
+        // `$(ls -tr ... 2>/dev/null)` 展开为空串，命令变成**裸 `cat`**。
+        // 而 `cat` 不带参数时**读标准输入**，在 exec 通道下 stdin 不关闭
+        // → **命令永不返回**。
+        //
+        // 连锁反应：in-flight 标志被卡住 → 界面一直显示"刷新中"
+        // → 连「停止」按钮都变灰点不动（canStop 里检查了 refreshing）
+        // → 必须退出重进才能恢复。
+        val cmd = LogcatCommands.buildSearch()
+        assertTrue(
+            "cat 必须显式重定向 stdin（</dev/null），否则无匹配时会挂死",
+            cmd.contains("</dev/null")
+        )
+    }
+
+    @Test
+    fun `capture size query also redirects stdin`() {
+        // 同一类问题：无匹配时 `du` 无参数也会读 stdin
+        val cmd = LogcatCommands.buildCaptureSize()
+        assertTrue(cmd.contains("</dev/null"))
+    }
+
+    @Test
+    fun `search still works normally when files exist`() {
+        // 回归：加了重定向不该影响正常路径的语义
+        val cmd = LogcatCommands.buildSearch(tagQuery = "MyApp", limit = 100)
+        assertTrue("仍要检索全部轮转份", cmd.contains("ls -tr"))
+        assertTrue("仍是扩展正则（-E 可能与其他标志连写为 -aEi）", cmd.contains("E"))
+        assertTrue("仍要截断", cmd.contains("tail -n 100"))
+    }
 }

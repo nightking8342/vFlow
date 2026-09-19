@@ -202,12 +202,31 @@ data class CaptureCoverage(
  * 那说明 shell 侧的 `tail -n` 截断过，后面还有更多内容。
  * 不告诉用户的话，他会以为这就是全部。
  */
-fun buildCoverage(lines: List<LogcatLine>, limit: Int): CaptureCoverage {
+fun buildCoverage(
+    /**
+     * 用于计算范围的行。
+     *
+     * ⚠️ **应传未经过滤的原始行**，不是展示用结果。
+     * 覆盖范围描述的是"这批采集留下了哪一段"，
+     * 不该因为它此刻的过滤条件而变 —— 那是两码事。
+     * （踩过：筛选后只剩降级行时，rangeText 为 null，
+     * 界面上的覆盖范围整行消失，看起来像"没有覆盖范围"）
+     */
+    lines: List<LogcatLine>,
+    limit: Int,
+    /**
+     * 结果是否被行数上限截断。
+     *
+     * ⚠️ 由调用方传入而非从 `lines.size >= limit` 推断：
+     * 传入的是**原始行**时这个推断就不成立了。
+     */
+    truncated: Boolean = lines.size >= limit,
+): CaptureCoverage {
     val stamped = lines.filter { !it.isContinuation && it.timestamp.isNotBlank() }
     return CaptureCoverage(
         firstTimestamp = stamped.firstOrNull()?.timestamp,
         lastTimestamp = stamped.lastOrNull()?.timestamp,
-        truncatedByLimit = lines.size >= limit,
+        truncatedByLimit = truncated,
     )
 }
 
