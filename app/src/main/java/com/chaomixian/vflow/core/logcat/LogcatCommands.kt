@@ -258,7 +258,14 @@ object LogcatCommands {
         // `ls -tr` 按时间正序（最旧在前），这样 grep 的输出天然是时间序
         val sources = "\$(ls -tr $CAPTURE_GLOB 2>/dev/null)"
 
-        return "cat $sources | grep -a${pattern.grepFlags} -e ${shellQuote(pattern.regex)} " +
+        // ⚠️ `-E` **不是可选的**：pattern 里用了 `[ ]+`、`|`、`.*` 等 ERE 语法，
+        // 而在基本正则（BRE，grep 默认）里 `+` 是**字面字符**而不是量词 ——
+        // `[ ]+` 会去匹配"一个空格后跟一个加号"，永远匹配不到。
+        //
+        // 症状极其误导：采集文件好好地写着日志、命令也正常返回，
+        // 只是**永远搜不到东西**，看起来像"采集不到日志"。
+        // 已实际踩过（用户报「采集不到日志」）。
+        return "cat $sources | grep -aE${pattern.grepFlags} -e ${shellQuote(pattern.regex)} " +
             "| tail -n ${clampLines(limit)}"
     }
 

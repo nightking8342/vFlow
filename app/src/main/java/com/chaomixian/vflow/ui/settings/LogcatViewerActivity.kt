@@ -405,6 +405,16 @@ private suspend fun loadLogs(
     // Shell 层失败会以 "Error:" 前缀返回（见 ShellManager.executeShizukuCommand）
     val failed = output.startsWith("Error:")
 
+    // ⚠️ 无论成功失败都记一行。此前只在失败时记，导致
+    // "命令没跑对"与"跑了但没匹配到"在日志里**完全无法区分** ——
+    // 用户报"采集不到日志"时只能猜。
+    // 记命令原文（而非仅结果）是因为提交给 shell 的形式本身就可能是问题所在。
+    DebugLogger.i(
+        TAG,
+        "读取日志: state=$state 用时=${elapsed}ms 失败=$failed 行数=${output.lineSequence().count()} " +
+            "cmd=$cmd"
+    )
+
     return LoadOutcome(
         rawLines = LogcatParser.parseLines(output),
         elapsedMs = elapsed,

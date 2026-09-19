@@ -427,11 +427,33 @@ class LogcatCommandsTest {
     }
 
     @Test
-    fun `grep treats the file as text`() {
-        // `-a` 是必需的：日志里混进二进制字节时，grep 会判定"binary file matches"
-        // 而不输出内容 —— 表现是搜到了却什么都没有
+    fun `grep uses extended regex so that plus is a quantifier`() {
+        // ⚠️ **本测试保护的是一个已实际踩过的坑。**
+        //
+        // pattern 里用了 `[ ]+` 这类 ERE 语法。而在基本正则（BRE，grep 默认）里
+        // `+` 是**字面字符**而不是量词 —— `[ ]+` 会去匹配"一个空格后跟一个加号"，
+        // 永远匹配不到任何日志行。
+        //
+        // 症状极其误导：采集文件好好地写着日志、命令也正常返回、
+        // 只是**永远搜不到东西**，看起来完全像"采集不到日志"。
+        //
+        // 旧的断言只检查了 `-a`，因此这个 bug 溜过去了。
         val cmd = LogcatCommands.buildSearch()
-        assertTrue("必须带 -a", cmd.contains("grep -a") || cmd.contains("-a"))
+
+        assertTrue("必须带 -E（扩展正则），否则 + 不是量词", cmd.contains("grep -aE") || cmd.contains("-E"))
+        assertTrue("必须带 -a：混进二进制字节时 grep 会判定 binary file 而不输出内容", cmd.contains("-a"))
+    }
+
+    @Test
+    fun `the search pattern only uses syntax that requires -E`() {
+        // 反向确认：pattern 里确实含有"BRE 下会失效"的语法，
+        // 所以 -E 是必需的而非可选。若哪天把 pattern 改写成纯 BRE 语法，
+        // 这条会失败，提醒把 -E 的说明一并更新
+        val p = LogcatCommands.buildSearchPattern("tag", "msg", LogLevel.INFO)
+        assertTrue(
+            "pattern 含 + 量化（BRE 下会失效），因此必须配 -E",
+            p.regex.contains("+")
+        )
     }
 
     @Test

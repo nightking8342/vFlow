@@ -135,10 +135,19 @@ plugins {
  * 而 `MainActivity.checkCoreAutoStart()` 只判断"Core 活没活"，不看版本。
  * 也就是说：**改了版本号也不会让旧进程自动重启，仍然需要手动重启一次。**
  *
- * 19 → 20 → 22 这段历史是早期误用版本号担当"需要重启"信号留下的，
- * 现在职责已移交指纹机制，此处不再需要跟着每次改动递增。
+ * ## 🚫 不要在开发过程中改它
+ *
+ * 除非是**发版**，否则不要动这个数。
+ *
+ * 曾经误以为"改了 core 就要 bump，否则 Core 不会重启"——
+ * 那是错的：bump 了也**不会**触发重启（见上），
+ * 真正让新代码生效的是**手动重启**，而提示手动重启由指纹机制负责。
+ *
+ * 现在 = 20。它从 19 加到 20 是早期那次误用的残留，
+ * 之后所有 core 改动**都不应该**再动它（曾违反过三次：20→21→22→23，
+ * 已全部回退）。
  */
-val vflowCoreVersion = 23
+val vflowCoreVersion = 20
 
 val localProperties = Properties()
 val localPropertiesFile = rootProject.file("local.properties")
