@@ -34,6 +34,40 @@ object LogcatCommands {
     const val DEFAULT_LINES = 1000
 
     /**
+     * 采集文件的轮转容量（KB/份）。
+     *
+     * ## 为什么是 64MB 而不是原来的 1MB
+     *
+     * 原值 1MB × 4 份在高频日志下只覆盖约 10 秒（实测：某 TAG 每秒刷 2800 行、
+     * 每行约 140 字符 → 约 400KB/秒）。用户"开采集 5 分钟再回来查"时，
+     * 早期日志早已被轮转覆盖，而**界面上没有任何提示**。
+     *
+     * 64MB × 4 份 = 256MB，同样速率下能覆盖约 10 分钟，
+     * 足够覆盖默认的 5 分钟上限。
+     *
+     * ⚠️ 这只是把窗口拉长，**不能保证覆盖整个区间**——
+     * 写入速率是不可预知的。所以界面必须显示「实际覆盖了什么」，
+     * 覆盖不全时让用户知道（见 [buildCaptureCoverage]）。
+     */
+    const val ROTATE_KB = 64 * 1024
+
+    /**
+     * 保留的轮转文件数。
+     *
+     * ⚠️ 实际文件数可能比它多 1（实测 `-n 2` 会得到 3 个文件），
+     * 所以**读的时候必须用通配符枚举**，不要假定个数。
+     */
+    const val ROTATE_COUNT = 4
+
+    /**
+     * 单次检索返回的行数上限。
+     *
+     * 与 [MAX_LINES] 分开是因为含义不同：那是"跨进程传输上限"，
+     * 这是"检索结果上限"。两者当前取值相同，但将来可能分道扬镳。
+     */
+    const val MAX_MATCHES = 2000
+
+    /**
      * 采集时长上限的默认值（秒）。5 分钟——够复现绝大多数问题，且不会忘关太久。
      *
      * 用户可在界面上调整；App 侧计时用于即时反馈，shell 侧 `timeout` 是兜底
@@ -95,8 +129,8 @@ object LogcatCommands {
      * @param timeoutSec   采集时长上限（秒）；进程到点自动结束
      */
     fun buildStartCapture(
-        rotateKb: Int = 1024,
-        rotateCount: Int = 3,
+        rotateKb: Int = ROTATE_KB,
+        rotateCount: Int = ROTATE_COUNT,
         timeoutSec: Int = DEFAULT_TIMEOUT_SEC,
     ): String =
         "rm -f $DONE_FILE; " +
@@ -169,16 +203,118 @@ object LogcatCommands {
 
     // ── 读取 ─────────────────────────────────────────────────────
 
+    /** 需要转义的正则元字符。 */
+    private const val REGEX_METACHARS = """[.\[\](){}*+?^$|]"""
+
+    /** 转义前缀（反斜杠）。写成码位是为了避开转义层数 —— 这里已经写错过一次。 */
+    private val REGEX_ESCAPE_PREFIX = 0x5C.toChar().toString()
+
+    /** 采集文件的通配符（含轮转出来的历史份）。 */
+    private const val CAPTURE_GLOB = "$CAPTURE_FILE*"
+
     /**
-     * 从采集文件尾部有界读取。
+     * **在整个采集文件里检索**（采集态与已完成态都用它）。
      *
-     * [CaptureState.Capturing] 与 [CaptureState.Completed] **都用它**——
-     * 两者的数据源是同一个文件，区别只在于前者还在增长、后者已固定。
+     * ## 为什么不是 `tail -n N`
      *
-     * 结果只有 [lines] 行，天然满足 Binder 上限。
+     * 原实现取文件**末尾 N 行**。在 2800 行/秒的日志下，
+     * 1000 行只覆盖 **0.35 秒** —— 用户"采 5 分钟再回来查"时，
+     * 除了最后零点几秒，其余全部看不到。
+     * 这与「覆盖开关之间的日志」的设计意图完全背离。
+     *
+     * 改成检索后，**只要文件里还留着的行就能找回来**，
+     * 不再受"末尾 N 行"这道闸门限制。
+     *
+     * ## 检索范围
+     *
+     * 用 `$CAPTURE_FILE*` 通配符覆盖**轮转出来的历史份**——
+     * 只看当前那份的话，能见到的还是最近一小段。
+     *
+     * ## ⚠️ 顺序
+     *
+     * 轮转文件名是 `logcat_capture.log.1`、`.2`…（**数字越大越旧**），
+     * 而 shell 的通配符展开是按字典序：`.1` 会排在 `.10` 之前。
+     * 因此**不能靠通配符的展开顺序**得到时间顺序，
+     * 得用 `ls -tr` 按修改时间反序再 cat。这里用 `-t` 正序（最旧在前）。
+     *
+     * ## 反压
+     *
+     * 匹配行数可能远超传输上限，所以 shell 侧就要截断（`tail -n`），
+     * 否则会撞 Binder 上限把 UserService 打死（类注释第 1 条）。
+     *
+     * @param tagQuery TAG 关键字（空 = 不过滤）。**大小写不敏感**
+     * @param messageQuery 消息关键字（空 = 不过滤）
+     * @param minLevel 最低级别；用 `grep` 的级别字符匹配
+     * @param limit 最多返回多少行
      */
-    fun buildTail(lines: Int = DEFAULT_LINES): String =
-        "tail -n ${clampLines(lines)} $CAPTURE_FILE"
+    fun buildSearch(
+        tagQuery: String = "",
+        messageQuery: String = "",
+        minLevel: LogLevel = LogLevel.VERBOSE,
+        limit: Int = MAX_LINES,
+    ): String {
+        val pattern = buildSearchPattern(tagQuery, messageQuery, minLevel)
+
+        // `ls -tr` 按时间正序（最旧在前），这样 grep 的输出天然是时间序
+        val sources = "\$(ls -tr $CAPTURE_GLOB 2>/dev/null)"
+
+        return "cat $sources | grep -a${pattern.grepFlags} -e ${shellQuote(pattern.regex)} " +
+            "| tail -n ${clampLines(limit)}"
+    }
+
+    /**
+     * 由过滤条件构造 grep 用的正则。
+     *
+     * ## 为什么在 shell 侧 grep 而不是把文件读回来内存筛
+     *
+     * 文件可达数百 MB，不可能整个读回来。必须在 shell 侧先收窄。
+     *
+     * ## 级别怎么匹配
+     *
+     * `threadtime` 的级别在固定列，但这**不能靠列位置硬切**——
+     * pid/tid 的宽度在不同 ROM 上可能不同。用正则匹配 `\s级别\s`
+     * 的形状更稳：日志行的结构是 `... pid tid 级别 TAG: msg`。
+     *
+     * ⚠️ `minLevel` 是"至少这么严重"，所以 E 要同时放行 E 与 F。
+     */
+    internal fun buildSearchPattern(
+        tagQuery: String,
+        messageQuery: String,
+        minLevel: LogLevel,
+    ): SearchPattern {
+        val parts = mutableListOf<String>()
+
+        // 级别：>= minLevel 的所有级别字符
+        val levels = LogLevel.entries
+            .filter { it.priority >= minLevel.priority }
+            .joinToString("") { it.char.toString() }
+        if (levels.length < LogLevel.entries.size) {
+            parts.add("[ ]+[$levels][ ]+")
+        }
+
+        // TAG 与消息：都是大小写不敏感的子串
+        tagQuery.trim().takeIf { it.isNotBlank() }?.let {
+            parts.add("${escapeForRegex(it)}.*:")
+        }
+        messageQuery.trim().takeIf { it.isNotBlank() }?.let {
+            parts.add(escapeForRegex(it))
+        }
+
+        return SearchPattern(
+            regex = if (parts.isEmpty()) "." else parts.joinToString(".*"),
+            grepFlags = if (tagQuery.isNotBlank() || messageQuery.isNotBlank()) "i" else "",
+        )
+    }
+
+    /**
+     * 转义正则元字符。
+     *
+     * 用户输入的 TAG / 关键字里可能有 `.` `[` `(` 等，
+     * 不转义会被当成正则语法 —— 表现是**匹配结果莫名其妙**
+     * （如 TAG 里有个 `.` 就变成"任意字符"）。
+     */
+    internal fun escapeForRegex(value: String): String =
+        value.replace(Regex(REGEX_METACHARS)) { m -> REGEX_ESCAPE_PREFIX + m.value }
 
     /**
      * 快照：读 logcat 缓冲区（**空闲态**用）。
@@ -237,15 +373,17 @@ object LogcatCommands {
         lines: Int = DEFAULT_LINES,
         tag: String? = null,
         minLevel: LogLevel = LogLevel.VERBOSE,
+        messageQuery: String = "",
     ): String? = when (state) {
         is CaptureState.Idle -> buildSnapshot(lines, tag, minLevel)
-        // 采集态：过滤在 App 侧做（采集文件永远全量写入），
-        // 这样改过滤条件只需重渲染，不用重跑命令，也支持事后切换
-        is CaptureState.Capturing -> buildTail(lines)
-        // 已完成态的数据源与采集态相同，但文件不再变化 ——
-        // 重新读一遍得到的还是同一批内容。界面应隐藏刷新按钮；
-        // 这里仍返回命令只是为了"重新采集后首次加载"这类场景能复用
-        is CaptureState.Completed -> buildTail(lines)
+        // 采集态与已完成态都走 shell 侧检索。
+        //
+        // ⚠️ 过滤**下推到了 grep**，这与"采集文件永远全量写入"不冲突：
+        // 文件里仍是全量，只是读的时候在 shell 侧收窄。
+        // 不下推的话（原实现）只能读文件末尾 N 行，高频日志下
+        // 1000 行只覆盖 0.35 秒，等于大部分内容搜不到。
+        is CaptureState.Capturing -> buildSearch(tag.orEmpty(), messageQuery, minLevel, lines)
+        is CaptureState.Completed -> buildSearch(tag.orEmpty(), messageQuery, minLevel, lines)
         is CaptureState.Stale -> null
     }
 
@@ -269,8 +407,8 @@ object LogcatCommands {
     ): String? = when (state) {
         // 采集态与已完成态都只能读文件（App 进程读不到 shell 写的 /sdcard 路径，
         // 所以统一走 tail 由 shell 读）；文件本身是全量写入的，天然不带 TAG 过滤
-        is CaptureState.Capturing -> buildTail(lines)
-        is CaptureState.Completed -> buildTail(lines)
+        is CaptureState.Capturing -> buildSearch(minLevel = minLevel, limit = lines)
+        is CaptureState.Completed -> buildSearch(minLevel = minLevel, limit = lines)
         is CaptureState.Idle -> buildSnapshotForTagStats(lines, minLevel)
         is CaptureState.Stale -> null
     }
@@ -287,6 +425,19 @@ object LogcatCommands {
      */
     fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
 }
+
+/**
+ * 一个 shell 检索用的正则 + grep 标志。
+ *
+ * 抽出来是为了**可单测**：正则拼错的表现是"搜不到东西"，
+ * 而用户完全看不出是条件写错还是真的没有。
+ */
+internal data class SearchPattern(
+    /** POSIX 扩展正则（`grep -E` 语法）。 */
+    val regex: String,
+    /** grep 的标志字符，如 `"i"` 表示大小写不敏感。 */
+    val grepFlags: String,
+)
 
 /**
  * 采集状态（调试工具 §4.2.1）。

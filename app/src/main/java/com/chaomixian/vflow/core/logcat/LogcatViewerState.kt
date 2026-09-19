@@ -145,3 +145,68 @@ fun dataSourceLabel(state: CaptureState): String = when (state) {
     is CaptureState.Stale -> "上次采集文件（异常结束）"
     is CaptureState.Idle -> "缓冲区（会变化）"
 }
+
+/**
+ * 采集覆盖范围的描述。
+ *
+ * ## 为什么需要它
+ *
+ * 用户点「开始采集」、5 分钟后回来查，会**默认这批日志覆盖了整段时间**。
+ * 但如果日志速率很高，采集文件的轮转会把早期内容挤掉 —— 实际只覆盖了最后十几秒。
+ *
+ * 这个落差必须显式告诉用户，否则他会得出"这个工具漏日志"的结论，
+ * 而真相是"那部分内容已被轮转覆盖"。
+ *
+ * @param firstTimestamp 实际读到的最早一行的时间
+ * @param lastTimestamp  实际读到的最晚一行的时间
+ * @param truncatedByLimit 结果是否被行数上限截断（说明后面还有更多）
+ */
+data class CaptureCoverage(
+    val firstTimestamp: String?,
+    val lastTimestamp: String?,
+    val truncatedByLimit: Boolean,
+) {
+    /** 是否有可显示的时间范围。 */
+    val hasRange: Boolean get() = !firstTimestamp.isNullOrBlank() && !lastTimestamp.isNullOrBlank()
+
+    /**
+     * 范围文案，如 `09:13:26–09:13:36`。
+     *
+     * 只有一行时返回该时刻本身。
+     */
+    val rangeText: String?
+        get() {
+            if (!hasRange) return null
+            val first = firstTimestamp!!.timeOfDay()
+            val last = lastTimestamp!!.timeOfDay()
+            return when {
+                first == null || last == null -> null
+                first == last -> first
+                else -> "$first–$last"
+            }
+        }
+
+    private fun String.timeOfDay(): String? {
+        val space = indexOf(' ')
+        if (space < 0) return null
+        val time = substring(space + 1)
+        val dot = time.indexOf('.')
+        return if (dot > 0) time.substring(0, dot) else time
+    }
+}
+
+/**
+ * 从检索结果算出覆盖范围。
+ *
+ * ⚠️ `truncatedByLimit` 的判断依据是"结果行数达到了上限" ——
+ * 那说明 shell 侧的 `tail -n` 截断过，后面还有更多内容。
+ * 不告诉用户的话，他会以为这就是全部。
+ */
+fun buildCoverage(lines: List<LogcatLine>, limit: Int): CaptureCoverage {
+    val stamped = lines.filter { !it.isContinuation && it.timestamp.isNotBlank() }
+    return CaptureCoverage(
+        firstTimestamp = stamped.firstOrNull()?.timestamp,
+        lastTimestamp = stamped.lastOrNull()?.timestamp,
+        truncatedByLimit = lines.size >= limit,
+    )
+}

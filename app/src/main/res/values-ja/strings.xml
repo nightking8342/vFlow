@@ -177,6 +177,9 @@
     <string name="logcat_action_rescan">再フィルタ</string>
     <string name="logcat_action_release">破棄</string>
     <string name="logcat_completed_hint">このログは固定されています。フィルタを変えても内容は変わりません。</string>
+    <string name="logcat_coverage_range">実際の範囲 %1$s</string>
+    <string name="logcat_coverage_truncated">行数上限に達しました。以降にも内容があります。「行数」を増やすか条件を絞ってください。</string>
+    <string name="logcat_action_refresh">検索</string>
     <string name="logcat_filter_message_label">メッセージ</string>
     <string name="logcat_filter_message_hint">メッセージ内容で絞り込み</string>
     <string name="logcat_wrap_on">折り返し：オン</string>
@@ -206,7 +209,6 @@
     <string name="logcat_tag_stats">TAG 統計</string>
     <string name="logcat_show_own_app">このアプリのログを表示</string>
     <string name="logcat_line_limit_label">行数</string>
-    <string name="logcat_action_refresh">更新</string>
     <string name="logcat_action_clear_list">消去</string>
     <string name="logcat_refreshing">読み取り中…</string>
     <string name="logcat_tag_stats_title">TAG 統計（全 %1$d 行）</string>

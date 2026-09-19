@@ -79,9 +79,12 @@ class LogcatCommandsTest {
     }
 
     @Test
-    fun `tail bounds the line count`() {
-        assertTrue(LogcatCommands.buildTail(300).contains("tail -n 300"))
-        assertTrue(LogcatCommands.buildTail(999_999).contains("tail -n ${LogcatCommands.MAX_LINES}"))
+    fun `search bounds the line count`() {
+        assertTrue(LogcatCommands.buildSearch(limit = 300).contains("tail -n 300"))
+        assertTrue(
+            LogcatCommands.buildSearch(limit = 999_999)
+                .contains("tail -n ${LogcatCommands.MAX_LINES}")
+        )
     }
 
     @Test
@@ -325,5 +328,120 @@ class LogcatCommandsTest {
     fun `tag stats on a completed state also read the capture file`() {
         val cmd = LogcatCommands.buildTagStats(CaptureState.Completed)
         assertTrue(cmd!!.contains(LogcatCommands.CAPTURE_FILE))
+    }
+
+    // ── 采集检索 ★ ──────────────────────────────────────────────
+
+    @Test
+    fun `search covers rotated files not just the current one`() {
+        // ⚠️ 只看当前那份的话，能见到的还是最近一小段。
+        // 轮转出来的历史份里才有更早的日志
+        val cmd = LogcatCommands.buildSearch()
+        assertTrue("必须用通配符覆盖轮转文件", cmd.contains("${LogcatCommands.CAPTURE_FILE}*"))
+    }
+
+    @Test
+    fun `search orders files by time so output is chronological`() {
+        // ⚠️ 轮转文件名是 .1 .2 .10，shell 通配符按**字典序**展开时
+        // .10 会排在 .2 前面 —— 直接 cat 通配符会得到乱序输出。
+        // 必须用 ls -t 按修改时间排
+        val cmd = LogcatCommands.buildSearch()
+        assertTrue("应按时间排序", cmd.contains("ls -tr"))
+        assertTrue("应 cat 排序后的结果", cmd.contains("cat "))
+    }
+
+    @Test
+    fun `search never reads the whole file into the result`() {
+        // ⚠️ 采集文件可达数百 MB，结果必须被截断 ——
+        // 否则会撞 Binder 上限把 UserService 打死
+        val cmd = LogcatCommands.buildSearch(limit = 500)
+        assertTrue("Shell 侧必须截断", cmd.contains("tail -n 500"))
+    }
+
+    @Test
+    fun `search clamps an oversized limit`() {
+        val cmd = LogcatCommands.buildSearch(limit = 999_999)
+        assertTrue(cmd.contains("tail -n ${LogcatCommands.MAX_LINES}"))
+    }
+
+    @Test
+    fun `search passes the pattern through shell quoting`() {
+        // ⚠️ 模式必须经 shellQuote 包裹。不用的话，用户 TAG 里的引号/分号
+        // 会造成命令拼接错误甚至注入。
+        // 用 buildSearchPattern 算出的**期望值**比对，避免把逻辑重写一遍
+        val expected = LogcatCommands.shellQuote(
+            LogcatCommands.buildSearchPattern("MyApp", "", LogLevel.VERBOSE).regex
+        )
+        assertTrue("模式应被 shellQuote 包裹", LogcatCommands.buildSearch(tagQuery = "MyApp").contains(expected))
+    }
+
+    @Test
+    fun `search escapes regex metacharacters in user input`() {
+        // ⚠️ 不转义的话，TAG 里的 `.` 会被当成"任意字符"，
+        // 表现是匹配结果莫名其妙地多 —— 用户完全看不出原因
+        val p = LogcatCommands.buildSearchPattern("a.b", "", LogLevel.VERBOSE)
+        // 用码位比较而非转义字面量 —— 后者在源码里层数一多就容易写错
+        val backslash = 0x5C.toChar()
+        assertTrue("点号前应有反斜杠", p.regex.contains("$backslash."))
+    }
+
+    @Test
+    fun `search is case insensitive when a keyword is given`() {
+        val withTag = LogcatCommands.buildSearchPattern("MyApp", "", LogLevel.VERBOSE)
+        assertTrue("有关键字时应大小写不敏感", withTag.grepFlags.contains("i"))
+
+        val noKeyword = LogcatCommands.buildSearchPattern("", "", LogLevel.VERBOSE)
+        assertTrue("无关键字时不需要 i", !noKeyword.grepFlags.contains("i"))
+    }
+
+    @Test
+    fun `search level filter admits every level at or above the threshold`() {
+        // ⚠️ "最低级别"是**至少这么严重**：W 要放行 W/E/F 三级。
+        // 只放行 W 会让 ERROR 被过滤掉 —— 而那正是最该看到的
+        val p = LogcatCommands.buildSearchPattern("", "", LogLevel.WARN)
+        assertTrue("W 应在内", p.regex.contains("W"))
+        assertTrue("E 应在内", p.regex.contains("E"))
+        assertTrue("F 应在内", p.regex.contains("F"))
+        assertTrue("I 不该在内", !p.regex.contains("I"))
+    }
+
+    @Test
+    fun `search omits the level filter at verbose`() {
+        // V 是最低级，放行全部 —— 加个 `[VDIWEF]` 只是白费
+        val p = LogcatCommands.buildSearchPattern("", "", LogLevel.VERBOSE)
+        assertTrue("V 门槛下不该有级别过滤", !p.regex.contains("[VDIWEF]"))
+    }
+
+    @Test
+    fun `search combines tag and message conditions`() {
+        val p = LogcatCommands.buildSearchPattern("MyApp", "error", LogLevel.VERBOSE)
+        assertTrue("TAG 条件应在", p.regex.contains("MyApp"))
+        assertTrue("消息条件应在", p.regex.contains("error"))
+    }
+
+    @Test
+    fun `an empty search matches everything`() {
+        val p = LogcatCommands.buildSearchPattern("", "", LogLevel.VERBOSE)
+        assertEquals(".", p.regex)
+        assertEquals("", p.grepFlags)
+    }
+
+    @Test
+    fun `grep treats the file as text`() {
+        // `-a` 是必需的：日志里混进二进制字节时，grep 会判定"binary file matches"
+        // 而不输出内容 —— 表现是搜到了却什么都没有
+        val cmd = LogcatCommands.buildSearch()
+        assertTrue("必须带 -a", cmd.contains("grep -a") || cmd.contains("-a"))
+    }
+
+    @Test
+    fun `rotation capacity is large enough for the default time limit`() {
+        // ⚠️ 原值 1MB × 4 在高频日志下只覆盖约 10 秒，
+        // 用户"采 5 分钟再回来查"时早期日志早被挤掉。
+        // 64MB × 4 = 256MB，按 400KB/s 可覆盖约 10 分钟
+        val cmd = LogcatCommands.buildStartCapture()
+        assertTrue("轮转容量应远大于 1MB", LogcatCommands.ROTATE_KB >= 64 * 1024)
+        assertTrue(cmd.contains("-r ${LogcatCommands.ROTATE_KB}"))
+        assertTrue(cmd.contains("-n ${LogcatCommands.ROTATE_COUNT}"))
     }
 }

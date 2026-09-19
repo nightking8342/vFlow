@@ -158,14 +158,21 @@ private fun LogcatViewerScreen(onBack: () -> Unit) {
     /**
      * 读一次数据源（**唯一会跑 shell 命令的入口**）。
      *
-     * 过滤条件传空 —— 读回来的是原始数据，筛选交给内存里的 [result] 派生。
-     * 这样"读"与"筛"彻底分开：读一次可以用很多次。
+     * ⚠️ **过滤条件要一起传下去**：采集态/已完成态走的是 shell 侧 grep 检索，
+     * 不是把整个文件读回来内存筛。
+     *
+     * 这与上一版的做法相反（那时过滤在内存做）。改的原因是**正确性**：
+     * 采集文件可达数百 MB，不可能整个读回来；而"读末尾 N 行再筛"
+     * 在高频日志下只能看到 0.35 秒的内容，等于大部分日志搜不到。
+     *
+     * 代价是改过滤条件要重跑一次命令 —— 所以界面上「刷新」改叫「检索」，
+     * 语义更准确，也让用户知道点一下会执行一次查询。
      */
     fun loadFromSource() {
         refreshing = true
         scope.launch {
             val outcome = withContext(Dispatchers.IO) {
-                loadLogs(context, session.state, LogcatFilter())
+                loadLogs(context, session.state, filter)
             }
             rawLines = outcome.rawLines
             capturedState = session.state
@@ -331,6 +338,7 @@ private fun LogcatViewerScreen(onBack: () -> Unit) {
             if (rawLines.isNotEmpty() || result.emptyReason != null) {
                 StatusBar(
                     result = result,
+                    filterLineLimit = filter.lineLimit,
                     state = session.state,
                 )
             }
@@ -379,7 +387,13 @@ private suspend fun loadLogs(
     filter: LogcatFilter,
 ): LoadOutcome {
     // STALE 不执行命令，走提示（buildRefresh 返回 null 就是表达这个）
-    val cmd = LogcatCommands.buildRefresh(state, filter.lineLimit, filter.tagQuery, filter.minLevel)
+    val cmd = LogcatCommands.buildRefresh(
+        state,
+        filter.lineLimit,
+        filter.tagQuery,
+        filter.minLevel,
+        filter.messageQuery,
+    )
         ?: return LoadOutcome(emptyList(), 0, shellOk = true, timedOut = false)
 
     val startedAt = System.currentTimeMillis()
@@ -857,7 +871,7 @@ private fun EmptyHint(reason: LogcatEmptyReason?, rawLineCount: Int, modifier: M
 }
 
 @Composable
-private fun StatusBar(result: LogcatViewerResult, state: CaptureState) {
+private fun StatusBar(result: LogcatViewerResult, state: CaptureState, filterLineLimit: Int) {
     Surface(color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
             Text(
@@ -893,6 +907,28 @@ private fun StatusBar(result: LogcatViewerResult, state: CaptureState) {
                 style = MaterialTheme.typography.bodySmall,
                 fontFamily = FontFamily.Monospace,
             )
+
+            // ⚠️ 覆盖范围必须显示：用户会默认"这批日志覆盖了我采集的整段时间"，
+            // 而高频日志下轮转可能只留下最后十几秒。
+            // 不说出来的话，他只会得出"这工具漏日志"的结论（这正是用户报的问题 2）
+            val coverage = buildCoverage(result.lines, filterLineLimit)
+            coverage.rangeText?.let { range ->
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = stringResource(R.string.logcat_coverage_range, range),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (coverage.truncatedByLimit) {
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = stringResource(R.string.logcat_coverage_truncated),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.tertiary,
+                )
+            }
 
             // 降级行数是最容易让用户踩坑的地方，单独再提一次
             if (result.continuationCount > 0) {

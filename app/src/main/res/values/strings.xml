@@ -180,6 +180,9 @@
     <string name="logcat_action_rescan">重新筛选</string>
     <string name="logcat_action_release">放弃这批</string>
     <string name="logcat_completed_hint">这批日志已固定，切换过滤不会改变内容。</string>
+    <string name="logcat_coverage_range">实际覆盖 %1$s</string>
+    <string name="logcat_coverage_truncated">结果已达行数上限，后面还有更多；调大「条数」或缩小过滤范围可看到更早的内容。</string>
+    <string name="logcat_action_refresh">检索</string>
     <string name="logcat_filter_message_label">消息</string>
     <string name="logcat_filter_message_hint">按消息内容过滤</string>
     <string name="logcat_wrap_on">自动换行：开</string>
@@ -209,7 +212,6 @@
     <string name="logcat_tag_stats">TAG 统计</string>
     <string name="logcat_show_own_app">显示本应用日志</string>
     <string name="logcat_line_limit_label">条数</string>
-    <string name="logcat_action_refresh">刷新</string>
     <string name="logcat_action_clear_list">清空</string>
     <string name="logcat_refreshing">正在读取…</string>
     <string name="logcat_tag_stats_title">TAG 统计（共 %1$d 行）</string>
