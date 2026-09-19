@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -764,16 +765,20 @@ private fun LogcatList(
         if (lines.isNotEmpty()) listState.scrollToItem(lines.lastIndex)
     }
 
-    LazyColumn(state = listState, modifier = modifier.fillMaxSize()) {
-        // ⚠️ **不要自定义 key**。logcat 里两行完全相同的日志极常见
+    // ⚠️ SelectionContainer 包在 LazyColumn **外面**，不是每行一个：
+    // 放里面的话只能单行选择，而用户复制日志几乎总是要连着复制好几行
+    SelectionContainer {
+        LazyColumn(state = listState, modifier = modifier.fillMaxSize()) {
+            // ⚠️ **不要自定义 key**。logcat 里两行完全相同的日志极常见
         // （循环打印、重复的堆栈帧），而 `LogcatLine` 是 data class，
         // 内容相同的两行必然算出同一个 key —— LazyColumn 要求 key 唯一，
         // 撞上会抛 IllegalArgumentException 直接崩掉界面。
         //
         // 这里也确实不需要自定义 key：列表是**整体替换**语义（§4.1.2），
         // 没有移动/重排，默认的位置索引天然唯一且稳定。
-        items(lines) { line ->
-            LogcatRow(line, wrapLines)
+            items(lines) { line ->
+                LogcatRow(line, wrapLines)
+            }
         }
     }
 }

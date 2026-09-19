@@ -771,9 +771,13 @@ object VFlowCoreBridge {
                     streamSocket.soTimeout = 0
                     val writer = PrintWriter(streamSocket.outputStream, true)
                     val reader = BufferedReader(InputStreamReader(streamSocket.inputStream))
+                    // ⚠️ 订阅帧发出后**立刻**登记 writer，不要等 consumeLogcatStream。
+                    // 否则存在竞态：addTrigger 触发的条件下发可能早于注册，
+                    // 那时 writer 还是 null → 条件丢失 → 触发器不工作
+                    synchronized(logcatWriterLock) { logcatStreamWriter = writer }
                     writer.println(subscribeRequest.toString())
                     if (writer.checkError()) return@withContext false
-                    consumeLogcatStream(reader, writer, onEvent)
+                    consumeLogcatStream(reader, onEvent)
                 }
             } else {
                 Socket(HOST, PORT).use { streamSocket ->
@@ -783,9 +787,10 @@ object VFlowCoreBridge {
                     streamSocket.tcpNoDelay = true
                     val writer = PrintWriter(streamSocket.getOutputStream(), true)
                     val reader = BufferedReader(InputStreamReader(streamSocket.getInputStream()))
+                    synchronized(logcatWriterLock) { logcatStreamWriter = writer }
                     writer.println(subscribeRequest.toString())
                     if (writer.checkError()) return@withContext false
-                    consumeLogcatStream(reader, writer, onEvent)
+                    consumeLogcatStream(reader, onEvent)
                 }
             }
         } catch (e: Exception) {
@@ -800,12 +805,9 @@ object VFlowCoreBridge {
 
     private suspend fun consumeLogcatStream(
         reader: BufferedReader,
-        writer: PrintWriter,
         onEvent: suspend (JSONObject) -> Unit,
     ): Boolean {
-        // 先登记 writer，之后 updateLogcatTriggers 才有通道可用
-        synchronized(logcatWriterLock) { logcatStreamWriter = writer }
-
+        // 登记已在连接建立处完成（见 streamLogcatEvents 的说明）
         while (true) {
             val line = reader.readLine() ?: return false
             val payload = try {
@@ -814,7 +816,21 @@ object VFlowCoreBridge {
                 DebugLogger.d(TAG, "logcat 流收到非法 JSON，跳过: ${e.message}")
                 continue
             }
-            if (!payload.optBoolean("success")) return false
+            if (!payload.optBoolean("success")) {
+                DebugLogger.w(TAG, "logcat 流被 Core 拒绝: $line")
+                return false
+            }
+
+            // ⚠️ 这条日志是**区分两类故障的关键**：
+            // - 收到 "ready" → Core 认识 subscribeLogcatStream，是新代码，流真的建立了
+            // - 从未收到     → Core 不认识这个 method（旧代码），或连接被立刻关掉
+            //
+            // 之所以需要它：Core 的版本号是写死的常量（`vflowCoreVersion`），
+            // 不随 app 版本变，所以光看 ping 的 versionCode 判断不出跑的是不是新代码。
+            if (payload.optString("event") == "ready") {
+                DebugLogger.i(TAG, "logcat 流已建立（Core 已就绪）")
+            }
+
             onEvent(payload)
         }
     }

@@ -694,14 +694,15 @@ fun SettingsScreen(
                 // logcat 调试器与「UI 检查器」同为调试工具，放进同一行按钮，
                 // 而不是单独占一行列表项——两者是并列的工具入口，不该一个用列表项
                 // 一个用按钮，那会让人以为它们不是一类东西
-                SettingsButtonRow(
-                    primaryLabel = coreManagementLabel,
-                    onPrimaryClick = actions.onOpenCoreManagement,
-                    secondaryLabel = uiInspectorLabel,
-                    onSecondaryClick = actions.onStartUiInspector,
+                // 三个工具入口：核心管理 / UI 检查器 一行，
+                // logcat 调试器落单、独占下一行（见 SettingsButtonGrid）
+                SettingsButtonGrid(
+                    buttons = listOf(
+                        SettingsButton(coreManagementLabel, actions.onOpenCoreManagement),
+                        SettingsButton(uiInspectorLabel, actions.onStartUiInspector),
+                        SettingsButton(logcatViewerTitle, actions.onOpenLogcatViewer),
+                    ),
                     position = SettingsGroupPosition.Bottom,
-                    tertiaryLabel = logcatViewerTitle,
-                    onTertiaryClick = actions.onOpenLogcatViewer,
                 )
             }
         }
@@ -1128,55 +1129,72 @@ private fun SettingsButtonRow(
     primaryEnabled: Boolean = true,
     secondaryEnabled: Boolean = true,
     position: SettingsGroupPosition,
-    /**
-     * 可选的第三个按钮。
-     *
-     * 调试区那一行工具入口有三个（核心管理 / UI 检查器 / logcat 调试器），
-     * 用可选参数而不是另写一个三按钮组件——两者的样式必须一致，
-     * 分开写迟早会漂移。
-     *
-     * 默认 null：其余调用点仍是两按钮，行为不变。
-     */
-    tertiaryLabel: String? = null,
-    onTertiaryClick: (() -> Unit)? = null,
+) {
+    SettingsButtonGrid(
+        buttons = listOf(
+            SettingsButton(primaryLabel, onPrimaryClick, primaryEnabled),
+            SettingsButton(secondaryLabel, onSecondaryClick, secondaryEnabled),
+        ),
+        position = position,
+    )
+}
+
+/**
+ * 一组按钮里的一项。
+ *
+ * @param label 文案。为空表示"这个位置没有按钮"
+ * @param onClick 点击回调
+ */
+private data class SettingsButton(
+    val label: String,
+    val onClick: () -> Unit,
+    val enabled: Boolean = true,
+)
+
+/**
+ * 按钮网格：**每行两个，不满一行时剩下的按钮独占整行**。
+ *
+ * 这样排的原因：
+ * - 三个按钮挤一行时每个只有 1/3 宽，中文文案（"logcat 调试器"）要折成两行才放得下
+ * - 而如果让第三个保持 1/3 宽、右边留空，视觉上又像排版出错
+ * - "两个一行 + 落单的占满"是这两种毛病都没有的排法
+ *
+ * 按**列表**接收而不是固定参数，是为了以后加按钮不用改调用方 ——
+ * 传几个就排几个，落单自动占满。
+ */
+@Composable
+private fun SettingsButtonGrid(
+    buttons: List<SettingsButton>,
+    position: SettingsGroupPosition,
 ) {
     SettingsItemSurface(position = position) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 14.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            FilledTonalButton(
-                modifier = Modifier
-                    .weight(1f)
-                    .height(48.dp),
-                onClick = onPrimaryClick,
-                enabled = primaryEnabled,
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Text(text = primaryLabel)
-            }
-            FilledTonalButton(
-                modifier = Modifier
-                    .weight(1f)
-                    .height(48.dp),
-                onClick = onSecondaryClick,
-                enabled = secondaryEnabled,
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Text(text = secondaryLabel)
-            }
-            if (tertiaryLabel != null && onTertiaryClick != null) {
-                FilledTonalButton(
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(48.dp),
-                    onClick = onTertiaryClick,
-                    shape = RoundedCornerShape(16.dp)
+            buttons.chunked(2).forEach { rowButtons ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    // 三按钮时每个只有 1/3 宽，长文案需要能换行
-                    Text(text = tertiaryLabel, maxLines = 2)
+                    // 落单的按钮**独占整行**，不留半格空白 ——
+                    // 留空会让人以为那里本该有东西（排版出错感）
+                    val soloInRow = rowButtons.size == 1 && buttons.size > 1
+
+                    rowButtons.forEach { button ->
+                        FilledTonalButton(
+                            modifier = Modifier
+                                .then(if (soloInRow) Modifier.fillMaxWidth() else Modifier.weight(1f))
+                                .height(48.dp),
+                            onClick = button.onClick,
+                            enabled = button.enabled,
+                            shape = RoundedCornerShape(16.dp),
+                        ) {
+                            Text(text = button.label, maxLines = 1)
+                        }
+                    }
                 }
             }
         }

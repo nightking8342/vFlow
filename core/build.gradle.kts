@@ -112,7 +112,23 @@ plugins {
     kotlin("jvm") // 使用标准 Kotlin JVM 插件
 }
 
-val vflowCoreVersion = 19
+/**
+ * Core 的版本号。
+ *
+ * ⚠️ **改动了 core/src 下任何会影响运行行为的代码，就必须把这个数加一。**
+ *
+ * 原因：`VFlowCoreBridge.getCoreVersionStatus()` 靠
+ * `packaged.versionCode > running.versionCode` 判断"要不要重启 Core 进程"。
+ * 这个数不变的话，即使 apk 里的 dex 已经更新，正在跑的**旧进程也不会被重启**——
+ * 于是一直在用旧代码，表现为新功能"完全不工作"且**没有任何错误**。
+ *
+ * 这个坑已实际踩过：进程仍是加 logcat 之前的版本，
+ * `subscribeLogcatStream` 请求被它当成未知方法，流建立不起来。
+ *
+ * 19 → 20：新增 logcat 触发器的 Core 侧实现（LogcatStreamWrapper 等）
+ *           与 StreamingWrapper 的双工协议扩展
+ */
+val vflowCoreVersion = 20
 
 val localProperties = Properties()
 val localPropertiesFile = rootProject.file("local.properties")
