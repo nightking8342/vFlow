@@ -1462,7 +1462,7 @@
     <string name="workflow_chip_missing_permissions">缺少权限</string>
     <string name="workflow_chip_missing_permissions_count">缺 %d 项权限</string>
     <string name="workflow_chip_steps">%d 个步骤</string>
-    <string name="workflow_chip_permissions_count">%d 项权限</string>
+    <string name="workflow_chip_function">函数</string>
     <string name="workflow_silent_execution_enabled">静默执行</string>
     <string name="workflow_silent_execution_desc">执行时不显示进度通知与启动提示。「需要你输入或选择」的提示仍会显示，失败也会通知。</string>
     <string name="workflow_id_copied">工作流ID已复制</string>

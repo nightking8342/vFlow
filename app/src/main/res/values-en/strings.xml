@@ -1460,7 +1460,7 @@
     <string name="workflow_chip_missing_permissions">Missing Permissions</string>
     <string name="workflow_chip_missing_permissions_count">%d missing permissions</string>
     <string name="workflow_chip_steps">%d steps</string>
-    <string name="workflow_chip_permissions_count">%d permissions</string>
+    <string name="workflow_chip_function">Function</string>
     <string name="workflow_silent_execution_enabled">Silent execution</string>
     <string name="workflow_silent_execution_desc">Hides the progress notification and the start-up prompt while running. Prompts asking for your input or choice still appear, and failures are still reported.</string>
     <string name="workflow_id_copied">Workflow ID copied</string>

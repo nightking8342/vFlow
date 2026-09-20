@@ -23,6 +23,7 @@ import com.chaomixian.vflow.core.types.complex.VImage
 import com.chaomixian.vflow.core.utils.StorageManager
 import com.chaomixian.vflow.core.workflow.model.ActionStep
 import com.chaomixian.vflow.core.workflow.model.ActionStepExecutionSettings
+import com.chaomixian.vflow.core.workflow.model.FunctionSignatureDefaults
 import com.chaomixian.vflow.core.workflow.model.Workflow
 import com.chaomixian.vflow.core.workflow.model.WorkflowReentryBehavior
 import com.chaomixian.vflow.core.workflow.module.logic.*
@@ -212,7 +213,12 @@ object WorkflowExecutor {
                         stepOutputs = mutableMapOf(),
                         loopStack = Stack(),
                         triggerData = triggerData,
-                        namedVariables = ConcurrentHashMap<String, VObject>(),
+                        // 函数工作流（决策 §9.1）：直接执行时没有调用方注入实参，
+                        // 用声明的默认值作命名变量种子，否则内部 {{vars.<参数名>}} 全解析成空。
+                        // 普通工作流的签名是 null，这里得到空表，行为与改动前完全一致。
+                        namedVariables = ConcurrentHashMap<String, VObject>(
+                            FunctionSignatureDefaults.seedNamedVariables(workflow.functionSignature)
+                        ),
                         workflowStack = Stack<String>().apply { push(workflow.id) },
                         workDir = workDir
                     )

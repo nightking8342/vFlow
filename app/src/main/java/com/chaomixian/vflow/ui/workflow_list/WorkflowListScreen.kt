@@ -691,6 +691,26 @@ fun WorkflowCard(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    // 函数徽标放最前：它回答的是「这是什么」，
+                    // 比后面的「有多少步骤 / 缺哪些权限」更先被需要。
+                    // 样式与其他 chip 完全一致——「函数」二字加 Σ 图标已足够区分，
+                    // 再给描边会让它在同排 chip 里显得像异常态。
+                    if (workflow.isFunction) {
+                        WorkflowChip(
+                            label = stringResource(R.string.workflow_chip_function),
+                            iconRes = R.drawable.rounded_functions_24,
+                            containerColor = if (colorfulCardsEnabled) {
+                                Color(visualColors.chipBackground)
+                            } else {
+                                MaterialTheme.colorScheme.surfaceContainerHighest
+                            },
+                            contentColor = if (colorfulCardsEnabled) {
+                                Color(visualColors.iconTint)
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                    }
                     if (missingPermissions.isNotEmpty()) {
                         WorkflowChip(
                             label = stringResource(R.string.workflow_chip_missing_permissions),
@@ -1392,6 +1412,23 @@ private fun WorkflowCardCompact(
                             }
                         }
                         SpacerWidth(12.dp)
+                    }
+                    // 网格卡片放不下第三行 chip：卡片内容区约 165dp，图标行 + 底部操作行
+                    // 已占 100dp，剩下给 chip 列的 65dp 恰好装下「步骤 + 权限」两枚（54dp）。
+                    // 故这里改用标题前缀图标——横向让位，纵向零成本，且始终可见。
+                    if (workflow.isFunction) {
+                        Icon(
+                            painter = painterResource(R.drawable.rounded_functions_24),
+                            contentDescription = stringResource(R.string.workflow_chip_function),
+                            tint = if (colorfulCardsEnabled) {
+                                Color(visualColors.iconTint)
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier
+                                .padding(end = 4.dp)
+                                .size(18.dp)
+                        )
                     }
                     Text(
                         text = workflow.name,
