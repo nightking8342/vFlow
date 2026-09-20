@@ -435,7 +435,9 @@ output_vflow_trigger_fold_posture_source_name    信号来源
 
 > **验证方式**：`scripts/fold-trigger-verify.sh`（adb 采集，零代码）+ 两轮人工操作实测。
 > **验证设备**：小米 MIX Fold 3（`2308CPXD0C`，Android 17 / API 37，澎湃 OS4.0，MIUI V816）。
-> **原始数据**：`.fold-verify/session/run.log`（第一轮 150 采样）、`run2.log`（第二轮 120 采样，含旋转）。
+> **原始数据**：本轮采集了 270 个采样点（第一轮 150 + 第二轮 120，含旋转），存放于 `.fold-verify/session/`。
+> ⚠️ 该目录**未纳入版本控制**（`.gitignore:45`），因此上面的关键数据已摘录到本节正文中，无需查阅原始文件。
+> 需要重新采集时跑 `scripts/fold-trigger-verify.sh watch`（脚本会自行创建该目录）。
 
 ### 9.1 实测证实的事实
 
