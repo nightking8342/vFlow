@@ -88,6 +88,7 @@ object ModuleRegistry {
         register(LocationTriggerModule(), context)
         register(PoseTriggerModule(), context)
         register(VoiceTriggerModule(), context)
+        register(FoldTriggerModule(), context)
 
         // 界面交互
         register(FindTextModule(), context)

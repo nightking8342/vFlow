@@ -645,6 +645,22 @@
     <string name="option_vflow_trigger_screen_on">点灯時</string>
     <string name="option_vflow_trigger_screen_unlocked">ロック解除時</string>
     <string name="option_vflow_trigger_screen_off">消灯時</string>
+
+    <!-- vflow.trigger.fold -->
+    <string name="module_vflow_trigger_fold_name">折りたたみトリガー</string>
+    <string name="module_vflow_trigger_fold_desc">デバイスの折りたたみ・展開・半開き時にワークフローを起動します</string>
+    <string name="param_vflow_trigger_fold_event_name">起動条件</string>
+    <string name="summary_vflow_trigger_fold_prefix">折りたたみ</string>
+    <string name="msg_vflow_trigger_fold_triggered">折りたたみ状態が起動しました</string>
+    <string name="option_vflow_trigger_fold_folded">折りたたみ時</string>
+    <string name="option_vflow_trigger_fold_unfolded">展開時</string>
+    <string name="option_vflow_trigger_fold_half_opened">半開き時</string>
+    <string name="output_vflow_trigger_fold_state_name">現在の状態</string>
+    <string name="output_vflow_trigger_fold_angle_name">ヒンジ角度</string>
+    <string name="output_vflow_trigger_fold_is_folded_name">折りたたみ済み</string>
+    <string name="output_vflow_trigger_fold_is_unfolded_name">展開済み</string>
+    <string name="output_vflow_trigger_fold_is_half_opened_name">半開き</string>
+    <string name="output_vflow_trigger_fold_posture_source_name">信号ソース</string>
     <string name="module_vflow_trigger_bluetooth_name">Bluetooth トリガー</string>
     <string name="module_vflow_trigger_bluetooth_desc">Bluetooth 状態やデバイス接続の変化時に起動します</string>
     <string name="param_vflow_trigger_bluetooth_trigger_type_name">トリガータイプ</string>

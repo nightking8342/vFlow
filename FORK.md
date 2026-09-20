@@ -51,6 +51,14 @@
 | `test/core/execution/VariableResolverTest.kt` | 补 1 例：锁定「`{{vars.<name>}}` 解析成功、裸写 `{{<name>}}` 不解析」两条分支语义。防止将来有人"放宽"裸写法时无意改变行为 | **我方**（新增用例） |
 | `docs/fork/chat-float-window-design.md` | fork 独有：Chat 悬浮窗需求设计 + 实施交接（折叠/展开双形态、Application 作用域共享 VM、窗内审批 + 透明中转 Activity；§9.1 P0 验证结论、§9.2 P1 实现状态与动画失败结论），上游无此文件 | 我方 |
 | `docs/fork/chat-float-window-ui.html` | fork 独有：Chat 悬浮窗可交互 UI 原型（折叠/展开/审批/输入/状态一致性五组演示），上游无此文件 | 我方 |
+| `docs/fork/fold-trigger-design.md` | fork 独有：**折叠屏触发器设计**（`vflow.trigger.fold`）v3.0，**已实现并通过真机验证**（小米 MIX Fold 3，结论见 §9）。核心决策：做「状态推断」而非事件监听；**以铰链角度为主力信号**（实测 `device_posture` 滞后 1–2 秒且半折值不可靠，信号优先级已对调）；不引入 `androidx.window`；输出 6 项魔法变量（含 `posture_source` 诊断项）。**实测推翻了外部调研的悲观结论**——铰链传感器双向完整上报，非「只在折叠方向」。§8.1 记录一处既有缺陷：关闭后台服务通知会使服务降级、所有传感器类触发器静默失效。上游无此文件 | 我方 |
+| `core/workflow/module/triggers/FoldTriggerModule.kt`、`FoldTriggerData.kt`、`FoldStateResolver.kt`、`handlers/FoldTriggerHandler.kt`（均新增） | fork 独有：**折叠屏触发器实现**。`FoldTriggerModule`=模块定义（1 个 ENUM 参数 + 6 个输出）；`FoldTriggerData`=`@Parcelize` 载荷；`FoldStateResolver`=**纯函数状态机**（信号融合/迟滞/去抖/边沿检测，无 Android 依赖，可纯 JVM 单测）；`FoldTriggerHandler`=继承 `BaseTriggerHandler`，融合铰链角度（主力）+ 小米 `device_posture`（校验）两路信号。**厂商私有 key `device_posture` 完全收敛在 Handler 内**。阈值经真机实测校准：折叠 <40° / 展开 >150° / 半折 40–150° | 我方 |
+| `res/drawable/rounded_fold_24.xml`（新增） | fork 独有：折叠屏触发器图标（双屏对折造型，上游无此 drawable） | 我方 |
+| `test/core/workflow/module/triggers/FoldStateResolverTest.kt`（新增） | fork 独有：状态机单测 25 例（三态判定、迟滞防抖、去抖计时、信号降级、角度优先于 posture、枚举序列化稳定性）。含「实测抖动 7° 不触发变迁」的回归用例 | 我方 |
+| `scripts/fold-trigger-verify.sh`（新增） | fork 独有：折叠屏 P0 真机验证脚本（adb，零代码）。`snapshot` 快照 / `watch` 多信号实时对比 / `raw` 全量转储；采集 `device_posture` + 铰链角度 + 小米私有 `fold_status` + DeviceStateManager + 内外屏状态五路信号。**可复用于其他折叠屏机型复测** | 我方 |
+| `core/workflow/module/ModuleRegistry.kt` | 触发器段追加 1 行 `register(FoldTriggerModule(), context)`（不重排既有注册） | 手动合并（追加一行，取上游 + 追加） |
+| `core/workflow/module/triggers/handlers/TriggerHandlerRegistry.kt` | `initialize()` 追加 1 行 `register(FoldTriggerModule().id) { FoldTriggerHandler() }`（不重排既有注册） | 手动合并（追加一行） |
+| 字符串资源 `strings_module.xml`（values / values-en / values-ja 三份） | 追加折叠屏触发器文案块（模块名/描述/参数/选项/6 个输出名/摘要前缀/进度消息，中英日齐全） | 手动合并（追加条目） |
 | `ui/chat/ChatFloatWindowService.kt`、`ChatFloatPanelContent.kt`、`ChatFloatSummary.kt`、`ChatFloatWindowLauncher.kt`、`ChatFloatGeometry.kt`（均新增） | fork 独有：Chat 悬浮窗实现（P1 折叠态）。Service=窗口/拖动/吸附/展开折叠；PanelContent=折叠态 Compose UI；Summary=文案推导；Launcher=权限与启动；Geometry=锚定边计算 | 我方 |
 | `ui/main/MainComposeShell.kt` | ① Chat 顶栏 actions 新增「悬浮窗」按钮；② ChatViewModel 获取由 `viewModel()` 改为 `ChatViewModelHolder.get()`（共享给悬浮窗 Service）；③ `ChatTopBarAction` 枚举新增 `ShowFloatWindow` | **手动合并**（4 处追加/替换，若上游改同区域需逐块判断） |
 | `AndroidManifest.xml` | 追加 `ChatFloatWindowService` 声明（`foregroundServiceType="specialUse"`） | **手动合并**（追加声明） |
@@ -113,6 +121,13 @@
   - ⚠️ **已有分歧（2026-09-15）**：`versionCode 49 → 50`、`versionName "1.5.3-pr1" → "1.5.4"`（提交 `3360e63b`）。
     fork 首次自定版本号——此前 `1.5.3-pr1` 是上游 5 月定的。**合并上游时此处取上游**，
     然后按需重新决定 fork 号段。冲突面小（两行），但每次上游 bump 版本号都会撞上。
+  - ⚠️ **签名文件的特殊存放（2026-09-20 记录）**：`vFlow.jks` 与 `signing.properties` 均在 `.gitignore`
+    （第 11-12 行）中、**未纳入版本控制**，只存在于本地工作区。影响：
+    **新建 worktree 时这两个文件不会带过去**，构建会静默降级并打印 `⚠️ Release 签名文件未找到`，
+    产物改用 AGP 默认 debug 签名 → 装到已装正式版的设备上会因签名冲突失败。
+    **处理方式：从 `dev` 分支的工作区复制**（`git checkout dev -- vFlow.jks` 无效，文件未被跟踪）。
+    签名者应为 `CN=vFlow Fork, OU=Fork, O=nightking8342`。见 `AGENTS.md`「常用命令」。
+    这条**不是与上游的分歧**（两边都没跟踪这两个文件），而是本仓库的操作约定，记录于此以免再次踩坑。
 - `settings.gradle.kts` —— 模块声明（`:app` `:core`）。
 - `app/src/main/java/com/chaomixian/vflow/core/workflow/module/ModuleRegistry.kt` —— 模块注册表。**新增模块时在 `initialize()` 里按分类追加一行即可，不要重排已有注册**，否则每次上游合并都在这个文件解冲突。
 - `core/src/main` —— vFlow Core 独立进程（Master-Worker）。改动独立，应单独评估、单独 patch。

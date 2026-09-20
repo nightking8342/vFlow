@@ -24,6 +24,11 @@ This file provides guidance to coding agents when working with code in this repo
 - `docs/fork/chat-float-window-ui.html` —— Chat 悬浮窗**可交互 UI 原型**（浏览器打开）：折叠/展开/审批/输入/状态一致性五组演示，配套上文的交互对齐稿。
 - **已实现**：`ui/chat/ChatFloat{WindowService,PanelContent,Summary,WindowLauncher,Geometry}.kt` + `ChatViewModelHolder.kt`（P1 折叠态已可用）。Caveat：`ChatFloatGeometry` 及其单测目前仍在使用（Service 的锚定计算），暂勿删除。
 - `docs/fork/function-workflow.md` —— 函数工作流功能的需求文档 + 实现状态/交接（含真机测试场景）。
+- `docs/fork/fold-trigger-design.md` —— **折叠屏触发器设计 + 实现状态**（`vflow.trigger.fold`，**已实现并真机验证可用**）。核心决策：做「状态推断」而非事件监听；**以铰链角度为主力信号**（真机实测 `device_posture` 滞后 1–2 秒且半折值几乎不出现，不能作主力）；阈值经实测校准（折叠 <40° / 展开 >150° / 半折 40–150°）；输出 6 项魔法变量供下游引用。
+  - **§9 = P0 真机验证结论**（小米 MIX Fold 3）：推翻了一处外部调研的悲观结论（铰链传感器实测双向完整上报，非「只在折叠方向」），并发现两个调研未提及的新问题。
+  - **实现文件**：`FoldTriggerModule` / `FoldStateResolver`（纯函数状态机，可单测）/ `FoldTriggerHandler`。
+  - ⚠️ §8.1 记录一处**既有缺陷**：关闭后台服务通知会使 `TriggerService` 降级，**所有传感器类触发器**（本功能、姿态、敲击）都会静默失效 —— 排查「触发器不触发」时先查这个。
+  - 跨机型复测用 `scripts/fold-trigger-verify.sh`（adb 零代码）。
 
 ---
 
@@ -33,31 +38,52 @@ vFlow 是一款 Android 端可视化自动化工具。核心价值：把手机�
 
 - **技术栈**：Kotlin 2.3.20、Compose（Material 3）、Gradle。
 - **两个模块**：
-  - `:app` —— 主应用（UI 层 `com.chaomixian.vflow.ui.*` + 业务逻辑层 `com.chaomixian.vflow.core.*`），约 600 个 Kotlin 文件。
+  - `:app` —— 主应用（UI 层 `com.chaomixian.vflow.ui.*` + 业务逻辑层 `com.chaomixian.vflow.core.*`），约 624 个 Kotlin 文件。
   - `:core` —— vFlow Core 独立进程（`com.chaomixian.vflow.server.*`），通过 app_process 以子进程运行做高权限操作，Master-Worker + 本地 Socket。
-- **规模**：200+ 功能模块，63 个测试文件。
-- **版本**：`versionName = "1.5.3-pr1"`，`compileSdk 36` / `minSdk 29`。
+- **规模**：200+ 功能模块（其中**触发器 24 个**，注册在 `ModuleRegistry.kt` 的「触发器」段），76 个测试文件。
+- **版本**：`versionName = "1.5.4"`，`compileSdk 36` / `minSdk 29`。
 
 ---
 
 ## 常用命令
 
+> **⭐ 打包一律用 release。** 本项目**不使用 `assembleDebug` 作为交付产物** —— 需要装到真机或分发时，统一 `./gradlew assembleRelease`。
+> 原因：debug 构建复用 release 签名（见 `app/build.gradle.kts:41-49`），产物行为与 release 一致，但没有 R8 混淆/资源压缩，
+> 体积与运行时表现都不代表真实交付形态。**用 release 构建验证，才能暴露混淆（ProGuard）相关问题。**
+
+> **⚠️ worktree 场景：release 签名文件不在 git 里。**
+> `vFlow.jks` 与 `signing.properties` 都在 `.gitignore`（第 11-12 行）中，**未纳入版本控制**，
+> 因此新建的 worktree（`git worktree add`）里**不会有这两个文件**，构建会静默降级并打印 `⚠️ Release 签名文件未找到`。
+> **遇到这种情况，主动从 `dev` 分支的工作区取**（`dev` 是 fork 主干，长期保留这两个文件）：
+>
+> ```bash
+> # 在 worktree 里执行；把 <主仓库路径> 换成本地 dev 分支工作区的路径
+> cp <主仓库路径>/vFlow.jks .
+> cp <主仓库路径>/signing.properties .
+> ```
+>
+> 注意：`git checkout dev -- vFlow.jks` 之类的做法**不行** —— 文件未被跟踪，git 里没有这个对象。
+> 必须从文件系统复制。取到后用下面的命令确认签名者是否为 `CN=vFlow Fork, O=nightking8342`。
+
 ```bash
-# 构建（debug APK）
-./gradlew assembleDebug
+# 打包（⭐ 默认就该用这个；产物在 app/build/outputs/apk/release/）
+./gradlew assembleRelease
 
 # 运行单元测试（app 模块）
 ./gradlew test
 
-# 只跑某个测试类
-./gradlew test --tests "com.chaomixian.vflow.xxx.TestClass"
+# 只跑某个测试类（注意：聚合的 test 任务不支持 --tests，需用模块级任务）
+./gradlew :app:testDebugUnitTest --tests "com.chaomixian.vflow.xxx.TestClass"
 
-# 构建 release（需要签名，见 FORK.md 敏感点）
-./gradlew assembleRelease
+# 验证 release APK 签名（应显示 CN=vFlow Fork, O=nightking8342）
+"$ANDROID_HOME/build-tools/<版本>/apksigner" verify --print-certs \
+  app/build/outputs/apk/release/app-arm64-v8a-release.apk
 
 # core 模块单独构建 dex（app 的 preBuild 会自动依赖它）
 ./gradlew :core:buildDex
 ```
+
+> `assembleDebug` 仍然可用，但仅限「快速编译检查」这类不关心产物的场景。
 
 **Windows 环境注意**：
 - 需要 Android SDK + JDK 17 就绪（`gradle.properties` 里应有 sdk 路径或 `ANDROID_HOME`）。
@@ -144,10 +170,15 @@ App 与 Core 通过本地 Socket 通信（支持 TCP 和 Unix Domain Socket）�
 
 ## 验证门禁
 
-- **改 `app` 业务逻辑 / 新模块**：`./gradlew test`（有 63 个测试文件，涉及解析/执行/类型的改动必须跑）。
+- **改 `app` 业务逻辑 / 新模块**：`./gradlew test`（有 76 个测试文件，涉及解析/执行/类型的改动必须跑）。
+  - ⚠️ 已知既有失败：`VObjectPropertyTest > test VFile properties from absolute path` 因 `android.net.Uri.parse` 未 mock 而失败（纯 JVM 测试环境限制，与业务改动无关）。**判断"我是不是改坏了"时先排除它。**
 - **改 Core**：`./gradlew :core:buildDex` + 真机验证（Core 是独立进程，单测覆盖有限）。
-- **改前端 UI**（Compose）：构建 `./gradlew assembleDebug`，跑真机/模拟器看效果。
-- **改原生代码**（cpp）：`./gradlew assembleDebug` 会触发 externalNativeBuild，可能很慢；尽量先确认需要再改。
+- **改前端 UI**（Compose）：构建 `./gradlew assembleRelease`（**见「常用命令」——打包统一用 release**），跑真机/模拟器看效果。
+- **改原生代码**（cpp）：`./gradlew assembleRelease` 会触发 externalNativeBuild，可能很慢；尽量先确认需要再改。
+
+> **装真机前先确认签名**。若构建日志出现 `⚠️ Release 签名文件未找到`，说明产物**没有用 fork 的签名**，
+> 装到已装过正式版的设备上会因签名不一致而失败。处理方式见「常用命令」的 worktree 说明。
+
 
 ---
 

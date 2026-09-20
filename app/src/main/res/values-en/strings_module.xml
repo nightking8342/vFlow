@@ -704,6 +704,22 @@
     <string name="option_vflow_trigger_screen_unlocked">Unlocked</string>
     <string name="option_vflow_trigger_screen_off">Off</string>
 
+    <!-- vflow.trigger.fold -->
+    <string name="module_vflow_trigger_fold_name">Fold Trigger</string>
+    <string name="module_vflow_trigger_fold_desc">Trigger workflow when the device folds, unfolds, or is half-opened</string>
+    <string name="param_vflow_trigger_fold_event_name">Trigger Condition</string>
+    <string name="summary_vflow_trigger_fold_prefix">Fold</string>
+    <string name="msg_vflow_trigger_fold_triggered">Fold state triggered</string>
+    <string name="option_vflow_trigger_fold_folded">Folded</string>
+    <string name="option_vflow_trigger_fold_unfolded">Unfolded</string>
+    <string name="option_vflow_trigger_fold_half_opened">Half Opened</string>
+    <string name="output_vflow_trigger_fold_state_name">Current State</string>
+    <string name="output_vflow_trigger_fold_angle_name">Hinge Angle</string>
+    <string name="output_vflow_trigger_fold_is_folded_name">Is Folded</string>
+    <string name="output_vflow_trigger_fold_is_unfolded_name">Is Unfolded</string>
+    <string name="output_vflow_trigger_fold_is_half_opened_name">Is Half Opened</string>
+    <string name="output_vflow_trigger_fold_posture_source_name">Signal Source</string>
+
     <!-- vflow.trigger.bluetooth -->
     <string name="module_vflow_trigger_bluetooth_name">Bluetooth Trigger</string>
     <string name="module_vflow_trigger_bluetooth_desc">Trigger when Bluetooth state or device connection changes</string>

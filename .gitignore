@@ -40,3 +40,6 @@ __pycache__/
 
 # 临时提交信息文件（git commit -F 用）
 .commitmsg.tmp
+
+# 折叠屏触发器的真机验证原始数据（adb 采集，不入库）
+.fold-verify/
