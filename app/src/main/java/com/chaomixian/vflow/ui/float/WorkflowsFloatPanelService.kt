@@ -474,7 +474,9 @@ class WorkflowsFloatPanelService : Service() {
             Toast.makeText(this, getString(R.string.workflow_not_exists), Toast.LENGTH_SHORT).show()
             return
         }
-        Toast.makeText(this, getString(R.string.toast_starting_workflow, latestWorkflow.name), Toast.LENGTH_SHORT).show()
+        if (!latestWorkflow.silentExecution) {
+            Toast.makeText(this, getString(R.string.toast_starting_workflow, latestWorkflow.name), Toast.LENGTH_SHORT).show()
+        }
         WorkflowExecutor.execute(
             workflow = latestWorkflow,
             context = this,

@@ -477,7 +477,9 @@ private fun executeWorkflow(
             return
         }
     }
-    context.toast(context.getString(R.string.home_starting_execution, workflow.name))
+    if (!workflow.silentExecution) {
+        context.toast(context.getString(R.string.home_starting_execution, workflow.name))
+    }
     WorkflowExecutor.execute(
         workflow = workflow,
         context = context,

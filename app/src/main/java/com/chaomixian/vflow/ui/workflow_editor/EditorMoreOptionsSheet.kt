@@ -81,6 +81,7 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
     private lateinit var imageExpandIcon: ImageView
 
     private lateinit var switchMaxExecutionTime: com.google.android.material.materialswitch.MaterialSwitch
+    private lateinit var switchSilentExecution: com.google.android.material.materialswitch.MaterialSwitch
     private lateinit var layoutMaxExecutionTimeSlider: LinearLayout
     private lateinit var textMaxExecutionTimeValue: TextView
     private lateinit var sliderMaxExecutionTime: com.google.android.material.slider.Slider
@@ -156,6 +157,7 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
         imageExpandIcon = view.findViewById(R.id.image_expand_icon)
 
         switchMaxExecutionTime = view.findViewById(R.id.switch_max_execution_time)
+        switchSilentExecution = view.findViewById(R.id.switch_silent_execution)
         layoutMaxExecutionTimeSlider = view.findViewById(R.id.layout_max_execution_time_slider)
         textMaxExecutionTimeValue = view.findViewById(R.id.text_max_execution_time_value)
         sliderMaxExecutionTime = view.findViewById(R.id.slider_max_execution_time)
@@ -202,6 +204,7 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
             selectedIconRes = WorkflowVisuals.normalizeIconResName(wf.cardIconRes)
             selectedThemeColor = WorkflowVisuals.normalizeThemeColorHex(wf.cardThemeColor)
             selectedReentryBehavior = wf.reentryBehavior
+            switchSilentExecution.isChecked = wf.silentExecution
             iconPickerAdapter.setSelectedIcon(selectedIconRes)
             themeColorAdapter.setSelectedColor(selectedThemeColor)
             updateVisualPreview()
@@ -231,6 +234,7 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
             selectedIconRes = WorkflowVisuals.defaultIconResName()
             selectedThemeColor = WorkflowVisuals.defaultThemeColorHex()
             selectedReentryBehavior = WorkflowReentryBehavior.BLOCK_NEW
+            switchSilentExecution.isChecked = false
             iconPickerAdapter.setSelectedIcon(selectedIconRes)
             themeColorAdapter.setSelectedColor(selectedThemeColor)
             updateVisualPreview()
@@ -420,6 +424,7 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
             tags = tags,
             maxExecutionTime = maxExecutionTime,
             reentryBehavior = selectedReentryBehavior,
+            silentExecution = switchSilentExecution.isChecked,
             cardIconRes = selectedIconRes,
             cardThemeColor = selectedThemeColor
         )

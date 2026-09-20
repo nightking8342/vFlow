@@ -27,11 +27,13 @@ class ShortcutExecutorActivity : AppCompatActivity() {
 
                 if (workflow != null) {
                     // 显示提示并执行工作流
-                    Toast.makeText(
-                        applicationContext,
-                        getString(com.chaomixian.vflow.R.string.shortcut_executing, workflow.name),
-                        Toast.LENGTH_SHORT
-                    ).show()
+                    if (!workflow.silentExecution) {
+                        Toast.makeText(
+                            applicationContext,
+                            getString(com.chaomixian.vflow.R.string.shortcut_executing, workflow.name),
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
                     WorkflowExecutor.execute(
                         workflow = workflow,
                         context = applicationContext,

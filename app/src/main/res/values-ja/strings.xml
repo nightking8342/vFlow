@@ -1385,6 +1385,8 @@
     <string name="workflow_chip_missing_permissions_count">%d 権限がありません</string>
     <string name="workflow_chip_steps">%d 歩</string>
     <string name="workflow_chip_permissions_count">%d 権限</string>
+    <string name="workflow_silent_execution_enabled">サイレント実行</string>
+    <string name="workflow_silent_execution_desc">実行中は進行状況の通知と開始時のメッセージを表示しません。入力や選択を求めるプロンプトは引き続き表示され、失敗時も通知されます。</string>
     <string name="workflow_id_copied">ワークフローIDがコピーされました</string>
     <string name="key_tester_title">ボタンテスター</string>
     <string name="key_tester_subtitle">物理キーのデバイスパスとキーコードを見つける</string>

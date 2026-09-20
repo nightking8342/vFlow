@@ -528,6 +528,28 @@
 
                 </LinearLayout>
 
+                <com.google.android.material.divider.MaterialDivider
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginVertical="12dp" />
+
+                <!-- 静默执行开关 -->
+                <com.google.android.material.materialswitch.MaterialSwitch
+                    android:id="@+id/switch_silent_execution"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/workflow_silent_execution_enabled" />
+
+                <!-- 说明文案：必须写清「不静音什么」，否则用户会以为静默 = 绝对安静，
+                     然后疑惑为什么还会弹输入框 -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="@string/workflow_silent_execution_desc"
+                    android:textAppearance="?attr/textAppearanceBodySmall"
+                    android:textColor="?attr/colorOnSurfaceVariant" />
+
             </LinearLayout>
 
         </com.google.android.material.card.MaterialCardView>
