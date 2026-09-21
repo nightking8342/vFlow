@@ -17,8 +17,8 @@
 
 | 文件 / 范围 | 分歧内容 | 冲突归属 |
 |---|---|---|
-| `core/src/main/java/.../server/logcat/`（`LogcatLineParser.kt` + `LogcatMatcher.kt` + `LogcatConditionCodec.kt` + `LogcatEventQueue.kt`，均新增） | fork 独有：**logcat 触发器的 Core 侧纯函数层**（解析 / 匹配 / 条件解码 / 有界事件队列）。是 app 侧同名纯函数的移植版——Core 没有测试目录的说法已不成立（见下），两份实现各自有测试保护。⚠️ **任何语义改动必须同时改两处，且以 app 侧为准**；不一致的表现是「调试工具里看着能匹配的日志，触发器匹配不到」 | 我方 |
-| `core/src/main/java/.../server/wrappers/shell/LogcatStreamWrapper.kt`（新增） | fork 独有：logcat 触发器的 Core 侧流式实现（长驻 `logcat -T 1` + 双线程：泵线程读 stdout 解析匹配、主线程读控制帧）。走文档 §6.3 方案 A 注册进 `serviceWrappers`（不包装系统服务）。含背压保护：有界队列 + 独立写线程，丢弃计数定期上报 | 我方 |
+| `core/src/main/java/.../server/logcat/`（`LogcatLineParser.kt` + `LogcatMatcher.kt` + `LogcatConditionCodec.kt` + `LogcatEventQueue.kt`，均新增） | fork 独有：**logcat 触发器的 Core 侧纯函数层**（解析 / 匹配 / 条件解码 / 有界事件队列）。是 app 侧同名纯函数的移植版——Core 没有测试目录的说法已不成立（见下），两份实现各自有测试保护。⚠️ **任何语义改动必须同时改两处，且以 app 侧为准**；不一致的表现是「调试工具里看着能匹配的日志，触发器匹配不到」。⚠️ `LogcatEventQueue.clear()` **故意只丢积压事件、不清 `dropped`/`accepted` 计数** —— 丢弃数要留到 `drainDropped()` 上报为止（它是用户知道"丢过日志"的唯一途径），在 clear 里清零会让那次上报永远发不出去。有测试锁住这个语义；需要连计数一起清时用 `resetAll()` | 我方 |
+| `core/src/main/java/.../server/wrappers/shell/LogcatStreamWrapper.kt`（新增） | fork 独有：logcat 触发器的 Core 侧流式实现（长驻 `logcat -T 1` + 双线程：泵线程读 stdout 解析匹配、主线程读控制帧）。走文档 §6.3 方案 A 注册进 `serviceWrappers`（不包装系统服务）。含背压保护：有界队列 + 独立写线程，丢弃计数定期上报。**2026-09-21 改为「代次隔离」**：原先泵/写线程共用一个 `@Volatile running` 布尔 + `if (pumpThread?.isAlive) return` 守卫 —— 装包时 App 被强杀、socket 不发 FIN，旧泵仍活着，新订阅被守卫挡住而不启动新泵 → **触发器失灵，重启 App 或重存工作流才恢复**。现在用 `AtomicLong generation` + `@Volatile activeGen`，泵只认自己那一代的代号，新流订阅必定建新泵、旧泵下一轮自行退出。⚠️ **已知残留**：写线程阻塞在 `writer.println` 时 `interrupt()` 无效（Java `soTimeout` 只管读、无 `SO_SNDTIMEO`）、被取代连接的 `controlLoop` 无 FIN 时永久卡在 `readLine`、`conditions` 不按代隔离 —— 三者同一根因（无断流检测），根治需协议层心跳并动 `StreamingWrapper`/`BaseWorker`（上游文件，见敏感点清单） | **手动合并** |
 | `core/src/main/java/.../server/wrappers/StreamingWrapper.kt`（改） | `handleStream` 增加 `reader` 参数，把单向推送升级为**双工**。原先只有 writer，流建立后这条连接再无上行数据，`updateTriggers` 无处投递。唯一既有实现 `IClipboardWrapper` 忽略该参数 | **手动合并**（签名变更，上游若加新的 StreamingWrapper 实现需同步） |
 | `core/src/main/java/.../server/worker/BaseWorker.kt`（改） | `tryHandleStreamRequest` 透传 `reader` 给 `handleStream` | **手动合并**（1 行） |
 | `services/VFlowCoreBridge.kt`（改） | 新增 logcat 流式 API（`streamLogcatEvents` + `updateLogcatTriggers`）与 **dex 指纹机制**（`packagedDexFingerprint` / `isCoreDexNewerThanRunning` / `recordLaunchedDexFingerprint` + 顶层纯函数 `coreDexFingerprint` / `shouldPromptCoreRestart`）。流式 API 的关键是**保留 writer** 供后续控制帧使用（双工） | **手动合并**（新增方法为主） |
@@ -47,6 +47,12 @@
 | `core/logcat/`（`LogcatLine.kt` + `LogcatParser.kt` + `LogcatCommands.kt`，均新增） | fork 独有：**logcat 纯函数层**（解析 + 命令构造），供 logcat 调试工具与 logcat 触发器共用。含三处真机实测得出的硬约束：可能返回大数据的命令必须 shell 侧限流（否则撞 Binder 上限打死 UserService）、后台采集命令必须切断三个 stdio（否则 `exec` 永久挂起）、状态判定必须按 pidfile 精确匹配。**未改动任何上游文件** | 我方 |
 | `test/core/logcat/`（`LogcatParserTest.kt` + `LogcatCommandsTest.kt` + `LogcatCaptureUiTest.kt`，均新增） | fork 独有：上述纯函数的 68 个单测。重点是"改错了不报错、只静默变差"的地方：降级继承链不被日志头标记行污染、连续续行不链式继承、三个 stdio 重定向齐全、TAG 统计绕过过滤、shell 元字符转义、岛存活必须长于采集上限、计时不显示负数、无法计时时不误判超时 | 我方 |
 | `core/logcat/LogcatCaptureUi.kt`（新增） | fork 独有：logcat 采集的展示层纯函数（岛的图标/缓存 key/存活时长、正计时与时长格式化）。与 `LogcatCommands` 一起构成"改错了不报错"的那一层，全部有单测 | 我方 |
+| `core/logcat/LogcatCommands.kt`（改） | **2026-09-21 大幅扩充**（本地调试器七项修复的 command 层）。新增：`buildFilteredCount` / `parseFilteredCount`（全量统计当前条件命中数，**只回传一个数字不回传位置索引**——命中上万条时索引会撞 Binder 上限）、`capturePatternForPs`（查杀特征串，**不带 `/system/bin/` 前缀**——`ps -A -o PID,ARGS` 的 ARGS 里没有路径）、`nextPageSkipBytes` + `contentBytesOf`（翻页按实际内容量推进）、`TIMEOUT_EXIT_CODE` + `isTimeoutResult`、`MIN_READ_WINDOW_KB`、`killCapturedProcesses(rotateKb, rotateCount)`（参数化）。⚠️ 改动集中在命令构造函数，若上游改同区域需逐块判断 | **我方** |
+| `core/logcat/LogcatViewerState.kt`（改） | fork 独有文件的扩充（`buildViewerResult` / `diagnoseEmpty` / `buildCoverage` 等纯函数层）。上游无此文件 | 我方 |
+| `ui/settings/LogcatViewerActivity.kt`（改） | fork 独有文件（logcat 调试器 UI）。本批七项修复集中在此：超时链路接通、翻页游标、窗口口径统一、刷新提示、下拉菜单锚点、滚动轴重做（命中区 24→40dp、**删掉时间预览气泡**）、静默吞异常。上游无此文件 | 我方 |
+| `test/core/logcat/LogcatCommandsTest.kt`（改） | 本批新增约 40 例，重点锁**"改错了不报错、只静默变差"**的地方：查杀特征串必须是 `ps` 输出的连续子串（且**不能带绝对路径**）、级别字符类必须带方括号（逐级别验证 + 裸写反向断言）、`wc -l` 而非 `grep -c`、翻页衔接。⚠️ 多数关键测试做过**反证**（把代码改回 bug 版本确认变红）| 我方 |
+| `test/core/logcat/LogcatViewerStateTest.kt`（改） | 同上，覆盖 `buildViewerResult` 的派生逻辑 | 我方 |
+
 | `services/LogcatCaptureController.kt`（新增） | fork 独有：logcat 采集状态机 + 计时 + 超级岛联动。进程级单例（Activity 与 Receiver 都要用）。**判定一律走 pidfile 探测，内存状态只用于显示**——App 被杀后 logcat 仍在跑，靠内存标志会误判为空闲并起第二个进程。含三处实现期踩出的坑（`StateFlow` 等值去重不发射、`timeout` 自然收尾同样留 `STALE`、自动停止不可在 ticker 协程内取消自己），详见设计文档 §4.2.3 | 我方 |
 | `services/LogcatActionReceiver.kt`（新增） | fork 独有：超级岛「结束」按钮的广播接收器。**必须 Manifest 静态注册**——岛按钮可能在通知发出后很久才被点击，动态注册的接收器届时已注销，表现为"按钮渲染正常、点着没反应"（已实际踩过）。用 `goAsync()` 延长生命周期 | 我方 |
 | `AndroidManifest.xml`（改） | 追加 `LogcatActionReceiver` 声明（`exported="false"`，无 intent-filter——调用方走显式 Component 意图） | **手动合并**（追加声明） |
@@ -164,9 +170,15 @@
 - `settings.gradle.kts` —— 模块声明（`:app` `:core`）。
 - `app/src/main/java/com/chaomixian/vflow/core/workflow/module/ModuleRegistry.kt` —— 模块注册表。**新增模块时在 `initialize()` 里按分类追加一行即可，不要重排已有注册**，否则每次上游合并都在这个文件解冲突。
 - `core/src/main` —— vFlow Core 独立进程（Master-Worker）。改动独立，应单独评估、单独 patch。
+  - ⚠️ **已有分歧（2026-09-21）**：`LogcatStreamWrapper.kt` 改为**代次隔离**（`AtomicLong generation` + `@Volatile activeGen` 替代共用的 `running` 布尔）。修的是「装包后 logcat 触发器失灵」——见分歧清单。该文件是 fork 新增文件，但**改动了 Core 的流式行为**，且 `LogcatEventQueue.kt` 的 `clear()` 语义被明确（只丢事件、不清计数，新增 `resetAll()`）。
+  - ⚠️ **改 Core 需重启才生效**：Core 是独立进程，装包不会杀掉它。`vflowCoreVersion`（`core/build.gradle.kts`）**不在开发过程中改**，只在发版时改。
 - `app/src/main/java/com/chaomixian/vflow/core/execution/WorkflowExecutor.kt` —— 工作流执行器核心循环。改动风险高，须谨慎。
 - `app/src/main/java/com/chaomixian/vflow/api/` —— 远程 API。**新增 handler 时新增文件，不要改既有接口签名**。
 - `app/src/main/java/com/chaomixian/vflow/core/workflow/model/Workflow.kt` / `ActionStep.kt` —— 工作流数据模型。上游改动会波及大量解析/序列化代码。
+- `app/src/main/res/values*/strings.xml`（中/英/日） —— 字符串资源。fork 一直以**追加条目**的方式改，冲突面小但**每次上游合并都会撞**（同文件同区域）。⚠️ 追加时注意：
+  - 三语言**必须同步**（漏一个会导致该语言下显示成另一个语言的文案）
+  - 键名重复会**构建失败**（`Resource and asset merger: Found item String/x more than one time`）——追加前先 `grep` 一次，已实际踩过
+  - ⚠️ 本仓库有一批**孤儿字符串**（定义了但零引用，用户已确认"确实不要"那些提示）。它们**故意保留**，作为将来可能的引用来源，不要当成死代码清理。
 
 ---
 
