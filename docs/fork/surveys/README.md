@@ -37,6 +37,7 @@
 | [`trigger-system-overview.md`](trigger-system-overview.md) | **触发器体系（本项目现状）**：三层架构（模块声明 / Handler 事件 / Service 分发）、**两处注册**（漏一处即静默失效）、两条链路（配置链路 + 事件链路）、数据模型、三种 Handler 范式（含定时调度 / 外部进程 / 独立 Service）、triggerData 两条数据路、**三套独立的触发器身份判定**、24 个触发器全量清单（事件源 / 权限矩阵）、能力评估与排障顺序 | v1.0 · 已走查定稿 |
 | [`logcat-readability-survey.md`](logcat-readability-survey.md) | **logcat 可读性调研（单点）**：无 root 纯 Shizuku 下能否读 logcat、是否需要 `READ_LOGS`、能读到谁（系统 TAG / 第三方应用）的**真机实测结论**；含三个判定陷阱（采样窗口过小、子串匹配假阴性、标签与实际身份不符）与相邻能力的可行性对照 | v1.0 · 真机实测 |
 | [`notification-system-overview.md`](notification-system-overview.md) | **通知体系（本项目现状）**：两套反向链路（8 处生产者 / 单点监听消费者）、`ExecutionNotificationManager` 的 API 36+ 活体通知分支、渠道与权限清单、用户开关、AI 暴露面、面向小米超级岛改造的落点与风险 | v1.0 · 已走查定稿 |
+| [`script-system-overview.md`](script-system-overview.md) | **脚本体系现状与能力边界**（JS / Lua）：两引擎对照（**两侧均已注入真 Context**，JS 侧为 2026-09-21 新增）、模块树注入机制、内联 `{% %}`；**能力边界三层拆解**（语言层已全开 / 环境层已补齐 / 能力层受 UID 限制）；与 ShortX 的逐项对照（含其 context 来源的源码直读）与 **~80% 覆盖率结论**；**流体云可行性实证**（含 `service call` 绕过特权链路的 `138` 事务码方案）；威胁模型与分级策略；**已实施改动与真机验证记录**；一个已确认的 release 缺陷 | v1.1 · 走查 + 本机实测 + 真机验证 |
 
 ---
 
@@ -77,5 +78,11 @@
 
 > AI 体系（含缓存、模块可发现性）已由 `ai-system-overview.md` 覆盖，不再列为待办。
 > 通知体系已由 `notification-system-overview.md` 覆盖，不再列为待办。
+> 脚本体系（JS / Lua 能力边界）已由 `script-system-overview.md` 覆盖，不再列为待办。
+>
+> ⚠️ **`script-system-overview.md` 有一个 A/B 级别的结论须优先应用**：
+> `app/proguard-rules.pro:97` 的 Shizuku keep 规则包名写错（`dev.rikka.shizuku.**` 应为
+> `rikka.shizuku.**`），**release 构建会裁剪掉 Shizuku 类**，导致脚本里反射 Shizuku 失败
+> （真机已复现）。debug 构建不暴露此问题。
 
 > 新增梳理文档后，请回到本 README 的「现有文档」表补一行。
