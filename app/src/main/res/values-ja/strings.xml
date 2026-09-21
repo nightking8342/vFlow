@@ -173,7 +173,7 @@
     <string name="logcat_capture_finished_content">収集が完了しました</string>
     <string name="logcat_state_completed">収集完了（データソースは固定）</string>
     <string name="logcat_empty_completed">このログに条件に一致する内容はありません。条件を緩めるか、再収集してください。</string>
-    <string name="logcat_status_completed">収集ファイル %1$d 行 · 継続 %2$d 行 · %3$s</string>
+    <string name="logcat_status_completed">今回の読取 %1$d 行 · 継続 %2$d 行 · %3$s</string>
     <string name="logcat_action_rescan">再フィルタ</string>
     <string name="logcat_action_release">破棄</string>
     <string name="logcat_find_hint">検索（ハイライト、行は減らさない）</string>
@@ -182,7 +182,7 @@
     <string name="logcat_action_delete_files">収集ファイルを削除</string>
     <string name="logcat_completed_hint">このログは固定されています。フィルタを変えても内容は変わりません。</string>
     <string name="logcat_coverage_range">実際の範囲 %1$s</string>
-    <string name="logcat_coverage_truncated">行数上限に達しました。以降にも内容があります。「行数」を増やすか条件を絞ってください。</string>
+    <string name="logcat_coverage_truncated">このページは「行数」の上限に達しました。以前のログは「ページ」で遡れます。</string>
     <string name="logcat_action_refresh">検索</string>
     <string name="logcat_filter_message_label">メッセージ</string>
     <string name="logcat_filter_message_hint">メッセージ内容で絞り込み</string>
@@ -217,7 +217,7 @@
     <string name="logcat_refreshing">読み取り中…</string>
     <string name="logcat_tag_stats_title">TAG 統計（全 %1$d 行）</string>
     <string name="logcat_tag_stats_hint">現在の TAG フィルタを無視します（レベルフィルタは有効）。項目をタップするとフィルタ欄に入ります。</string>
-    <string name="logcat_tag_stats_empty">TAG が見つかりません</string>
+    <string name="logcat_tag_stats_empty">TAG が見つかりません。収集ファイルが空か、「レベル」フィルタで全て除外された可能性があります。</string>
     <string name="logcat_close">閉じる</string>
 
     <string name="logcat_empty_rotated">ログを読み取れませんでした。logcat バッファがローテーションした可能性があります。「収集」を開始してから再現してください。</string>
@@ -229,7 +229,7 @@
     <string name="logcat_empty_no_filter_hint">一致するログはありません。</string>
 
     <string name="logcat_status_idle">バッファ %1$d 行 · 継続 %2$d 行 · %3$d ms</string>
-    <string name="logcat_status_capturing">ファイル %1$d 行 · 継続 %2$d 行 · %3$s · %4$d ms</string>
+    <string name="logcat_status_capturing">今回の読取 %1$d 行 · 継続 %2$d 行 · %3$s · %4$d ms</string>
     <string name="logcat_status_stale">前回の収集ファイル %1$d 行 · 継続 %2$d 行</string>
     <string name="logcat_status_no_time_range">時間範囲なし</string>
     <string name="logcat_degraded_hint">%1$d 行に TAG プレフィックスがありません（多くは複数行ログの継続行）。message 一致で取りこぼす可能性があります。</string>
@@ -1387,6 +1387,7 @@
     <string name="workflow_chip_function">関数</string>
     <string name="workflow_silent_execution_enabled">サイレント実行</string>
     <string name="workflow_silent_execution_desc">実行中は進行状況の通知と開始時のメッセージを表示しません。入力や選択を求めるプロンプトは引き続き表示され、失敗時も通知されます。</string>
+    <string name="workflow_chip_permissions_count">%d 権限</string>
     <string name="workflow_id_copied">ワークフローIDがコピーされました</string>
     <string name="key_tester_title">ボタンテスター</string>
     <string name="key_tester_subtitle">物理キーのデバイスパスとキーコードを見つける</string>
@@ -1477,4 +1478,25 @@
     <string name="global_variable_config_invalid_value">変数値が不正です</string>
     <string name="global_variable_config_delete_confirm_title">グローバル変数を削除する</string>
     <string name="global_variable_config_delete_confirm_message">グローバル変数「%1$s」を削除してもよろしいですか?</string>
+
+    <!-- logcat 查看器：往前翻页 -->
+
+
+    <!-- logcat 查看器：采集总量 / 读取量 / 页码 -->
+    <string name="logcat_status_capture">収集 %1$d 行 · %2$s</string>
+    <string name="logcat_status_capture_unknown">収集合計を集計中…</string>
+    <string name="logcat_status_stats_loading">合計を集計中…</string>
+    <string name="logcat_status_read">今回の読取 %1$d 行%2$s · %3$s</string>
+    <string name="logcat_status_degraded_part"> · 継続 %1$d 行</string>
+    <string name="logcat_page_label">ページ</string>
+    <string name="logcat_page_newest">%1$d ページ（最新）</string>
+    <string name="logcat_page_approx">%1$d ページ付近に移動しました（ページ位置は概算のため、数十行ずれる場合があります）。正確に辿るには隣接ページを使ってください。</string>
+    <string name="logcat_read_failed">ログの読み取りに失敗しました。一覧は前回の内容のままです。Shell 権限を確認して再試行してください。</string>
+    <string name="logcat_status_matches">この条件で %1$d 行が一致（全体）</string>
+    <string name="logcat_status_no_matches">現在の条件に一致するログはありません。条件を緩めてください</string>
+    <string name="logcat_status_counting">一致件数を集計中…</string>
+    <string name="logcat_page_empty">このページには内容がありません。ファイル先頭の可能性があります</string>
+    <string name="logcat_tag_stats_failed">TAG 統計に失敗しました。収集済み（収集ファイルが存在）であることと、Shell 権限を確認してください。</string>
+
+
 </resources>

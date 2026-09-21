@@ -82,12 +82,29 @@ class LogcatViewerStateTest {
     }
 
     @Test
-    fun `stop is blocked by an in-flight refresh`() {
-        // ⚠️ 所有 shell 操作都必须串行（§4.1.1：Shizuku 的 exec 同步阻塞，
-        // 并发发起会互相干扰）。停止虽然只是一条 kill，也占同一条通道。
-        // 若哪天想让停止插队，必须先想清楚它与在飞的刷新如何互斥。
+    fun `stop stays enabled while a refresh is in flight`() {
+        // ⚠️ 回归：这里曾经是反的（断言"刷新中就不能停"），而那个设计导致了
+        // 用户报的「点开始后停止按钮一直是灰的」。
+        //
+        // 链路是：点「开始」→ 进入采集态 → 界面**自动检索一次**（为了让用户
+        // 立刻看到日志）→ refreshing = true → 停止被自己锁死，只能退出重进。
+        //
+        // 取舍已记录在 LogcatViewerActions.canStop 的注释里：
+        // 「必须能停下」优先于「shell 通道串行」。停止只是一条 kill。
         val actions = buildViewerActions(CaptureState.Capturing(1), shellReady = true, refreshing = true)
-        assertFalse(actions.canStop)
+        assertTrue(
+            "刷新进行中时停止按钮必须仍可用 —— 否则进入采集态后立刻就停不下来了",
+            actions.canStop,
+        )
+    }
+
+    @Test
+    fun `stop is enabled the moment capturing begins`() {
+        // 上一条的"起点"版本：刚进入采集态（此时自动检索正在飞）就要能停。
+        // 这正是用户实际遇到的那一帧。
+        val justStarted = buildViewerActions(CaptureState.Capturing(1), shellReady = true, refreshing = true)
+        assertTrue(justStarted.capturing)
+        assertTrue(justStarted.canStop)
     }
 
     @Test
@@ -415,5 +432,210 @@ class LogcatViewerStateTest {
         // 用户想找的往往是"这一行在不在"而不是"这条消息的正文是什么"
         val lines = listOf(line("A", continuation = true).copy(raw = "   at Foo.bar(Foo.kt:42)"))
         assertEquals(1, runLogcatSearch(lines, LogcatSearch(query = "Foo.kt")).matchCount)
+    }
+
+    // ── 上方带的折叠 ─────────────────────────────────────────────
+
+    @Test
+    fun `band height shrinks exactly as much as the content moves up`() {
+        // ★★ 这条锁的是一个**已经出现过两次**的反馈环：
+        //
+        // 若"内容总高"这个基准是从**已折叠的布局节点**上量出来的，
+        // 它会随折叠一起变小：
+        //     contentHeightPx ← contentHeight − collapsed
+        //     bandHeight      = contentHeightPx − collapsed
+        //                     = contentHeight − 2×collapsed   ← 缩得比上移快
+        //
+        // 外观症状：内容上移了 collapsed，容器却缩了 2×collapsed，
+        // **底部空出 collapsed 那么大一块空白**（用户报的
+        // 「最终不是 A 行固定，而是空白」）。
+        //
+        // 修法是从不受限的测量结果里取 placeable.height ——
+        // 这里锁住"基准恒为自然高度"这个不变量：无论折叠到哪一步，
+        // 可见高度都必须恰好等于 自然高度 − 折叠量
+        val natural = 600
+        listOf(0f, 120f, 300f, 480f).forEach { collapsed ->
+            val band = UpperCollapse(
+                contentHeightPx = natural,          // ← 恒为自然高度，不随折叠变
+                maxCollapsePx = maxUpperCollapse(natural, 120),
+                collapsedPx = collapsed,
+            )
+            assertEquals(
+                "折叠 $collapsed 时可见高度应为 $natural - $collapsed",
+                (natural - collapsed).toInt(),
+                band.visibleHeightPx,
+            )
+        }
+    }
+
+    @Test
+    fun `a drifting content height would leave a gap`() {
+        // 上一条的反面：把"基准随折叠变小"的错法算一遍，
+        // 确认它**确实**会算出比正确值更小的可见高度 ——
+        // 也就是会留缝。这样这条测试才有意义（不是同义反复）
+        val natural = 600
+        val collapsed = 300f
+        val correct = (natural - collapsed).toInt()
+
+        var driftingBaseline = natural
+        repeat(1) { driftingBaseline -= collapsed.toInt() }   // 被夹过一次
+        val buggy = (driftingBaseline - collapsed).toInt()
+
+        assertTrue("错法应当算出更小的高度（即底部留缝）", buggy < correct)
+        assertEquals("错法的缝正好等于折叠量", collapsed.toInt(), correct - buggy)
+    }
+
+    @Test
+    fun `max collapse stops exactly one action row short of the content`() {
+        // ★ 核心定义：收尽 == A 行正好贴住标题栏。
+        // 上界若写成"内容总高"，收尽时屏幕上就只剩日志区了 ——
+        // 没有任何操作入口，用户没法再展开
+        assertEquals(480f, maxUpperCollapse(contentHeightPx = 600, actionRowHeightPx = 120), 0.01f)
+    }
+
+    @Test
+    fun `nothing can collapse before the action row is measured`() {
+        // ⚠️ A 行还没测量出来时上界为 0 —— 此时必须**不许折叠**。
+        // 若退回"按内容总高收"，首帧就会把 A 行一起收走
+        assertEquals(0f, maxUpperCollapse(600, 0), 0.01f)
+        assertEquals(0f, maxUpperCollapse(0, 120), 0.01f)
+    }
+
+    @Test
+    fun `dragging up collapses the band`() {
+        // Compose 的 drag 位移向下为正。手指上滑（deltaY < 0）表示"收起"
+        assertEquals(120f, advanceUpperCollapse(0f, -120f, maxCollapsePx = 480f), 0.01f)
+    }
+
+    @Test
+    fun `dragging down expands it back`() {
+        assertEquals(200f, advanceUpperCollapse(300f, 100f, maxCollapsePx = 480f), 0.01f)
+    }
+
+    @Test
+    fun `collapse is clamped at both ends`() {
+        // 不夹上界：折叠量超过上界 → A 行也被收走
+        // 不夹下界：内容下方出现空白
+        assertEquals(480f, advanceUpperCollapse(470f, -500f, maxCollapsePx = 480f), 0.01f)
+        assertEquals(0f, advanceUpperCollapse(10f, 500f, maxCollapsePx = 480f), 0.01f)
+    }
+
+    @Test
+    fun `a zero upper bound does not produce a negative collapse`() {
+        assertEquals(0f, advanceUpperCollapse(0f, -100f, maxCollapsePx = 0f), 0.01f)
+    }
+
+    @Test
+    fun `progress runs from zero to one`() {
+        val full = UpperCollapse(600, 480f, 0f)
+        assertEquals(0f, full.progress, 0.001f)
+        assertFalse(full.isFullyCollapsed)
+
+        val half = UpperCollapse(600, 480f, 240f)
+        assertEquals(0.5f, half.progress, 0.001f)
+
+        val done = UpperCollapse(600, 480f, 480f)
+        assertEquals(1f, done.progress, 0.001f)
+        assertTrue(done.isFullyCollapsed)
+        assertFalse(UpperCollapse(600, 480f, 479f).isFullyCollapsed)
+    }
+
+    @Test
+    fun `visible height equals content minus collapse`() {
+        assertEquals(600, UpperCollapse(600, 480f, 0f).visibleHeightPx)
+        assertEquals(250, UpperCollapse(600, 480f, 350f).visibleHeightPx)
+    }
+
+    @Test
+    fun `collapsed state leaves exactly the action row visible`() {
+        // ★ 收尽时的可见高度必须**正好等于 A 行高** —— 这是"一体滚动"的验收条件。
+        // 若这里对不上，说明折叠上界与 A 行高度没对齐
+        val content = 600
+        val actionRow = 120
+        val max = maxUpperCollapse(content, actionRow)
+        val done = UpperCollapse(content, max, max)
+        assertEquals(actionRow, done.visibleHeightPx)
+    }
+
+    @Test
+    fun `visible height does not drift when computed repeatedly`() {
+        // ⚠️ 关键不变量。若实现改成"从可见高度反推折叠量"，
+        // 每帧都会丢一点 —— 手指还按着就把上方区悄悄收光了
+        var collapsed = 0f
+        repeat(10) { collapsed = advanceUpperCollapse(collapsed, -10f, maxCollapsePx = 480f) }
+        assertEquals("10 次 -10 应当正好等于 100", 100f, collapsed, 0.01f)
+    }
+
+    @Test
+    fun `pulling down at the top of the log expands the band`() {
+        val (next, used) = consumePullToExpand(300f, availableY = 80f, maxCollapsePx = 480f)
+        assertEquals(220f, next, 0.01f)
+        assertEquals("必须回报消费量", 80f, used, 0.01f)
+    }
+
+    @Test
+    fun `pulling down only consumes as much as it can`() {
+        // 只剩 30px 可展开但手指拉了 200px —— 只能消费 30。
+        // 虚报消费量会让外层以为没事可做，日志就不会滚
+        val (next, used) = consumePullToExpand(30f, availableY = 200f, maxCollapsePx = 480f)
+        assertEquals(0f, next, 0.01f)
+        assertEquals("不能虚报消费量", 30f, used, 0.01f)
+    }
+
+    @Test
+    fun `upward scroll at the top is not consumed here`() {
+        // availableY < 0 是"上推"，那是滚动日志的事。
+        // 这里也消费的话，日志到顶后就翻不了新内容了
+        val (next, used) = consumePullToExpand(300f, availableY = -50f, maxCollapsePx = 480f)
+        assertEquals(300f, next, 0.01f)
+        assertEquals(0f, used, 0.01f)
+    }
+
+    @Test
+    fun `nothing is consumed when already fully expanded`() {
+        val (next, used) = consumePullToExpand(0f, availableY = 100f, maxCollapsePx = 480f)
+        assertEquals(0f, next, 0.01f)
+        assertEquals("已全展开时不应拦截位移", 0f, used, 0.01f)
+    }
+
+    @Test
+    fun `the band can rest anywhere in between`() {
+        // ★★ 这条锁的是用户明确提出的诉求：
+        // 「目前日志内容上方的滚动不能停留在中间，要么全部展开，要么滚动到顶部。
+        //   能不能实现随便停在中间？」
+        //
+        // 之前这里是"过半收尽、否则弹回"的两段吸附，会把中间位置全部吞掉。
+        // 两段吸附对**按钮式**折叠合适（点击=意图明确），对**拖拽**不合适 ——
+        // 拖动本身就在连续表达位置，用户停在哪就是想停在哪。
+        listOf(50f, 200f, 240f, 400f, 479f).forEach { pos ->
+            assertEquals(
+                "折叠 $pos 应原样保留，不该被吸附到 0 或 480",
+                pos,
+                snapUpperCollapse(pos, maxCollapsePx = 480f),
+                0.01f,
+            )
+        }
+    }
+
+    @Test
+    fun `snap only rejects a barely-moved touch`() {
+        // 保留的唯一吸附：几乎没动 —— 那多半是点击时的手抖，
+        // 而不是"想把上方区挪开 1 像素"
+        assertEquals(0f, snapUpperCollapse(0f, maxCollapsePx = 480f), 0.01f)
+        assertEquals(0f, snapUpperCollapse(3f, maxCollapsePx = 480f), 0.01f)
+        // 超过阈值就保留
+        assertEquals(20f, snapUpperCollapse(20f, maxCollapsePx = 480f), 0.01f)
+    }
+
+    @Test
+    fun `snap clamps out-of-range values`() {
+        // 拖出边界（快速拖动常见）要夹住，不能让折叠量越界
+        assertEquals(0f, snapUpperCollapse(-100f, maxCollapsePx = 480f), 0.01f)
+        assertEquals(480f, snapUpperCollapse(9999f, maxCollapsePx = 480f), 0.01f)
+    }
+
+    @Test
+    fun `snap is safe when the band cannot collapse`() {
+        assertEquals(0f, snapUpperCollapse(0f, maxCollapsePx = 0f), 0.01f)
     }
 }

@@ -63,13 +63,20 @@ data class LogcatViewerActions(
     val canStart: Boolean get() = shellReady && !refreshing && !capturing
 
     /**
-     * 「停止」：需要 Shell，且不能在刷新中。
+     * 「停止」：需要 Shell，且当前在采集。
      *
-     * ⚠️ 即使已经在采集，也**不能**绕过 [refreshing]——
-     * 所有 shell 操作共用同一条阻塞通道（§4.1.1），并发发起会互相干扰。
-     * 停止虽然只是一条 `kill`，也得排队。
+     * ⚠️ **刻意不依赖 [refreshing]**（这里改过一次，用户报的 bug）。
+     *
+     * 原先写的是 `shellReady && !refreshing && capturing`，理由是不与其它 shell
+     * 命令并发（§4.1.1 那条同步阻塞通道）。但进入采集态时界面会**自动检索一次**
+     * （为了让用户立刻看到已有日志进来），于是 `refreshing` 在「开始」之后
+     * 立刻为真 —— **停止按钮从一开始就是灰的**，用户只能退出重进才恢复。
+     *
+     * 取舍：「必须能停下」的优先级高于「通道串行」。停止只是一条 `kill`，
+     * 即使与读命令并发也不会破坏状态；而停不下来会让用户以为整个页面卡死。
+     * 其余按钮仍按 [refreshing] 串行，它们没这个紧迫性。
      */
-    val canStop: Boolean get() = shellReady && !refreshing && capturing
+    val canStop: Boolean get() = shellReady && capturing
 
     /** 「清理」：仅 `STALE` 态可用（§10 决策 2：不自动清理）。 */
     val canClear: Boolean get() = shellReady && !refreshing && stale
@@ -228,6 +235,186 @@ fun buildCoverage(
         lastTimestamp = stamped.lastOrNull()?.timestamp,
         truncatedByLimit = truncated,
     )
+}
+
+// ── 上方信息区的折叠 ────────────────────────────────────────────
+
+/**
+ * 上方信息区（Shell 状态 / 采集 / 过滤 / 查找栏 / A 行）的折叠量。
+ *
+ * ## 交互模型
+ *
+ * A 行（条数 / 检索 / 清空 / 删除 / 换行 / 搜索）**是这一带的一部分**，
+ * 它跟着上方内容一起上移 —— 而不是固定不动、由上方内容去"挤压"它。
+ * 这一点是用户明确纠正过的：早先的实现把 A 行钉死在外层，于是
+ * 上方内容被压扁时紧挨 A 行的那一条先消失，且 A 行收尽后摸不到滚动手势。
+ *
+ * 上界不是"内容总高"，而是 **内容总高 − A行高** ——
+ * 收尽时正好只剩 A 行贴住标题栏，这正是要达成的终态。
+ *
+ * ## 为什么基准值必须独立于当前折叠量
+ *
+ * 可见高度 = 内容高度 − 折叠量。若每帧从"当前可见高度"反推内容高度，
+ * 会把**被裁掉的部分当成不存在** —— 于是每帧都丢一点，手指还按着
+ * 就已经悄悄收光了。
+ *
+ * @param contentHeightPx 上方带的**完整**内容高度（不受折叠影响）
+ * @param maxCollapsePx 折叠上界 = 内容总高 − A行高
+ * @param collapsedPx 已收起的像素数，`0` = 完全展开
+ */
+data class UpperCollapse(
+    val contentHeightPx: Int,
+    val maxCollapsePx: Float,
+    val collapsedPx: Float,
+) {
+    /** 上方区当前应有的可见高度。 */
+    val visibleHeightPx: Int
+        get() = (contentHeightPx - collapsedPx).coerceAtLeast(0f).toInt()
+
+    /** 收起进度，`0f`（全展开）～`1f`（只剩 A 行）。 */
+    val progress: Float
+        get() = if (maxCollapsePx <= 0f) 1f else (collapsedPx / maxCollapsePx).coerceIn(0f, 1f)
+
+    /** 是否已完全收起（A 行上方再无内容）。 */
+    val isFullyCollapsed: Boolean
+        get() = maxCollapsePx <= 0f || collapsedPx >= maxCollapsePx
+}
+
+/**
+ * 折叠上界：内容总高减去 A 行高。
+ *
+ * 收尽时可见高度恰好等于 A 行高，也就是"A 行贴住标题栏"。
+ * A 行还没测量出来时返回 0 —— 此时**不许折叠**，否则会把 A 行一起收走。
+ */
+fun maxUpperCollapse(contentHeightPx: Int, actionRowHeightPx: Int): Float {
+    if (contentHeightPx <= 0 || actionRowHeightPx <= 0) return 0f
+    return (contentHeightPx - actionRowHeightPx).coerceAtLeast(0).toFloat()
+}
+
+/**
+ * 应用一次「在上方带上拖动」。
+ *
+ * ⚠️ `dragDeltaY` 的方向约定：Compose 的 `detectVerticalDragGestures`
+ * 给的是**手指位移**，向下为正。手指下滑 = 把上方区拉回来（折叠量减少）。
+ */
+fun advanceUpperCollapse(
+    collapsedPx: Float,
+    dragDeltaY: Float,
+    maxCollapsePx: Float,
+): Float {
+    if (maxCollapsePx <= 0f) return 0f
+    val next = collapsedPx - dragDeltaY
+    // ⚠️ 两端都要夹住：不夹上界会把 A 行也收走（屏幕只剩日志区），
+    // 不夹下界会让内容下方出现空白
+    return next.coerceIn(0f, maxCollapsePx)
+}
+
+/**
+ * 应用一次「日志区到顶后继续下拉」。
+ *
+ * 返回 新的折叠量 与 **本次被消费掉的位移**。
+ *
+ * ⚠️ 必须回报消费量：不回报的话，嵌套滚动会认为这段位移没人要，
+ * 于是继续向上抛给更外层 —— 表现是"日志到顶后继续下拉，整页跟着弹动"。
+ *
+ * @return `first` = 新折叠量；`second` = 本次消费的位移（≥0）
+ */
+fun consumePullToExpand(
+    collapsedPx: Float,
+    availableY: Float,
+    maxCollapsePx: Float,
+): Pair<Float, Float> {
+    // availableY ≤ 0 表示手指在上推（或没有剩余位移）——那是"滚动日志"，不归这里管
+    if (availableY <= 0f || collapsedPx <= 0f || maxCollapsePx <= 0f) {
+        return collapsedPx to 0f
+    }
+    val next = (collapsedPx - availableY).coerceAtLeast(0f)
+    return next to (collapsedPx - next).coerceAtMost(availableY)
+}
+
+/**
+ * 松手后的吸附。
+ *
+ * ⚠️ 这里**曾经是"过半收尽、否则弹回"的两段吸附**，用户明确反馈不要：
+ * 「目前日志内容上方的滚动不能停留在中间，要么全部展开，要么滚动到顶部。
+ * 能不能实现随便停在中间？」
+ *
+ * 两段吸附对**按钮式**折叠合适（点击=意图明确），但对**拖拽**不合适：
+ * 拖动本身就是在连续地表达位置，用户停在哪就是想停在哪。
+ * 强制吸附会让"我只想让它让出半屏"这个很自然的需求无法实现。
+ *
+ * 现在只保留一条**防误触**规则：几乎没动（< 2%）时弹回 ±0，
+ * 因为那多半是点击时的手抖，而不是想把上方区挪开 1 像素。
+ *
+ * @return 夹在 `[0, maxCollapsePx]` 内的最终折叠量
+ */
+fun snapUpperCollapse(collapsedPx: Float, maxCollapsePx: Float): Float {
+    if (maxCollapsePx <= 0f) return 0f
+    val clamped = collapsedPx.coerceIn(0f, maxCollapsePx)
+    // 只在"几乎没动"时弹回，其余位置**原样保留**（随便停在中间）
+    return if (clamped < maxCollapsePx * 0.02f) 0f else clamped
+}
+
+// ── 滚动轴拖动预览 ───────────────────────────────────────────────
+
+/**
+ * 拖动滚动轴时，把手指的 y 位置换算成列表下标。
+ *
+ * ## 为什么不用系统 Scrollbar
+ *
+ * Compose 没有内置"可拖动 + 带预览"的滚动条。用户要的是**预览时间**：
+ * 「当我按着滚动轴拖动时，可以预览当前位置的时间」——
+ * 这需要在拖动过程中实时读出目标行的 `timestamp` 并显示出来，
+ * 所以必须自己画。
+ *
+ * @param dragY 手指相对轨道顶部的像素位置
+ * @param trackHeightPx 轨道总高
+ * @param itemCount 列表项数
+ * @return 目标下标，已夹到 `[0, itemCount-1]`
+ */
+fun scrollIndexForDrag(dragY: Float, trackHeightPx: Float, itemCount: Int): Int {
+    if (itemCount <= 0) return 0
+    if (itemCount == 1 || trackHeightPx <= 0f) return 0
+    val ratio = (dragY / trackHeightPx).coerceIn(0f, 1f)
+    return (ratio * (itemCount - 1)).toInt().coerceIn(0, itemCount - 1)
+}
+
+/**
+ * 列表下标 → 滑块在轨道上的 y 位置（未拖动时用来画滑块）。
+ *
+ * ⚠️ 分子分母都按 `itemCount - 1` 算（而不是 `itemCount`）：
+ * 这样首项落在 0、末项落在 `trackHeight - thumbHeight`，
+ * 两端都被**用完**。用 `itemCount` 的话滑块永远到不了底部，
+ * 看起来像"还有没滚完的内容"。
+ *
+ * @param thumbHeightPx 滑块自身高度（它占掉的那段行程要扣掉）
+ */
+fun thumbYForScrollIndex(
+    index: Int,
+    trackHeightPx: Float,
+    itemCount: Int,
+    thumbHeightPx: Float,
+): Float {
+    if (itemCount <= 1 || trackHeightPx <= 0f) return 0f
+    val travel = (trackHeightPx - thumbHeightPx).coerceAtLeast(1f)
+    val ratio = (index.toFloat() / (itemCount - 1)).coerceIn(0f, 1f)
+    return ratio * travel
+}
+
+/**
+ * 滑块高度（按时长比例）。
+ *
+ * 列表很长时滑块会很小，所以要给一个下限 —— 太小的滑块按不住。
+ */
+fun thumbHeightForTrack(
+    trackHeightPx: Float,
+    visibleCount: Int,
+    itemCount: Int,
+    minThumbPx: Float,
+): Float {
+    if (trackHeightPx <= 0f || itemCount <= 0) return 0f
+    val ratio = (visibleCount.toFloat() / itemCount).coerceIn(0f, 1f)
+    return (trackHeightPx * ratio).coerceIn(minThumbPx.coerceAtMost(trackHeightPx), trackHeightPx)
 }
 
 // ── 查找（与筛选不同）────────────────────────────────────────────
