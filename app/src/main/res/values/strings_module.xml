@@ -3389,4 +3389,42 @@
     <string name="error_vflow_external_module_failed">外部扩展返回失败。</string>
     <string name="error_vflow_external_module_exception_title">扩展执行异常</string>
     <string name="error_vflow_external_module_unknown">发生了未知错误</string>
+    <!-- 免打扰模式触发器（fork 新增） -->
+    <!-- logcat 触发器 -->
+    <string name="module_vflow_trigger_logcat_name">logcat 触发</string>
+    <string name="module_vflow_trigger_logcat_desc">当设备日志中出现符合条件的内容时触发工作流</string>
+    <string name="param_vflow_trigger_logcat_tag_filter_type_name">TAG 条件</string>
+    <string name="param_vflow_trigger_logcat_tag_filter_value_name">TAG 值</string>
+    <string name="param_vflow_trigger_logcat_message_filter_type_name">消息条件</string>
+    <string name="param_vflow_trigger_logcat_message_filter_value_name">消息值</string>
+    <string name="param_vflow_trigger_logcat_min_level_name">最低级别</string>
+    <string name="param_vflow_trigger_logcat_cooldown_name">冷却时间（毫秒）</string>
+    <string name="param_vflow_trigger_logcat_exclude_self_name">排除本应用日志</string>
+    <string name="option_vflow_trigger_logcat_any">任意</string>
+    <string name="option_vflow_trigger_logcat_equals">等于</string>
+    <string name="option_vflow_trigger_logcat_contains">包含</string>
+    <string name="option_vflow_trigger_logcat_regex">正则</string>
+    <string name="option_vflow_trigger_logcat_level_v">V 详细</string>
+    <string name="option_vflow_trigger_logcat_level_d">D 调试</string>
+    <string name="option_vflow_trigger_logcat_level_i">I 信息</string>
+    <string name="option_vflow_trigger_logcat_level_w">W 警告</string>
+    <string name="option_vflow_trigger_logcat_level_e">E 错误</string>
+    <string name="option_vflow_trigger_logcat_level_f">F 致命</string>
+    <string name="option_vflow_trigger_logcat_exclude_self_on">排除</string>
+    <string name="option_vflow_trigger_logcat_exclude_self_off">不排除</string>
+    <string name="output_vflow_trigger_logcat_message_name">消息正文</string>
+    <string name="output_vflow_trigger_logcat_tag_name">TAG</string>
+    <string name="output_vflow_trigger_logcat_level_name">级别</string>
+    <string name="output_vflow_trigger_logcat_pid_name">进程号</string>
+    <string name="output_vflow_trigger_logcat_raw_name">完整原始行</string>
+    <string name="summary_vflow_trigger_logcat_prefix">当日志</string>
+    <string name="module_vflow_trigger_do_not_disturb_name">免打扰触发</string>
+    <string name="module_vflow_trigger_do_not_disturb_desc">当系统免打扰模式开启或关闭时触发工作流</string>
+    <string name="param_vflow_trigger_do_not_disturb_state_name">触发条件</string>
+    <string name="summary_vflow_trigger_do_not_disturb_prefix">免打扰</string>
+    <string name="option_vflow_trigger_do_not_disturb_on">开启时</string>
+    <string name="option_vflow_trigger_do_not_disturb_off">关闭时</string>
+    <string name="option_vflow_trigger_do_not_disturb_any">任意变化</string>
+    <string name="output_vflow_trigger_do_not_disturb_enabled_name">免打扰已开启</string>
+    <string name="output_vflow_trigger_do_not_disturb_previous_enabled_name">变化前是否开启</string>
 </resources>

@@ -12,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.Closeable
@@ -33,6 +34,41 @@ object VFlowCoreBridge {
     private const val TAG = "VFlowCoreBridge"
     private const val PREFS_NAME = "vFlowPrefs"
     private const val PREF_UNIX_SOCKET_ENABLED = "core_unix_socket_enabled"
+
+    /**
+     * 记录「上次**启动 Core 时**，包里的 dex 指纹是什么」。
+     *
+     * ## 它解决什么问题
+     *
+     * `MainActivity.checkCoreAutoStart()` 只判断"Core 活没活"，
+     * 不判断"跑的是不是新代码"。所以改了 `core/src` 之后：
+     *
+     * | 场景 | 结果 |
+     * |---|---|
+     * | 装新 apk，Core 进程还活着 | ❌ 继续跑**旧代码**，新功能完全无效且无任何提示 |
+     * | Core 被杀 / 手机重启 | ✅ 启动时自然加载新 dex |
+     *
+     * 这个坑实际踩过两次（logcat 触发器的 Core 侧实现、路由表注册），
+     * 两次都是"代码明明写了却不生效"，排查成本很高。
+     *
+     * ## 为什么不靠版本号
+     *
+     * `vflowCoreVersion` 是手写常量，只在**功能稳定、要发版**时才该动它；
+     * 而"改了 core 就该重启"是开发期的高频需求，两者节奏不同。
+     * 用它当依据的话，要么频繁改版本号，要么就一直忘了改（实际就是这样）。
+     *
+     * ## 为什么用 dex 指纹而不是时间戳
+     *
+     * 指纹只在 **core 源码真的变了** 时才变。用构建时间戳的话，
+     * 改一行 app 代码也会触发"core 有更新"的误报。
+     *
+     * ✅ 已验证 `:core:buildDex` 是**确定性**的：同样源码产出字节相同的 dex，
+     * 所以不会因为重复构建而产生假变化。
+     */
+    private const val PREF_LAST_LAUNCHED_DEX_FINGERPRINT = "core_last_launched_dex_fingerprint"
+
+    /** core dex 在 assets 里的名字。 */
+    private const val CORE_DEX_ASSET = "vFlowCore.dex"
     private const val HOST = "127.0.0.1"
     private const val PORT = 19999
     private const val CORE_VERSION_ASSET = "vFlowCore.version"
@@ -165,6 +201,53 @@ object VFlowCoreBridge {
         } else {
             null
         }
+
+    /**
+     * 当前 **apk 里**的 core dex 指纹。
+     *
+     * @return 16 位十六进制摘要；读取失败返回 null
+     */
+    fun packagedDexFingerprint(): String? {
+        val appContext = resolveAppContext() ?: return null
+        return runCatching {
+            appContext.assets.open(CORE_DEX_ASSET).use { coreDexFingerprint(it) }
+        }.onFailure {
+            DebugLogger.d(TAG, "读取 core dex 指纹失败: ${it.message}")
+        }.getOrNull()
+    }
+
+    /**
+     * **包里的 core dex 是否比"上次启动时用的"更新**。
+     *
+     * 这是"改了 core 需要重启"的判据，**与版本号无关** ——
+     * 只有 core 源码真的变了才为 true，改 app 代码不会误报。
+     *
+     * 首次安装（没有记录）返回 false：那时 Core 本来就会被启动，
+     * 不需要额外提示。
+     */
+    fun isCoreDexNewerThanRunning(): Boolean {
+        val appContext = resolveAppContext() ?: return false
+        val lastLaunched = appContext
+            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(PREF_LAST_LAUNCHED_DEX_FINGERPRINT, null)
+
+        return shouldPromptCoreRestart(packagedDexFingerprint(), lastLaunched)
+    }
+
+    /**
+     * 记录"本次启动 Core 用的是这个指纹"。
+     *
+     * ⚠️ **必须在真正部署 dex 之后调用**（见 `CoreLauncher.deployDex`）——
+     * 提前记录的话，若部署失败，下次就不会再提示了。
+     */
+    fun recordLaunchedDexFingerprint(context: Context) {
+        val fingerprint = packagedDexFingerprint() ?: return
+        context.applicationContext
+            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(PREF_LAST_LAUNCHED_DEX_FINGERPRINT, fingerprint)
+            .apply()
+    }
 
     fun getCoreVersionStatus(): CoreVersionStatus {
         val packaged = packagedVersionInfo
@@ -500,6 +583,16 @@ object VFlowCoreBridge {
         }
     }
 
+    /**
+     * logcat 流的**上行 writer**。
+     *
+     * `StreamingWrapper` 的流建立后这条连接归它独占，而 [updateLogcatTriggers]
+     * 需要从另一个协程往同一个 socket 写控制帧 —— 因此必须把 writer 存下来。
+     * 用锁保护是因为它同时被流协程（登记/清理）与调用方（写入）访问。
+     */
+    private var logcatStreamWriter: PrintWriter? = null
+    private val logcatWriterLock = Any()
+
     // 业务 API 封装
     /**
      * 执行 Shell 命令（使用当前权限模式）
@@ -722,6 +815,129 @@ object VFlowCoreBridge {
                     imageUri = payload.optString("imageUri").takeIf { it.isNotBlank() }
                 )
             )
+        }
+    }
+
+    /**
+     * 订阅 logcat 事件流（**双工**）。
+     *
+     * 与 [streamClipboardEvents] 的区别：这条连接**保持 writer**，
+     * 订阅之后仍可向 Core 发控制帧（条件更新），见 [updateLogcatTriggers]。
+     *
+     * ⚠️ **必须保留 writer 的生命周期**：把 writer 存到 [logcatStreamWriter]，
+     * 供并发的 [updateLogcatTriggers] 使用。这是 `StreamingWrapper` 加 reader
+     * 参数之后新增的能力（见 core 侧 `StreamingWrapper` 的说明）。
+     *
+     * @param conditionArray 初始条件列表。订阅帧自带全量条件 ——
+     *   这样 Core 不必等第二次通信才开始工作，且"重连即重发"的语义天然正确
+     * @param onEvent 每收到一个事件回调一次
+     * @return 流是否曾成功建立（断开时返回 false，由调用方决定是否重连）
+     */
+    suspend fun streamLogcatEvents(
+        conditionArray: JSONArray,
+        onEvent: suspend (JSONObject) -> Unit,
+    ): Boolean = withContext(Dispatchers.IO) {
+        val subscribeRequest = JSONObject()
+            .put("target", "logcat")
+            .put("method", "subscribeLogcatStream")
+            .put("params", JSONObject().put("conditions", conditionArray))
+
+        return@withContext try {
+            if (isUnixSocketEnabled()) {
+                val socketName = getUnixSocketName()
+                LocalSocket(LocalSocket.SOCKET_STREAM).use { streamSocket ->
+                    bindStreamCancellation(streamSocket)
+                    streamSocket.connect(
+                        LocalSocketAddress(socketName, LocalSocketAddress.Namespace.ABSTRACT)
+                    )
+                    streamSocket.soTimeout = 0
+                    val writer = PrintWriter(streamSocket.outputStream, true)
+                    val reader = BufferedReader(InputStreamReader(streamSocket.inputStream))
+                    // ⚠️ 订阅帧发出后**立刻**登记 writer，不要等 consumeLogcatStream。
+                    // 否则存在竞态：addTrigger 触发的条件下发可能早于注册，
+                    // 那时 writer 还是 null → 条件丢失 → 触发器不工作
+                    synchronized(logcatWriterLock) { logcatStreamWriter = writer }
+                    writer.println(subscribeRequest.toString())
+                    if (writer.checkError()) return@withContext false
+                    consumeLogcatStream(reader, onEvent)
+                }
+            } else {
+                Socket(HOST, PORT).use { streamSocket ->
+                    bindStreamCancellation(streamSocket)
+                    streamSocket.soTimeout = 0
+                    streamSocket.keepAlive = true
+                    streamSocket.tcpNoDelay = true
+                    val writer = PrintWriter(streamSocket.getOutputStream(), true)
+                    val reader = BufferedReader(InputStreamReader(streamSocket.getInputStream()))
+                    synchronized(logcatWriterLock) { logcatStreamWriter = writer }
+                    writer.println(subscribeRequest.toString())
+                    if (writer.checkError()) return@withContext false
+                    consumeLogcatStream(reader, onEvent)
+                }
+            }
+        } catch (e: Exception) {
+            DebugLogger.w(TAG, "logcat 事件流异常: ${e.javaClass.simpleName} - ${e.message}", e)
+            false
+        } finally {
+            // 无论怎么退出都要清掉 writer，否则 updateLogcatTriggers 会往一个
+            // 已关闭的 socket 上写，且 checkError 不一定会立刻反映出来
+            synchronized(logcatWriterLock) { logcatStreamWriter = null }
+        }
+    }
+
+    private suspend fun consumeLogcatStream(
+        reader: BufferedReader,
+        onEvent: suspend (JSONObject) -> Unit,
+    ): Boolean {
+        // 登记已在连接建立处完成（见 streamLogcatEvents 的说明）
+        while (true) {
+            val line = reader.readLine() ?: return false
+            val payload = try {
+                JSONObject(line)
+            } catch (e: Exception) {
+                DebugLogger.d(TAG, "logcat 流收到非法 JSON，跳过: ${e.message}")
+                continue
+            }
+            if (!payload.optBoolean("success")) {
+                DebugLogger.w(TAG, "logcat 流被 Core 拒绝: $line")
+                return false
+            }
+
+            // ⚠️ 这条日志是**区分两类故障的关键**：
+            // - 收到 "ready" → Core 认识 subscribeLogcatStream，是新代码，流真的建立了
+            // - 从未收到     → Core 不认识这个 method（旧代码），或连接被立刻关掉
+            //
+            // 之所以需要它：Core 的版本号是写死的常量（`vflowCoreVersion`），
+            // 不随 app 版本变，所以光看 ping 的 versionCode 判断不出跑的是不是新代码。
+            if (payload.optString("event") == "ready") {
+                DebugLogger.i(TAG, "logcat 流已建立（Core 已就绪）")
+            }
+
+            onEvent(payload)
+        }
+    }
+
+    /**
+     * 向已建立的 logcat 流下发新的条件列表（**全量替换**）。
+     *
+     * ⚠️ **这是双工协议的上行方向**，也是 `StreamingWrapper` 需要 reader 参数的原因。
+     *
+     * @return true 表示已写入；false 表示当前没有活跃的流
+     *   （此时不必重试——App 侧的重连逻辑会带着完整条件重新订阅）
+     */
+    fun updateLogcatTriggers(conditionArray: JSONArray): Boolean {
+        val frame = JSONObject()
+            .put("method", "updateTriggers")
+            .put("conditions", conditionArray)
+
+        val writer = synchronized(logcatWriterLock) { logcatStreamWriter } ?: return false
+
+        return try {
+            writer.println(frame.toString())
+            !writer.checkError()
+        } catch (e: Exception) {
+            DebugLogger.w(TAG, "下发 logcat 条件失败: ${e.message}")
+            false
         }
     }
 
@@ -1117,4 +1333,52 @@ object VFlowCoreBridge {
             })
         return sendRaw(req)?.optBoolean("success") ?: false
     }
+}
+
+/**
+ * 算一个输入流的**内容指纹**（SHA-256 前 16 位十六进制）。
+ *
+ * 抽成顶层函数是为了**可单测** —— 指纹算错的表现是
+ * 「改了 core 却不提示重启」，用户会继续跑旧代码且毫无察觉。
+ *
+ * ⚠️ 必须**逐块读**而不是 `readBytes()`：dex 有 2.7MB，
+ * 整个读进内存在低端设备上不划算。
+ */
+internal fun coreDexFingerprint(input: java.io.InputStream): String {
+    val digest = java.security.MessageDigest.getInstance("SHA-256")
+    val buf = ByteArray(64 * 1024)
+    while (true) {
+        val n = input.read(buf)
+        if (n <= 0) break
+        digest.update(buf, 0, n)
+    }
+    return digest.digest().joinToString("") { "%02x".format(it) }.take(16)
+}
+
+/**
+ * 判定「是否需要提示重启 Core」。
+ *
+ * ## 为什么独立成纯函数
+ *
+ * 这是本机制的核心判断，逻辑简单但**错法很隐蔽**：
+ * 返回错的 false 会让用户静默地继续跑旧代码（这个坑已实际踩过两次），
+ * 返回错的 true 会让提示变得不可信、最终被无视。
+ *
+ * @param currentFingerprint apk 里 dex 的指纹；null 表示读取失败
+ * @param lastLaunchedFingerprint 上次启动 Core 时记录的指纹；null 表示从未记录
+ * @return true = 应当提示重启
+ */
+internal fun shouldPromptCoreRestart(
+    currentFingerprint: String?,
+    lastLaunchedFingerprint: String?,
+): Boolean {
+    // 读不出当前指纹：不提示。提示了也没法让用户判断真假，
+    // 而"提示不可信"比"没提示"更糟
+    if (currentFingerprint.isNullOrBlank()) return false
+
+    // 从未记录（首次安装 / 刚从更早的版本升级上来）：
+    // 不提示 —— 那时 Core 本来就会被启动，不需要额外提醒
+    if (lastLaunchedFingerprint.isNullOrBlank()) return false
+
+    return currentFingerprint != lastLaunchedFingerprint
 }

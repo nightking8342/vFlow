@@ -168,6 +168,78 @@
     <string name="model_config_empty_models_body">Add one model first, then this provider can be used directly in chat.</string>
 
     <string name="settings_section_debugging">Debugging</string>
+    <!-- logcat debug tool -->
+    <string name="logcat_notification_channel_name">Log Capture</string>
+    <string name="logcat_notification_channel_desc">Shows progress while capturing system logs. View the timer on the super island and stop at any time.</string>
+    <string name="logcat_capture_island_content">Capturing logs</string>
+    <string name="logcat_capture_stop_action">Stop</string>
+    <string name="logcat_capture_finished_content">Capture finished</string>
+    <string name="logcat_state_completed">Capture finished (source is fixed)</string>
+    <string name="logcat_empty_completed">No matching content in this capture. Loosen the filter or capture again.</string>
+    <string name="logcat_status_completed">Read %1$d lines · %2$d continuation · %3$s</string>
+    <string name="logcat_action_rescan">Re-filter</string>
+    <string name="logcat_action_release">Discard</string>
+    <string name="logcat_find_hint">Find (highlight, keeps all rows)</string>
+    <string name="logcat_find_prev">Previous</string>
+    <string name="logcat_find_next">Next</string>
+    <string name="logcat_action_delete_files">Delete capture files</string>
+    <string name="logcat_completed_hint">This capture is fixed; changing filters will not alter its contents.</string>
+    <string name="logcat_coverage_range">Actual coverage %1$s</string>
+    <string name="logcat_coverage_truncated">This page hit the Lines limit; earlier entries exist. Use the Page selector to go back.</string>
+    <string name="logcat_action_refresh">Search</string>
+    <string name="logcat_filter_message_label">Message</string>
+    <string name="logcat_filter_message_hint">Filter by message content</string>
+    <string name="logcat_wrap_on">Wrap: on</string>
+    <string name="logcat_wrap_off">Wrap: off</string>
+    <!-- logcat viewer -->
+    <string name="logcat_viewer_title">Logcat Debugger</string>
+    <string name="logcat_viewer_entry_title">Logcat Debugger</string>
+    <string name="logcat_action_recapture">Capture again</string>
+    <string name="logcat_viewer_entry_subtitle">Capture and inspect system logs to debug triggers</string>
+    <string name="logcat_viewer_export">Export</string>
+    <string name="logcat_viewer_export_text">Export as text (.log)</string>
+    <string name="logcat_viewer_export_json">Export as JSON (.json)</string>
+    <string name="logcat_shell_ready">Shell ready</string>
+    <string name="logcat_shell_not_ready">Shell not ready: Shizuku or Root permission is required to read system logs</string>
+    <string name="logcat_section_capture">Capture</string>
+    <string name="logcat_state_capturing">Capturing</string>
+    <string name="logcat_state_idle">Not capturing</string>
+    <string name="logcat_state_stale">Last capture ended abnormally</string>
+    <string name="logcat_action_start">Start</string>
+    <string name="logcat_action_stop">Stop</string>
+    <string name="logcat_action_clear">Clear</string>
+    <string name="logcat_timeout_label">Time limit</string>
+    <string name="logcat_section_filter">Filter</string>
+    <string name="logcat_level_label">Level</string>
+    <string name="logcat_tag_label">TAG</string>
+    <string name="logcat_tag_hint">Filter by TAG substring</string>
+    <string name="logcat_tag_stats">TAG stats</string>
+    <string name="logcat_show_own_app">Show this app logs</string>
+    <string name="logcat_line_limit_label">Lines</string>
+    <string name="logcat_action_clear_list">Clear</string>
+    <string name="logcat_refreshing">Reading…</string>
+    <string name="logcat_tag_stats_title">TAG stats (%1$d lines)</string>
+    <string name="logcat_tag_stats_hint">Ignores the current TAG filter (level filter still applies). Tap an entry to fill the filter box.</string>
+    <string name="logcat_tag_stats_empty">No tags found. The capture file may be empty, or the Level filter removed everything.</string>
+    <string name="logcat_close">Close</string>
+
+    <string name="logcat_empty_rotated">No logs read. The logcat buffer may have rotated; start a capture before reproducing the issue.</string>
+    <string name="logcat_empty_just_started">Capture just started, no logs produced yet.</string>
+    <string name="logcat_empty_stale">The last capture ended abnormally (the app may have been reclaimed). Tap Clear to start over.</string>
+    <string name="logcat_empty_shell">Shizuku or Root permission is required to read system logs.</string>
+    <string name="logcat_empty_timeout">The command timed out. The log volume may be too large; try a smaller line count.</string>
+    <string name="logcat_empty_filtered">Read %1$d lines, but all were filtered out by the current level or TAG conditions. Try loosening them.</string>
+    <string name="logcat_empty_no_filter_hint">No matching logs.</string>
+
+    <string name="logcat_status_idle">Buffer %1$d lines · %2$d continuation · %3$d ms</string>
+    <string name="logcat_status_capturing">Read %1$d lines · %2$d continuation · %3$s · %4$d ms</string>
+    <string name="logcat_status_stale">Last capture file %1$d lines · %2$d continuation</string>
+    <string name="logcat_status_no_time_range">no time range</string>
+    <string name="logcat_degraded_hint">%1$d lines have no TAG prefix (usually continuations of multi-line logs); matching by message may miss them.</string>
+
+    <string name="logcat_toast_exported">Exported %1$d lines</string>
+    <string name="logcat_toast_export_failed">Export failed: cannot write file</string>
+    <string name="logcat_toast_nothing_to_export">Nothing to export</string>
     <string name="settings_switch_enable_logging">Record Debug Logs</string>
     <string name="settings_switch_enable_logging_desc">When enabled, all app logs will be recorded in memory until the app is force stopped. Slightly increases memory usage.</string>
     <string name="settings_switch_enable_telemetry">Enable telemetry</string>
@@ -344,8 +416,8 @@
     <string name="home_total_workflows">Total Workflows</string>
     <string name="home_auto_tasks">Automated Tasks</string>
     <string name="home_permission_health">Permission Health Check</string>
-    <string name="home_core_update_title">Core Update Available</string>
-    <string name="home_core_update_desc">A newer Core is bundled. Running: %1$s, bundled: %2$s. Tap to open Core Management and update.</string>
+    <string name="home_core_update_title">Core Needs Restart</string>
+    <string name="home_core_update_desc">Core code changed but the running process is still on the old build. Tap to open Core Management and restart.</string>
     <string name="home_permission_good">Status: Good, all permissions granted</string>
     <string name="home_permission_missing">Status: %d missing permissions</string>
     <string name="home_recent_logs">Recent Logs</string>
@@ -697,6 +769,7 @@
     <string name="editor_more_advanced_settings">Advanced Settings</string>
     <string name="editor_more_ai_generate">AI Generate</string>
     <string name="editor_more_ui_inspector">UI Inspector</string>
+    <string name="editor_more_logcat_debugger">Logcat Debugger</string>
     <string name="add_workflow">Add workflow</string>
 
     <!-- Workflow Metadata -->
@@ -1174,7 +1247,7 @@
     <string name="core_version_summary">Running: %1$s  Bundled: %2$s</string>
     <string name="core_version_summary_legacy">Running: legacy Core without version info  Bundled: %1$s</string>
     <string name="core_version_summary_not_running">Core not running  Bundled: %1$s</string>
-    <string name="core_update_available_hint">A newer bundled Core is available. Tap “Update Core” below to load it.</string>
+    <string name="core_update_available_hint">Core code changed. Tap the button below to restart and load the new build.</string>
     <string name="mode_root">Root</string>
     <string name="mode_shell">Shell</string>
     <string name="status_not_connected">Not connected</string>
@@ -1387,6 +1460,9 @@
     <string name="workflow_chip_missing_permissions">Missing Permissions</string>
     <string name="workflow_chip_missing_permissions_count">%d missing permissions</string>
     <string name="workflow_chip_steps">%d steps</string>
+    <string name="workflow_chip_function">Function</string>
+    <string name="workflow_silent_execution_enabled">Silent execution</string>
+    <string name="workflow_silent_execution_desc">Hides the progress notification and the start-up prompt while running. Prompts asking for your input or choice still appear, and failures are still reported.</string>
     <string name="workflow_chip_permissions_count">%d permissions</string>
     <string name="workflow_id_copied">Workflow ID copied</string>
 
@@ -1482,4 +1558,25 @@ Note: Ensure device and web editor are on the same network
     <string name="global_variable_config_invalid_value">Variable value is invalid</string>
     <string name="global_variable_config_delete_confirm_title">Delete Global Variable</string>
     <string name="global_variable_config_delete_confirm_message">Delete global variable \"%1$s\"?</string>
+
+    <!-- logcat 查看器：往前翻页 -->
+
+
+    <!-- logcat 查看器：采集总量 / 读取量 / 页码 -->
+    <string name="logcat_status_capture">Captured %1$d lines · %2$s</string>
+    <string name="logcat_status_capture_unknown">Captured total: computing…</string>
+    <string name="logcat_status_stats_loading">Computing capture totals…</string>
+    <string name="logcat_status_read">Read %1$d lines%2$s · %3$s</string>
+    <string name="logcat_status_degraded_part"> · %1$d continuation</string>
+    <string name="logcat_page_label">Page</string>
+    <string name="logcat_page_newest">Page %1$d (newest)</string>
+    <string name="logcat_page_approx">Jumped to near page %1$d (page positioning is estimated and may be off by a few dozen lines). Use adjacent pages for exact browsing.</string>
+    <string name="logcat_read_failed">Failed to read logs; the list still shows the previous content. Check Shell access and retry.</string>
+    <string name="logcat_status_matches">%1$d lines match (whole file)</string>
+    <string name="logcat_status_no_matches">No log lines match the current filter; try loosening it</string>
+    <string name="logcat_status_counting">Counting matches…</string>
+    <string name="logcat_page_empty">No content on this page; may be at the start of the file</string>
+    <string name="logcat_tag_stats_failed">TAG stats failed. Make sure a capture has been taken (the capture file exists) and Shell access works.</string>
+
+
 </resources>

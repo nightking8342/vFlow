@@ -130,8 +130,10 @@ class ShareReceiverActivity : AppCompatActivity() {
             triggerStepId = triggerId
         )
         // 在主线程显示 Toast
-        CoroutineScope(Dispatchers.Main).launch {
-            Toast.makeText(applicationContext, getString(R.string.share_workflow_started, workflow.name), Toast.LENGTH_SHORT).show()
+        if (!workflow.silentExecution) {
+            CoroutineScope(Dispatchers.Main).launch {
+                Toast.makeText(applicationContext, getString(R.string.share_workflow_started, workflow.name), Toast.LENGTH_SHORT).show()
+            }
         }
     }
 

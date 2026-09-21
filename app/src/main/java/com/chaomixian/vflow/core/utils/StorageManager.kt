@@ -39,6 +39,10 @@ object StorageManager {
     val backupsDir: File
         get() = getSubDir("backups")
 
+    /** 获取导出目录: /sdcard/vFlow/exports（logcat 日志、会话导出等落这里，用户可直接在文件管理器里找到） */
+    val exportsDir: File
+        get() = getSubDir("exports")
+
     private fun getSubDir(name: String): File {
         val dir = File(rootDir, name)
         if (!dir.exists()) dir.mkdirs()

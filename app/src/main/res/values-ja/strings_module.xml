@@ -3006,4 +3006,42 @@
     <string name="error_vflow_external_module_failed">外部拡張が失敗を返しました。</string>
     <string name="error_vflow_external_module_exception_title">拡張機能の実行例外</string>
     <string name="error_vflow_external_module_unknown">不明なエラーが発生しました</string>
+    <!-- サイレントモードトリガー（fork 追加） -->
+    <!-- logcat トリガー -->
+    <string name="module_vflow_trigger_logcat_name">logcat トリガー</string>
+    <string name="module_vflow_trigger_logcat_desc">デバイスログに条件に一致する内容が現れたときにワークフローを実行します</string>
+    <string name="param_vflow_trigger_logcat_tag_filter_type_name">TAG 条件</string>
+    <string name="param_vflow_trigger_logcat_tag_filter_value_name">TAG の値</string>
+    <string name="param_vflow_trigger_logcat_message_filter_type_name">メッセージ条件</string>
+    <string name="param_vflow_trigger_logcat_message_filter_value_name">メッセージの値</string>
+    <string name="param_vflow_trigger_logcat_min_level_name">最低レベル</string>
+    <string name="param_vflow_trigger_logcat_cooldown_name">クールダウン（ミリ秒）</string>
+    <string name="param_vflow_trigger_logcat_exclude_self_name">このアプリのログを除外</string>
+    <string name="option_vflow_trigger_logcat_any">任意</string>
+    <string name="option_vflow_trigger_logcat_equals">一致</string>
+    <string name="option_vflow_trigger_logcat_contains">含む</string>
+    <string name="option_vflow_trigger_logcat_regex">正規表現</string>
+    <string name="option_vflow_trigger_logcat_level_v">V 詳細</string>
+    <string name="option_vflow_trigger_logcat_level_d">D デバッグ</string>
+    <string name="option_vflow_trigger_logcat_level_i">I 情報</string>
+    <string name="option_vflow_trigger_logcat_level_w">W 警告</string>
+    <string name="option_vflow_trigger_logcat_level_e">E エラー</string>
+    <string name="option_vflow_trigger_logcat_level_f">F 致命的</string>
+    <string name="option_vflow_trigger_logcat_exclude_self_on">除外</string>
+    <string name="option_vflow_trigger_logcat_exclude_self_off">除外しない</string>
+    <string name="output_vflow_trigger_logcat_message_name">メッセージ本文</string>
+    <string name="output_vflow_trigger_logcat_tag_name">TAG</string>
+    <string name="output_vflow_trigger_logcat_level_name">レベル</string>
+    <string name="output_vflow_trigger_logcat_pid_name">プロセス ID</string>
+    <string name="output_vflow_trigger_logcat_raw_name">元の行全体</string>
+    <string name="summary_vflow_trigger_logcat_prefix">ログが</string>
+    <string name="module_vflow_trigger_do_not_disturb_name">サイレントモードトリガー</string>
+    <string name="module_vflow_trigger_do_not_disturb_desc">サイレントモードのオン・オフ時にワークフローを起動します</string>
+    <string name="param_vflow_trigger_do_not_disturb_state_name">起動条件</string>
+    <string name="summary_vflow_trigger_do_not_disturb_prefix">サイレントモード</string>
+    <string name="option_vflow_trigger_do_not_disturb_on">オン時</string>
+    <string name="option_vflow_trigger_do_not_disturb_off">オフ時</string>
+    <string name="option_vflow_trigger_do_not_disturb_any">変更時</string>
+    <string name="output_vflow_trigger_do_not_disturb_enabled_name">サイレントモードがオン</string>
+    <string name="output_vflow_trigger_do_not_disturb_previous_enabled_name">変更前の状態</string>
 </resources>

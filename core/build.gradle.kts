@@ -112,7 +112,42 @@ plugins {
     kotlin("jvm") // 使用标准 Kotlin JVM 插件
 }
 
-val vflowCoreVersion = 19
+/**
+ * Core 的**对外**版本号。
+ *
+ * ## 什么时候该改它
+ *
+ * **只在功能稳定、准备发版时改。** 日常开发改了 `core/src` **不需要动它**。
+ *
+ * ## 那"改了 core 但没重启，跑的还是旧代码"怎么办
+ *
+ * 由**另一套机制**解决，与这个版本号无关：
+ * `VFlowCoreBridge.isCoreDexNewerThanRunning()` 比较「apk 里的 dex 指纹」
+ * 与「上次启动 Core 时用的指纹」，不一致就在 Core 管理页提示重启。
+ *
+ * 用指纹而非版本号的原因：两者的**节奏不同** ——
+ * "改了 core 要重启"是开发期的高频需求，而版本号只在发版时动。
+ * 用版本号当判据的话，要么频繁改、要么一直忘改（实际就忘过两次）。
+ *
+ * ## ⚠️ 注意它**不能**自动触发重启
+ *
+ * `getCoreVersionStatus().needsUpdate` 只被两处 UI 用到（首页与管理页的提示），
+ * 而 `MainActivity.checkCoreAutoStart()` 只判断"Core 活没活"，不看版本。
+ * 也就是说：**改了版本号也不会让旧进程自动重启，仍然需要手动重启一次。**
+ *
+ * ## 🚫 不要在开发过程中改它
+ *
+ * 除非是**发版**，否则不要动这个数。
+ *
+ * 曾经误以为"改了 core 就要 bump，否则 Core 不会重启"——
+ * 那是错的：bump 了也**不会**触发重启（见上），
+ * 真正让新代码生效的是**手动重启**，而提示手动重启由指纹机制负责。
+ *
+ * 现在 = 20。它从 19 加到 20 是早期那次误用的残留，
+ * 之后所有 core 改动**都不应该**再动它（曾违反过三次：20→21→22→23，
+ * 已全部回退）。
+ */
+val vflowCoreVersion = 20
 
 val localProperties = Properties()
 val localPropertiesFile = rootProject.file("local.properties")
@@ -165,6 +200,14 @@ dependencies {
 
     // JSON 解析库 (运行时需要，会被打入 dex)
     implementation("org.json:json:20251224")
+
+    // 单元测试。core 是纯 JVM 模块（java-library + kotlin jvm），
+    // 因此可以直接放 src/test 跑 JUnit —— 不需要 Android 环境。
+    //
+    // 能测的范围是 logcat 触发器的**纯函数部分**（解析 / 匹配 / 编解码）：
+    // 它们是热路径，且失败模式是「触发器静默不触发」，必须有测试保护。
+    // 流式 wrapper 本身与进程/线程相关，仍只能靠真机验证。
+    testImplementation("junit:junit:4.13.2")
 
     add(r8Configuration.name, "com.android.tools:r8:${r8Version.get()}")
 }

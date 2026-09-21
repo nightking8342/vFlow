@@ -17,8 +17,41 @@
 
 | 文件 / 范围 | 分歧内容 | 冲突归属 |
 |---|---|---|
+| `core/src/main/java/.../server/logcat/`（`LogcatLineParser.kt` + `LogcatMatcher.kt` + `LogcatConditionCodec.kt` + `LogcatEventQueue.kt`，均新增） | fork 独有：**logcat 触发器的 Core 侧纯函数层**（解析 / 匹配 / 条件解码 / 有界事件队列）。是 app 侧同名纯函数的移植版——Core 没有测试目录的说法已不成立（见下），两份实现各自有测试保护。⚠️ **任何语义改动必须同时改两处，且以 app 侧为准**；不一致的表现是「调试工具里看着能匹配的日志，触发器匹配不到」 | 我方 |
+| `core/src/main/java/.../server/wrappers/shell/LogcatStreamWrapper.kt`（新增） | fork 独有：logcat 触发器的 Core 侧流式实现（长驻 `logcat -T 1` + 双线程：泵线程读 stdout 解析匹配、主线程读控制帧）。走文档 §6.3 方案 A 注册进 `serviceWrappers`（不包装系统服务）。含背压保护：有界队列 + 独立写线程，丢弃计数定期上报 | 我方 |
+| `core/src/main/java/.../server/wrappers/StreamingWrapper.kt`（改） | `handleStream` 增加 `reader` 参数，把单向推送升级为**双工**。原先只有 writer，流建立后这条连接再无上行数据，`updateTriggers` 无处投递。唯一既有实现 `IClipboardWrapper` 忽略该参数 | **手动合并**（签名变更，上游若加新的 StreamingWrapper 实现需同步） |
+| `core/src/main/java/.../server/worker/BaseWorker.kt`（改） | `tryHandleStreamRequest` 透传 `reader` 给 `handleStream` | **手动合并**（1 行） |
+| `services/VFlowCoreBridge.kt`（改） | 新增 logcat 流式 API（`streamLogcatEvents` + `updateLogcatTriggers`）与 **dex 指纹机制**（`packagedDexFingerprint` / `isCoreDexNewerThanRunning` / `recordLaunchedDexFingerprint` + 顶层纯函数 `coreDexFingerprint` / `shouldPromptCoreRestart`）。流式 API 的关键是**保留 writer** 供后续控制帧使用（双工） | **手动合并**（新增方法为主） |
+| `services/CoreLauncher.kt`（改） | `deployDex` 成功后调用 `recordLaunchedDexFingerprint(context)` —— 这是"改了 core 需重启"判据的另一半。⚠️ 必须在**部署成功之后**调用，提前记录的话部署失败就再也不会提示 | **手动合并**（新增 1 行） |
+| `ui/home/HomeScreen.kt`、`ui/settings/CoreManagementActivity.kt`（改） | `coreNeedsUpdate` 的判据由"版本号落后"改为 **dex 指纹变化**（`versionStatus.needsUpdate \|\| isCoreDexNewerThanRunning()`） | **手动合并**（各 1 处判断 + 文案） |
+| `core/build.gradle.kts`（改） | ① 加 `testImplementation("junit:junit:4.13.2")` —— **core 是纯 JVM 模块，可以放 src/test 跑 JUnit**（文档里"core 没有测试目录"只是现状描述）；② `vflowCoreVersion` 注释重写，明确 **🚫 不要在开发过程中改它**（只在发版时改） | **手动合并** |
+| `test/services/CoreDexFingerprintTest.kt`（新增） | fork 独有：13 例。锁住"该提示却返回 false"（会让用户静默跑旧代码）与"不该提示却返回 true"（提示不可信）两个方向 | 我方 |
+| `core/src/main/java/.../server/VFlowCore.kt`（改） | `tryRouteStreamRequest` 的流式白名单由**硬编码 clipboard** 改为查 `Config.STREAM_METHODS`。⚠️ 这是上游核心文件，且坑很深：Core 有**两条路由路径**（普通请求查 `ROUTING_TABLE`、流式请求查这张白名单），只改前者时流式请求会被拦下后**落到普通路径转发**，而那条路承载不了长连接 —— 表现为 `ping` 正常但流报 `ECONNREFUSED`（已实际踩过） | **手动合并**（改动集中在 `tryRouteStreamRequest` 一个方法） |
+| `core/src/main/java/.../server/common/Config.kt`（改） | ① `ROUTING_TABLE` 追加 `"logcat" to WorkerType.SHELL`；② 新增 `STREAM_METHODS`（流式订阅方法 → target，与 `ROUTING_TABLE` 同桌以便同时看到）；③ `init` 加一致性校验 —— 流式表里的 target 必须在路由表里，否则启动时报错 | **手动合并**（追加） |
+| `core/src/test/java/.../server/common/RoutingTableConsistencyTest.kt`（新增） | fork 独有：**在构建期**拦住"新增流式能力漏改一张表"（5 例）。这类错误的表现是流静默建立不起来，靠读代码很难发现 | 我方 |
+| `core/src/main/java/.../server/common/Config.kt`（改） | `ROUTING_TABLE` 追加 `"logcat" to WorkerType.SHELL`。⚠️ **只注册 `serviceWrappers` 不够**——那张表是"谁能处理"，这张才是"转发给谁"；漏了请求会回 `{"error":"No route"}` 且流建立不起来（已实际踩过） | **手动合并**（追加一行） |
+| `core/src/main/java/.../server/worker/ShellWorker.kt`（改） | 追加 `serviceWrappers["logcat"] = LogcatStreamWrapper()` | **手动合并**（追加一行） |
+| `core/build.gradle.kts`（改） | ① 加 `testImplementation("junit:junit:4.13.2")`——**core 是纯 JVM 模块（java-library + kotlin jvm），可以放 src/test 跑 JUnit**，文档里"core 没有测试目录"只是现状描述而非限制。② `vflowCoreVersion` 19 → 22（见下方敏感点） | **手动合并** |
+| `core/src/test/java/.../server/logcat/`（新增） | fork 独有：**本仓库 core 模块的首个测试目录**（66 例）。覆盖索引扫描解析、条件匹配与级别位掩码、条件编解码、有界事件队列的丢弃策略。这些类跑在热路径上且失败模式是"触发器静默不触发"，必须有测试 | 我方 |
 | `FORK.md`、`AGENTS.md`、`CLAUDE.md` | fork 独有文件，上游没有 | 我方 |
 | `docs/fork/function-workflow.md`、`docs/fork/function-workflow-ui.html` | fork 独有：函数工作流需求文档 + 可交互 UI 原型（上游无此文件） | 我方 |
+| `docs/fork/do-not-disturb-trigger.md` | fork 独有：**免打扰模式触发器**功能文档（需求/设计决策/实现状态/真机验证待办/自触发环风险）。含 AOSP 源码核实的 API 选型结论，上游无此文件 | 我方 |
+| `docs/fork/logcat-trigger-design.md` | fork 独有：**logcat 触发器设计文档**（Core 侧匹配架构、多触发器共享一条流、`LogcatCondition` 条件数据结构、**§6.5 双工协议扩展**、**§7.1 必须继承 `BaseTriggerHandler`**、降级语义、背压/隐私风险、14 项真机场景）。2026-09-17 修订过三处硬伤；尚未实现；上游无此文件 | 我方 |
+| `docs/fork/logcat-debug-tool.md` | fork 独有：**logcat 调试工具设计文档**（前置工具，用于采集日志调试触发器）。核心是「开关式后台采集（shell 侧写文件、`-r`/`-n` 轮转）+ 快照兜底」，**全程走普通 `exec`、不碰流式协议**。含**两条已真机实测证实**的硬约束（Binder 传输上限；后台进程不切断 stdio 会永久挂起）、三态采集状态机（`IDLE`/`CAPTURING`/`STALE`）、单一刷新按钮与 TAG 统计绕过过滤、降级行与日志头标记行处理、与触发器的纯函数复用关系。**§4.2.3 记录实现期踩出的三个静默失效坑**（`StateFlow` 等值去重不发射、`timeout` 自然收尾同样留 `STALE` 导致假异常提示、自动停止不可在 ticker 协程内取消自己）。**部分实现**：纯函数层 + 超级岛层 + 采集控制器 + 岛按钮接收器已完成，查看器 UI 与导出待做；上游无此文件 | 我方 |
+| `core/workflow/module/triggers/DoNotDisturbTriggerModule.kt`、`.../handlers/DoNotDisturbTriggerHandler.kt`（均新增） | fork 独有：免打扰触发器。走 `ACTION_INTERRUPTION_FILTER_CHANGED` 广播，只需 `NOTIFICATION_POLICY` 权限（不需通知使用权）。含顶层纯函数 `isDndFilterEnabled` / `isDndEnabled` / 日志探针 `probeDndState` | 我方 |
+| `res/drawable/rounded_do_not_disturb_on_24.xml`（新增） | fork 独有：免打扰触发器图标（上游无勿扰图标，`DoNotDisturbModule` 借用的是 `rounded_notifications_unread_24`） | 我方 |
+| `test/.../triggers/DoNotDisturbTriggerMathTest.kt`、`DoNotDisturbTriggerModuleTest.kt`（均新增） | fork 独有：上述纯函数逐值锁定 + 枚举规范化 + 权限/输出声明体检 | 我方 |
+| `core/workflow/module/ModuleRegistry.kt` | `initialize()` 按分类追加注册 `DoNotDisturbTriggerModule`（不重排已有注册） | 手动合并（追加一行，取上游 + 追加） |
+| `core/workflow/module/triggers/handlers/TriggerHandlerRegistry.kt` | `initialize()` 按分类追加注册 `DoNotDisturbTriggerHandler`（不重排已有注册） | 手动合并（追加一行，取上游 + 追加） |
+| 字符串资源 `strings_module.xml`（中/英/日） | 追加免打扰触发器文案 9 条 ×3 语言 | 手动合并（追加条目） |
+| `core/logcat/`（`LogcatLine.kt` + `LogcatParser.kt` + `LogcatCommands.kt`，均新增） | fork 独有：**logcat 纯函数层**（解析 + 命令构造），供 logcat 调试工具与 logcat 触发器共用。含三处真机实测得出的硬约束：可能返回大数据的命令必须 shell 侧限流（否则撞 Binder 上限打死 UserService）、后台采集命令必须切断三个 stdio（否则 `exec` 永久挂起）、状态判定必须按 pidfile 精确匹配。**未改动任何上游文件** | 我方 |
+| `test/core/logcat/`（`LogcatParserTest.kt` + `LogcatCommandsTest.kt` + `LogcatCaptureUiTest.kt`，均新增） | fork 独有：上述纯函数的 68 个单测。重点是"改错了不报错、只静默变差"的地方：降级继承链不被日志头标记行污染、连续续行不链式继承、三个 stdio 重定向齐全、TAG 统计绕过过滤、shell 元字符转义、岛存活必须长于采集上限、计时不显示负数、无法计时时不误判超时 | 我方 |
+| `core/logcat/LogcatCaptureUi.kt`（新增） | fork 独有：logcat 采集的展示层纯函数（岛的图标/缓存 key/存活时长、正计时与时长格式化）。与 `LogcatCommands` 一起构成"改错了不报错"的那一层，全部有单测 | 我方 |
+| `services/LogcatCaptureController.kt`（新增） | fork 独有：logcat 采集状态机 + 计时 + 超级岛联动。进程级单例（Activity 与 Receiver 都要用）。**判定一律走 pidfile 探测，内存状态只用于显示**——App 被杀后 logcat 仍在跑，靠内存标志会误判为空闲并起第二个进程。含三处实现期踩出的坑（`StateFlow` 等值去重不发射、`timeout` 自然收尾同样留 `STALE`、自动停止不可在 ticker 协程内取消自己），详见设计文档 §4.2.3 | 我方 |
+| `services/LogcatActionReceiver.kt`（新增） | fork 独有：超级岛「结束」按钮的广播接收器。**必须 Manifest 静态注册**——岛按钮可能在通知发出后很久才被点击，动态注册的接收器届时已注销，表现为"按钮渲染正常、点着没反应"（已实际踩过）。用 `goAsync()` 延长生命周期 | 我方 |
+| `AndroidManifest.xml`（改） | 追加 `LogcatActionReceiver` 声明（`exported="false"`，无 intent-filter——调用方走显式 Component 意图） | **手动合并**（追加声明） |
+| `services/island/Island{Template,TemplateBuilder,Notifier}.kt`（均新增） | fork 独有：**通用「模板态」超级岛通知层**（走 `miui.focus.param` + `param_v2`，与现有 `IslandNotificationDispatcher` 的 RemoteViews 通道并存不互斥）。提供系统原生计时器与内置 Lottie 动图——这是 RemoteViews 通道给不了的。`IslandTemplate` 不含业务语义，任何需要岛上计时器的功能可复用。已真机验证（动图/正计时/按钮回传全部通过） | 我方 |
+| `test/services/island/IslandTemplateBuilderTest.kt`（新增） | fork 独有：上述 24 个单测，逐字段对齐小米官方 stopWatch 模板的运行态与暂停态 | 我方 |
 | `docs/fork/notification-island-design.md` | fork 独有：**通知机制改造设计（适配小米澎湃 OS 超级岛）**。基于官方接入文档 + 官方模板库 + mindfs 已落地实现。v2.0 定稿：26 项决策台账（§6）、三层架构（能力探测 / 参数装配 / 图标装配）、状态×样式对照表、决策理由与已知限制（§8.1–8.4）。上游无此文件 | 我方 |
 | `services/island/`（`IslandCapability.kt` + `IslandNotificationSpec.kt` + `IslandParamsBuilder.kt` + `IslandIcons.kt` + `IslandNotificationDispatcher.kt` + `IslandRemoteViews.kt`，均新增） | fork 独有：**小米澎湃 OS 超级岛装配层**。能力探测（`notification_focus_protocol >= 3` + `canShowFocus`，异步一次 + 进程缓存）、厂商中立的通知语义（含 `stepName` / `statusText` / `progressText`）、`miui.focus.param.custom` JSON 装配（纯函数；**只写 custom，不写模板 key**——两者并存会让 SystemUI 走模板分支、忽略 RemoteViews）、`miui.focus.pics` 图标装配（key 必须带 `miui.focus.pic_` 前缀，否则 SystemUI 解析不到）、**展开态 RemoteViews**（浅/深/岛展开三实例，**按 workflowId 缓存复用**，只传变化字段）、对外唯一入口。厂商私有协议完全收敛在本目录内，业务侧不出现任何 `miui.*` 字符串 | 我方 |
 | `res/layout/island_execution_expand_{dark,light}.xml`（新增） | fork 独有：超级岛展开态 RemoteViews 布局（五行：头部 / 进度行 / 进度条 / 状态行 / 底部）。两份布局 **view id 完全一致**（仅颜色资源不同），故同一套操作代码通用。浅色版是必需的——该 RemoteViews 被通知栏与锁屏预览复用，那两处有浅色模式。**未提供 `rv.tiny`**：那是小折叠（flip）机型的折叠态视图，大折叠不需要，mindfs 的实现也不写 | 我方 |
@@ -69,7 +102,7 @@
 | `ui/chat/ChatViewModel.kt` | 新增 `exportConversation(conversationId)` 方法（复用既有 `_events` 提示通道，不改变现有签名） | 手动合并（新增方法） |
 | `ui/main/MainComposeShell.kt` | `ChatHistorySideSheet` / `ChatHistorySideSheetItem` 追加导出图标与 `onExportConversation` 回调（含调用点接线） | 手动合并（追加参数/按钮） |
 | 字符串资源 `strings*.xml` | 新增会话导出文案 `chat_export_conversation` / `chat_export_share_title` / `chat_export_failed`（中/英/日） | 手动合并（追加条目） |
-| `docs/fork/surveys/`（`README.md` + `ai-system-overview.md` + `agent-design-comparison.md` + `notification-system-overview.md`） | fork 独有：**现状调研文档目录**（改代码前的地图）。`README.md` 为索引+写作规范；`ai-system-overview.md` 为 AI 体系梳理（三套链路/提示词/工具/技能/执行流程/模块可发现性/缓存 + 能力评估）；`agent-design-comparison.md` 为头部 Agent 项目外部对照调研；`notification-system-overview.md` 为通知体系梳理（8 处生产者 + 监听消费者、活体通知分支、渠道/权限/开关、超级岛改造落点与风险）。上游均无此文件 | 我方 |
+| `docs/fork/surveys/`（`README.md` + `ai-system-overview.md` + `agent-design-comparison.md` + `trigger-system-overview.md` + `logcat-readability-survey.md` + `notification-system-overview.md`） | fork 独有：**现状调研文档目录**（改代码前的地图）。`README.md` 为索引+写作规范；`ai-system-overview.md` 为 AI 体系梳理（三套链路/提示词/工具/技能/执行流程/模块可发现性/缓存 + 能力评估）；`agent-design-comparison.md` 为头部 Agent 项目外部对照调研；`trigger-system-overview.md` 为触发器体系梳理（两层注册/两条链路/三种 Handler 范式/24 个触发器清单与权限矩阵/排障顺序）；`logcat-readability-survey.md` 为 logcat 可读性真机实测结论；`notification-system-overview.md` 为通知体系梳理（8 处生产者 + 监听消费者、活体通知分支、渠道/权限/开关、超级岛改造落点与风险）。上游均无此文件 | 我方 |
 | `core/workflow/model/Workflow.kt` | 新增 `functionSignature` 字段（Parcelable，带默认值 null，向后兼容） | 手动合并（fork 追加字段，若上游也改需逐块判断） |
 | `core/workflow/model/FunctionSignature.kt`（新增） | 新增 `FunctionParam`/`ReturnKey`/`FunctionReturn`/`FunctionSignature` 数据类 | 我方 |
 | `core/execution/WorkflowExecutor.kt` | `executeSubWorkflow` 增加可选参数 `injectedVariables: Map<String, VObject> = emptyMap()`（带默认值，不破坏现有调用） | 手动合并（向上游方法加带默认值参数，若上游改了该方法需逐块判断） |

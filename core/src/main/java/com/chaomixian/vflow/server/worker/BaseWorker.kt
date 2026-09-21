@@ -150,7 +150,7 @@ abstract class BaseWorker(
     ) {
         while (isRunning) {
             val requestStr = reader.readLine() ?: break
-            val streamHandled = tryHandleStreamRequest(requestStr, writer)
+            val streamHandled = tryHandleStreamRequest(requestStr, writer, reader)
             if (streamHandled) {
                 return
             }
@@ -168,7 +168,18 @@ abstract class BaseWorker(
         }
     }
 
-    private fun tryHandleStreamRequest(requestStr: String, writer: PrintWriter): Boolean {
+    /**
+     * 流式请求分流。
+     *
+     * ⚠️ `reader` **必须传给 handleStream**：流建立后 App 仍可能继续发控制帧
+     * （如 logcat 触发器中途改条件）。不传的话那条连接就是单向的，
+     * 「运行时改变订阅内容」将无路可走 —— 详见 StreamingWrapper 的说明。
+     */
+    private fun tryHandleStreamRequest(
+        requestStr: String,
+        writer: PrintWriter,
+        reader: BufferedReader,
+    ): Boolean {
         return try {
             val request = JSONObject(requestStr)
             val target = request.optString("target")
@@ -176,7 +187,7 @@ abstract class BaseWorker(
             val params = request.optJSONObject("params") ?: JSONObject()
             val wrapper = serviceWrappers[target]
             if (wrapper is StreamingWrapper) {
-                wrapper.handleStream(method, params, writer)
+                wrapper.handleStream(method, params, writer, reader)
             } else {
                 false
             }

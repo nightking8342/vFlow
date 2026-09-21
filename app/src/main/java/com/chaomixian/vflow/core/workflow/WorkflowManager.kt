@@ -99,6 +99,7 @@ class WorkflowManager(val context: Context) {
             steps = normalizedVisualWorkflow.steps,
             maxExecutionTime = normalizedVisualWorkflow.maxExecutionTime,
             reentryBehavior = normalizedVisualWorkflow.reentryBehavior,
+            silentExecution = normalizedVisualWorkflow.silentExecution,
             functionSignature = aggregateSignature
         )
 
@@ -254,6 +255,8 @@ class WorkflowManager(val context: Context) {
             tags = record.getStringList("tags") ?: emptyList(),
             maxExecutionTime = record.getInt("maxExecutionTime"),
             reentryBehavior = WorkflowReentryBehavior.fromStoredValue(record.getString("reentryBehavior")),
+            // 旧记录没有这个键 → 落回 false，即保持既有行为。不需要兼容映射。
+            silentExecution = record.getBoolean("silentExecution") ?: false,
             functionSignature = parseFunctionSignature(record)
         )
     }

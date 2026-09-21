@@ -115,6 +115,7 @@ data class SettingsScreenActions(
     val onClearLogs: () -> Unit,
     val onRunDiagnostic: () -> Unit,
     val onOpenKeyTester: () -> Unit,
+    val onOpenLogcatViewer: () -> Unit,
     val onOpenCoreManagement: () -> Unit,
     val onStartUiInspector: () -> Unit,
     val onOpenAbout: () -> Unit,
@@ -254,6 +255,11 @@ fun SettingsScreen(
     val clearLogsLabel = stringResource(R.string.settings_button_clear_logs)
     val runDiagnosticLabel = stringResource(R.string.settings_button_run_diagnostic)
     val keyTesterLabel = stringResource(R.string.settings_button_key_tester)
+    val logcatViewerTitle = stringResource(R.string.logcat_viewer_entry_title)
+    // ⚠️ 这个副标题**当前没有渲染位置**（logcat 入口已经是按钮，不是列表项），
+    // 但必须保留并留在下面的搜索列表里——否则用户搜「采集日志」这类
+    // 只出现在副标题里的词时，整个「调试」分组会消失（§6.1 易漏点 1）。
+    val logcatViewerSubtitle = stringResource(R.string.logcat_viewer_entry_subtitle)
     val coreManagementLabel = stringResource(R.string.settings_button_core_management)
     val uiInspectorLabel = stringResource(R.string.settings_button_ui_inspector)
 
@@ -313,6 +319,7 @@ fun SettingsScreen(
         crashReportsTitle, crashReportsSubtitle,
         exportLogsLabel, clearLogsLabel,
         runDiagnosticLabel, keyTesterLabel,
+        logcatViewerTitle, logcatViewerSubtitle,
         coreManagementLabel, uiInspectorLabel
     ).any { matchesSearch(normalizedQuery, it) }
     val showAboutSection = matchesSearch(
@@ -684,12 +691,18 @@ fun SettingsScreen(
                     onSecondaryClick = actions.onOpenKeyTester,
                     position = SettingsGroupPosition.Middle
                 )
-                SettingsButtonRow(
-                    primaryLabel = coreManagementLabel,
-                    onPrimaryClick = actions.onOpenCoreManagement,
-                    secondaryLabel = uiInspectorLabel,
-                    onSecondaryClick = actions.onStartUiInspector,
-                    position = SettingsGroupPosition.Bottom
+                // logcat 调试器与「UI 检查器」同为调试工具，放进同一行按钮，
+                // 而不是单独占一行列表项——两者是并列的工具入口，不该一个用列表项
+                // 一个用按钮，那会让人以为它们不是一类东西
+                // 三个工具入口：核心管理 / UI 检查器 一行，
+                // logcat 调试器落单、独占下一行（见 SettingsButtonGrid）
+                SettingsButtonGrid(
+                    buttons = listOf(
+                        SettingsButton(coreManagementLabel, actions.onOpenCoreManagement),
+                        SettingsButton(uiInspectorLabel, actions.onStartUiInspector),
+                        SettingsButton(logcatViewerTitle, actions.onOpenLogcatViewer),
+                    ),
+                    position = SettingsGroupPosition.Bottom,
                 )
             }
         }
@@ -1115,34 +1128,74 @@ private fun SettingsButtonRow(
     onSecondaryClick: () -> Unit,
     primaryEnabled: Boolean = true,
     secondaryEnabled: Boolean = true,
-    position: SettingsGroupPosition
+    position: SettingsGroupPosition,
+) {
+    SettingsButtonGrid(
+        buttons = listOf(
+            SettingsButton(primaryLabel, onPrimaryClick, primaryEnabled),
+            SettingsButton(secondaryLabel, onSecondaryClick, secondaryEnabled),
+        ),
+        position = position,
+    )
+}
+
+/**
+ * 一组按钮里的一项。
+ *
+ * @param label 文案。为空表示"这个位置没有按钮"
+ * @param onClick 点击回调
+ */
+private data class SettingsButton(
+    val label: String,
+    val onClick: () -> Unit,
+    val enabled: Boolean = true,
+)
+
+/**
+ * 按钮网格：**每行两个，不满一行时剩下的按钮独占整行**。
+ *
+ * 这样排的原因：
+ * - 三个按钮挤一行时每个只有 1/3 宽，中文文案（"logcat 调试器"）要折成两行才放得下
+ * - 而如果让第三个保持 1/3 宽、右边留空，视觉上又像排版出错
+ * - "两个一行 + 落单的占满"是这两种毛病都没有的排法
+ *
+ * 按**列表**接收而不是固定参数，是为了以后加按钮不用改调用方 ——
+ * 传几个就排几个，落单自动占满。
+ */
+@Composable
+private fun SettingsButtonGrid(
+    buttons: List<SettingsButton>,
+    position: SettingsGroupPosition,
 ) {
     SettingsItemSurface(position = position) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 14.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            FilledTonalButton(
-                modifier = Modifier
-                    .weight(1f)
-                    .height(48.dp),
-                onClick = onPrimaryClick,
-                enabled = primaryEnabled,
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Text(text = primaryLabel)
-            }
-            FilledTonalButton(
-                modifier = Modifier
-                    .weight(1f)
-                    .height(48.dp),
-                onClick = onSecondaryClick,
-                enabled = secondaryEnabled,
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Text(text = secondaryLabel)
+            buttons.chunked(2).forEach { rowButtons ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    // 落单的按钮**独占整行**，不留半格空白 ——
+                    // 留空会让人以为那里本该有东西（排版出错感）
+                    val soloInRow = rowButtons.size == 1 && buttons.size > 1
+
+                    rowButtons.forEach { button ->
+                        FilledTonalButton(
+                            modifier = Modifier
+                                .then(if (soloInRow) Modifier.fillMaxWidth() else Modifier.weight(1f))
+                                .height(48.dp),
+                            onClick = button.onClick,
+                            enabled = button.enabled,
+                            shape = RoundedCornerShape(16.dp),
+                        ) {
+                            Text(text = button.label, maxLines = 1)
+                        }
+                    }
+                }
             }
         }
     }

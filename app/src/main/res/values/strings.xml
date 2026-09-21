@@ -168,6 +168,80 @@
     <string name="model_config_empty_models_body">先添加一个模型，这个供应商就能在聊天里直接使用。</string>
 
     <string name="settings_section_debugging">调试</string>
+    <!-- logcat 调试工具 -->
+    <string name="logcat_notification_channel_name">日志采集</string>
+    <string name="logcat_notification_channel_desc">采集系统日志时显示进度。可在超级岛上查看计时并随时结束。</string>
+    <string name="logcat_capture_island_content">正在采集日志</string>
+    <string name="logcat_capture_stop_action">结束</string>
+    <string name="logcat_capture_finished_content">采集已结束</string>
+    <string name="logcat_state_completed">采集已完成（数据源已固定）</string>
+    <string name="logcat_empty_completed">这批日志里没有符合条件的内容。可以放宽过滤条件，或重新采集。</string>
+    <string name="logcat_status_completed">本次读取 %1$d 行 · 降级 %2$d 行 · %3$s</string>
+    <string name="logcat_action_rescan">重新筛选</string>
+    <string name="logcat_action_release">放弃这批</string>
+    <string name="logcat_find_hint">查找（高亮，不改动结果）</string>
+    <string name="logcat_find_prev">上一个</string>
+    <string name="logcat_find_next">下一个</string>
+    <string name="logcat_action_delete_files">删除采集文件</string>
+    <string name="logcat_completed_hint">这批日志已固定，切换过滤不会改变内容。</string>
+    <string name="logcat_coverage_range">实际覆盖 %1$s</string>
+    <string name="logcat_coverage_truncated">本页已取满「条数」；还有更早的日志，用 A 行的「页码」往后翻。</string>
+    <string name="logcat_action_refresh">检索</string>
+    <string name="logcat_filter_message_label">消息</string>
+    <string name="logcat_filter_message_hint">按消息内容过滤</string>
+    <string name="logcat_wrap_on">自动换行：开</string>
+    <string name="logcat_wrap_off">自动换行：关</string>
+    <!-- logcat 查看器 -->
+    <string name="logcat_viewer_title">logcat 调试器</string>
+    <string name="logcat_viewer_entry_title">logcat 调试器</string>
+    <string name="logcat_action_recapture">重新采集</string>
+    <string name="logcat_viewer_entry_subtitle">采集与查看系统日志，用于调试触发器</string>
+    <string name="logcat_viewer_export">导出</string>
+    <string name="logcat_viewer_export_text">导出为文本 (.log)</string>
+    <string name="logcat_viewer_export_json">导出为 JSON (.json)</string>
+    <string name="logcat_shell_ready">Shell 已就绪</string>
+    <string name="logcat_shell_not_ready">Shell 未就绪：需要 Shizuku 或 Root 权限才能读取系统日志</string>
+    <string name="logcat_section_capture">采集</string>
+    <string name="logcat_state_capturing">采集中</string>
+    <string name="logcat_state_idle">未在采集</string>
+    <string name="logcat_state_stale">上次采集异常结束</string>
+    <string name="logcat_action_start">开始</string>
+    <string name="logcat_action_stop">停止</string>
+    <string name="logcat_action_clear">清理</string>
+    <string name="logcat_timeout_label">时长上限</string>
+    <string name="logcat_section_filter">过滤</string>
+    <string name="logcat_level_label">级别</string>
+    <string name="logcat_tag_label">TAG</string>
+    <string name="logcat_tag_hint">按 TAG 关键字过滤</string>
+    <string name="logcat_tag_stats">TAG 统计</string>
+    <string name="logcat_show_own_app">显示本应用日志</string>
+    <string name="logcat_line_limit_label">条数</string>
+    <string name="logcat_action_clear_list">清空</string>
+    <string name="logcat_refreshing">正在读取…</string>
+    <string name="logcat_tag_stats_title">TAG 统计（共 %1$d 行）</string>
+    <string name="logcat_tag_stats_hint">忽略当前 TAG 过滤（级别过滤保留），点击某项填入过滤框</string>
+    <string name="logcat_tag_stats_empty">没有统计到任何 TAG。可能是采集文件为空，或当前「级别」过滤把日志全筛掉了。</string>
+    <string name="logcat_close">关闭</string>
+
+    <!-- 空结果文案：各类原因必须分开说（§4.6） -->
+    <string name="logcat_empty_rotated">未读到日志。logcat 缓冲区可能已轮转，建议开启「采集」后复现问题。</string>
+    <string name="logcat_empty_just_started">采集刚开始，还没有日志产生。</string>
+    <string name="logcat_empty_stale">上次采集异常结束（App 可能被系统回收）。可点「清理」后重新开始。</string>
+    <string name="logcat_empty_shell">需要 Shizuku 或 Root 权限才能读取系统日志。</string>
+    <string name="logcat_empty_timeout">命令超时。可能是日志量过大，试试调小「条数」。</string>
+    <string name="logcat_empty_filtered">读到了 %1$d 行，但都因当前的级别或 TAG 条件被过滤掉了。放宽条件试试。</string>
+    <string name="logcat_empty_no_filter_hint">没有匹配的日志。</string>
+
+    <!-- 底部状态栏 -->
+    <string name="logcat_status_idle">缓冲区 %1$d 行 · 降级 %2$d 行 · %3$d ms</string>
+    <string name="logcat_status_capturing">本次读取 %1$d 行 · 降级 %2$d 行 · %3$s · %4$d ms</string>
+    <string name="logcat_status_stale">上次采集文件 %1$d 行 · 降级 %2$d 行</string>
+    <string name="logcat_status_no_time_range">无时间范围</string>
+    <string name="logcat_degraded_hint">有 %1$d 行没有 TAG 前缀（多为多行日志的续行），按 message 匹配时可能失配。</string>
+
+    <string name="logcat_toast_exported">已导出 %1$d 行</string>
+    <string name="logcat_toast_export_failed">导出失败：无法写入文件</string>
+    <string name="logcat_toast_nothing_to_export">没有可导出的日志</string>
     <string name="settings_switch_enable_logging">记录调试日志</string>
     <string name="settings_switch_enable_logging_desc">开启后，应用的所有日志将被记录在内存中，直到应用被强制终止。这会略微增加内存占用。</string>
     <string name="settings_switch_enable_telemetry">启用遥测</string>
@@ -344,8 +418,8 @@
     <string name="home_total_workflows">工作流总数</string>
     <string name="home_auto_tasks">自动化任务</string>
     <string name="home_permission_health">权限健康检查</string>
-    <string name="home_core_update_title">Core 更新提醒</string>
-    <string name="home_core_update_desc">检测到新的 Core 版本。当前运行：%1$s，内置版本：%2$s。点击进入管理页面更新。</string>
+    <string name="home_core_update_title">Core 需要重启</string>
+    <string name="home_core_update_desc">检测到 Core 代码有改动，当前跑的还是旧代码。点击进入管理页面重启以加载新版本。</string>
     <string name="home_permission_good">状态：良好，所有权限均已授予</string>
     <string name="home_permission_missing">状态：存在 %d 个缺失的权限</string>
     <string name="home_recent_logs">最近日志</string>
@@ -697,6 +771,7 @@
     <string name="editor_more_advanced_settings">高级设置</string>
     <string name="editor_more_ai_generate">AI 生成</string>
     <string name="editor_more_ui_inspector">UI 检查器</string>
+    <string name="editor_more_logcat_debugger">logcat 调试器</string>
     <string name="add_workflow">添加工作流</string>
 
     <!-- Workflow Metadata -->
@@ -1174,7 +1249,7 @@
     <string name="core_version_summary">当前运行：%1$s  内置版本：%2$s</string>
     <string name="core_version_summary_legacy">当前运行：旧版 Core（未上报版本）  内置版本：%1$s</string>
     <string name="core_version_summary_not_running">Core 未运行  内置版本：%1$s</string>
-    <string name="core_update_available_hint">检测到可更新的 Core，点击下方“更新 Core”加载新版本。</string>
+    <string name="core_update_available_hint">检测到 Core 代码有改动，点击下方按钮重启以加载新版本。</string>
     <string name="mode_root">Root</string>
     <string name="mode_shell">Shell</string>
     <string name="status_not_connected">未连接</string>
@@ -1387,6 +1462,9 @@
     <string name="workflow_chip_missing_permissions">缺少权限</string>
     <string name="workflow_chip_missing_permissions_count">缺 %d 项权限</string>
     <string name="workflow_chip_steps">%d 个步骤</string>
+    <string name="workflow_chip_function">函数</string>
+    <string name="workflow_silent_execution_enabled">静默执行</string>
+    <string name="workflow_silent_execution_desc">执行时不显示进度通知与启动提示。「需要你输入或选择」的提示仍会显示，失败也会通知。</string>
     <string name="workflow_chip_permissions_count">%d 项权限</string>
     <string name="workflow_id_copied">工作流ID已复制</string>
 
@@ -1482,4 +1560,25 @@
     <string name="global_variable_config_invalid_value">变量值不合法</string>
     <string name="global_variable_config_delete_confirm_title">删除全局变量</string>
     <string name="global_variable_config_delete_confirm_message">确定删除全局变量“%1$s”吗？</string>
+
+    <!-- logcat 查看器：往前翻页 -->
+
+
+    <!-- logcat 查看器：采集总量 / 读取量 / 页码 -->
+    <string name="logcat_status_capture">采集 %1$d 行 · 覆盖 %2$s</string>
+    <string name="logcat_status_capture_unknown">采集 总量统计中…（点「TAG 统计」或稍候）</string>
+    <string name="logcat_status_stats_loading">正在统计采集总量…</string>
+    <string name="logcat_status_read">本次读取 %1$d 行%2$s · 覆盖 %3$s</string>
+    <string name="logcat_status_degraded_part"> · 降级 %1$d 行</string>
+    <string name="logcat_page_label">页码</string>
+    <string name="logcat_page_newest">第 %1$d 页（最新）</string>
+    <string name="logcat_page_approx">已跳到第 %1$d 页附近（页码定位是估算的，可能偏几十行）。想精确浏览请用相邻页码。</string>
+    <string name="logcat_read_failed">读取日志失败，列表仍是上一次的内容。请检查 Shell 权限后重试。</string>
+    <string name="logcat_status_matches">本条件命中 %1$d 行（全量）</string>
+    <string name="logcat_status_no_matches">当前条件没有命中任何日志，可放宽过滤条件</string>
+    <string name="logcat_status_counting">正在统计命中数…</string>
+    <string name="logcat_page_empty">本页没有内容，可能已到文件开头</string>
+    <string name="logcat_tag_stats_failed">TAG 统计失败。请确认已开启采集（有采集文件）、且 Shell 权限正常。</string>
+
+
 </resources>

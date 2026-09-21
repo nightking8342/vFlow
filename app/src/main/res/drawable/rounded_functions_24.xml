@@ -1,0 +1,17 @@
+<!-- 函数工作流标注图标：求和符号 Σ。
+     与其他 chip 图标（rounded_security_24 / rounded_dashboard_fill_24）同为 24dp 单色矢量，
+     由 Compose 的 Icon 用 tint 着色。这是 fork 新增文件（上游无此文件）。
+
+     按 960 视口手写并逐顶点核对，是一个对称的简单多边形（无自交，无填充规则歧义）：
+       顶横 y=160..280，底横 y=680..800，左右各留 240 边距；
+       左边界右凸至 (400,480)，右侧凹口折返于 (600,480)，两点关于中线对称。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:height="24dp"
+    android:tint="#000000"
+    android:viewportHeight="960"
+    android:viewportWidth="960"
+    android:width="24dp">
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M240,160L720,160L720,280L440,280L600,480L440,680L720,680L720,800L240,800L240,680L400,480L240,280Z" />
+</vector>

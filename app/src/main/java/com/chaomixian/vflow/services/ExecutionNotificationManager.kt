@@ -80,6 +80,23 @@ internal fun executionNotificationIdFor(workflowId: String): Int =
     NOTIFICATION_ID_BASE + (kotlin.math.abs(workflowId.hashCode()) % NOTIFICATION_ID_RANGE)
 
 /**
+ * 静默执行的工作流是否应当**不发**这条状态通知。
+ *
+ * 抽成顶层纯函数是为了能 JVM 单测——这里的语义（尤其是 [ExecutionNotificationState.Failed]
+ * 的豁免）一旦被误改，表现为「静默工作流失败了却没有任何提示」，靠读代码很难发现。
+ *
+ * **失败豁免是刻意的**：静默的语义是「别播报过程」，不是「炸了也别告诉我」。
+ * 无人值守的静默任务若失败也悄无声息，用户会以为它正常跑着。
+ *
+ * @param silentExecution 工作流的静默开关。
+ * @param state 本次要展示的状态。
+ */
+internal fun shouldSilenceNotification(
+    silentExecution: Boolean,
+    state: ExecutionNotificationState,
+): Boolean = silentExecution && state !is ExecutionNotificationState.Failed
+
+/**
  * 管理工作流执行期间的进度通知。
  * 这是一个单例对象，负责创建、更新和移除状态栏通知。
  */
@@ -133,6 +150,21 @@ object ExecutionNotificationManager {
      * @param state 通知的当前状态 (Running, Completed, Cancelled, Failed)。
      */
     fun updateState(workflow: Workflow, state: ExecutionNotificationState) {
+        // 静默工作流：整个过程性通知都不发。
+        //
+        // 闸门开在这里而不是 WorkflowExecutor 的 9 个 updateState 调用点，
+        // 是为了把改动收在 1 个文件里——执行器是高冲突风险区，散落判断既扩大 diff 又易漏。
+        //
+        // 顺带取消一次：若用户在执行**中途**打开静默开关，之前发出去的通知会残留在通知栏
+        // （后续 updateState 全部 return，Completed 永远不到达，3 秒后的 cancelNotification
+        // 也会被下面的守卫拦掉）。静默是「不可逆的收敛态」，中途开启应当立刻清掉残留。
+        //
+        // 失败状态**豁免**：静默的语义是「别播报过程」，不是「炸了也别告诉我」。
+        if (shouldSilenceNotification(workflow.silentExecution, state)) {
+            notificationManager.cancel(executionNotificationIdFor(workflow.id))
+            return
+        }
+
         val prefs = appContext.getSharedPreferences("vFlowPrefs", Context.MODE_PRIVATE)
         if (!prefs.getBoolean("progressNotificationEnabled", true)) {
             return

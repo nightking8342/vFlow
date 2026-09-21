@@ -245,11 +245,13 @@ fun WorkflowListRoute(
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             pendingWorkflow?.let { workflow ->
-                Toast.makeText(
-                    context,
-                    context.getString(R.string.toast_starting_workflow, workflow.name),
-                    Toast.LENGTH_SHORT
-                ).show()
+                if (!workflow.silentExecution) {
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.toast_starting_workflow, workflow.name),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
                 WorkflowExecutor.execute(
                     workflow = workflow,
                     context = context,
@@ -564,11 +566,13 @@ fun WorkflowListRoute(
                 } else {
                     val missingPermissions = PermissionManager.getMissingPermissions(context, workflow)
                     if (missingPermissions.isEmpty()) {
-                        Toast.makeText(
-                            context,
-                            context.getString(R.string.toast_starting_workflow, workflow.name),
-                            Toast.LENGTH_SHORT
-                        ).show()
+                        if (!workflow.silentExecution) {
+                            Toast.makeText(
+                                context,
+                                context.getString(R.string.toast_starting_workflow, workflow.name),
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
                         WorkflowExecutor.execute(
                             workflow = workflow,
                             context = context,
@@ -595,12 +599,16 @@ fun WorkflowListRoute(
                     60_000L -> context.getString(R.string.workflow_execute_delay_1min)
                     else -> context.getString(R.string.workflow_execute_delay_seconds, delayMs / 1000)
                 }
-                Toast.makeText(
-                    context,
-                    context.getString(R.string.workflow_execute_delayed, delayText, workflow.name),
-                    Toast.LENGTH_SHORT
-                ).show()
-                delayedExecuteHandler.postDelayed({ 
+                // 延时预约的确认横幅同样静默——这是「立即执行」的另一种形态，
+                // 若立即静默、延时仍弹，同一开关下两种行为不一致，看起来像 bug。
+                if (!workflow.silentExecution) {
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.workflow_execute_delayed, delayText, workflow.name),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+                delayedExecuteHandler.postDelayed({
                     val missingPermissions = PermissionManager.getMissingPermissions(context, workflow)
                     if (missingPermissions.isEmpty()) {
                         WorkflowExecutor.execute(

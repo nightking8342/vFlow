@@ -54,6 +54,7 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
     var workflow: Workflow? = null
     var onAiGenerateClicked: (() -> Unit)? = null
     var onUiInspectorClicked: (() -> Unit)? = null
+    var onLogcatDebuggerClicked: (() -> Unit)? = null
     var onMetadataSaved: ((Workflow) -> Unit)? = null
 
     private lateinit var textWorkflowName: TextView
@@ -73,12 +74,14 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
 
     private lateinit var layoutAiGenerate: MaterialCardView
     private lateinit var layoutUiInspector: MaterialCardView
+    private lateinit var layoutLogcatDebugger: MaterialCardView
     private lateinit var cardMoreMetadata: MaterialCardView
     private lateinit var layoutMoreMetadataHeader: LinearLayout
     private lateinit var layoutMoreMetadataContent: LinearLayout
     private lateinit var imageExpandIcon: ImageView
 
     private lateinit var switchMaxExecutionTime: com.google.android.material.materialswitch.MaterialSwitch
+    private lateinit var switchSilentExecution: com.google.android.material.materialswitch.MaterialSwitch
     private lateinit var layoutMaxExecutionTimeSlider: LinearLayout
     private lateinit var textMaxExecutionTimeValue: TextView
     private lateinit var sliderMaxExecutionTime: com.google.android.material.slider.Slider
@@ -147,12 +150,14 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
 
         layoutAiGenerate = view.findViewById(R.id.card_ai_generate)
         layoutUiInspector = view.findViewById(R.id.card_ui_inspector)
+        layoutLogcatDebugger = view.findViewById(R.id.card_logcat_debugger)
         cardMoreMetadata = view.findViewById(R.id.card_more_metadata)
         layoutMoreMetadataHeader = view.findViewById(R.id.layout_more_metadata_header)
         layoutMoreMetadataContent = view.findViewById(R.id.layout_more_metadata_content)
         imageExpandIcon = view.findViewById(R.id.image_expand_icon)
 
         switchMaxExecutionTime = view.findViewById(R.id.switch_max_execution_time)
+        switchSilentExecution = view.findViewById(R.id.switch_silent_execution)
         layoutMaxExecutionTimeSlider = view.findViewById(R.id.layout_max_execution_time_slider)
         textMaxExecutionTimeValue = view.findViewById(R.id.text_max_execution_time_value)
         sliderMaxExecutionTime = view.findViewById(R.id.slider_max_execution_time)
@@ -199,6 +204,7 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
             selectedIconRes = WorkflowVisuals.normalizeIconResName(wf.cardIconRes)
             selectedThemeColor = WorkflowVisuals.normalizeThemeColorHex(wf.cardThemeColor)
             selectedReentryBehavior = wf.reentryBehavior
+            switchSilentExecution.isChecked = wf.silentExecution
             iconPickerAdapter.setSelectedIcon(selectedIconRes)
             themeColorAdapter.setSelectedColor(selectedThemeColor)
             updateVisualPreview()
@@ -228,6 +234,7 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
             selectedIconRes = WorkflowVisuals.defaultIconResName()
             selectedThemeColor = WorkflowVisuals.defaultThemeColorHex()
             selectedReentryBehavior = WorkflowReentryBehavior.BLOCK_NEW
+            switchSilentExecution.isChecked = false
             iconPickerAdapter.setSelectedIcon(selectedIconRes)
             themeColorAdapter.setSelectedColor(selectedThemeColor)
             updateVisualPreview()
@@ -246,6 +253,10 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
 
         layoutUiInspector.setOnClickListener {
             onUiInspectorClicked?.invoke()
+        }
+
+        layoutLogcatDebugger.setOnClickListener {
+            onLogcatDebuggerClicked?.invoke()
         }
 
         // 折叠/展开更多元数据
@@ -413,6 +424,7 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
             tags = tags,
             maxExecutionTime = maxExecutionTime,
             reentryBehavior = selectedReentryBehavior,
+            silentExecution = switchSilentExecution.isChecked,
             cardIconRes = selectedIconRes,
             cardThemeColor = selectedThemeColor
         )

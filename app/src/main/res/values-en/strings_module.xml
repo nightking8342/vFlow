@@ -3386,4 +3386,42 @@
     <string name="error_vflow_external_module_failed">The external extension returned a failure.</string>
     <string name="error_vflow_external_module_exception_title">Extension exception</string>
     <string name="error_vflow_external_module_unknown">An unknown error occurred.</string>
+    <!-- Do Not Disturb trigger (fork addition) -->
+    <!-- logcat trigger -->
+    <string name="module_vflow_trigger_logcat_name">Logcat Trigger</string>
+    <string name="module_vflow_trigger_logcat_desc">Trigger a workflow when matching content appears in device logs</string>
+    <string name="param_vflow_trigger_logcat_tag_filter_type_name">TAG condition</string>
+    <string name="param_vflow_trigger_logcat_tag_filter_value_name">TAG value</string>
+    <string name="param_vflow_trigger_logcat_message_filter_type_name">Message condition</string>
+    <string name="param_vflow_trigger_logcat_message_filter_value_name">Message value</string>
+    <string name="param_vflow_trigger_logcat_min_level_name">Minimum level</string>
+    <string name="param_vflow_trigger_logcat_cooldown_name">Cooldown (ms)</string>
+    <string name="param_vflow_trigger_logcat_exclude_self_name">Exclude this app\'s logs</string>
+    <string name="option_vflow_trigger_logcat_any">Any</string>
+    <string name="option_vflow_trigger_logcat_equals">Equals</string>
+    <string name="option_vflow_trigger_logcat_contains">Contains</string>
+    <string name="option_vflow_trigger_logcat_regex">Regex</string>
+    <string name="option_vflow_trigger_logcat_level_v">V Verbose</string>
+    <string name="option_vflow_trigger_logcat_level_d">D Debug</string>
+    <string name="option_vflow_trigger_logcat_level_i">I Info</string>
+    <string name="option_vflow_trigger_logcat_level_w">W Warn</string>
+    <string name="option_vflow_trigger_logcat_level_e">E Error</string>
+    <string name="option_vflow_trigger_logcat_level_f">F Fatal</string>
+    <string name="option_vflow_trigger_logcat_exclude_self_on">Exclude</string>
+    <string name="option_vflow_trigger_logcat_exclude_self_off">Include</string>
+    <string name="output_vflow_trigger_logcat_message_name">Message</string>
+    <string name="output_vflow_trigger_logcat_tag_name">TAG</string>
+    <string name="output_vflow_trigger_logcat_level_name">Level</string>
+    <string name="output_vflow_trigger_logcat_pid_name">PID</string>
+    <string name="output_vflow_trigger_logcat_raw_name">Raw line</string>
+    <string name="summary_vflow_trigger_logcat_prefix">When a log</string>
+    <string name="module_vflow_trigger_do_not_disturb_name">Do Not Disturb Trigger</string>
+    <string name="module_vflow_trigger_do_not_disturb_desc">Trigger the workflow when Do Not Disturb is turned on or off</string>
+    <string name="param_vflow_trigger_do_not_disturb_state_name">Trigger Condition</string>
+    <string name="summary_vflow_trigger_do_not_disturb_prefix">Do Not Disturb</string>
+    <string name="option_vflow_trigger_do_not_disturb_on">When turned on</string>
+    <string name="option_vflow_trigger_do_not_disturb_off">When turned off</string>
+    <string name="option_vflow_trigger_do_not_disturb_any">Any change</string>
+    <string name="output_vflow_trigger_do_not_disturb_enabled_name">Do Not Disturb is on</string>
+    <string name="output_vflow_trigger_do_not_disturb_previous_enabled_name">Was on before the change</string>
 </resources>

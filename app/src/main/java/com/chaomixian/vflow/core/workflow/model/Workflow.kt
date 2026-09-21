@@ -30,6 +30,15 @@ data class Workflow(
     var tags: List<String> = emptyList(),
     var maxExecutionTime: Int? = null,
     var reentryBehavior: WorkflowReentryBehavior = WorkflowReentryBehavior.BLOCK_NEW,
+    /**
+     * 静默执行：执行时不发「过程性噪音」——执行进度通知与「开始执行」Toast。
+     *
+     * **不静音**「需要用户交互」的通知（ExecutionUIService 的输入/选择/错误弹窗）：
+     * 那些是工作流在**等用户操作**的信号，静音掉的工作流会静默挂起，用户不知该去点一下。
+     *
+     * 失败通知**豁免**本开关——静默的语义是「别播报过程」，不是「炸了也别告诉我」。
+     */
+    var silentExecution: Boolean = false,
     // 新增：函数工作流的签名声明。null = 普通工作流（非函数）。
     var functionSignature: FunctionSignature? = null
 ) : Parcelable {

@@ -63,6 +63,7 @@ import com.chaomixian.vflow.permissions.PermissionManager
 import com.chaomixian.vflow.ui.app_picker.AppPickerMode
 import com.chaomixian.vflow.ui.app_picker.UnifiedAppPickerSheet
 import com.chaomixian.vflow.ui.common.BaseActivity
+import com.chaomixian.vflow.ui.settings.LogcatViewerActivity
 import com.chaomixian.vflow.ui.workflow_editor.inspector.WorkflowInspectorInsertController
 import com.google.android.material.appbar.AppBarLayout
 import com.google.android.material.appbar.MaterialToolbar
@@ -137,7 +138,9 @@ class WorkflowEditorActivity : BaseActivity() {
         if (result.resultCode == Activity.RESULT_OK) {
             pendingExecutionWorkflow?.let {
                 executionTracker.beginExecutionTracking(it.id)
-                toast(getString(R.string.editor_toast_execution_start, it.name))
+                if (!it.silentExecution) {
+                    toast(getString(R.string.editor_toast_execution_start, it.name))
+                }
                 val executionInstanceId = WorkflowExecutor.execute(
                     workflow = it,
                     context = this,
@@ -851,7 +854,9 @@ class WorkflowEditorActivity : BaseActivity() {
         val missingPermissions = PermissionManager.getMissingPermissions(this, workflow)
         if (missingPermissions.isEmpty()) {
             executionTracker.beginExecutionTracking(workflow.id)
-            toast(getString(R.string.editor_toast_execution_start, workflow.name))
+            if (!workflow.silentExecution) {
+                toast(getString(R.string.editor_toast_execution_start, workflow.name))
+            }
             val executionInstanceId = WorkflowExecutor.execute(
                 workflow = workflow,
                 context = this,
@@ -1674,7 +1679,9 @@ class WorkflowEditorActivity : BaseActivity() {
             60_000L -> getString(R.string.workflow_execute_delay_1min)
             else -> getString(R.string.workflow_execute_delay_seconds, delayMs / 1000)
         }
-        toast(getString(R.string.workflow_execute_delayed, delayText, workflow.name))
+        if (!workflow.silentExecution) {
+            toast(getString(R.string.workflow_execute_delayed, delayText, workflow.name))
+        }
         delayedExecuteHandler.postDelayed({
             val missingPermissions = PermissionManager.getMissingPermissions(this, workflow)
             if (missingPermissions.isEmpty()) {
@@ -2002,6 +2009,10 @@ class WorkflowEditorActivity : BaseActivity() {
         sheet.onUiInspectorClicked = {
             dismissAllSheets()
             inspectorInsertController.startInspector()
+        }
+        sheet.onLogcatDebuggerClicked = {
+            dismissAllSheets()
+            startActivity(Intent(this, LogcatViewerActivity::class.java))
         }
         sheet.onMetadataSaved = { updatedWorkflow ->
             currentWorkflow = updatedWorkflow

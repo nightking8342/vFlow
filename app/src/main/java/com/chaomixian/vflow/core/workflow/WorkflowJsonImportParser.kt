@@ -123,7 +123,9 @@ class WorkflowJsonImportParser(
             homepage = data.getString("homepage") ?: meta?.getString("homepage") ?: "",
             tags = data.getStringList("tags") ?: meta?.getStringList("tags") ?: emptyList(),
             maxExecutionTime = data.getInt("maxExecutionTime"),
-            reentryBehavior = WorkflowReentryBehavior.fromStoredValue(data.getString("reentryBehavior"))
+            reentryBehavior = WorkflowReentryBehavior.fromStoredValue(data.getString("reentryBehavior")),
+            // 旧导出文件没有这个键 → false（保持既有行为）。
+            silentExecution = data.getBoolean("silentExecution") ?: false
         )
         return sanitizeWorkflow(workflow)
     }
