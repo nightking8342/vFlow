@@ -89,8 +89,35 @@ class LogcatEventQueue(capacity: Int = DEFAULT_CAPACITY) {
     /** 当前积压量。用于界面/诊断判断是否在过载。 */
     fun size(): Int = queue.size
 
-    /** 清空队列（流结束时调用，避免旧事件串到下一次）。 */
-    fun clear() {
+    /**
+     * 丢弃队列里积压的事件（换代时调用，避免旧事件串到下一次流）。
+     *
+     * ⚠️ **本方法故意不清 `dropped` / `accepted` 计数。**
+     *
+     * 清队列的语义是"不要再发了"，不是"假装没丢过" ——
+     * 丢弃数是用来告诉用户「丢过 N 条」的，必须留到 [drainDropped] 上报为止。
+     * 在这里清零会让那次上报永远发不出去，用户就再也知道不了丢过日志。
+     *
+     * （这是原有设计，且 [LogcatEventQueueTest] 有测试锁住。
+     * 我曾试图让本方法连计数一起清 —— 那是错的，已回退。）
+     *
+     * @return 本次清掉的积压条数，便于调用方决定是否需要提示
+     */
+    fun clear(): Int {
+        val n = queue.size
         queue.clear()
+        return n
+    }
+
+    /**
+     * 重置**全部**计数与队列 —— 仅在"确认上一代的丢弃数已经上报完毕"后调用。
+     *
+     * ⚠️ 与 [clear] 的区别：那个只丢事件、保留计数；这个连计数一起清。
+     * 换代时**不要**直接用它 —— 先把 [drainDropped] 的结果上报出去，再调本方法。
+     */
+    fun resetAll() {
+        queue.clear()
+        dropped.set(0)
+        accepted.set(0)
     }
 }

@@ -117,19 +117,93 @@ class LogcatStreamWrapper :
     /** 当前条件列表。**整体替换**，不做部分更新（§6.5.2）。 */
     private val conditions = AtomicReference<List<LogcatCondition>>(emptyList())
 
-    @Volatile
-    private var running = false
+    /**
+     * 泵的运行标志。
+     *
+     * ⚠️⚠️ **它必须与"某一次具体的流"绑定，不能跨流共用。**
+     *
+     * ## 原先的缺陷（用户报「装包后 logcat 触发器失灵，重启或重存工作流才恢复」）
+     *
+     * 原实现是一个共用的 `@Volatile var running`，`stopPump()` 置 false、
+     * `handleStream()` 置 true。问题出在**新流建立时旧泵还没退干净**：
+     *
+     * ```
+     * t0  stopPump():   running = false
+     * t1  新流订阅:      running = true        ← 旧泵还没观察到 false
+     * t2  旧泵循环时:    while (running) → true → 【继续跑】
+     * t3  两个泵同时跑，抢同一个进程与队列
+     * ```
+     *
+     * 触发场景很具体：**App 被安装/强杀时 socket 不发 FIN**，
+     * Core 的 `controlLoop` 不会立刻返回，旧泵因而不退出；
+     * 新 App 起来重新订阅时，`startPump()` 看到 `pumpThread?.isAlive == true`
+     * 就跳过启动 —— 而那个"还活着"的泵绑的是**已死的旧 socket**，
+     * 事件全推给废弃的 writer，App 永远收不到。
+     *
+     * 「重存工作流」之所以能恢复，是因为它走 `removeTrigger` → `streamJob.cancel()`
+     * → **App 主动关 socket** → Core 立刻收到 EOF → 旧泵真正退场。
+     * 也就是说：**只有"干净断开一次"才能自愈**，这正是缺陷特征。
+     *
+     * 现在用 `[generation]` 做代次隔离：每次 `handleStream` 领一个新代号，
+     * 泵只认自己那一代的代号。旧泵即使存活，也会在下一轮循环发现
+     * "我的代号过期了"而退出，**不会再与新泵抢**。
+     */
+    private val generation = AtomicLong(0)
 
+    /** 当前活跃代的运行标志；由 [generation] 与 [activeGen] 共同决定。 */
+    @Volatile
+    private var activeGen = -1L
+
+    /** 某代是否仍在运行。泵线程用它判断"我这一代还算不算数"。 */
+    private fun isCurrent(gen: Long): Boolean = activeGen == gen
+
+    /**
+     * 保护「换代」那几行（`stopPump` → 领代号 → `startPump`）。
+     *
+     * ⚠️ **不要拿它包住 `controlLoop`** —— 那个循环要阻塞到对端断开，
+     * 包进来的话第二条连接会被挂死，正好毁掉本次修复的目的。
+     */
+    private val takeoverLock = Any()
+
+    /**
+     * 泵线程。
+     *
+     * ⚠️ **只写不读**：泵线程自己写，`stopPump()` 里置 null 也没有任何读取点
+     * （守卫已改用代号）。保留字段只是为了诊断时能看到线程对象，
+     * 不要再用它做"IsAlive → 跳过启动"这类判断 —— 那正是原缺陷。
+     */
     private var pumpThread: Thread? = null
+
+    /** 写线程。跨线程读写，故用 `@Volatile`（`startWriter` 会 interrupt 旧的）。 */
+    @Volatile
     private var writeThread: Thread? = null
+
+    /**
+     * 当前代的 logcat 进程。
+     *
+     * ⚠️ **必须 `@Volatile`**：泵线程写它（`runLogcat` 里 `logcatProcess = process`），
+     * 而**另一个线程**（新连接的 `stopPump()`）读它并 destroy。
+     * 两者之间没有 happens-before 边（不是通过 Thread.start 传递的），
+     * 非 volatile 时新线程可能读到 null → 旧进程不被 destroy →
+     * 旧泵继续阻塞在自己的 readLine 上，把"新旧两个 logcat 并存"的窗口
+     * 从微秒级拉长到"下一行日志到来"。
+     *
+     * ⚠️ 泵线程退出时用的是它**自己捕获的局部 process**，不是这个字段 ——
+     * 所以即使换代交错，也不会误杀别的代的进程。
+     */
+    @Volatile
     private var logcatProcess: Process? = null
 
     /**
      * 待发送事件的有界队列。丢弃策略与计数都在它内部（独立类，有单测）。
+     *
+     * ⚠️ 跨代共享，但**每次换代都会 `clear()`**（见 `startPump`）——
+     * 不清的话旧代积压的事件会由新代写线程推给 App 并误触发工作流。
      */
+    @Volatile
     private var queue: LogcatEventQueue? = null
 
-    /** 已成功发出的事件数。用于让用户看到"实际推了多少"。 */
+    /** 已成功发出的事件数。用于让用户看到"实际推了多少"。**换代时清零。** */
     private val sentCount = java.util.concurrent.atomic.AtomicLong(0)
 
     /**
@@ -170,15 +244,31 @@ class LogcatStreamWrapper :
         writer.println(JSONObject().put("success", true).put("event", "ready").toString())
         if (writer.checkError()) return true
 
-        running = true
-        startPump(writer)
+        // ⚠️ 换代这一段**必须互斥**：`BaseWorker` 对每条连接各起一个线程，
+        // 两个订阅帧几乎同时到达时，`stopPump()` + `incrementAndGet()` +
+        // `activeGen = gen` + `startPump()` 这套多步操作会交错 ——
+        // 最直接的后果是 `queue` 被创建两份、丢掉一份（惰性初始化竞态）。
+        //
+        // 只锁这一段、**不锁整个方法**：下面的 `controlLoop` 是阻塞的
+        // （要一直读控制帧直到对端断开），整体加锁会把第二条连接直接挂死。
+        val gen = synchronized(takeoverLock) {
+            // **先 stopPump 清掉上一代**，再发布新代号 —— 顺序不能反：
+            // 否则上一代的泵可能在本代代号发布后又"复活"一轮
+            stopPump()
+            val g = generation.incrementAndGet()
+            activeGen = g
+            startPump(writer, g)
+            g
+        }
 
         try {
             // 主线程留给控制帧。这里阻塞是**必要的**——它同时充当断流检测：
             // App 一断开，readLine 立刻返回 null
-            controlLoop(reader, writer)
+            controlLoop(reader, writer, gen)
         } finally {
-            stopPump()
+            // ⚠️ 只有当**自己这一代仍然活跃**时才清理。
+            // 若期间已有新流接管（activeGen 变了），这次清理会误伤新流
+            if (isCurrent(gen)) stopPump()
         }
 
         return true
@@ -191,8 +281,12 @@ class LogcatStreamWrapper :
      * 日志稀少时 App 断开了 Core 完全无感（§6.5.4），
      * 而这里一旦 `readLine()` 返回 null 就知道该收工了。
      */
-    private fun controlLoop(reader: BufferedReader, writer: PrintWriter) {
-        while (running) {
+    private fun controlLoop(reader: BufferedReader, writer: PrintWriter, startGen: Long) {
+        // ⚠️ 用 var：空条件停泵后若条件又变回非空，本连接会**重新领一个新代号**
+        // 拉起泵（见下面 METHOD_UPDATE_TRIGGERS 分支）。
+        // 用 val 的话这一代永远"已过期"，泵再也起不来
+        var gen = startGen
+        while (isCurrent(gen)) {
             val line = try {
                 reader.readLine()
             } catch (e: Exception) {
@@ -211,11 +305,17 @@ class LogcatStreamWrapper :
                         conditions.set(next)
 
                         // §7.1：空列表意味着"没有触发器了"，应停掉 logcat 进程省资源，
-                        // 而不是让它空转
+                        // 而不是让它空转。
+                        // ⚠️ 这里用 stopPumpForGen 而不是 stopPump：只停**泵**，
+                        // 本连接的 controlLoop 要继续跑（条件可能还会变回来）
                         if (next.isEmpty()) {
                             stopPump()
-                        } else if (pumpThread?.isAlive != true) {
-                            startPump(writer)
+                        } else if (!isCurrent(gen)) {
+                            // 上一轮空条件把泵停了 → 重新领代号拉起
+                            val revived = generation.incrementAndGet()
+                            activeGen = revived
+                            startPump(writer, revived)
+                            gen = revived
                         }
 
                         writer.println(
@@ -237,25 +337,54 @@ class LogcatStreamWrapper :
 
     // ── logcat 泵 ────────────────────────────────────────────────
 
-    private fun startPump(writer: PrintWriter) {
-        if (pumpThread?.isAlive == true) return
-
+    /**
+     * 启动泵。每次流订阅调用一次，持有**属于本次流**的 [gen]。
+     *
+     * ⚠️ 不再用 `pumpThread?.isAlive` 做守卫 —— 那个守卫配合共用 `running`
+     * 会让"旧泵还活着"变成"新泵不启动"，而旧泵绑的是已死的 socket（见 [generation] 的说明）。
+     * 现在的守卫换成了代号：**只要不是当前代，旧泵下一轮必然自杀**，
+     * 而新泵总是会被创建出来。
+     */
+    private fun startPump(writer: PrintWriter, gen: Long) {
         // 队列与写线程必须一起起 —— 泵线程只管入队，不碰 socket
-        if (queue == null) queue = LogcatEventQueue(QUEUE_CAPACITY)
-        startWriter(writer)
+        val q = queue ?: LogcatEventQueue(QUEUE_CAPACITY).also { queue = it }
+
+        // ⚠️⚠️ **换代必须先清空队列**，否则旧代积压的事件会由新代的写线程
+        // 推给 App —— 而那些事件带着**仍然存在的 triggerId**，
+        // App 侧按 id 定位成功 → 【几分钟前的旧日志触发了刚重启后的工作流】。
+        //
+        // 这是"新流消费旧积压"的组合，只在代次切换后成立；
+        // 旧实现（共用 running + isAlive 守卫）因为旧泵永不退出，
+        // 反而不存在这个组合 —— 所以它是本次代次隔离【引入】的问题。
+        //
+        // ⚠️ 调 `reportStats` **再** `clear()`，顺序不能反 ——
+        // 上一代可能有没上报完的丢弃数，而换代这个时点是最后一次机会：
+        // 它写的是**旧 writer**（还能不能写通另说，但至少尝试过）。
+        // `reportStats` 内部走 `drainDropped()`（读+清零），无事可报时自身就 return，
+        // 所以这里不必先判断。
+        //
+        // ⚠️ 用 `clear()`（只丢积压事件）而不是连计数一起清：
+        // **丢弃数必须留到上报为止** —— 它是用户知道"丢过日志"的唯一途径。
+        reportStats(writer)
+        q.clear()
+
+        // 发送计数是"本次会话推了多少"的展示口径，跨代累加会让用户
+        // 看到一个与当前会话无关的数字，所以换代时归零
+        sentCount.set(0)
+        startWriter(writer, gen)
 
         pumpThread = thread(name = "vflow-logcat-pump", isDaemon = true) {
             // 照 VoiceTriggerHandler 的重试模式（文档 §6.4）：
             // logcat 意外退出时重启，而不是让整条流就此死掉
-            while (running) {
+            while (isCurrent(gen)) {
                 try {
-                    runLogcat(writer)
+                    runLogcat(writer, gen)
                 } catch (e: Exception) {
-                    if (running) {
+                    if (isCurrent(gen)) {
                         System.err.println("[logcat] 泵异常退出，将重启: ${e.message}")
                     }
                 }
-                if (!running) break
+                if (!isCurrent(gen)) break
 
                 // ⚠️ 退避前先确认进程真的结束了。
                 // 固定 delay 后重启会在"进程还在退出中"时撞上端口/资源冲突，
@@ -265,13 +394,20 @@ class LogcatStreamWrapper :
         }
     }
 
+    /**
+     * 停掉**当前代**的泵。
+     *
+     * ⚠️ `activeGen = -1` 而不是某个"运行中"布尔 —— 这样即使有**旧代的泵
+     * 还卡在阻塞读上**，它醒来时发现 `isCurrent(旧gen)` 为假就会自行退出，
+     * 不需要我们去 join 它（join 会阻塞调用线程，代价更大）。
+     */
     private fun stopPump() {
-        running = false
+        activeGen = -1L
         // destroy 会让阻塞在 stdout 上的 readLine 返回 null，泵线程据此退出
         runCatching { logcatProcess?.destroy() }
         logcatProcess = null
         pumpThread = null
-        // 写线程靠 running 标志与队列中断退出；唤醒它以免卡在 take() 上
+        // 写线程靠代号与队列中断退出；唤醒它以免卡在 take() 上
         writeThread?.interrupt()
         writeThread = null
     }
@@ -308,19 +444,35 @@ class LogcatStreamWrapper :
      * 与泵线程分离，这样**写慢不会反压到读**。
      * 唯一的耦合点是队列，而队列满的处理是明确的丢弃 + 计数。
      */
-    private fun startWriter(writer: PrintWriter) {
-        if (writeThread?.isAlive == true) return
+    private fun startWriter(writer: PrintWriter, gen: Long) {
+        // ⚠️ 与泵同源：不用 `writeThread?.isAlive` 守卫 ——
+        // 旧写线程可能绑着已死的 socket 还活着，守卫会让新写线程起不来。
+        //
+        // ⚠️⚠️ **但不要以为 interrupt 一定收得回旧写线程。**
+        // 它可能正阻塞在 `writer.println` 上：Java 的 `soTimeout` **只管读**，
+        // 没有 `SO_SNDTIMEO`，`SocketOutputStream` 也不可中断 ——
+        // 对端不读时（Android 杀进程前会先 cgroup freezer 冻结进程，
+        // 这正是"不发 FIN"的现实来源）它会**卡到对端被回收为止**。
+        //
+        // 因此本方法只能保证"新写线程一定会建起来"，不能保证"旧的会立刻退场"。
+        // 这类僵尸线程的根治要靠协议层心跳（见类注释的待办），
+        // 现在至少做到：**它已经取走的那条事件被正确计数**，
+        // 不会既没送达又不计丢弃（见下面的 sentCount 位置）。
+        writeThread?.interrupt()
 
         writeThread = thread(name = "vflow-logcat-writer", isDaemon = true) {
             var lastStatsAt = System.currentTimeMillis()
 
-            while (running) {
+            while (isCurrent(gen)) {
                 // 带超时地取，这样既能及时响应停止，又能定期上报统计
                 val payload = queue?.poll(STATS_INTERVAL_MS)
 
                 if (payload != null) {
                     writer.println(payload)
                     if (writer.checkError()) break
+                    // ⚠️ 计数放在 `checkError()` **之后** —— 它代表"这一条真的发出去了"。
+                    // 放在 println 之前/中间的话，若那条卡在写缓冲里再也没送达，
+                    // 用户看到的"累计推送 N 条"会偏高，而它是判断过载的唯一参照
                     sentCount.incrementAndGet()
                 }
 
@@ -334,8 +486,10 @@ class LogcatStreamWrapper :
                 }
             }
 
-            // 退出前再报一次，免得最后的丢弃数没送到
-            reportStats(writer)
+            // 退出前再报一次，免得最后的丢弃数没送到。
+            // ⚠️ 只在仍是当前代时才报 —— 换代时队列已被 clear() 清零，
+            // 僵尸线程这次上报会把新流刚积累的丢弃数抢走并写到死 socket 上
+            if (isCurrent(gen)) reportStats(writer)
         }
     }
 
@@ -359,7 +513,7 @@ class LogcatStreamWrapper :
         )
     }
 
-    private fun runLogcat(writer: PrintWriter) {
+    private fun runLogcat(writer: PrintWriter, gen: Long) {
         val process = ProcessBuilder(
             LOGCAT_BIN, "-v", "threadtime",
             // ⚠️ `-T 1` 而不是 `logcat -c`（文档 §6.4）：
@@ -376,7 +530,9 @@ class LogcatStreamWrapper :
         try {
             process.inputStream.bufferedReader().use { reader ->
                 val parser = LogcatLineParser()
-                while (running) {
+                // ⚠️ 用**代号**而不是共用布尔：本代被取代时立刻停止读，
+                // 不让两个泵同时消费同一个 logcat stdout
+                while (isCurrent(gen)) {
                     val line = reader.readLine() ?: break
 
                     val parsed = parser.parse(line) ?: continue
