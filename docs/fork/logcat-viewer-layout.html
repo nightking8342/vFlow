@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>logcat 调试器 · 布局方案评审 v3</title>
+<style>
+  :root{
+    --bg:#0f1115;--panel:#171a21;--line:#2a2f3a;--fg:#e6e9ef;--dim:#9aa3b2;
+    --accent:#7aa2f7;--warn:#e0af68;--err:#f7768e;--ok:#9ece6a;
+    --surface:#1f232c;--sv:#252a34;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;padding:24px}
+  h1{font-size:19px;margin:0 0 4px}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:18px}
+  .sub b{color:var(--accent)}
+  .wrap{display:flex;gap:28px;align-items:flex-start;flex-wrap:wrap}
+
+  .phone{width:390px;height:780px;background:#000;border-radius:34px;padding:9px;
+         box-shadow:0 0 0 1px #333,0 22px 50px rgba(0,0,0,.6);flex:0 0 auto}
+  .screen{width:100%;height:100%;background:var(--bg);border-radius:26px;overflow:hidden;
+          display:flex;flex-direction:column;position:relative}
+
+  .topbar{height:56px;flex:0 0 56px;display:flex;align-items:center;gap:4px;
+          padding:0 6px 0 4px;background:var(--sv);border-bottom:1px solid var(--line);
+          position:relative;z-index:20}
+  .topbar .title{flex:1;font-size:16px;font-weight:500;margin-left:4px}
+  .iconbtn{width:40px;height:40px;border-radius:50%;display:grid;place-items:center;
+           cursor:pointer;color:var(--dim);font-size:17px;user-select:none;border:none;background:none}
+  .iconbtn:hover{background:rgba(255,255,255,.07)}
+  .iconbtn.on{color:var(--accent);background:rgba(122,162,247,.14)}
+
+  /* ① 上方区：高度可收缩，内容整体上移，顶部裁切 */
+  .upper{flex:0 0 auto;overflow:hidden;position:relative;cursor:grab;background:var(--bg)}
+  .upper.dragging{cursor:grabbing}
+  .upper-inner{will-change:transform}
+  .zoneTag{position:absolute;left:0;right:0;bottom:0;height:0;z-index:5}
+
+  .sec{padding:10px 14px}
+  .sec.order{border-top:1px solid var(--line)}
+  .sec-title{font-size:12px;color:var(--dim);letter-spacing:.4px;margin-bottom:6px}
+  .row{display:flex;align-items:center;gap:8px;margin:5px 0}
+  .row .lab{width:44px;flex:0 0 44px;font-size:12px;color:var(--dim)}
+  .field{flex:1;height:34px;border:1px solid #3a4150;border-radius:4px;background:transparent;
+         color:var(--fg);padding:0 10px;font-size:12px;min-width:0}
+  .field::placeholder{color:#5d6675}
+  .chip{padding:3px 11px;border-radius:14px;border:1px solid #3a4150;font-size:12px;
+        font-family:ui-monospace,Consolas,monospace;color:var(--dim);cursor:pointer}
+  .chip.sel{background:#2b3550;border-color:var(--accent);color:#cfe0ff}
+  .btn{padding:5px 11px;border-radius:5px;border:1px solid #3a4150;background:transparent;
+       color:var(--accent);font-size:12px;cursor:pointer;white-space:nowrap}
+  .btn:hover{background:rgba(122,162,247,.12)}
+  .btn.danger{color:var(--err)}
+  .cbbar{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dim);padding:2px 0}
+  .cb{width:15px;height:15px;border:1.5px solid #5d6675;border-radius:2px;
+      display:grid;place-items:center;font-size:10px;color:transparent}
+  .cb.on{background:var(--accent);border-color:var(--accent);color:#0b1020}
+  .banner{background:#2a3140;font-size:11px;color:#c8d0dd;padding:5px 14px}
+
+  /* ② A 行：常驻固定 */
+  .arow{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:6px 12px;
+        background:var(--surface);border-top:1px solid var(--line);
+        border-bottom:1px solid var(--line);position:relative;z-index:10}
+  .arow .lab{font-size:12px;color:var(--dim)}
+  .spacer{flex:1}
+
+  /* ③ 日志区：独立滚动 */
+  .logs{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;
+        font:11px/1.5 ui-monospace,Consolas,monospace;padding:2px 0;background:var(--bg)}
+  .logs::-webkit-scrollbar{width:5px}
+  .logs::-webkit-scrollbar-thumb{background:#3a4150;border-radius:3px}
+  .lg{padding:1px 12px;white-space:pre;color:#c3cad6}
+  .lg.w{color:var(--warn)} .lg.e{color:var(--err)}
+  .lg.c{color:#727b8a;padding-left:22px}
+  .lg.hl{background:#4a3b1c}
+
+  .statusbar{flex:0 0 auto;background:var(--surface);border-top:1px solid var(--line);
+             padding:6px 14px;font:11px/1.5 ui-monospace,Consolas,monospace;color:#b9c1cd;z-index:20}
+  .statusbar .dim{color:var(--dim);display:flex;justify-content:space-between;gap:8px}
+  .statusbar .dim b{color:var(--warn)}
+
+  .toast{position:absolute;left:50%;bottom:74px;transform:translateX(-50%);
+         background:rgba(30,35,44,.97);border:1px solid var(--line);color:#dfe5ee;
+         font-size:11px;padding:6px 13px;border-radius:16px;white-space:nowrap;
+         opacity:0;transition:opacity .25s;pointer-events:none;z-index:30;max-width:92%;text-align:center}
+  .toast.show{opacity:1}
+
+  .side{flex:1 1 400px;min-width:340px;max-width:540px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
+  .card h2{font-size:14px;margin:0 0 10px;color:var(--accent)}
+  .card ul{margin:0;padding-left:18px;color:#c9d1dc;font-size:13px}
+  .card li{margin:6px 0}
+  code{background:#232833;padding:1px 5px;border-radius:4px;
+       font:12px ui-monospace,Consolas,monospace;color:#a9c4ff}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px}
+  th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--dim);font-weight:500}
+  .bad{color:var(--err)} .good{color:var(--ok)} .warnc{color:var(--warn)}
+  .risk{background:#2a2318;border:1px solid #4a3b1c;border-radius:8px;padding:10px 12px;
+        margin-top:10px;font-size:12.5px;color:#e8d5b0}
+  .hint{font-size:12px;color:var(--dim);margin-top:8px}
+</style>
+</head>
+<body>
+
+<h1>logcat 调试器 · 布局方案 v3</h1>
+<div class="sub">
+  手指在<b>日志区</b>滑动 → <b>只有日志滚</b>，上方区纹丝不动。<br>
+  手指在<b>日志区以外</b>（上方信息区 / A 行）滑动 → <b>驱动上方区收缩</b>，日志区随之变高，直到上方区只剩 A 行。
+</div>
+
+<div class="wrap">
+  <div class="phone">
+    <div class="screen">
+
+      <div class="topbar">
+        <button class="iconbtn" title="返回">←</button>
+        <div class="title">logcat 调试器</div>
+        <button class="iconbtn" id="btnSearch" title="查找">🔍</button>
+        <button class="iconbtn" title="导出">⤴</button>
+      </div>
+
+      <!-- ① 上方区：手指在这里滑 → 收缩 -->
+      <div class="upper" id="upper">
+        <div class="upper-inner" id="upperInner">
+          <div class="banner">Shell 就绪 · 在此区滑动可收起（拖我试试）</div>
+
+          <div class="sec">
+            <div class="sec-title">采集</div>
+            <div class="row">
+              <span style="flex:1;font-size:13px">采集</span>
+              <span style="font:13px ui-monospace,monospace;color:var(--accent)">00:42</span>
+              <button class="btn" style="color:var(--fg);border-color:#5d6675">停止</button>
+            </div>
+            <div style="font-size:11px;color:var(--dim)">采集中</div>
+            <div class="row" style="margin-top:8px">
+              <span style="flex:1;font-size:12px">采集时长上限</span>
+              <button class="btn">10 分钟 ▾</button>
+            </div>
+          </div>
+
+          <div class="sec order" id="findbar" style="display:none">
+            <div class="row" style="margin:0">
+              <input class="field" id="findInput" placeholder="查找（只高亮，不筛掉上下文）">
+              <span style="font:12px ui-monospace,monospace;color:var(--accent)">2/17</span>
+              <button class="iconbtn" style="width:34px;height:34px">↑</button>
+              <button class="iconbtn" style="width:34px;height:34px">↓</button>
+              <button class="iconbtn" style="width:34px;height:34px" id="findClose">✕</button>
+            </div>
+          </div>
+
+          <div class="sec order">
+            <div class="sec-title">过滤</div>
+            <div class="row">
+              <span class="lab">级别</span>
+              <span class="chip">V</span><span class="chip sel">D</span>
+              <span class="chip">I</span><span class="chip">W</span>
+              <span class="chip">E</span><span class="chip">F</span>
+            </div>
+            <div class="row">
+              <span class="lab">TAG</span>
+              <input class="field" placeholder="如 ActivityManager">
+              <button class="btn">TAG 统计</button>
+            </div>
+            <div class="row">
+              <span class="lab">消息</span>
+              <input class="field" placeholder="消息内容包含">
+              <span style="width:76px;flex:0 0 76px"></span>
+            </div>
+            <div class="cbbar"><span class="cb on">✓</span>显示本应用日志</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ② A 行：常驻 -->
+      <div class="arow" id="arow">
+        <span class="lab">条数</span>
+        <button class="btn">500 ▾</button>
+        <span class="spacer"></span>
+        <button class="btn">检索</button>
+        <button class="btn">清空</button>
+        <button class="btn danger">删除采集文件</button>
+        <button class="btn">自动换行</button>
+      </div>
+
+      <!-- ③ 日志区：独立滚动 -->
+      <div class="logs" id="logs"></div>
+
+      <div class="statusbar">
+        <div>采集中 · 显示 128 条 · 降级行 7 条 · 耗时 63ms</div>
+        <div class="dim">
+          <span>覆盖范围 10:12:03–10:12:45</span>
+          <span>上方区已收起 <b id="collapsedPct">0%</b></span>
+        </div>
+      </div>
+
+      <div class="toast" id="toast"></div>
+    </div>
+  </div>
+
+  <div class="side">
+    <div class="card">
+      <h2>交互分工（与 v1/v2 的区别）</h2>
+      <table>
+        <tr><th>手指位置</th><th>谁响应</th></tr>
+        <tr><td><b>日志区</b>内</td><td class="good">只滚日志。<b>上方区高度不变</b></td></tr>
+        <tr><td>上方信息区 / A 行</td><td class="warnc">驱动上方区收缩 / 展开，日志区高度跟着变</td></tr>
+        <tr><td>日志已到顶仍继续下拉</td><td class="warnc">传导给上方区，把它拉回来展开</td></tr>
+        <tr><td>上方区已收尽仍继续上推</td><td class="warnc">转交给日志区滚动</td></tr>
+      </table>
+      <div class="hint">v1 是"两个固定高度独立滚动"（错），v2 是"一个滚动流"（也不对）。这一版是<b>嵌套滚动 + 消费仲裁</b>：手势落在谁身上，就归谁。</div>
+
+      <h2>Compose 怎么实现</h2>
+      <ul>
+        <li>外层仍是固定 <code>Column</code>：上方区 / A 行 / 日志区 / 状态栏。</li>
+        <li>上方区加一个 <code>NestedScrollConnection</code>，<b>只</b>在
+            <code>onPreScroll</code> 里消费竖直位移 —— 手势优先给它。</li>
+        <li>日志区用 <code>LazyColumn</code>，自己滚自己的。<b>日志区内滑动时上方区消费量为 0</b>，因为滚动已被日志区吃掉。</li>
+        <li>"日志到顶继续下拉"和"上方收尽继续上推"靠 <code>onPostScroll</code> 把剩余位移转交，不写这段就会"滑到头就卡住"。</li>
+      </ul>
+      <div class="risk">
+        <b>⚠️ 实现上有两个坑</b>
+        <ul style="margin-top:6px">
+          <li><b>不能只按"手指落点"判断。</b>嵌套滚动里手势一旦被日志区接管，
+              <code>onPreScroll</code> 根本不会轮到上方区 —— 这正好实现了你要的效果，
+              但要靠 <code>LazyColumn</code> 先声明消费，别反过来。</li>
+          <li><b>上方区收缩量要 clamp，且用 dp 不用像素。</b>收缩范围是
+              <code>0..(上方区总高 - A行高)</code>，越界会让 A 行被推走或留白。
+              另外必须限制在 <code>0..max</code> 循环外提前 <code>return consumed</code>，
+              否则手指慢速滑动时会累积漂移。</li>
+        </ul>
+      </div>
+
+      <h2>另外两个 bug（与布局无关）</h2>
+      <ul>
+        <li class="bad"><b>点搜索没反应</b> —— 查找栏渲染在了不可见位置。
+            改成"点 🔍 时若上方区已收起，先自动展开再聚焦输入框"。</li>
+        <li class="bad"><b>停止按钮灰着</b> —— 进采集态会自动检索一次，
+            <code>refreshing=true</code>，而 <code>canStop</code> 带了 <code>!refreshing</code>。
+            且那段自动加载的 <code>LaunchedEffect</code> 在源码里<b>写了两遍</b>（每次状态变化并发两条跨进程命令）。
+            修法：<code>canStop</code> 去掉对 <code>refreshing</code> 的依赖，并删掉重复那份。</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── 日志内容 ──
+const SAMPLE = [
+  ['d','09-19 10:12:03.101  4821  4855 D ActivityManager: startActivity com.example.app/.Main'],
+  ['d','09-19 10:12:03.244  4821  4855 D ActivityManager: displayId=0 taskId=128'],
+  ['i','09-19 10:12:03.677  2011  2011 I tap_dbtap : 触控上报 x=534 y=1092'],
+  ['i','09-19 10:12:03.679  2011  2011 I tap_dbtap : 触控上报 x=534 y=1104'],
+  ['w','09-19 10:12:04.012  3120  3188 W StrictMode: VmPolicy violation with penaltyLog'],
+  ['c','        at android.os.StrictMode.onVmPolicyViolation(StrictMode.java:2095)'],
+  ['c','        at com.example.app.Repo.load(Repo.kt:88)'],
+  ['e','09-19 10:12:04.480  3120  3188 E AndroidRuntime: FATAL EXCEPTION: main'],
+  ['c','        java.lang.NullPointerException: Attempt to invoke field on null'],
+  ['c','        \tat com.example.app.Repo.load(Repo.kt:91)'],
+  ['c','        \tat com.example.app.Main.onCreate(Main.kt:33)'],
+  ['d','09-19 10:12:04.688  4821  4821 D WindowManager: relayoutWindow'],
+  ['i','09-19 10:12:05.001  2011  2011 I tap_dbtap : 触控上报 x=540 y=2201'],
+  ['d','09-19 10:12:05.220  1500  1500 D ViewRootImpl: performTraversals'],
+  ['i','09-19 10:12:05.560  2314  2314 I NotificationService: enqueue notification'],
+  ['d','09-19 10:12:06.118  4821  4890 D InputReader: Touch down 0'],
+  ['i','09-19 10:12:06.402  2011  2011 I tap_dbtap : 触控上报 x=112 y=88'],
+  ['w','09-19 10:12:06.900  1500  1522 W Choreographer: Skipped 47 frames'],
+  ['d','09-19 10:12:07.033  4821  4855 D ActivityManager: pauseActivity'],
+  ['e','09-19 10:12:07.510  3901  3942 E SurfaceFlinger: Failed to find layer'],
+];
+const logsEl = document.getElementById('logs');
+for (let i = 0; i < 12; i++) {
+  SAMPLE.forEach(function (p) {
+    const d = document.createElement('div');
+    d.className = 'lg ' + p[0] + (i % 3 === 1 && p[1].indexOf('tap_dbtap') >= 0 ? ' hl' : '');
+    d.textContent = p[1];
+    logsEl.appendChild(d);
+  });
+}
+
+const upper     = document.getElementById('upper');
+const upperInner= document.getElementById('upperInner');
+const arow      = document.getElementById('arow');
+const toast     = document.getElementById('toast');
+const pctEl     = document.getElementById('collapsedPct');
+
+let toastTimer;
+function say(msg, ms) {
+  toast.textContent = msg;
+  toast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(function () { toast.classList.remove('show'); }, ms || 2200);
+}
+
+// ── 上方区的折叠模型 ──
+// capacity = 上方区内容总高（需要先量一次，量的时候必须临时放开高度）
+let fullHeight = 0;
+let collapsed = 0;          // 当前已收起多少 px
+let startCollapsed = 0;     // 手势开始时的收起量
+let startY = 0;
+let dragging = false;
+
+function measure() {
+  const h = upperInner.scrollHeight;
+  fullHeight = h;
+  upper.style.maxHeight = h + 'px';
+  apply();
+}
+function maxCollapse() { return fullHeight; }   // 允许完全收起（A 行在其下方，不会被裁）
+
+function apply() {
+  collapsed = Math.max(0, Math.min(maxCollapse(), collapsed));
+  upper.style.height = (fullHeight - collapsed) + 'px';
+  upperInner.style.transform = 'translateY(' + (-collapsed) + 'px)';
+  const pct = fullHeight > 0 ? Math.round(collapsed / fullHeight * 100) : 0;
+  pctEl.textContent = pct + '%';
+}
+
+// ① 在上方区拖动 → 收缩 / 展开
+upper.addEventListener('pointerdown', function (e) {
+  dragging = true; startY = e.clientY; startCollapsed = collapsed;
+  upper.classList.add('dragging');
+  upper.setPointerCapture(e.pointerId);
+});
+upper.addEventListener('pointermove', function (e) {
+  if (!dragging) return;
+  // 手指上移（clientY 变小）→ collapsed 增大 → 上方区收起
+  collapsed = startCollapsed + (startY - e.clientY);
+  apply();
+  e.preventDefault();
+});
+function endDrag(e) {
+  if (!dragging) return;
+  dragging = false;
+  upper.classList.remove('dragging');
+  if (e && e.pointerId !== undefined && upper.hasPointerCapture(e.pointerId)) {
+    upper.releasePointerCapture(e.pointerId);
+  }
+  // 松手吸附：过半就收尽，否则弹回
+  const half = maxCollapse() / 2;
+  if (collapsed > 12 && collapsed < half) { collapsed = 0; apply(); say('松手弹回 —— 上方区恢复'); }
+  else if (collapsed >= half && collapsed < maxCollapse() - 12) {
+    collapsed = maxCollapse(); apply(); say('松手吸附 —— 上方区收尽，只剩 A 行');
+  }
+}
+upper.addEventListener('pointerup', endDrag);
+upper.addEventListener('pointercancel', endDrag);
+upper.addEventListener('wheel', function (e) {
+  collapsed = startCollapsed = collapsed + e.deltaY;
+  apply();
+  clearTimeout(window._w);
+  window._w = setTimeout(function () {
+    if (collapsed > 12 && collapsed < maxCollapse() / 2) { collapsed = 0; apply(); }
+    else if (collapsed >= maxCollapse() / 2) { collapsed = maxCollapse(); apply(); }
+  }, 140);
+  e.preventDefault();
+}, { passive: false });
+
+// ② 日志区独立滚动 —— 不碰上方区
+logsEl.addEventListener('scroll', function () {
+  say('日志区滚动 —— 上方区完全没动（高度不变）', 1600);
+}, { passive: true });
+
+// ③ 日志已到顶仍继续下拉 → 把上方区拉回来
+let wheelAcc = 0;
+logsEl.addEventListener('wheel', function (e) {
+  const atTop = logsEl.scrollTop <= 0;
+  if (atTop && e.deltaY < 0 && collapsed > 0) {
+    collapsed += e.deltaY;
+    apply();
+    e.preventDefault();
+    say('日志已到顶 —— 继续下拉把上方区拉回来');
+  }
+}, { passive: false });
+
+// ④ 点 🔍：若上方区已收起，先展开再聚焦（修「点搜索没反应」）
+const findbar  = document.getElementById('findbar');
+const btnSearch= document.getElementById('btnSearch');
+btnSearch.addEventListener('click', function () {
+  if (findbar.style.display !== 'none') {
+    findbar.style.display = 'none';
+    btnSearch.classList.remove('on');
+    say('查找栏收起');
+    return;
+  }
+  findbar.style.display = 'block';
+  btnSearch.classList.add('on');
+  // 内容变高了，重新测量；若处于收起态则先展开
+  collapsed = 0;
+  measure();
+  setTimeout(function () {
+    document.getElementById('findInput').focus();
+    say('查找栏展开并自动展开上方区 —— 一定看得见');
+  }, 60);
+});
+document.getElementById('findClose').addEventListener('click', function () {
+  findbar.style.display = 'none';
+  btnSearch.classList.remove('on');
+  measure();
+});
+
+window.addEventListener('resize', measure);
+measure();
+setTimeout(function () {
+  say('两种手势都试试：在★日志区★滑 → 只滚日志；在★上方灰色区域★滑 → 收起上方区', 4200);
+}, 400);
+</script>
+</body>
+</html>
