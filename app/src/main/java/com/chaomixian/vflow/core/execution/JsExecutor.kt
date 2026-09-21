@@ -30,14 +30,28 @@ class JsExecutor(private val executionContext: ExecutionContext) {
             @Suppress("DEPRECATION")
             context.optimizationLevel = -1
 
-            // 创建标准作用域
-            val scope = context.initStandardObjects()
+            // 绑定应用的 ClassLoader。缺少这一步时，脚本里的
+            // Packages.<应用内部类> 会被 Rhino 当成包路径对象（NativeJavaPackage），
+            // 表现为「xxx 不是函数，它是 object」。
+            context.setApplicationClassLoader(executionContext.applicationContext.classLoader)
 
-            // 注入 context (作为 vflowContext)
-            val contextObj = context.newObject(scope)
-            contextObj.setPrototype(scope)
-            contextObj.setParentScope(scope)
-            ScriptableObject.putProperty(scope, "context", contextObj)
+            // 创建作用域。
+            // 用 ImporterTopLevel 而非 initStandardObjects()：前者额外提供
+            // importClass / importPackage 两个 Java 互操作入口，使 Auto.js、
+            // ShortX 风格的脚本可以直接粘贴运行，无需改写成 Packages.xxx 全路径。
+            // 其构造函数内部已初始化标准对象，无需再调 initStandardObjects()。
+            val scope = ImporterTopLevel(context)
+
+            // 注入真实的 Android Context（经 javaToJS 桥接为 Java 对象）。
+            // 此前这里注入的是空壳 JS 对象，导致脚本中的
+            // context.getSystemService(...) / getContentResolver() 等调用全部失效。
+            // 注入 Application Context 即可：调用能否成功取决于进程 UID，与用哪个
+            // Context 无关；需要更高权限的操作应走 vflow.shizuku.shell_command。
+            ScriptableObject.putProperty(
+                scope,
+                "context",
+                Context.javaToJS(executionContext.applicationContext, scope)
+            )
 
             // 注入 inputs (直接作为对象)
             val inputsObj = context.newObject(scope)
