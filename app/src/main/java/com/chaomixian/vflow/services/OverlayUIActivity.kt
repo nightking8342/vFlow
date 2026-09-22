@@ -9,6 +9,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Typeface
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Bundle
@@ -16,6 +17,9 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.text.InputType
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.style.StyleSpan
 import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.WindowManager
@@ -752,20 +756,73 @@ class OverlayUIActivity : AppCompatActivity() {
      */
     private fun showErrorDialog(workflowName: String, moduleName: String, errorMessage: String) {
         val dialogView = LayoutInflater.from(this).inflate(R.layout.dialog_execution_error, null)
+        val detailText = dialogView.findViewById<TextView>(R.id.text_error_detail)
+        detailText.text = buildErrorDetailSpanned(workflowName, moduleName, errorMessage)
 
-        val workflowText = dialogView.findViewById<TextView>(R.id.text_workflow_name)
-        val moduleText = dialogView.findViewById<TextView>(R.id.text_module_name)
-        val messageText = dialogView.findViewById<TextView>(R.id.text_error_message)
+        // 复制内容取**纯文本**，不带 Spannable 的字重跨度：
+        // 粘到别处时带一堆 span 没有意义，还容易被目标应用显示成乱码
+        val copyPlainText = buildErrorDetailPlainText(workflowName, moduleName, errorMessage)
 
-        workflowText.text = getString(R.string.execution_error_workflow_name, workflowName)
-        moduleText.text = getString(R.string.execution_error_module_name, moduleName)
-        messageText.text = errorMessage
-
-        MaterialAlertDialogBuilder(this)
+        val dialog = MaterialAlertDialogBuilder(this)
             .setView(dialogView)
             .setPositiveButton(R.string.common_ok) { _, _ -> complete(true) }
+            .setNegativeButton(R.string.common_copy) { _, _ -> complete(true) }
             .setOnCancelListener { cancel() }
             .show()
+
+        // `setNegativeButton(resId, listener)` 一旦传了 listener 就会在点完自动 dismiss，
+        // 而"复制"不该关掉弹窗（用户多半要对着错误信息排错）。这里传 null 拿按钮、
+        // 再自己挂 listener，就能在复制后保持弹窗打开。
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener {
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            clipboard.setPrimaryClip(ClipData.newPlainText(getString(R.string.overlay_ui_clip_label_text), copyPlainText))
+            Toast.makeText(applicationContext, R.string.copied_to_clipboard, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /**
+     * 错误详情的**纯文本**版（复制到剪贴板用）。
+     *
+     * ⚠️ 与 [buildErrorDetailSpanned] 必须**逐行对应**：两边行数与换行位置不一致时，
+     * 用户看到的和复制到的就不是一份东西了。改一处务必同步另一处。
+     */
+    private fun buildErrorDetailPlainText(
+        workflowName: String,
+        moduleName: String,
+        errorMessage: String,
+    ): String = buildString {
+        append(getString(R.string.execution_error_workflow_name, workflowName))
+        append('\n')
+        append(getString(R.string.execution_error_module_name, moduleName))
+        append('\n')
+        append(errorMessage)
+    }
+
+    /**
+     * 错误详情的**显示**版：三行拼进同一个 `TextView`，用 `Spannable` 还原层级。
+     *
+     * ⚠️ 三行必须合并成一个 `TextView` —— `textIsSelectable` 的手势与选区都收在
+     * **单个 TextView 的 Layout 内部**，拆成三个 View 就只能一行一行地选、
+     * 拖不出跨行选区（首版就是这么写的，被用户反馈「只能一行一行复制」）。
+     *
+     * 层级：只有前两行「工作流：…」「出错模块：…」加粗，错误原因保持正文。
+     *
+     * ⚠️ **不要再加 `RelativeSizeSpan` 去还原 `labelLarge`**：Material3 里
+     * `labelLarge` 与 `bodyMedium` **同为 14sp**，差别只在字重（500 vs 400）。
+     * 加字号跨度反而会凭空造出一个原设计里不存在的层级差。
+     */
+    private fun buildErrorDetailSpanned(
+        workflowName: String,
+        moduleName: String,
+        errorMessage: String,
+    ): CharSequence {
+        val labelText = getString(R.string.execution_error_workflow_name, workflowName) +
+            "\n" + getString(R.string.execution_error_module_name, moduleName)
+        val fullText = "$labelText\n$errorMessage"
+
+        return SpannableString(fullText).apply {
+            setSpan(StyleSpan(Typeface.BOLD), 0, labelText.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
     }
 
     private fun complete(result: Any?) {

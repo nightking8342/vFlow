@@ -1,6 +1,8 @@
 package com.chaomixian.vflow.ui.home
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.text.format.DateUtils
@@ -30,11 +32,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.TextButton
@@ -878,6 +882,40 @@ private fun LogDetailDialog(
     val context = LocalContext.current
     val dateFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()) }
     val scrollState = rememberScrollState()
+
+    // 复制按钮的取值必须与下面 `text` 槽里**渲染出来的内容逐字一致**，
+    // 否则用户看到的和复制到的会是两份东西。
+    // ⚠️ `resolveMessage` 的兜底文案、`detailedLog` 的空态兜底都要照搬：
+    // 只拼"有值时"的分支会让复制结果在空日志时与显示不符。
+    val basicInfo = log.resolveMessage(context) ?: stringResource(R.string.log_no_detail_message)
+    val executionDetails = if (!log.detailedLog.isNullOrEmpty()) {
+        log.detailedLog
+    } else {
+        stringResource(R.string.text_no_detailed_logs)
+    }
+    val plainTextForCopy = buildString {
+        append(stringResource(R.string.log_details_title, log.workflowName))
+        append('\n')
+        append(
+            stringResource(
+                R.string.log_execution_time,
+                dateFormat.format(Date(log.timestamp)),
+            )
+        )
+        append('\n')
+        append('\n')
+        append(stringResource(R.string.label_basic_info))
+        append('\n')
+        append(basicInfo)
+        append('\n')
+        append(stringResource(R.string.log_workflow_id, log.workflowId))
+        append('\n')
+        append('\n')
+        append(stringResource(R.string.text_execution_details))
+        append('\n')
+        append(executionDetails)
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = {
@@ -891,58 +929,85 @@ private fun LogDetailDialog(
             }
         },
         title = {
-            Column {
-                Text(
-                    text = stringResource(R.string.log_details_title, log.workflowName),
-                    style = MaterialTheme.typography.headlineSmall
-                )
-                Text(
-                    text = stringResource(
-                        R.string.log_execution_time,
-                        dateFormat.format(Date(log.timestamp))
-                    ),
-                    modifier = Modifier.padding(top = 8.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            // ⚠️ 复制按钮**不能占用 dismissButton 槽** —— 那个位置是「删除」的，
+            // 换掉就等于把这个功能删了。Material3 的 AlertDialog 只有 confirm /
+            // dismiss 两个按钮槽，第三个动作只能自己找地方放，这里放标题行右侧。
+            Row(verticalAlignment = Alignment.Top) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.log_details_title, log.workflowName),
+                        style = MaterialTheme.typography.headlineSmall
+                    )
+                    Text(
+                        text = stringResource(
+                            R.string.log_execution_time,
+                            dateFormat.format(Date(log.timestamp))
+                        ),
+                        modifier = Modifier.padding(top = 8.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                // 复制**不关弹窗** —— 用户多半要对着日志排错，关掉就得重新点进来
+                IconButton(
+                    onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(
+                            ClipData.newPlainText(
+                                context.getString(R.string.log_details_title, log.workflowName),
+                                plainTextForCopy,
+                            )
+                        )
+                        context.toast(context.getString(R.string.copied_to_clipboard))
+                    }
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.rounded_content_copy_24),
+                        contentDescription = stringResource(R.string.common_copy),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         },
         text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 480.dp)
-                    .verticalScroll(scrollState)
-            ) {
-                Text(
-                    text = stringResource(R.string.label_basic_info),
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                LogDetailCodeBlock(
-                    text = log.resolveMessage(context) ?: stringResource(R.string.log_no_detail_message),
-                    modifier = Modifier.padding(top = 8.dp)
-                )
-                Text(
-                    text = stringResource(R.string.log_workflow_id, log.workflowId),
-                    modifier = Modifier.padding(top = 8.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.outline
-                )
-                Text(
-                    text = stringResource(R.string.text_execution_details),
-                    modifier = Modifier.padding(top = 16.dp),
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                LogDetailCodeBlock(
-                    text = if (!log.detailedLog.isNullOrEmpty()) {
-                        log.detailedLog
-                    } else {
-                        stringResource(R.string.text_no_detailed_logs)
-                    },
-                    modifier = Modifier.padding(top = 8.dp)
-                )
+            // ⚠️ `SelectionContainer` 包在**滚动容器外面**：里面的基本信息、
+            // 工作流 ID、执行详情三块要能被**跨块连续选中**，用户复制日志时
+            // 通常是把详情整段拷走，而不是只挑其中一行。
+            //
+            // 包在里面（每块各包一层）只能单块选择；包在这一层则整块贯通。
+            SelectionContainer {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 480.dp)
+                        .verticalScroll(scrollState)
+                ) {
+                    Text(
+                        text = stringResource(R.string.label_basic_info),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    LogDetailCodeBlock(
+                        text = basicInfo,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                    Text(
+                        text = stringResource(R.string.log_workflow_id, log.workflowId),
+                        modifier = Modifier.padding(top = 8.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+                    Text(
+                        text = stringResource(R.string.text_execution_details),
+                        modifier = Modifier.padding(top = 16.dp),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    LogDetailCodeBlock(
+                        text = executionDetails,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
             }
         }
     )

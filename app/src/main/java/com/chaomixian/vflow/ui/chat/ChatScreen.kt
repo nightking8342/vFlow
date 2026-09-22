@@ -56,6 +56,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
@@ -1040,11 +1041,16 @@ private fun UserMessageBubble(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text(
-                        text = message.content,
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = contentColor,
-                    )
+                    // 用户消息是纯 `Text`（不走 markdown 渲染），
+                    // 所以这里的 SelectionContainer 要单独包一层 ——
+                    // `ChatMarkdownContent` 那层覆盖不到它。
+                    SelectionContainer {
+                        Text(
+                            text = message.content,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = contentColor,
+                        )
+                    }
                     MessageFooterRow(
                         timestampMillis = message.timestampMillis,
                         tokenCount = message.tokenCount,

@@ -40,33 +40,25 @@
             android:orientation="vertical"
             android:padding="12dp">
 
-            <TextView
-                android:id="@+id/text_workflow_name"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/text_workflow_unnamed"
-                android:textAppearance="?attr/textAppearanceLabelLarge"
-                android:textColor="?attr/colorOnErrorContainer"
-                tools:text="工作流：每日签到" />
+            <!-- ⚠️ 工作流名 / 出错模块 / 错误原因**必须是同一个 TextView**：
+                 `textIsSelectable` 的手势与选区都收在**单个 TextView 的 Layout 内部**，
+                 拆成三个 TextView 就只能一行一行地选中、拖不出跨行选区（已实际踩过：
+                 首版拆三段，用户反馈「只能一行一行复制」）。
 
-            <TextView
-                android:id="@+id/text_module_name"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/text_error_module"
-                android:textAppearance="?attr/textAppearanceLabelLarge"
-                android:textColor="?attr/colorOnErrorContainer"
-                tools:text="出错模块：#1 点击" />
+                 三行的字重层级改由代码侧的 Spannable 表达（见
+                 `buildErrorDetailSpanned`），不再靠各自的 textAppearance ——
+                 那是拆成多个 View 才能用的手段。
 
+                 用 TextView 而不是 EditText：EditText 即使设了
+                 `inputType="none"`，部分输入法仍会弹出软键盘。 -->
             <TextView
-                android:id="@+id/text_error_message"
-                android:layout_width="wrap_content"
+                android:id="@+id/text_error_detail"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="@string/label_error_reason"
                 android:textAppearance="?attr/textAppearanceBodyMedium"
                 android:textColor="?attr/colorOnErrorContainer"
-                tools:text="找不到指定的控件：id/button_confirm" />
+                android:textIsSelectable="true"
+                tools:text="工作流：每日签到&#10;出错模块：#1 点击&#10;找不到指定的控件：id/button_confirm" />
         </LinearLayout>
     </com.google.android.material.card.MaterialCardView>
 
