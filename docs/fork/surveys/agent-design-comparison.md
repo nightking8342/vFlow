@@ -268,6 +268,48 @@ Codex 的公开 `docs/config.md` 主要暴露配置层，工具设计偏内部�
 
 ---
 
+## 7. 附：Markdown 表格渲染对照（2026-09-22 补）
+
+**起因**：用户反馈「Chat Agent 回复里的 Markdown 表格没渲染成表格，且一部分正常、一部分不正常」。
+
+### 7.1 四家的渲染栈
+
+| 项目 | 渲染库 | 对模型输出做 markdown 归一化？ |
+|---|---|---|
+| **ccb** | `marked` 17 + highlight.js（TUI）；`streamdown` + `shiki`（Web UI） | 无。只有「禁用删除线分词器」（模型常用 `~100` 表示约数）+ 剥离 XML 包装标签 |
+| **dsh** | 自研 mdast/micromark 管线 | 无。`incremental.ts` 只处理**未闭合 code fence** |
+| **opencode** | `marked` + `remend` | 无表格逻辑。`remend` 只愈合**行内**语法（`**world` → `**world**`）；`sanitizeMarkdown` 是 DOMPurify |
+| **pi** | `marked` 18 | 无。只有 `\t`→三空格、流式半截围栏裁剪、mermaid transform |
+
+四家的表格测试（`pi/packages/tui/test/markdown.test.ts` 最全，8 个 `describe("Tables")` 用例）**全部只覆盖渲染布局**（cell 换行、列宽、宽表滚动、流式稳定），**没有一条是「表格前缺空行」的回归测试**。
+
+### 7.2 为什么它们不踩这个坑（**已实测，非推测**）
+
+**不是它们做了什么，而是它们的解析器不挑。** 把 `pi` vendored 的 `marked` 拉出来跑 vFlow 失败的输入：
+
+| 输入（无空行） | `marked` | `org.jetbrains:markdown` **0.7.3** |
+|---|---|---|
+| 正文段落 + 表格 | ✅ TABLE | ❌ PARAGRAPH |
+| `**粗体行**` + 表格 | ✅ TABLE | ❌ PARAGRAPH |
+| 列表 + 表格 | ✅ TABLE | ❌ PARAGRAPH |
+| 标题 / 空行 / 文档开头 | ✅ TABLE | ✅ TABLE |
+
+> **教训**：四家用的是 JS 生态（Web/终端有 DOM），Android 无对等物。**这份对照不能得出「它们比我们做得好」**——它们的栈天然规避了这个问题。
+
+### 7.3 vFlow 的根因与修复
+
+`multiplatform-markdown-renderer:0.39.2` 声明依赖 `org.jetbrains:markdown:0.7.3`，而该版本**要求 GFM 表格块前必须是空行或块边界**（`#` 标题、代码围栏结尾、文档开头都算边界），否则整个块塌成 `PARAGRAPH`（AST 实测确认）。
+
+**量化**（真实会话 27 条含管道回复）：0.7.3 解析出 24 个表格、**8 条消息一个表格都没有**；升级 0.7.14 后 **40 个表格、0 条全无**。
+
+**修复**：显式提升解析器到 0.7.14（上游已修，新增 `TableAwareBlockQuoteMarkerProvider` 等类）。详见 `FORK.md` 敏感点清单 2026-09-22 条目。
+
+### 7.4 未采信的推论（留档）
+
+子代理调查时提出「三家用 `marked`，其 table tokenizer 对无空行更宽容」——该判断**当时标注为「推测，非代码证据」**，后经 7.2 实测证实。**留档原因**：这正是 `AGENTS.md` 里「只看字符串会误判」那类教训的翻版——**子代理自己标了不确定的结论，不要当事实采信**。
+
+---
+
 ## 附录：来源
 
 - [Scale to many tools with tool search — Claude Code Docs](https://code.claude.com/docs/en/agent-sdk/tool-search)

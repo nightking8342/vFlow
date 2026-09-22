@@ -171,6 +171,11 @@ dependencies {
     implementation(libs.multiplatform.markdown.renderer.m3)
     implementation(libs.multiplatform.markdown.renderer.code)
 
+    // fork: 显式提升 GFM 解析器，覆盖 mikepenz 传递依赖的 0.7.3。
+    // 0.7.3 要求 GFM 表格块前必须有空行，否则整块被当作 PARAGRAPH 渲染成纯文本
+    // （表现为「AI 回复里表格没渲染成表格」）。0.7.14 已修此行为。
+    implementation(libs.jetbrains.markdown)
+
     // 核心 UI 库
     implementation("androidx.core:core-ktx:1.18.0")
     implementation("androidx.appcompat:appcompat:1.7.1")

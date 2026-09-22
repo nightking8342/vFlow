@@ -168,6 +168,18 @@
 以下是上游的核心区。目前 fork **尚未改动**它们；一旦改动（尤其是结构性改动），必须在上表登记，并评估合并成本：
 
 - `app/build.gradle.kts` —— 编译配置、签名、ABI、依赖。上游可能频繁变更，改动时冲突面大。
+  - ⚠️ **已有分歧（2026-09-22）**：`implementation(libs.jetbrains.markdown)` —— **显式提升 GFM 解析器
+    `org.jetbrains:markdown` 0.7.3 → 0.7.14**（配套 `libs.versions.toml` 新增 `jetbrains-markdown` 版本与
+    library 两项）。**起因**：mikepenz 0.39.2 声明依赖 0.7.3，而 **0.7.3 的 GFM 表格块前必须有空行**，
+    否则整块塌成 `PARAGRAPH`、管道符原样显示（实测：`正文段落` / `**粗体行**` 紧贴表格 → 0 个表格）。
+    表现为「AI 回复里表格没渲染成表格，且一部分正常一部分不正常」——**前面是标题或空行的表格正常，
+    紧贴段落的被吞**。用一份真实会话（27 条含管道回复）量化：0.7.3 解析出 24 个表格、8 条消息全无表格；
+    0.7.14 解析出 40 个表格、0 条消息全无。**0.7.14 已修此行为**（新增 `TableAwareBlockQuoteMarkerProvider`
+    等类）。**升级注意**：① 必须显式声明——Gradle 默认选版本较高者，但依赖方声明的是 0.7.3，
+    不显式加会一直用旧版；② 该坐标是 KMP 根模块，Android 侧实际解析到 `markdown-jvm`，
+    用 `:app:dependencyInsight --dependency org.jetbrains:markdown` 验证应显示
+    `By conflict resolution: between versions 0.7.14 and 0.7.3`；③ **合并上游时此处取上游**，
+    若上游同步提升了 mikepenz 版本、或该库自身修复了表格行为，本行可删。冲突面小（2 文件各 1-2 行）。
   - ⚠️ **已有分歧（2026-09-15）**：`versionCode 49 → 50`、`versionName "1.5.3-pr1" → "1.5.4"`（提交 `3360e63b`）。
     fork 首次自定版本号——此前 `1.5.3-pr1` 是上游 5 月定的。**合并上游时此处取上游**，
     然后按需重新决定 fork 号段。冲突面小（两行），但每次上游 bump 版本号都会撞上。

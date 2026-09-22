@@ -20,6 +20,10 @@ backdrop = "1.0.6"
 reorderable = "3.0.0"
 foundationLayout = "1.10.6"
 multiplatform-markdown-renderer = "0.39.2"
+# fork: 解析器版本覆盖。mikepenz 0.39.2 声明依赖 0.7.3，但 0.7.3 的 GFM 表格
+# 要求表格块前必须有空行，否则整块塌成 PARAGRAPH（管道符原样显示）。
+# 上游在后续版本修了这个行为，0.7.14 实测可正确解析「段落/粗体行紧贴表格」。
+jetbrains-markdown = "0.7.14"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -42,6 +46,8 @@ androidx-foundation-layout = { group = "androidx.compose.foundation", name = "fo
 multiplatform-markdown-renderer-android = { module = "com.mikepenz:multiplatform-markdown-renderer-android", version.ref = "multiplatform-markdown-renderer" }
 multiplatform-markdown-renderer-m3 = { module = "com.mikepenz:multiplatform-markdown-renderer-m3", version.ref = "multiplatform-markdown-renderer" }
 multiplatform-markdown-renderer-code = { module = "com.mikepenz:multiplatform-markdown-renderer-code", version.ref = "multiplatform-markdown-renderer" }
+# fork: 显式提升 markdown 解析器（覆盖 mikepenz 的 0.7.3 传递依赖），修 GFM 表格前空行问题
+jetbrains-markdown = { module = "org.jetbrains:markdown", version.ref = "jetbrains-markdown" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
