@@ -348,6 +348,57 @@ class WorkflowPatchTest {
         assertEquals(listOf("after"), (outcome as StepPatchOutcome.Applied).steps.map { it.id })
     }
 
+    // ────────────── 回归：JsonElement 直传导致的类型污染 ──────────────
+    //
+    // 2026-09-22 真机缺陷：`update_workflow` 曾把未归一化的 `JsonElement`
+    // 直接交给 `coerceInputValue`，导致
+    //   - STRING 被多包一层引号（`ABC` → `""ABC""`）
+    //   - NUMBER 整个 JsonElement 落库（release 里被 R8 混淆成 `{a:false,b:"6000"}`）
+    //   - ANY 落库后再转义一遍（真换行变字面 `\n`、`\s` 变 `\\s`）
+    //
+    // 修法是先过一遍 `parseArguments` 归一化。下面几条锁住「Kotlin 值进入
+    // mergeParameters 后不再被改动」——归一化本身由 executor 的
+    // `normalizeParameterPatch` 负责，它的正确性靠 `ChatAgentToolingTest` 与真机验收。
+
+    @Test
+    fun mergeParameters_doesNotAlterPlainStringValue() {
+        // 回归缺陷 A：纯 ASCII 短串必须原样落库，不能被多包引号
+        val merged = WorkflowPatch.mergeParameters(emptyMap(), mapOf("content" to "ABC"))
+
+        assertEquals("ABC", merged["content"])
+    }
+
+    @Test
+    fun mergeParameters_preservesRealNewlinesAndRegexBackslash() {
+        // 回归缺陷 C：真换行必须保留为真换行；`\s` 必须还是 `\s`（不是 `\\s`）
+        val script = "var a=1;\nvar flat=ft.replace(/\\s+/g,'');"
+
+        val merged = WorkflowPatch.mergeParameters(emptyMap(), mapOf("script" to script))
+
+        val stored = merged["script"] as String
+        assertTrue("真换行必须保留", stored.contains('\n'))
+        assertFalse("换行不能被转义成字面 \\n", stored.contains("\\n"))
+        assertTrue("正则 \\s 必须原样", stored.contains("/\\s+/"))
+        assertFalse("正则不能被二次转义成 \\\\s", stored.contains("/\\\\s+/"))
+    }
+
+    @Test
+    fun mergeParameters_keepsNumericTypeNotWrapped() {
+        // 回归缺陷 B：数字必须是 Number，不能是别的东西
+        val merged = WorkflowPatch.mergeParameters(emptyMap(), mapOf("duration" to 6000))
+
+        assertEquals(6000, merged["duration"])
+        assertTrue("必须是 Number 而不能是容器", merged["duration"] is Number)
+    }
+
+    @Test
+    fun mergeParameters_keepsVariableReferenceVerbatim() {
+        // 回归缺陷 A 的变量引用变体：{{vars.STATE}} 必须单层原样
+        val merged = WorkflowPatch.mergeParameters(emptyMap(), mapOf("source" to "{{vars.STATE}}"))
+
+        assertEquals("{{vars.STATE}}", merged["source"])
+    }
+
     private fun step(
         id: String,
         moduleId: String = "vflow.device.delay",

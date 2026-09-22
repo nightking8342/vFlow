@@ -641,7 +641,68 @@ read-only fields (cannot be changed by tools):
 
 **对最常见的 update 场景完全准确**；对块成员的删除/恢复，前提是「单次原子调用」。
 
-#### 4.3.6 复用现有链路
+#### 4.3.6 参数值必须归一化后再进参数表（**真机缺陷，已修**）
+
+> **2026-09-22 真机缺陷**：`update_workflow` 首版把**未归一化的 `JsonElement`** 直接交给了
+> `coerceInputValue`，造成三个同时出现的写入污染。已在 P0 内修复。
+
+#### 缺陷表现
+
+| # | 症状 | 实际存储 | 运行期后果 |
+|---|---|---|---|
+| A | 字符串多包一层引号 | `content: "ABC"` → `""ABC""` | `targetText` 永远匹配不到，权限弹窗分支失效 |
+| B | 数字落成对象 | `duration: 6000` → `{a:false,b:"6000"}` | 延迟/初值/比较值全部失效 |
+| C | 多行文本被二次转义 | 真换行变字面 `\n`；`/\s+/` 变 `/\\s+/` | 正则匹配「反斜杠+s」，去空格功能彻底失效 |
+
+**B 的 `{a,b}` 是决定性证据**：那是 release 构建里 `kotlinx` 的 `JsonLiteral` 被 R8 混淆后的字段名
+（`isString`/`body` → `a`/`b`）。也就是说**整个 `JsonElement` 对象本身被当参数值存进了库**。
+
+#### 根因
+
+不是「序列化器二次编码」，而是**漏了一步归一化**。`coerceInputValue` 期望收到归一化后的
+Kotlin 值，三种声明类型拿到 `JsonElement` 时分别出错：
+
+| 声明类型 | 直传 `JsonElement` 的结果 |
+|---|---|
+| `STRING` | `rawValue.toString()` → `"\"ABC\""`（缺陷 A） |
+| `NUMBER` | `coerceNumber` 的 `is Number` / `is String` 都不匹配 → 元素原样落库（缺陷 B） |
+| `ANY` | 元素落库后再序列化一遍 → 二次转义（缺陷 C） |
+
+三条路径坏在同一行。
+
+#### 为什么 `save_workflow` 没这个问题
+
+它走 `buildParameters(stepSpec.parameters.toString())`——传的是 **JSON 字符串**，
+内部 `parseArguments` 会归一化。`update_workflow` 首版直传了 `JsonObject` 子树，**跳过了那一步**。
+
+#### 修法与防回归
+
+1. 新增顶层函数 `normalizeParameterPatchJson(rawJson: String?)`，`update_workflow` 的两个分支
+   （`update` / `insert`）都必须经它。**与 `save_workflow` 同源**（内部都走 `normalizeJsonElement`）
+2. `normalizeJsonElement` 从私有方法提为**顶层 internal**——原先是 private，测试够不到，
+   这是缺陷能溜出去的直接原因
+3. 新增 `ChatAgentParameterNormalizationTest`（18 例）。**关键设计**：测试走
+   `normalizeParameterPatchJson` 这个**真实入口**而非内部函数。
+
+> ⚠️ **测试策略上的一个教训**：最初只测 `normalizeJsonElement`（内部函数）时，
+> **反证不成立**——把调用点退回 bug 版本，测试依然全绿，因为测试压根不经过调用点。
+> 这个缺陷的形态正是「函数写对了，但调用点漏了归一化」。改测入口后反证才变红。
+> 教训：**测试要覆盖调用链，而不是函数**。
+
+#### 附带修正：`insert` 分支的参数基准
+
+同批自查发现另一个缺陷：`insert` 分支传了 `base = emptyMap()`，而 `save_workflow` 是
+`defaults + accepted`。后果是**新插入的步骤会丢掉模块的默认参数**（模型没显式给的字段变成缺失，
+而不是默认值）。已改为 `module.createSteps().firstOrNull()?.parameters.orEmpty()`。
+
+与 `update` 分支的基准**正好相反**，两者都要对：
+
+| 原语 | base | 理由 |
+|---|---|---|
+| `steps.update` | **步骤现有参数** | 否则未提及的参数被重置成默认值 |
+| `steps.insert` | **模块默认值** | 否则未提及的参数变成缺失 |
+
+### 4.3.7 复用现有链路
 
 | 环节 | 复用 |
 |---|---|

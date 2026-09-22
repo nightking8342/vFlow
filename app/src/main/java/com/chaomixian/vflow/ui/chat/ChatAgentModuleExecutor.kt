@@ -1627,7 +1627,7 @@ internal class ChatAgentModuleExecutor(
                 definition = definition,
                 module = module,
                 base = target.parameters,
-                patch = obj["parameters"] as? JsonObject,
+                patch = normalizeParameterPatch(obj["parameters"] as? JsonObject),
                 artifactStore = artifactStore,
                 stepLabel = stepId,
                 errors = errors,
@@ -1678,8 +1678,11 @@ internal class ChatAgentModuleExecutor(
                 toolCall = toolCall,
                 definition = definition,
                 module = module,
-                base = emptyMap(),
-                patch = obj["parameters"] as? JsonObject,
+                // 新步骤的基准是**模块默认值**（与 `save_workflow` 的 `defaults + accepted` 同口径）。
+                // 传空表会让新插入的步骤丢掉全部默认参数——模型没显式给的字段会变成缺失，
+                // 而不是默认值。这与 update 分支相反：那里必须用**步骤现有参数**作基准。
+                base = module.createSteps().firstOrNull()?.parameters.orEmpty(),
+                patch = normalizeParameterPatch(obj["parameters"] as? JsonObject),
                 artifactStore = artifactStore,
                 stepLabel = stepId,
                 errors = errors,
@@ -1757,7 +1760,7 @@ internal class ChatAgentModuleExecutor(
         definition: ChatAgentToolDefinition,
         module: ActionModule,
         base: Map<String, Any?>,
-        patch: JsonObject?,
+        patch: Map<String, Any?>?,
         artifactStore: ChatAgentArtifactStore,
         stepLabel: String,
         errors: MutableList<ChatToolResult>,
@@ -1780,19 +1783,29 @@ internal class ChatAgentModuleExecutor(
         }
 
         val accepted = linkedMapOf<String, Any?>()
-        patch.forEach { (key, element) ->
+        patch.forEach { (key, value) ->
             // null = 删键（不是写 null 值——两者在执行期对 isRequired 校验不等价）
-            if (element is JsonNull) {
+            if (value == null) {
                 accepted[key] = null
                 return@forEach
             }
             val input = definitionsById[key] ?: return@forEach
-            accepted[key] = coerceInputValue(input, element, artifactStore)
+            accepted[key] = coerceInputValue(input, value, artifactStore)
         }
 
         val merged = WorkflowPatch.mergeParameters(base, accepted)
         return (module as? AiParameterNormalizer)?.normalizeAiParameters(merged) ?: merged
     }
+
+    /**
+     * 把补丁里的 `parameters` 子树归一化成 Kotlin 值表。
+     *
+     * 只是把 [normalizeParameterPatchJson] 接到本类的 JSON 解析器上；
+     * 逻辑本身在顶层，好让单测覆盖**整条调用链**而不是单个函数
+     * （2026-09-22 的缺陷正是「函数对、但没被调用」）。
+     */
+    private fun normalizeParameterPatch(node: JsonObject?): Map<String, Any?>? =
+        normalizeParameterPatchJson(node?.toString())
 
     /** 收集本次补丁触及的 step id——`validate` 只跑这些，避免卡住存量工作流。 */
     private fun collectTouchedStepIds(root: JsonObject): Set<String> {
@@ -2625,18 +2638,7 @@ internal class ChatAgentModuleExecutor(
         return root.mapValues { (_, value) -> normalizeJsonValue(value) }
     }
 
-    private fun normalizeJsonValue(element: JsonElement): Any? {
-        return when (element) {
-            JsonNull -> null
-            is JsonObject -> element.mapValues { (_, value) -> normalizeJsonValue(value) }
-            is JsonArray -> element.map(::normalizeJsonValue)
-            is JsonPrimitive -> {
-                element.booleanOrNull
-                    ?: element.doubleOrNull
-                    ?: element.contentOrNull
-            }
-        }
-    }
+    private fun normalizeJsonValue(element: JsonElement): Any? = normalizeJsonElement(element)
 
     private fun coerceInputValue(
         input: InputDefinition,
@@ -2992,6 +2994,62 @@ internal data class ChatParameterBuildResult(
 
 /** 「调用函数工作流」的 moduleId。查询它的字段定义时会附上指向 `list_workflows` 的指引。 */
 internal const val CALL_FUNCTION_MODULE_ID = "vflow.logic.call_function"
+
+/**
+ * 把 `JsonElement` 归一化成 Kotlin 值（`String` / `Number` / `Boolean` / `Map` / `List` / `null`）。
+ *
+ * **这是所有工具入参进入模块参数表前的必经一步**，不能绕过。曾是私有方法，
+ * 提到顶层是为了让它可被单测直接覆盖——2026-09-22 的真机缺陷正出在
+ * 「`update_workflow` 把未归一化的 `JsonElement` 直接交给 `coerceInputValue`」：
+ * 字符串被多包一层引号、数字落成 `JsonLiteral` 对象、多行文本被二次转义。
+ *
+ * ⚠️ 判序是「boolean → double → content」，**这个顺序有副作用**：
+ * kotlinx 的 `doubleOrNull` 对带引号的 `"6000"` 也会解析成功，所以 `"6000"`
+ * 与 `6000` 殊途同归地归一成 Number。这对本工具是**宽容**而非有害
+ * （参数的真实存储类型由模块 schema 再决定），但要知道它存在——
+ * 单测里有一条专门锁定这个行为。真正不能被数字吞掉的是 `"ABC"`、`"{{vars.X}}"`
+ * 这类非纯数字串，它们落到 `contentOrNull`，保持字符串。
+ */
+internal fun normalizeJsonElement(element: JsonElement): Any? {
+    return when (element) {
+        JsonNull -> null
+        is JsonObject -> element.mapValues { (_, value) -> normalizeJsonElement(value) }
+        is JsonArray -> element.map(::normalizeJsonElement)
+        is JsonPrimitive -> {
+            element.booleanOrNull
+                ?: element.doubleOrNull
+                ?: element.contentOrNull
+        }
+    }
+}
+
+/**
+ * 补丁 `parameters` 子树的**归一化入口**——`update_workflow` 必须走这里。
+ *
+ * ⚠️ **这一步不能省**（2026-09-22 真机缺陷）：`coerceInputValue` 期望收到的是
+ * 归一化后的 Kotlin 值（`String` / `Number` / `Boolean` / `Map` / `List`），
+ * 不是 `JsonElement`。直传 `JsonElement` 会让三个分支同时出错：
+ *
+ * | 声明类型 | 直传 `JsonElement` 的结果 |
+ * |---|---|
+ * | `STRING` | `rawValue.toString()` → `"\"ABC\""`，**多包一层引号**（运行期匹配不到文本） |
+ * | `NUMBER` | `coerceNumber` 的 `is Number` / `is String` 都不匹配 → **整个元素原样落库**（release 构建里 `JsonLiteral` 的字段被 R8 混淆成 `{a:false,b:"6000"}`） |
+ * | `ANY` | 整个元素落库，序列化时**再转义一遍**（真换行变字面 `\n`、`/\s+/` 变 `/\\s+/`，正则失效） |
+ *
+ * `save_workflow` 不踩这个坑是因为它走 `buildParameters(json字符串)`，
+ * 内部已经调过 `parseArguments`。本函数是同一个语义，供补丁路径复用。
+ *
+ * 提为顶层并接受 `rawJson: String`（而非 `JsonObject`）是刻意的：
+ * 这样单测能覆盖**从 JSON 文本到 Kotlin 值**的完整链路，
+ * 而不是只测其中一个纯函数——后者正是这个缺陷第一次溜出去的原因。
+ *
+ * @return 归一化后的键值表；`rawJson` 为 null 或非对象时返回 `null`（表示「本次不改参数」）
+ */
+internal fun normalizeParameterPatchJson(rawJson: String?): Map<String, Any?>? {
+    if (rawJson.isNullOrBlank()) return null
+    val root = runCatching { Json.parseToJsonElement(rawJson) }.getOrNull() as? JsonObject ?: return null
+    return root.mapValues { (_, value) -> normalizeJsonElement(value) }
+}
 
 /**
  * 从模块的输入定义中筛出**该让 AI 看到的**字段。
