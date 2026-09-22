@@ -104,6 +104,33 @@ internal const val CHAT_LIST_WORKFLOWS_MODULE_ID = "vflow.agent.list_workflows"
 internal const val CHAT_GET_ENVIRONMENT_TOOL_NAME = "vflow_agent_get_environment"
 internal const val CHAT_GET_ENVIRONMENT_MODULE_ID = "vflow.agent.get_environment"
 
+/**
+ * 读出一个已存工作流的完整详情（含逐步的 step id 与参数）。
+ *
+ * `list_workflows` 只回答「有哪些工作流」，本工具回答「这个工作流长什么样」——
+ * 是 [CHAT_UPDATE_WORKFLOW_TOOL_NAME] 的前置：要改某个步骤，先要知道它的 step id。
+ *
+ * 输出是**纯文本**（与其余 5 个内建工具同风格），因为需要塞进 JSON 装不下的标注
+ * （jump 的目标步骤名、只读字段清单、变量型 jump 的「不可静态重映射」）。
+ */
+internal const val CHAT_GET_WORKFLOW_TOOL_NAME = "vflow_agent_get_workflow"
+internal const val CHAT_GET_WORKFLOW_MODULE_ID = "vflow.agent.get_workflow"
+
+/**
+ * 修改一个**已存在**的工作流的工具名。
+ *
+ * 与 `save_workflow` 的关键区别：`save_workflow` 的 id 恒为新生成的 `chat_saved_*`，
+ * 永远造新条目；本工具要求传 `workflow_id`，落到 [WorkflowManager.saveWorkflow] 时
+ * 按 id 命中已有记录并覆盖——这是数据层**本来就支持**的能力（见 `WorkflowManager:106-110`），
+ * 此前只是没有工具去用它。
+ *
+ * 入参形态是**操作原语补丁**而非整表替换。理由见
+ * `docs/fork/workflow-read-write-tools.md` §2.2：整工作流重发在长工作流上 token 成本高约 50 倍，
+ * 且「模型列清单时漏了一条」会被整表语义解释成「删除该条」。
+ */
+internal const val CHAT_UPDATE_WORKFLOW_TOOL_NAME = "vflow_agent_update_workflow"
+internal const val CHAT_UPDATE_WORKFLOW_MODULE_ID = "vflow.agent.update_workflow"
+
 internal fun chatToolNameFromModuleId(moduleId: String): String {
     val normalized = moduleId
         .lowercase()
@@ -123,7 +150,7 @@ internal class ChatAgentToolRegistry(context: Context) {
         ModuleRegistry.initialize(appContext)
         temporaryWorkflowModuleIds = buildTemporaryWorkflowModuleIds()
         savedWorkflowModuleIds = buildSavedWorkflowModuleIds()
-        // 常驻工具表 = 2 个工作流工具 + 3 个按需入口 + 11 个屏幕 helper。
+        // 常驻工具表 = 4 个工作流工具 + 3 个按需入口 + 11 个屏幕 helper。
         //
         // **59 个模块工具已撤出**（P1-1c）：它们不再进 `tools` 数组，
         // 改用 `query_module_schema` 查字段 + `call_module` 执行。
@@ -136,6 +163,8 @@ internal class ChatAgentToolRegistry(context: Context) {
             listOf(
                 buildTemporaryWorkflowToolDefinition(),
                 buildSaveWorkflowToolDefinition(),
+                buildGetWorkflowToolDefinition(),
+                buildUpdateWorkflowToolDefinition(),
                 buildLoadSkillToolDefinition(),
                 buildQueryModuleSchemaToolDefinition(),
                 buildCallModuleToolDefinition(),
@@ -551,6 +580,365 @@ internal class ChatAgentToolRegistry(context: Context) {
             usageScopes = setOf(ChatAgentToolUsageScope.SAVED_WORKFLOW),
             backend = ChatAgentToolBackend.SAVED_WORKFLOW,
         )
+    }
+
+    /**
+     * `get_workflow`：读出一个已存工作流的完整详情。
+     *
+     * 纯本地读，无副作用，故 READ_ONLY + 不截断（与 `list_workflows` 同口径：
+     * 截断可能正好切掉模型要找的那个 step id，等于让这次调用白做）。
+     */
+    private fun buildGetWorkflowToolDefinition(): ChatAgentToolDefinition {
+        return ChatAgentToolDefinition(
+            name = CHAT_GET_WORKFLOW_TOOL_NAME,
+            title = "查看工作流详情",
+            description = buildString {
+                append("Read the full definition of one saved workflow: its triggers, its steps, ")
+                append("each step's id / module id / parameters / disabled flag, and the workflow-level metadata. ")
+                append("Use this before `$CHAT_UPDATE_WORKFLOW_TOOL_NAME` — you need the real step ids to address them. ")
+                append("`$CHAT_LIST_WORKFLOWS_TOOL_NAME` only lists ids and names; it cannot show steps. ")
+                append("The output is text. Fields that no tool can change are listed under `read-only fields`. ")
+                append("A step whose `target_step_index` is a runtime variable is annotated as such — ")
+                append("its jump target cannot be recalculated statically, so do not try. ")
+                append("This is a local lookup with no side effects.")
+            },
+            moduleId = CHAT_GET_WORKFLOW_MODULE_ID,
+            moduleDisplayName = "查看工作流详情",
+            routingHints = setOf("工作流详情", "查看工作流", "工作流步骤", "workflow detail", "show workflow", "inspect workflow"),
+            inputSchema = buildJsonObject {
+                put("type", "object")
+                put("additionalProperties", JsonPrimitive(false))
+                put(
+                    "properties",
+                    buildJsonObject {
+                        put(
+                            "workflow_id",
+                            buildJsonObject {
+                                put("type", "string")
+                                put(
+                                    "description",
+                                    "Exact workflow id, as returned by `$CHAT_LIST_WORKFLOWS_TOOL_NAME`. " +
+                                        "Ids are not guessable — list first if you do not have one."
+                                )
+                            }
+                        )
+                    }
+                )
+                put("required", buildJsonArray { add(JsonPrimitive("workflow_id")) })
+            },
+            permissionNames = emptyList(),
+            riskLevel = ChatAgentToolRiskLevel.READ_ONLY,
+            usageScopes = setOf(ChatAgentToolUsageScope.DIRECT_TOOL),
+            truncatable = false,
+        )
+    }
+
+    /**
+     * `update_workflow`：用**操作原语补丁**修改一个已存在的工作流。
+     *
+     * ⚠️ 这里声明的 `riskLevel` 是**占位值**——实际审批走 `prepareUpdateWorkflow`
+     * 按「改动后的完整工作流」算出的风险等级（与 `save_workflow` 同口径）。
+     *
+     * description 里逐条写死了补丁语义，因为这些都是「模型不问就一定会猜错、
+     * 猜错就静默改坏数据」的地方（详见 `docs/fork/workflow-read-write-tools.md` §4.3.2）。
+     */
+    private fun buildUpdateWorkflowToolDefinition(): ChatAgentToolDefinition {
+        return ChatAgentToolDefinition(
+            name = CHAT_UPDATE_WORKFLOW_TOOL_NAME,
+            title = "修改工作流",
+            description = buildString {
+                append("Modify an EXISTING saved workflow in place, addressed by `workflow_id`. ")
+                append("Read it with `$CHAT_GET_WORKFLOW_TOOL_NAME` first to get the real step ids; ")
+                append("every `step_id` you pass must exist in that workflow, except the new ids inside `insert`. ")
+                append("\n\nThis is a PATCH, not a replacement — anything you do not mention stays untouched. ")
+                append("Omitting a step does NOT delete it; deletion must be explicit via `delete`. ")
+                append("`update` merges `parameters` by key: only the keys you pass change. ")
+                append("To remove one parameter, pass it with a JSON `null` value (that removes the key; ")
+                append("just leaving it out keeps it). Same rule for `metadata` fields. ")
+                append("\n\nExecution order is fixed: update, then insert, then delete, then move. ")
+                append("`move.to_index` is a 1-based display number measured against the workflow ")
+                append("BEFORE this patch is applied, so you can copy it straight from ")
+                append("`$CHAT_GET_WORKFLOW_TOOL_NAME` output. ")
+                append("\n\n`insert` needs exactly one of `after_step_id` or `at_index`. ")
+                append("Step ids must match [A-Za-z0-9_-]+ and must not collide with existing ids. ")
+                append("\n\nThe whole patch is atomic: if any part is invalid, nothing is written. ")
+                append("Risk level is computed from the resulting workflow. ")
+                append("To write a whole workflow from scratch, use `$CHAT_SAVE_WORKFLOW_TOOL_NAME` instead.")
+            },
+            moduleId = CHAT_UPDATE_WORKFLOW_MODULE_ID,
+            moduleDisplayName = "修改工作流",
+            routingHints = setOf("修改工作流", "编辑工作流", "改工作流", "update workflow", "edit workflow", "modify workflow"),
+            inputSchema = buildUpdateWorkflowSchema(),
+            permissionNames = emptyList(),
+            riskLevel = ChatAgentToolRiskLevel.HIGH,
+            usageScopes = setOf(ChatAgentToolUsageScope.DIRECT_TOOL),
+            backend = ChatAgentToolBackend.UPDATE_WORKFLOW,
+            truncatable = false,
+        )
+    }
+
+    private fun buildUpdateWorkflowSchema(): JsonObject {
+        return buildJsonObject {
+            put("type", "object")
+            put("additionalProperties", JsonPrimitive(false))
+            put(
+                "properties",
+                buildJsonObject {
+                    put("workflow_id", buildJsonObject {
+                        put("type", "string")
+                        put("description", "Exact id of the workflow to modify. Must already exist.")
+                    })
+                    put("metadata", buildMetadataPatchSchema())
+                    put("triggers", buildTriggerPatchSchema())
+                    put("steps", buildStepPatchSchema())
+                }
+            )
+            put("required", buildJsonArray { add(JsonPrimitive("workflow_id")) })
+        }
+    }
+
+    /** `metadata`：按 key 合并，传 `null` 删键。只读字段刻意不出现——它们不可改。 */
+    private fun buildMetadataPatchSchema(): JsonObject {
+        return buildJsonObject {
+            put("type", "object")
+            put("additionalProperties", JsonPrimitive(false))
+            put("description", "Workflow-level fields to change. Only the keys you pass are touched; pass `null` to clear one.")
+            put(
+                "properties",
+                buildJsonObject {
+                    put("name", buildJsonObject {
+                        put("type", "string")
+                        put("description", "New display name.")
+                    })
+                    put("description", buildJsonObject {
+                        put("type", "string")
+                        put("description", "New description.")
+                    })
+                    put("isEnabled", buildJsonObject {
+                        put("type", "boolean")
+                        put("description", "Enable or disable the whole workflow.")
+                    })
+                    put("folderId", buildJsonObject {
+                        put("type", "string")
+                        put("description", "Move into an existing folder by its **id** (not its name). An unknown id is rejected because the workflow would vanish from the list.")
+                    })
+                    put("tags", buildJsonObject {
+                        put("type", "array")
+                        put("items", buildJsonObject { put("type", "string") })
+                        put("description", "Replace the whole tag list.")
+                    })
+                    put("maxExecutionTime", buildJsonObject {
+                        put("type", "integer")
+                        put("minimum", 1)
+                        put("maximum", 3600)
+                        put("description", "Maximum execution time in seconds.")
+                    })
+                    put("reentryBehavior", buildJsonObject {
+                        put("type", "string")
+                        put("enum", JsonArray(listOf("block_new", "stop_current_and_run_new", "allow_parallel").map(::JsonPrimitive)))
+                        put("description", "How to handle a new trigger while the workflow is already running.")
+                    })
+                }
+            )
+        }
+    }
+
+    private fun buildTriggerPatchSchema(): JsonObject {
+        return buildJsonObject {
+            put("type", "object")
+            put("additionalProperties", JsonPrimitive(false))
+            put(
+                "description",
+                "Trigger changes. Trigger order has no meaning, so there is no `move`. " +
+                    "⚠️ Keep the existing `step_id` when modifying a trigger: trigger outputs are keyed by " +
+                    "trigger id, so changing an id breaks every `{{triggerId.outputId}}` reference in the steps."
+            )
+            put(
+                "properties",
+                buildJsonObject {
+                    put("update", buildJsonObject {
+                        put("type", "array")
+                        put("maxItems", 12)
+                        put("description", "Change existing triggers' parameters. `step_id` must already exist.")
+                        put("items", buildJsonObject {
+                            put("type", "object")
+                            put("additionalProperties", JsonPrimitive(false))
+                            put("properties", buildJsonObject {
+                                put("step_id", buildJsonObject {
+                                    put("type", "string")
+                                    put("description", "Existing trigger step id.")
+                                })
+                                put("parameters", buildPatchParametersSchema("Trigger parameters to merge by key."))
+                            })
+                            put("required", buildJsonArray { add(JsonPrimitive("step_id")) })
+                        })
+                    })
+                    put("insert", buildJsonObject {
+                        put("type", "array")
+                        put("maxItems", 12)
+                        put("description", "Append new trigger steps. Their ids must not collide with existing ones.")
+                        put("items", buildPatchInsertStepSchema("Unique new trigger step id."))
+                    })
+                    put("delete", buildJsonObject {
+                        put("type", "array")
+                        put("maxItems", 12)
+                        put("description", "Remove triggers by step id. Deleting the last trigger leaves a manual trigger.")
+                        put("items", buildJsonObject { put("type", "string") })
+                    })
+                }
+            )
+        }
+    }
+
+    private fun buildStepPatchSchema(): JsonObject {
+        return buildJsonObject {
+            put("type", "object")
+            put("additionalProperties", JsonPrimitive(false))
+            put(
+                "description",
+                "Step changes. Anything you do not mention stays exactly as it is — omitting a step is NOT a deletion."
+            )
+            put(
+                "properties",
+                buildJsonObject {
+                    put("update", buildJsonObject {
+                        put("type", "array")
+                        put("maxItems", 200)
+                        put("description", "Change existing steps' parameters or disabled flag. `step_id` must already exist.")
+                        put("items", buildJsonObject {
+                            put("type", "object")
+                            put("additionalProperties", JsonPrimitive(false))
+                            put("properties", buildJsonObject {
+                                put("step_id", buildJsonObject {
+                                    put("type", "string")
+                                    put("description", "Existing step id, as shown by `$CHAT_GET_WORKFLOW_TOOL_NAME`.")
+                                })
+                                put("parameters", buildPatchParametersSchema("Step parameters to merge by key."))
+                                put("is_disabled", buildJsonObject {
+                                    put("type", "boolean")
+                                    put(
+                                        "description",
+                                        "Disable or re-enable this single step. Only allowed on plain steps — " +
+                                            "block members (If/Loop/While/ForEach/DoWhile/menu/UI block parts) are rejected, " +
+                                            "because disabling them desynchronises the block pairing at runtime."
+                                    )
+                                })
+                            })
+                            put("required", buildJsonArray { add(JsonPrimitive("step_id")) })
+                        })
+                    })
+                    put("insert", buildJsonObject {
+                        put("type", "array")
+                        put("maxItems", 200)
+                        put("description", "Add new steps. Give exactly one of `after_step_id` or `at_index`.")
+                        put("items", buildPatchInsertStepSchema("Unique new step id."))
+                    })
+                    put("delete", buildJsonObject {
+                        put("type", "array")
+                        put("maxItems", 200)
+                        put(
+                            "description",
+                            "Remove steps by id. Deleting a block member requires removing all members " +
+                                "in the same call — a half-deleted block is an invalid structure. " +
+                                "A step that a `vflow.logic.jump` targets cannot be deleted."
+                        )
+                        put("items", buildJsonObject { put("type", "string") })
+                    })
+                    put("move", buildJsonObject {
+                        put("type", "array")
+                        put("maxItems", 200)
+                        put("description", "Reposition existing steps.")
+                        put("items", buildJsonObject {
+                            put("type", "object")
+                            put("additionalProperties", JsonPrimitive(false))
+                            put("properties", buildJsonObject {
+                                put("step_id", buildJsonObject {
+                                    put("type", "string")
+                                    put("description", "Existing step id to move.")
+                                })
+                                put("to_index", buildJsonObject {
+                                    put("type", "integer")
+                                    put("minimum", 1)
+                                    put(
+                                        "description",
+                                        "Target 1-based display number, measured against the workflow BEFORE " +
+                                            "this patch is applied (so you can copy it from `$CHAT_GET_WORKFLOW_TOOL_NAME`)."
+                                    )
+                                })
+                            })
+                            put("required", buildJsonArray {
+                                add(JsonPrimitive("step_id"))
+                                add(JsonPrimitive("to_index"))
+                            })
+                        })
+                    })
+                }
+            )
+        }
+    }
+
+    /**
+     * 补丁里的 `parameters`：**按 key 合并**，不是整表替换。
+     *
+     * 传 `null` 表示**删掉这个键**（而不是写一个 null 值）——两者在执行期
+     * 对 `isRequired` 校验并不等价，所以必须区分。
+     */
+    private fun buildPatchParametersSchema(description: String): JsonObject {
+        return buildJsonObject {
+            put("type", "object")
+            put("additionalProperties", JsonPrimitive(true))
+            put(
+                "description",
+                "$description Only the keys you pass change. Pass `null` for a key to remove it. " +
+                    "Values may be literals or references: `{{previousStepId.outputId}}` reads an earlier " +
+                    "step's output; `{{vars.paramName}}` reads a parameter declared by the " +
+                    "`vflow.logic.define_function` step. A bare `{{paramName}}` (without the `vars.` prefix) " +
+                    "does NOT resolve and silently yields an empty value."
+            )
+        }
+    }
+
+    private fun buildPatchInsertStepSchema(idDescription: String): JsonObject {
+        return buildJsonObject {
+            put("type", "object")
+            put("additionalProperties", JsonPrimitive(false))
+            put(
+                "properties",
+                buildJsonObject {
+                    put("after_step_id", buildJsonObject {
+                        put("type", "string")
+                        put("description", "Insert directly after this existing step. Mutually exclusive with `at_index`.")
+                    })
+                    put("at_index", buildJsonObject {
+                        put("type", "integer")
+                        put("minimum", 0)
+                        put("description", "Insert at this 0-based position. Mutually exclusive with `after_step_id`.")
+                    })
+                    put("id", buildJsonObject {
+                        put("type", "string")
+                        put("description", "$idDescription Must match [A-Za-z0-9_-]+ and be unique in the workflow.")
+                    })
+                    put("moduleId", buildJsonObject {
+                        put("type", "string")
+                        put(
+                            "description",
+                            "Canonical module id. Query `$CHAT_QUERY_MODULE_SCHEMA_TOOL_NAME` for valid ids and their fields."
+                        )
+                    })
+                    put("parameters", buildPatchParametersSchema("New step parameters."))
+                    put("indentationLevel", buildJsonObject {
+                        put("type", "integer")
+                        put("minimum", 0)
+                        put("maximum", 12)
+                        put("description", "Visual indentation level for block contents.")
+                    })
+                }
+            )
+            put("required", buildJsonArray {
+                add(JsonPrimitive("id"))
+                add(JsonPrimitive("moduleId"))
+            })
+        }
     }
 
     private fun buildTemporaryWorkflowSchema(moduleIds: List<String>): JsonObject {

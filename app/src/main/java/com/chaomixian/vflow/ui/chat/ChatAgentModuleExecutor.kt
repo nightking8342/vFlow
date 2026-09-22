@@ -28,6 +28,13 @@ import com.chaomixian.vflow.core.workflow.model.WorkflowReentryBehavior
 import com.chaomixian.vflow.core.workflow.FolderManager
 import com.chaomixian.vflow.core.workflow.GlobalVariableStore
 import com.chaomixian.vflow.core.workflow.WorkflowManager
+import com.chaomixian.vflow.core.workflow.WorkflowPatch
+import com.chaomixian.vflow.core.workflow.StepInsertion
+import com.chaomixian.vflow.core.workflow.StepListPatch
+import com.chaomixian.vflow.core.workflow.StepMove
+import com.chaomixian.vflow.core.workflow.StepPatchOutcome
+import com.chaomixian.vflow.core.workflow.applyStepListPatch
+import com.chaomixian.vflow.core.workflow.model.WorkflowFolder
 import com.chaomixian.vflow.permissions.Permission
 import com.chaomixian.vflow.permissions.PermissionManager
 import com.chaomixian.vflow.services.ExecutionUIService
@@ -163,6 +170,24 @@ internal sealed interface ChatPreparedToolItem {
         val missingPermissions: List<Permission>,
         val riskLevel: ChatAgentToolRiskLevel,
     ) : ChatPreparedToolItem
+
+    /**
+     * `update_workflow`：把操作原语补丁应用到已有工作流上。
+     *
+     * 与 [SaveWorkflow] 分开而不是复用，因为两者的语义不同：
+     * [SaveWorkflow] 的 id 是新生成的、整表替换；本项保持**原 id 不变**（靠它命中已有记录）、
+     * 只改补丁提到的部分。顺带要带上 [warnings]——那是「改动成功但用户需要知道」的提示。
+     */
+    data class UpdateWorkflow(
+        override val toolCall: ChatToolCall,
+        val definition: ChatAgentToolDefinition,
+        val workflowId: String,
+        val workflow: Workflow,
+        val warnings: List<String>,
+        val validationErrors: List<ChatToolResult>,
+        val missingPermissions: List<Permission>,
+        val riskLevel: ChatAgentToolRiskLevel,
+    ) : ChatPreparedToolItem
 }
 
 internal data class ChatPreparedToolBatch(
@@ -191,6 +216,7 @@ internal class ChatAgentModuleExecutor(
                     is ChatPreparedToolItem.NativeReady -> item.missingPermissions
                     is ChatPreparedToolItem.TemporaryWorkflow -> item.missingPermissions
                     is ChatPreparedToolItem.SaveWorkflow -> emptyList()
+                    is ChatPreparedToolItem.UpdateWorkflow -> emptyList()
                     is ChatPreparedToolItem.ImmediateResult -> emptyList()
                 }
             }
@@ -223,6 +249,7 @@ internal class ChatAgentModuleExecutor(
                 is ChatPreparedToolItem.NativeReady -> nativeToolExecutor.execute(item, artifactStore)
                 is ChatPreparedToolItem.TemporaryWorkflow -> executeTemporaryWorkflow(item, artifactStore)
                 is ChatPreparedToolItem.SaveWorkflow -> executeSaveWorkflow(item)
+                is ChatPreparedToolItem.UpdateWorkflow -> executeUpdateWorkflow(item)
             }.also { result ->
                 DebugLogger.i(
                     LOG_TAG,
@@ -321,6 +348,18 @@ internal class ChatAgentModuleExecutor(
                         ),
                     )
                 }
+                is ChatPreparedToolItem.UpdateWorkflow -> {
+                    ChatToolResult(
+                        callId = item.toolCall.id,
+                        name = item.toolCall.name,
+                        status = ChatToolResultStatus.PERMISSION_REQUIRED,
+                        summary = item.definition.title,
+                        outputText = chatAgentAppendNextStep(
+                            baseMessage = "Workflow `${item.workflow.name}` was not modified because the resulting workflow needs permissions that are not granted.",
+                            nextStep = "ask the user to grant the missing permissions, then apply the same patch again.",
+                        ),
+                    )
+                }
                 is ChatPreparedToolItem.TemporaryWorkflow -> {
                     val permissionNames = item.missingPermissions
                         .map { it.getLocalizedName(appContext) }
@@ -361,6 +400,7 @@ internal class ChatAgentModuleExecutor(
             is ChatPreparedToolItem.NativeReady -> item.definition.riskLevel
             is ChatPreparedToolItem.TemporaryWorkflow -> item.riskLevel
             is ChatPreparedToolItem.SaveWorkflow -> item.riskLevel
+            is ChatPreparedToolItem.UpdateWorkflow -> item.riskLevel
             is ChatPreparedToolItem.ImmediateResult -> item.riskLevel
         }
     }
@@ -407,6 +447,16 @@ internal class ChatAgentModuleExecutor(
         }
         if (toolCall.name == CHAT_SAVE_WORKFLOW_TOOL_NAME) {
             return prepareSaveWorkflow(toolCall, artifactStore)
+        }
+        if (toolCall.name == CHAT_GET_WORKFLOW_TOOL_NAME) {
+            return ChatPreparedToolItem.ImmediateResult(
+                toolCall = toolCall,
+                result = prepareGetWorkflow(toolCall),
+                riskLevel = ChatAgentToolRiskLevel.READ_ONLY,
+            )
+        }
+        if (toolCall.name == CHAT_UPDATE_WORKFLOW_TOOL_NAME) {
+            return prepareUpdateWorkflow(toolCall, artifactStore)
         }
 
         val definition = toolRegistry.getTool(toolCall.name)
@@ -613,6 +663,13 @@ internal class ChatAgentModuleExecutor(
                         summary = definition.title,
                         outputText = "Saving a workflow from inside a temporary workflow is not supported.",
                     )
+                    is ChatPreparedToolItem.UpdateWorkflow -> validationErrors += ChatToolResult(
+                        callId = preparedToolCall.id,
+                        name = preparedToolCall.name,
+                        status = ChatToolResultStatus.ERROR,
+                        summary = definition.title,
+                        outputText = "Updating a workflow from inside a temporary workflow is not supported.",
+                    )
                 }
             }
             val workflow = buildTemporaryWorkflow(spec, readySteps.map { it.step })
@@ -728,6 +785,183 @@ internal class ChatAgentModuleExecutor(
                 )
             )
         }
+    }
+
+    /**
+     * 处理 `get_workflow`：读出一个已存工作流的完整详情。
+     *
+     * 输出的结构刻意与 `save_workflow` 的入参对齐，于是模型可以把这里的输出
+     * 改一改直接喂给 `save_workflow`。但要注意「对齐」不等于「等价」——
+     * `isDisabled` 只有 `update_workflow` 能写，`save_workflow` 的 schema 里没有它。
+     */
+    private fun prepareGetWorkflow(toolCall: ChatToolCall): ChatToolResult {
+        val arguments = parseArguments(toolCall.argumentsJson)
+        val workflowId = arguments["workflow_id"]?.toString()?.trim().orEmpty()
+
+        val manager = WorkflowManager(appContext)
+        val workflow = if (workflowId.isBlank()) null else {
+            runCatching { manager.getWorkflow(workflowId) }.getOrNull()
+        }
+        if (workflow == null) {
+            return workflowNotFoundResult(
+                toolCall = toolCall,
+                summary = "查看工作流详情",
+                requestedId = workflowId,
+                knownWorkflows = runCatching { manager.getAllWorkflows() }.getOrDefault(emptyList()),
+            )
+        }
+
+        val foldersById = runCatching {
+            FolderManager(appContext).getAllFolders().associateBy { it.id }
+        }.getOrDefault(emptyMap())
+
+        return ChatToolResult(
+            callId = toolCall.id,
+            name = toolCall.name,
+            status = ChatToolResultStatus.SUCCESS,
+            summary = "查看工作流详情",
+            outputText = buildGetWorkflowOutputText(workflow, foldersById),
+        )
+    }
+
+    private fun buildGetWorkflowOutputText(
+        workflow: Workflow,
+        foldersById: Map<String, WorkflowFolder>,
+    ): String {
+        return buildString {
+            appendLine("workflow: ${workflow.name}")
+            appendLine("id: ${workflow.id}")
+            appendLine("isFunction: ${workflow.isFunction}")
+            workflow.folderId?.let { id ->
+                appendLine("folder: ${foldersById[id]?.name ?: id}")
+            }
+            if (workflow.description.isNotBlank()) appendLine("description: ${workflow.description}")
+            appendLine("isEnabled: ${workflow.isEnabled}")
+            appendLine("reentryBehavior: ${workflow.reentryBehavior.storedValue}")
+            workflow.maxExecutionTime?.let { appendLine("maxExecutionTime: $it") }
+            if (workflow.tags.isNotEmpty()) appendLine("tags: ${workflow.tags.joinToString(" ") { "#$it" }}")
+            appendLine("modifiedAt: ${workflow.modifiedAt}")
+
+            appendLine()
+            appendLine("triggers (${workflow.triggers.size}):")
+            if (workflow.triggers.isEmpty()) {
+                appendLine("- (none)")
+            } else {
+                workflow.triggers.forEach { appendLine(describeStepLine(it, workflow)) }
+            }
+
+            appendLine()
+            appendLine("steps (${workflow.steps.size}):")
+            if (workflow.steps.isEmpty()) {
+                appendLine("- (none)")
+            } else {
+                workflow.steps.forEach { appendLine(describeStepLine(it, workflow)) }
+            }
+
+            workflow.functionSignature?.let { signature ->
+                appendLine()
+                appendLine("function signature:")
+                if (signature.params.isEmpty()) {
+                    appendLine("  (no parameters)")
+                } else {
+                    signature.params.forEach { param ->
+                        val required = if (param.isRequired) " (required)" else ""
+                        val default = param.defaultValue?.let { " default=$it" }.orEmpty()
+                        appendLine("  - ${param.name}: ${param.type}$required$default")
+                    }
+                }
+                signature.returnDef?.let { ret -> appendLine("  returns: ${ret.type}") }
+            }
+
+            appendLine()
+            appendLine("read-only fields (no tool can change these):")
+            appendLine("  ${READ_ONLY_WORKFLOW_FIELDS.joinToString(", ")}")
+            appendLine()
+            append("To change this workflow, call `$CHAT_UPDATE_WORKFLOW_TOOL_NAME` with this id. ")
+            append("Step ids above are the addresses you pass as `step_id`.")
+        }.trim()
+    }
+
+    /**
+     * 一行的步骤描述。
+     *
+     * 三个标注是刻意的，缺一个模型就会误判：
+     * - **`[disabled]`**：这是「停用一步而不删」的唯一手段，AI 此前完全看不到
+     * - **jump 的目标步骤名**：`target_step_index: 1` 看不出这是个引用，标注 `(→ delay_1)` 才能
+     * - **变量型 jump 的警告**：`{{vars.x}}` 算不出目标，标注出来避免模型以为它能改
+     */
+    private fun describeStepLine(step: ActionStep, workflow: Workflow): String {
+        val parameters = step.parameters.entries
+            .filter { it.value != null }
+            .joinToString(", ") { (key, value) -> "$key: ${renderParameterValue(value)}" }
+        val disabled = if (step.isDisabled) "  [disabled]" else ""
+
+        val jumpNote = if (step.moduleId == JUMP_MODULE_ID) {
+            val raw = step.parameters[TARGET_STEP_INDEX_PARAM]
+            when {
+                raw is Number && raw.toDouble() % 1.0 == 0.0 ->
+                    workflow.steps.getOrNull(raw.toInt() - 1)?.let { " (→ ${it.id})" }.orEmpty()
+                else ->
+                    " (runtime variable target — cannot be recalculated statically)"
+            }
+        } else {
+            ""
+        }
+
+        return "- ${step.id}  ${step.moduleId}  {$parameters}$jumpNote$disabled"
+    }
+
+    private fun renderParameterValue(value: Any?): String {
+        return when (value) {
+            null -> "null"
+            is String -> "\"$value\""
+            is Map<*, *> -> value.entries.joinToString(", ", "{", "}") { (k, v) -> "$k: ${renderParameterValue(v)}" }
+            is List<*> -> value.joinToString(", ", "[", "]") { renderParameterValue(it) }
+            else -> value.toString()
+        }
+    }
+
+    /**
+     * 工作流 id 找不到时的**共用**错误构造。
+     *
+     * `get_workflow` 与 `update_workflow` 走同一个出口，避免两处各写一遍而口径漂移。
+     *
+     * ⚠️ **刻意不做「最近似 id」**：id 之间不存在近似关系（`chat_saved_550e8400-...`
+     * 与 `wf_abc` 算不出相似度），按相似度猜等于用名字选目标。工作流允许重名，
+     * 那会静默改错对象——而这是不可逆破坏。名字只用于**精确匹配**后的提示。
+     */
+    private fun workflowNotFoundResult(
+        toolCall: ChatToolCall,
+        summary: String,
+        requestedId: String,
+        knownWorkflows: List<Workflow>,
+    ): ChatToolResult {
+        val message = buildString {
+            if (requestedId.isBlank()) {
+                append("Missing `workflow_id`. ")
+            } else {
+                append("No workflow with id `$requestedId` exists. ")
+                append("Do not retry the same id — it will keep failing. ")
+                // 精确同名时告知其 id：模型常把名字当 id 传，这是可确定的纠正而非猜测。
+                val sameName = knownWorkflows.filter { it.name == requestedId }
+                if (sameName.isNotEmpty()) {
+                    append("\n`$requestedId` is the NAME of ")
+                    append(if (sameName.size == 1) "this workflow" else "${sameName.size} workflows")
+                    append(": ")
+                    append(sameName.joinToString("; ") { "`${it.id}` (${it.name})" })
+                    append(". Pick one id — do not guess.")
+                }
+            }
+            append("\n\nCall `$CHAT_LIST_WORKFLOWS_TOOL_NAME` to get real ids")
+            append(" (it accepts a `query` to filter by name).")
+        }
+        return ChatToolResult(
+            callId = toolCall.id,
+            name = toolCall.name,
+            status = ChatToolResultStatus.ERROR,
+            summary = summary,
+            outputText = message,
+        )
     }
 
     private fun prepareSavedWorkflowSteps(
@@ -1120,6 +1354,549 @@ internal class ChatAgentModuleExecutor(
         }
     }
 
+    /**
+     * 处理 `update_workflow`：把操作原语补丁应用到已有工作流上。
+     *
+     * 流水线（顺序固定，见 `docs/fork/workflow-read-write-tools.md` §4.3.3）：
+     * 解析 → 定位/键校验 → update → insert → delete → move → jump 重映射
+     * → folderId 校验 → validate → 权限 → 风险等级。
+     *
+     * 结构校验（块配对）按决策**降级到 P2 且只探测不拦截**，这里不拦。
+     */
+    private fun prepareUpdateWorkflow(
+        toolCall: ChatToolCall,
+        artifactStore: ChatAgentArtifactStore,
+    ): ChatPreparedToolItem {
+        val definition = toolRegistry.getTool(toolCall.name)
+            ?: return ChatPreparedToolItem.ImmediateResult(
+                toolCall = toolCall,
+                result = ChatToolResult(
+                    callId = toolCall.id,
+                    name = toolCall.name,
+                    status = ChatToolResultStatus.ERROR,
+                    summary = toolCall.name,
+                    outputText = "Unknown update workflow tool `${toolCall.name}`.",
+                )
+            )
+
+        val manager = WorkflowManager(appContext)
+        return try {
+            val root = json.parseToJsonElement(toolCall.argumentsJson) as? JsonObject
+                ?: throw IllegalArgumentException("Update workflow arguments must be a JSON object.")
+            val workflowId = root["workflow_id"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            val existing = if (workflowId.isBlank()) null else {
+                runCatching { manager.getWorkflow(workflowId) }.getOrNull()
+            }
+            if (existing == null) {
+                return ChatPreparedToolItem.ImmediateResult(
+                    toolCall = toolCall,
+                    result = workflowNotFoundResult(
+                        toolCall = toolCall,
+                        summary = definition.title,
+                        requestedId = workflowId,
+                        knownWorkflows = runCatching { manager.getAllWorkflows() }.getOrDefault(emptyList()),
+                    ),
+                )
+            }
+
+            val errors = mutableListOf<ChatToolResult>()
+            val warnings = mutableListOf<String>()
+
+            // ── metadata：按 key 合并，null = 删键（只读字段不在 schema 里，改不到）──
+            val metadataPatch = root["metadata"] as? JsonObject
+            val newMetadata = applyMetadataPatch(existing, metadataPatch, errors, definition, toolCall)
+
+            // ── folderId 存在性：未知 id 会让工作流从列表上消失 ──
+            newMetadata["folderId"]?.let { rawFolder ->
+                val folderId = rawFolder.toString()
+                val folderExists = runCatching {
+                    FolderManager(appContext).getAllFolders().any { it.id == folderId }
+                }.getOrDefault(false)
+                if (!folderExists) {
+                    val known = runCatching {
+                        FolderManager(appContext).getAllFolders().joinToString(", ") { "${it.name}(${it.id})" }
+                    }.getOrDefault("")
+                    errors += updateValidationError(
+                        toolCall, definition.title,
+                        "`folderId: $folderId` is not an existing folder, so the workflow would " +
+                            "disappear from the list. Pass a folder **id**, not its name. " +
+                            "Existing folders: ${known.ifBlank { "none" }}."
+                    )
+                }
+            }
+
+            // ── triggers：update/insert/delete（无 move，顺序无语义）──
+            val triggerPatch = root["triggers"] as? JsonObject
+            val patchResult = applyStepPatch(
+                toolCall = toolCall,
+                definition = definition,
+                artifactStore = artifactStore,
+                expectTrigger = true,
+                original = existing.triggers,
+                patchJson = triggerPatch,
+                errors = errors,
+                warnings = warnings,
+            )
+
+            // ── steps：update/insert/delete/move ──
+            val stepsPatch = root["steps"] as? JsonObject
+            val stepsResult = applyStepPatch(
+                toolCall = toolCall,
+                definition = definition,
+                artifactStore = artifactStore,
+                expectTrigger = false,
+                original = existing.steps,
+                patchJson = stepsPatch,
+                errors = errors,
+                warnings = warnings,
+            )
+
+            val newTriggers = patchResult ?: existing.triggers
+            val newSteps = stepsResult ?: existing.steps
+
+            val updated = existing.copy(
+                name = newMetadata["name"] as? String ?: existing.name,
+                description = newMetadata["description"] as? String ?: existing.description,
+                isEnabled = newMetadata["isEnabled"] as? Boolean ?: existing.isEnabled,
+                folderId = when {
+                    newMetadata.containsKey("folderId") -> newMetadata["folderId"] as? String
+                    else -> existing.folderId
+                },
+                tags = (newMetadata["tags"] as? List<*>)?.mapNotNull { it?.toString() } ?: existing.tags,
+                maxExecutionTime = when {
+                    newMetadata.containsKey("maxExecutionTime") ->
+                        (newMetadata["maxExecutionTime"] as? Number)?.toInt()
+                    else -> existing.maxExecutionTime
+                },
+                reentryBehavior = (newMetadata["reentryBehavior"] as? String)
+                    ?.let(WorkflowReentryBehavior::fromStoredValue)
+                    ?: existing.reentryBehavior,
+                triggers = newTriggers.ifEmpty { listOf(createManualTriggerCandidate().step) },
+                steps = newSteps,
+            )
+
+            if (updated.steps.isEmpty()) {
+                errors += updateValidationError(
+                    toolCall, definition.title,
+                    "The workflow must keep at least one action step."
+                )
+            }
+
+            // ── 逐模块 validate：**只覆盖本次新增/修改的步骤** ──
+            // 存量工作流可能含历史上就不合规模块的步骤，全量校验会让它彻底不可编辑。
+            val touchedIds = collectTouchedStepIds(root)
+            val allSteps = updated.triggers + updated.steps
+            allSteps.filter { it.id in touchedIds }.forEach { step ->
+                val module = ModuleRegistry.getModule(step.moduleId) ?: return@forEach
+                val validation = module.validate(step, allSteps)
+                if (!validation.isValid) {
+                    errors += updateValidationError(
+                        toolCall, definition.title,
+                        "Step `${step.id}` (${step.moduleId}) is invalid: " +
+                            (validation.errorMessage ?: "Validation failed.")
+                    )
+                }
+            }
+
+            val missingPermissions = PermissionManager.getMissingPermissions(appContext, updated)
+            ChatPreparedToolItem.UpdateWorkflow(
+                toolCall = toolCall,
+                definition = definition,
+                workflowId = existing.id,
+                workflow = updated,
+                warnings = warnings,
+                validationErrors = errors,
+                missingPermissions = missingPermissions,
+                riskLevel = riskLevelForSavedWorkflow(updated),
+            )
+        } catch (throwable: Throwable) {
+            ChatPreparedToolItem.ImmediateResult(
+                toolCall = toolCall,
+                result = ChatToolResult(
+                    callId = toolCall.id,
+                    name = toolCall.name,
+                    status = ChatToolResultStatus.ERROR,
+                    summary = definition.title,
+                    outputText = throwable.message?.ifBlank { null }
+                        ?: "Failed to parse the workflow patch.",
+                )
+            )
+        }
+    }
+
+    /**
+     * `metadata` 补丁 → 落地值表。
+     *
+     * 规则：**只改传了的键；传 `null` = 删键**（与 `steps.update` 的 parameters 同语义）。
+     * 返回值里出现的键就是「本次要改的」，没出现的一律保持原值——这是「不丢字段」的保证。
+     */
+    private fun applyMetadataPatch(
+        existing: Workflow,
+        patch: JsonObject?,
+        errors: MutableList<ChatToolResult>,
+        definition: ChatAgentToolDefinition,
+        toolCall: ChatToolCall,
+    ): Map<String, Any?> {
+        if (patch == null) return emptyMap()
+        val result = LinkedHashMap<String, Any?>()
+        patch.forEach { (key, element) ->
+            when (key) {
+                "name", "description", "folderId", "reentryBehavior" ->
+                    result[key] = element.jsonPrimitive.contentOrNull
+                "isEnabled" ->
+                    result[key] = element.jsonPrimitive.booleanOrNull
+                "maxExecutionTime" ->
+                    result[key] = element.jsonPrimitive.contentOrNull?.toIntOrNull()
+                "tags" ->
+                    result[key] = (element as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull }
+                else ->
+                    errors += updateValidationError(
+                        toolCall, definition.title,
+                        "`metadata.$key` is not a changeable field. Changeable: " +
+                            "name, description, isEnabled, folderId, tags, maxExecutionTime, reentryBehavior."
+                    )
+            }
+        }
+        return result
+    }
+
+    /**
+     * 一个 `steps` / `triggers` 补丁块 → 新的步骤列表。
+     *
+     * 先按模块把新参数求值出来（复用 [buildParameters]，口径与 `save_workflow` 一致），
+     * 再交给纯函数层的 [applyStepListPatch] 做列表手术。
+     *
+     * @return 新列表；失败返回 `null`（错误已写进 [errors]）
+     */
+    private fun applyStepPatch(
+        toolCall: ChatToolCall,
+        definition: ChatAgentToolDefinition,
+        artifactStore: ChatAgentArtifactStore,
+        expectTrigger: Boolean,
+        original: List<ActionStep>,
+        patchJson: JsonObject?,
+        errors: MutableList<ChatToolResult>,
+        warnings: MutableList<String>,
+    ): List<ActionStep>? {
+        if (patchJson == null) return null
+        val label = if (expectTrigger) "triggers" else "steps"
+        val originalIds = original.map { it.id }.toSet()
+        val rebuilt = mutableMapOf<String, ActionStep>()
+        val insertions = mutableListOf<StepInsertion>()
+        val deletions = mutableSetOf<String>()
+        val moves = mutableListOf<StepMove>()
+
+        // ── update：按 key 合并参数 ──
+        (patchJson["update"] as? JsonArray)?.forEach { element ->
+            val obj = element as? JsonObject ?: return@forEach
+            val stepId = obj["step_id"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            val target = original.firstOrNull { it.id == stepId }
+            if (target == null) {
+                errors += updateValidationError(
+                    toolCall, definition.title,
+                    "`$label.update` targets step id `$stepId`, which does not exist. " +
+                        "Existing ids: ${originalIds.joinToString(", ").ifBlank { "none" }}."
+                )
+                return@forEach
+            }
+            val module = ModuleRegistry.getModule(target.moduleId)
+            if (module == null) {
+                errors += updateValidationError(
+                    toolCall, definition.title, "Step `$stepId` uses unregistered module `${target.moduleId}`."
+                )
+                return@forEach
+            }
+
+            // is_disabled：块成员必须拒绝（执行器对 BLOCK_END 的禁用只跳一步，
+            // 会让循环静默只跑一遍——静态结构校验抓不到，见 §3.3.4）
+            val disabled = obj["is_disabled"]?.jsonPrimitive?.booleanOrNull
+            if (disabled != null && WorkflowPatch.isBlockMember(target.moduleId)) {
+                errors += updateValidationError(
+                    toolCall, definition.title,
+                    "`is_disabled` cannot be applied to `${target.moduleId}` (`$stepId`) because it is a " +
+                        "block member (If/Loop/While/ForEach/DoWhile/menu/UI block part). " +
+                        "Disabling part of a block desynchronises its pairing at runtime. " +
+                        "To remove the whole block, delete all of its members in the same patch."
+                )
+                return@forEach
+            }
+
+            // 参数：**以现有参数为 base**，而非模块默认值——否则未提及的参数会被重置成默认。
+            val mergedParameters = applyParameterPatch(
+                toolCall = toolCall,
+                definition = definition,
+                module = module,
+                base = target.parameters,
+                patch = obj["parameters"] as? JsonObject,
+                artifactStore = artifactStore,
+                stepLabel = stepId,
+                errors = errors,
+            ) ?: return@forEach
+
+            rebuilt[stepId] = target.copy(
+                parameters = mergedParameters,
+                isDisabled = disabled ?: target.isDisabled,
+            )
+        }
+
+        // ── insert ──
+        (patchJson["insert"] as? JsonArray)?.forEach { element ->
+            val obj = element as? JsonObject ?: return@forEach
+            val stepId = obj["id"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            val moduleId = obj["moduleId"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            val module = ModuleRegistry.getModule(moduleId)
+            if (module == null) {
+                errors += updateValidationError(
+                    toolCall, definition.title,
+                    "Inserted step `$stepId` uses module `$moduleId`, which is not registered."
+                )
+                return@forEach
+            }
+            val isTrigger = toolRegistry.isTriggerModule(moduleId)
+            if (expectTrigger && !isTrigger) {
+                errors += updateValidationError(
+                    toolCall, definition.title,
+                    "`triggers.insert` step `$stepId` must be a trigger module, but `$moduleId` is not."
+                )
+                return@forEach
+            }
+            if (!expectTrigger && isTrigger) {
+                errors += updateValidationError(
+                    toolCall, definition.title,
+                    "`steps.insert` step `$stepId` uses trigger module `$moduleId`. Put triggers in `triggers`."
+                )
+                return@forEach
+            }
+            if (!toolRegistry.isSavedWorkflowModuleAllowed(moduleId)) {
+                errors += updateValidationError(
+                    toolCall, definition.title,
+                    "Module `$moduleId` cannot appear in a saved workflow."
+                )
+                return@forEach
+            }
+            val parameters = applyParameterPatch(
+                toolCall = toolCall,
+                definition = definition,
+                module = module,
+                base = emptyMap(),
+                patch = obj["parameters"] as? JsonObject,
+                artifactStore = artifactStore,
+                stepLabel = stepId,
+                errors = errors,
+            ) ?: return@forEach
+
+            insertions += StepInsertion(
+                step = ActionStep(
+                    moduleId = moduleId,
+                    parameters = parameters,
+                    indentationLevel = obj["indentationLevel"]?.jsonPrimitive?.contentOrNull
+                        ?.toIntOrNull()?.coerceIn(0, MAX_WORKFLOW_INDENTATION_LEVEL) ?: 0,
+                    id = stepId,
+                ),
+                afterStepId = obj["after_step_id"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotBlank() },
+                atIndex = obj["at_index"]?.jsonPrimitive?.contentOrNull?.toIntOrNull(),
+            )
+        }
+
+        // ── delete ──
+        (patchJson["delete"] as? JsonArray)?.forEach { element ->
+            element.jsonPrimitive.contentOrNull?.trim()?.takeIf { it.isNotBlank() }?.let(deletions::add)
+        }
+
+        // ── move（仅 steps）──
+        (patchJson["move"] as? JsonArray)?.forEach { element ->
+            val obj = element as? JsonObject ?: return@forEach
+            val stepId = obj["step_id"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            val toIndex = obj["to_index"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
+            if (toIndex == null) {
+                errors += updateValidationError(toolCall, definition.title, "`move` for `$stepId` needs `to_index`.")
+                return@forEach
+            }
+            moves += StepMove(stepId = stepId, toIndex = toIndex)
+        }
+
+        if (rebuilt.isEmpty() && insertions.isEmpty() && deletions.isEmpty() && moves.isEmpty()) {
+            return null
+        }
+
+        return when (
+            val outcome = applyStepListPatch(
+                original = original,
+                patch = StepListPatch(
+                    rebuilt = rebuilt,
+                    insertions = insertions,
+                    deletions = deletions,
+                    moves = moves,
+                ),
+            )
+        ) {
+            is StepPatchOutcome.Applied -> {
+                warnings += outcome.warnings
+                outcome.steps
+            }
+            is StepPatchOutcome.Rejected -> {
+                outcome.errors.forEach { message ->
+                    errors += updateValidationError(toolCall, definition.title, message)
+                }
+                null
+            }
+        }
+    }
+
+    /**
+     * 参数补丁：**以 [base] 为基准按 key 合并**。
+     *
+     * 关键差异（与 `save_workflow` 的 [buildParameters]）：那里以**模块默认值**为 base，
+     * 因为它在造一个新步骤；这里必须以上**步骤的现有参数**为 base，
+     * 否则模型只想改 `duration`，其余参数会被静默重置成默认值。
+     *
+     * 未知键**必须报错**——静默丢弃会让模型以为改好了（病症 B）。
+     */
+    private fun applyParameterPatch(
+        toolCall: ChatToolCall,
+        definition: ChatAgentToolDefinition,
+        module: ActionModule,
+        base: Map<String, Any?>,
+        patch: JsonObject?,
+        artifactStore: ChatAgentArtifactStore,
+        stepLabel: String,
+        errors: MutableList<ChatToolResult>,
+    ): Map<String, Any?>? {
+        if (patch == null) return base
+
+        // 求值口径与执行校验同源（静态全集 ∪ 动态结果），并把 base 当作「已填好的 step」，
+        // 好让 CallFunctionModule 这类依据 step 现有值生成字段的模块也能吐出参数。
+        val baseStep = ActionStep(moduleId = module.id, parameters = base)
+        val definitionsById = resolveModuleInputDefinitions(module, baseStep).associateBy { it.id }
+
+        val unknown = patch.keys.filterNot(definitionsById::containsKey)
+        if (unknown.isNotEmpty()) {
+            errors += updateValidationError(
+                toolCall, definition.title,
+                "Step `$stepLabel` (`${module.id}`) got unknown parameter(s): ${unknown.joinToString(", ")}. " +
+                    "Available: ${definitionsById.keys.joinToString(", ").ifBlank { "none" }}."
+            )
+            return null
+        }
+
+        val accepted = linkedMapOf<String, Any?>()
+        patch.forEach { (key, element) ->
+            // null = 删键（不是写 null 值——两者在执行期对 isRequired 校验不等价）
+            if (element is JsonNull) {
+                accepted[key] = null
+                return@forEach
+            }
+            val input = definitionsById[key] ?: return@forEach
+            accepted[key] = coerceInputValue(input, element, artifactStore)
+        }
+
+        val merged = WorkflowPatch.mergeParameters(base, accepted)
+        return (module as? AiParameterNormalizer)?.normalizeAiParameters(merged) ?: merged
+    }
+
+    /** 收集本次补丁触及的 step id——`validate` 只跑这些，避免卡住存量工作流。 */
+    private fun collectTouchedStepIds(root: JsonObject): Set<String> {
+        val touched = mutableSetOf<String>()
+        listOf("triggers", "steps").forEach { section ->
+            val block = root[section] as? JsonObject ?: return@forEach
+            (block["update"] as? JsonArray)?.forEach { element ->
+                (element as? JsonObject)?.get("step_id")?.jsonPrimitive?.contentOrNull
+                    ?.trim()?.takeIf { it.isNotBlank() }?.let(touched::add)
+            }
+            (block["insert"] as? JsonArray)?.forEach { element ->
+                (element as? JsonObject)?.get("id")?.jsonPrimitive?.contentOrNull
+                    ?.trim()?.takeIf { it.isNotBlank() }?.let(touched::add)
+            }
+        }
+        return touched
+    }
+
+    private fun updateValidationError(
+        toolCall: ChatToolCall,
+        summary: String,
+        message: String,
+    ): ChatToolResult {
+        return ChatToolResult(
+            callId = toolCall.id,
+            name = toolCall.name,
+            status = ChatToolResultStatus.ERROR,
+            summary = summary,
+            outputText = message,
+        )
+    }
+
+    private fun executeUpdateWorkflow(item: ChatPreparedToolItem.UpdateWorkflow): ChatToolResult {
+        if (item.validationErrors.isNotEmpty()) {
+            return ChatToolResult(
+                callId = item.toolCall.id,
+                name = item.toolCall.name,
+                status = ChatToolResultStatus.ERROR,
+                summary = item.definition.title,
+                outputText = buildString {
+                    append("Workflow `${item.workflow.name}` was NOT modified — the patch has problems. ")
+                    append("Nothing was written.\n")
+                    item.validationErrors.take(10).forEachIndexed { index, error ->
+                        append("${index + 1}. ").append(error.outputText).append("\n")
+                    }
+                }.trim(),
+            )
+        }
+
+        val manager = WorkflowManager(appContext)
+        // 落盘前留一份原件：saveWorkflow 是覆盖式整表写，异常时会留下半写状态，
+        // 而本项目没有任何版本历史或回收站——不写回就是永久损坏。
+        val original = runCatching { manager.getWorkflow(item.workflowId) }.getOrNull()
+
+        return try {
+            manager.saveWorkflow(item.workflow)
+            ChatToolResult(
+                callId = item.toolCall.id,
+                name = item.toolCall.name,
+                status = ChatToolResultStatus.SUCCESS,
+                summary = item.definition.title,
+                outputText = buildUpdatedWorkflowResultText(item),
+            )
+        } catch (throwable: Throwable) {
+            val restored = original != null && runCatching { manager.saveWorkflow(original) }.isSuccess
+            ChatToolResult(
+                callId = item.toolCall.id,
+                name = item.toolCall.name,
+                status = ChatToolResultStatus.ERROR,
+                summary = item.definition.title,
+                outputText = buildString {
+                    append("Workflow `${item.workflow.name}` failed to save.")
+                    throwable.message?.takeIf { it.isNotBlank() }?.let { append("\n").append(it) }
+                    append(
+                        if (restored) "\n\nThe previous version was restored."
+                        else "\n\n⚠️ The previous version could NOT be restored — check the workflow manually."
+                    )
+                }.trim(),
+            )
+        }
+    }
+
+    private fun buildUpdatedWorkflowResultText(item: ChatPreparedToolItem.UpdateWorkflow): String {
+        return buildString {
+            append("Workflow `${item.workflow.name}` was updated.")
+            append("\n\nID: ").append(item.workflow.id)
+            append("\nTriggers: ").append(item.workflow.triggers.size)
+            append("\nSteps: ").append(item.workflow.steps.size)
+            append("\nRisk level: ").append(item.riskLevel.name.lowercase())
+
+            if (item.warnings.isNotEmpty()) {
+                append("\n\nWarnings:\n")
+                item.warnings.forEach { append("- ").append(it).append("\n") }
+            }
+            if (item.missingPermissions.isNotEmpty()) {
+                append("\nMissing permissions before execution:\n")
+                item.missingPermissions.forEach { append("- ").append(it.getLocalizedName(appContext)).append("\n") }
+            }
+            append("\nCall `").append(CHAT_GET_WORKFLOW_TOOL_NAME)
+                .append("` again to confirm the result, or `").append(CHAT_UPDATE_WORKFLOW_TOOL_NAME)
+                .append("` to apply another patch.")
+        }.trim()
+    }
+
     private fun buildSavedWorkflowResultText(workflow: ChatPreparedToolItem.SaveWorkflow): String {
         return buildString {
             append("Workflow `${workflow.workflow.name}` was saved successfully.")
@@ -1421,6 +2198,8 @@ internal class ChatAgentModuleExecutor(
             is ChatPreparedToolItem.NativeReady -> "native name=${toolCall.name} helper=${definition.nativeHelperId}"
             is ChatPreparedToolItem.Ready -> "module name=${toolCall.name} module=${module.id}"
             is ChatPreparedToolItem.SaveWorkflow -> "save_workflow name=${toolCall.name} workflow=${workflow.name}"
+            is ChatPreparedToolItem.UpdateWorkflow ->
+                "update_workflow name=${toolCall.name} id=${workflowId} warnings=${warnings.size} errors=${validationErrors.size}"
             is ChatPreparedToolItem.TemporaryWorkflow -> "temporary_workflow name=${toolCall.name} workflow=${workflow.name}"
         }
     }
@@ -2136,6 +2915,32 @@ internal class ChatAgentModuleExecutor(
         const val MAX_SAVED_WORKFLOW_MAX_SECONDS = 3600
         const val MAX_SAVED_WORKFLOW_TAGS = 12
         const val MAX_WORKFLOW_INDENTATION_LEVEL = 12
+
+        /** `vflow.logic.jump` 的 moduleId 与目标参数名（`get_workflow` 的标注要用）。 */
+        private const val JUMP_MODULE_ID = "vflow.logic.jump"
+        private const val TARGET_STEP_INDEX_PARAM = "target_step_index"
+
+        /**
+         * AI 工具链**改不到**的工作流字段。
+         *
+         * 它们不在任何补丁原语里，所以结构上就改不到——列出来是为了防止模型
+         * 试图通过 `metadata` 改它们然后陷入无效重试。
+         */
+        private val READ_ONLY_WORKFLOW_FIELDS = listOf(
+            "cardIconRes",
+            "cardThemeColor",
+            "shortcutName",
+            "shortcutIconRes",
+            "order",
+            "isFavorite",
+            "author",
+            "homepage",
+            "version",
+            "vFlowLevel",
+            "wasEnabledBeforePermissionsLost",
+            "modifiedAt",
+            "functionSignature",
+        )
     }
 }
 
