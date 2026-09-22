@@ -10,7 +10,10 @@ plugins {
 
 android {
     namespace = "com.chaomixian.vflow"
-    compileSdk = 36
+    // fork: 36 → 37。为升 mikepenz renderer 0.45.0（它要求依赖方 compileSdk >= 37）。
+    // ⚠️ `targetSdk` 保持 36 **不动**——它决定运行时行为（新 API 的兼容开关），
+    // 与「能不能编译」是两件事，不该顺手一起改。要动 targetSdk 应单独评估 + 真机回归。
+    compileSdk = 37
 
     val releaseKeystoreFile = rootProject.file("vFlow.jks")
     val releaseSigningPropsFile = rootProject.file("signing.properties")

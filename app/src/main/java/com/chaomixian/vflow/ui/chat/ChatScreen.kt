@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -128,6 +129,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -141,6 +143,83 @@ import kotlinx.serialization.json.Json
 
 private const val MAX_RECENT_PHOTOS = 18
 private const val MAX_PICKED_PHOTOS = 10
+
+/** 消息列表左右 padding（`LazyColumn` 的 horizontal padding）。卡片宽度预算要扣掉它。 */
+private val MESSAGE_LIST_HORIZONTAL_PADDING = 16.dp
+
+/**
+ * 卡片宽度上限的基准值（**手机竖屏下的原值，不要改**）。
+ *
+ * 这些不是随手定的：它们是**行长可读性（measure）**约束，桌面排版学里一般
+ * 45~75 字符。正文一味放宽会让换行时找不到行首，所以宽屏上也只是适度放宽，
+ * 而不是取消上限。
+ */
+private val CHAT_BASE_USER_MAX_WIDTH = 340.dp
+private val CHAT_BASE_ASSISTANT_MAX_WIDTH = 560.dp
+private val CHAT_BASE_TOOL_MAX_WIDTH = 540.dp
+private val CHAT_BASE_ERROR_MAX_WIDTH = 520.dp
+
+/**
+ * 卡片最多能占到可用宽度的比例。
+ *
+ * ⚠️ **留在 1.0（即允许占满）是有意的**：折叠屏展开态的目标就是让内容铺开，
+ * 这里不再额外留边。真正防止「一行太长」的是上面那几个基准值 + 下面的
+ * [CHAT_WIDE_WIDTH_SCALE]，不是这个比例。
+ */
+private const val CHAT_CONTENT_FILL_RATIO = 1.0f
+
+/**
+ * 宽屏上相对基准值放宽到的倍数，**同时是行长上限**。
+ *
+ * 取 1.6：以 assistant 为例 `560 × 1.6 = 896dp`，在折叠屏展开态（实测 871dp）
+ * 上会被可用宽度再收一次，最终约等于铺满。手机竖屏下这些上限本来就够不到
+ * 可用宽度，故完全不受影响。
+ */
+private const val CHAT_WIDE_WIDTH_SCALE = 1.6f
+
+/**
+ * 消息卡片在「本可用宽度」下的各角色最大宽度。
+ *
+ * ⚠️ **判据是「可用宽度是否超过最大基准上限」，不是屏幕尺寸断点，也不是逐角色比较。**
+ *
+ * 两处踩过的坑，都记在这里以免重犯：
+ *
+ * 1. **别借别人的屏幕断点**。最初用了 `MainComposeShell.kt:249` 的 `840.dp`，
+ *    但那是「**是否显示侧边导航栏**」的判据（还要求 `宽 > 高`）。实测 MIX Fold 3
+ *    展开态为 **871dp × 982dp**（宽 < 高），过不了那个 `宽 > 高`，
+ *    于是 `availableWidth = 839dp` 恰好差 1dp 落回窄屏分支 —— **改动完全不生效**。
+ *
+ * 2. **门槛必须统一，不能逐角色比较**。曾经写成「`available > 该角色的基准值`
+ *    就放宽」，结果 340dp 的用户气泡在**普通手机**（412dp 屏，可用 380dp）上
+ *    被放宽到 380dp —— 悄悄改掉了窄屏行为。现在只在可用宽度超过**最大**基准值
+ *    （[CHAT_BASE_ASSISTANT_MAX_WIDTH]）时才整体放宽，窄屏一律原样返回。
+ */
+private fun chatMessageMaxWidths(availableWidth: Dp): ChatMessageMaxWidths {
+    // 窄屏：一律不动，与改动前逐像素一致。
+    if (availableWidth <= CHAT_BASE_ASSISTANT_MAX_WIDTH) {
+        return ChatMessageMaxWidths(
+            user = CHAT_BASE_USER_MAX_WIDTH,
+            assistant = CHAT_BASE_ASSISTANT_MAX_WIDTH,
+            tool = CHAT_BASE_TOOL_MAX_WIDTH,
+            error = CHAT_BASE_ERROR_MAX_WIDTH,
+        )
+    }
+    val ceiling = availableWidth * CHAT_CONTENT_FILL_RATIO
+    fun relaxed(base: Dp): Dp = (base * CHAT_WIDE_WIDTH_SCALE).coerceAtMost(ceiling)
+    return ChatMessageMaxWidths(
+        user = relaxed(CHAT_BASE_USER_MAX_WIDTH),
+        assistant = relaxed(CHAT_BASE_ASSISTANT_MAX_WIDTH),
+        tool = relaxed(CHAT_BASE_TOOL_MAX_WIDTH),
+        error = relaxed(CHAT_BASE_ERROR_MAX_WIDTH),
+    )
+}
+
+private data class ChatMessageMaxWidths(
+    val user: Dp,
+    val assistant: Dp,
+    val tool: Dp,
+    val error: Dp,
+)
 
 private val prettyToolArgumentsJson = Json {
     prettyPrint = true
@@ -349,10 +428,24 @@ fun ChatScreen(
         }
     }
 
-    Box(
+    // ⚠️ 用 `BoxWithConstraints` 而不是 `Box`，是为了拿到可用宽度、推出消息卡片的
+    // 宽度上限（见 `chatMessageMaxWidths`）。**布局其余部分完全不变**。
+    //
+    // 起因：折叠屏展开态（内屏 600+dp）下，原先写死的 560dp 会让卡片只占一半宽度、
+    // 右侧大片留白。但**不能简单地把常量调大** —— 这些上限的作用是行长可读性
+    // （measure，桌面排版学里一般 45~75 字符），正文一味放宽会让换行时找不到行首。
+    //
+    // 所以这是「封顶放宽」而非「取消封顶」：仍保留上限，只让它在宽屏上跟着可用
+    // 宽度走。窄屏行为与改动前**完全一致**（手机竖屏下 560dp 本来就够不到）。
+    BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
     ) {
+        // 列表左右各 16dp padding（见下方 LazyColumn），卡片可用宽度要扣掉它。
+        val messageMaxWidths = chatMessageMaxWidths(
+            availableWidth = maxWidth - MESSAGE_LIST_HORIZONTAL_PADDING * 2,
+        )
+
         LazyColumn(
             state = listState,
             modifier = Modifier
@@ -373,6 +466,7 @@ fun ChatScreen(
                     ChatMessageBubble(
                         message = message,
                         availableToolsByName = availableToolsByName,
+                        maxWidths = messageMaxWidths,
                         modifier = Modifier.fillMaxWidth(),
                         onApproveToolCalls = chatViewModel::approveToolCalls,
                         onRejectToolCalls = chatViewModel::rejectToolCalls,
@@ -962,6 +1056,7 @@ private fun ChatWelcomeState(
 private fun ChatMessageBubble(
     message: ChatMessage,
     availableToolsByName: Map<String, ChatAgentToolDefinition>,
+    maxWidths: ChatMessageMaxWidths,
     modifier: Modifier = Modifier,
     onApproveToolCalls: (String) -> Unit,
     onRejectToolCalls: (String) -> Unit,
@@ -974,6 +1069,7 @@ private fun ChatMessageBubble(
     when (message.role) {
         ChatMessageRole.USER -> UserMessageBubble(
             message = message,
+            maxWidth = maxWidths.user,
             modifier = modifier,
             onCopyMessage = onCopyMessage,
         )
@@ -981,6 +1077,7 @@ private fun ChatMessageBubble(
         ChatMessageRole.ASSISTANT -> AssistantMessageCard(
             message = message,
             availableToolsByName = availableToolsByName,
+            maxWidth = maxWidths.assistant,
             modifier = modifier,
             onApproveToolCalls = onApproveToolCalls,
             onRejectToolCalls = onRejectToolCalls,
@@ -994,12 +1091,14 @@ private fun ChatMessageBubble(
         ChatMessageRole.TOOL -> ToolMessageCard(
             message = message,
             availableToolsByName = availableToolsByName,
+            maxWidth = maxWidths.tool,
             modifier = modifier,
             onCopyMessage = onCopyMessage,
         )
 
         ChatMessageRole.ERROR -> ErrorMessageCard(
             message = message,
+            maxWidth = maxWidths.error,
             modifier = modifier,
             onCopyMessage = onCopyMessage,
         )
@@ -1009,6 +1108,7 @@ private fun ChatMessageBubble(
 @Composable
 private fun UserMessageBubble(
     message: ChatMessage,
+    maxWidth: Dp,
     modifier: Modifier = Modifier,
     onCopyMessage: () -> Unit,
 ) {
@@ -1018,7 +1118,7 @@ private fun UserMessageBubble(
         contentAlignment = Alignment.CenterEnd,
     ) {
         Column(
-            modifier = Modifier.widthIn(max = 340.dp),
+            modifier = Modifier.widthIn(max = maxWidth),
             horizontalAlignment = Alignment.End,
         ) {
             Text(
@@ -1069,6 +1169,7 @@ private fun UserMessageBubble(
 private fun AssistantMessageCard(
     message: ChatMessage,
     availableToolsByName: Map<String, ChatAgentToolDefinition>,
+    maxWidth: Dp,
     modifier: Modifier = Modifier,
     onApproveToolCalls: (String) -> Unit,
     onRejectToolCalls: (String) -> Unit,
@@ -1085,7 +1186,7 @@ private fun AssistantMessageCard(
         contentAlignment = Alignment.CenterStart,
     ) {
         Surface(
-            modifier = Modifier.widthIn(max = 560.dp),
+            modifier = Modifier.widthIn(max = maxWidth),
             shape = RoundedCornerShape(30.dp),
             color = MaterialTheme.colorScheme.surfaceContainerLow,
             tonalElevation = 0.dp,
@@ -1404,6 +1505,7 @@ private fun ToolApprovalBadge(state: ChatToolApprovalState?) {
 private fun ToolMessageCard(
     message: ChatMessage,
     availableToolsByName: Map<String, ChatAgentToolDefinition>,
+    maxWidth: Dp,
     modifier: Modifier = Modifier,
     onCopyMessage: () -> Unit,
 ) {
@@ -1444,7 +1546,7 @@ private fun ToolMessageCard(
         contentAlignment = Alignment.CenterStart,
     ) {
         Surface(
-            modifier = Modifier.widthIn(max = 540.dp),
+            modifier = Modifier.widthIn(max = maxWidth),
             shape = RoundedCornerShape(24.dp),
             color = containerColor,
             tonalElevation = 0.dp,
@@ -1565,6 +1667,7 @@ private fun ToolMessageCard(
 @Composable
 private fun ErrorMessageCard(
     message: ChatMessage,
+    maxWidth: Dp,
     modifier: Modifier = Modifier,
     onCopyMessage: () -> Unit,
 ) {
@@ -1573,7 +1676,7 @@ private fun ErrorMessageCard(
         contentAlignment = Alignment.CenterStart,
     ) {
         Surface(
-            modifier = Modifier.widthIn(max = 520.dp),
+            modifier = Modifier.widthIn(max = maxWidth),
             shape = RoundedCornerShape(26.dp),
             color = MaterialTheme.colorScheme.errorContainer,
             tonalElevation = 0.dp,

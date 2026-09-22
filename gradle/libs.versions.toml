@@ -1,5 +1,5 @@
 [versions]
-agp = "9.0.1"
+agp = "9.4.1"
 kotlin = "2.3.20"
 r8 = "8.13.19"
 coreKtx = "1.18.0"
@@ -19,10 +19,11 @@ navigation3 = "1.1.0"
 backdrop = "1.0.6"
 reorderable = "3.0.0"
 foundationLayout = "1.10.6"
-multiplatform-markdown-renderer = "0.39.2"
-# fork: 解析器版本覆盖。mikepenz 0.39.2 声明依赖 0.7.3，但 0.7.3 的 GFM 表格
-# 要求表格块前必须有空行，否则整块塌成 PARAGRAPH（管道符原样显示）。
-# 上游在后续版本修了这个行为，0.7.14 实测可正确解析「段落/粗体行紧贴表格」。
+multiplatform-markdown-renderer = "0.45.0"
+# fork: 解析器版本覆盖。mikepenz 各版声明的 org.jetbrains:markdown 都偏旧
+# （0.39.2→0.7.3、0.42/0.43→0.7.5、0.44/0.45→0.7.9），而 GFM 表格块前必须
+# 有空行的限制在 0.7.14 才修好（否则段落/粗体行紧贴表格时整块塌成 PARAGRAPH、
+# 管道符原样显示）。所以**即便 renderer 升到 0.45.0 也必须保留这条覆盖**。
 jetbrains-markdown = "0.7.14"
 
 [libraries]

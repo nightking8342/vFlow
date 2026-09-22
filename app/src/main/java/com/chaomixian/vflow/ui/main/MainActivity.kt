@@ -236,7 +236,10 @@ class MainActivity : BaseActivity() {
         if (hideFromRecents) {
             val activityManager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
             activityManager.appTasks.forEach { task ->
-                if (task.taskInfo.baseActivity?.packageName == packageName) {
+                // fork: compileSdk 37 起 `RecentTaskInfo.taskInfo` 标注为可空，
+                // 需补一层安全调用（此前隐式非空）。语义不变：取不到 taskInfo 时
+                // 与「拿不到 baseActivity」一样，跳过该任务。
+                if (task.taskInfo?.baseActivity?.packageName == packageName) {
                     task.setExcludeFromRecents(true)
                 }
             }

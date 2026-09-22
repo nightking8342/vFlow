@@ -27,8 +27,9 @@
 | `ui/home/HomeScreen.kt`（改） | ② `LogDetailDialog`（点「最近日志」里任一条弹出的详情弹窗）加长按选择复制 + 复制按钮：`SelectionContainer` 包在该弹窗 `text` 槽的滚动 `Column` **外面**（跨块连续选中）；`dismissButton` 槽改为「复制」（全量纯文本，取值与 `text` 槽渲染内容逐字一致，为此把 `basicInfo` / `executionDetails` 提为局部变量共用），复制后**不关弹窗**。⚠️ 只包这一个弹窗，**不包日志列表本身**——列表行的单击语义是「进详情」，在里面加选择手势会和它抢同一个长按超时点 | **手动合并**（1 处包裹 + dismissButton 改写 + 2 个提为局部变量） |
 | `res/layout/dialog_execution_error.xml`（改） | ① 原「工作流名 / 出错模块 / 错误原因」三个 `TextView` **合并为单个 `text_error_detail`** —— `textIsSelectable` 的手势与选区都收在单个 TextView 的 Layout 内部，拆成多个 View 就只能一行一行选、拖不出跨行选区（首版拆三段，用户反馈"只能一行一行复制"）；层级改由 `Spannable` 表达，代码侧见 `OverlayUIActivity.buildErrorDetailSpanned` / `buildErrorDetailPlainText`（两者必须逐行对应）。② 加 `common_copy` 复制按钮 | **手动合并**（整个卡片内层重写 + 2 个新方法） |
 | `core/build.gradle.kts`（改） | ① 加 `testImplementation("junit:junit:4.13.2")` —— **core 是纯 JVM 模块，可以放 src/test 跑 JUnit**（文档里"core 没有测试目录"只是现状描述）；② `vflowCoreVersion` 注释重写，明确 **🚫 不要在开发过程中改它**（只在发版时改） | **手动合并** |
-| `ui/chat/ChatMarkdown.kt`（改） | `ChatMarkdownContent` 内层包 `SelectionContainer`，使 assistant 正文 / 思考过程 / 工具结果 / 错误提示**四处一次覆盖**均支持长按选中复制。⚠️ `modifier` 给 `SelectionContainer` 而**不给里面的 `Markdown`**（调用点用它做折叠态 `heightIn` + `clip` 裁剪，须作用在最外层）。⚠️ mikepenz renderer 内部是 `Column` 而非 Lazy，选区不会因项回收失稳；但**选择范围限于单条消息内**（消息列表本身是 LazyColumn，跨条拖选会与滚动抢手势）。各消息卡片的复制按钮 / 审批按钮 / `MessageFooterRow` 都在 `ChatMarkdownContent` **之外**，不受影响 | **手动合并**（1 处包裹 + 注释） |
-| `ui/chat/ChatScreen.kt`（改） | `UserMessageBubble` 的用户消息是纯 `Text`（不走 `ChatMarkdownContent`），单独包一层 `SelectionContainer` | **手动合并**（1 处包裹） |
+| `ui/chat/ChatMarkdown.kt`（改） | **三处 fork 定制**：① `ChatMarkdownContent` 内层包 `SelectionContainer`，使 assistant 正文 / 思考过程 / 工具结果 / 错误提示**四处一次覆盖**均支持长按选中复制。⚠️ `modifier` 给 `SelectionContainer` 而**不给里面的 `Markdown`**（调用点用它做折叠态 `heightIn` + `clip` 裁剪，须作用在最外层）。⚠️ mikepenz renderer 内部是 `Column` 而非 Lazy，选区不会因项回收失稳；但**选择范围限于单条消息内**（消息列表本身是 LazyColumn，跨条拖选会与滚动抢手势）。各消息卡片的复制按钮 / 审批按钮 / `MessageFooterRow` 都在 `ChatMarkdownContent` **之外**，不受影响。② **表格单元格不截断**：库默认 `maxLines = 1` + `TextOverflow.Ellipsis`（`MarkdownTable.kt:95/132/161`），即**每格单行、超出截成 `...`**。走库留的 `table` 组件钩子 + `MarkdownTable` 的 `headerBlock`/`rowBlock`，只改 `maxLines = Int.MAX_VALUE` + `overflow = Clip`，其余布局（横滚/分隔线/圆角/背景色）全部复用。**对照过四家头部 Agent（ccb/dsh/opencode/pi）：没有任何一家截断单元格，全部折行**。③ **标题字号覆盖**：库默认把标题映射到 M3 的 display/headline 档（`MarkdownTypography.kt:17-22`），`h2 = displayMedium = 45sp` 而正文仅 16sp，**2.8 倍落差**（用户实际反馈）。改走 `markdownTypography()` 压回合理台阶（h1=24sp / h2=22sp / h3-h6 递减）。⚠️ **一律不设 `color`**：`MarkdownText` 把 `style` 经 `pushStyle` 写进 span（`MarkdownText.kt:63-64`），其 color 会**覆盖** `markdownColor(text=)` 的主题色；曾试图用 `Color.Unspecified.copy(alpha=)` 做层级，实际会得到**半透明黑**（深色主题下变黑字）。 | **手动合并**（3 处定制 + 注释） |
+| `ui/chat/ChatScreen.kt`（改） | ① `UserMessageBubble` 的用户消息是纯 `Text`（不走 `ChatMarkdownContent`），单独包一层 `SelectionContainer`。② **消息卡片宽度上限按可用宽度推导**：原先 5 个硬编码常量（340/560/540/520dp），折叠屏展开态（实测 MIX Fold 3 **871dp × 982dp**）下卡片只占一半宽、右侧大片留白。改为 `BoxWithConstraints` 取 `maxWidth`，经 `chatMessageMaxWidths()` 推导。⚠️ **两个踩过的坑**：(a) **别借屏幕尺寸断点**——最初复用 `MainComposeShell.kt:249` 的 `840.dp`，但那是「是否显示侧边导航栏」的判据（还要求 `宽 > 高`）；展开态 871dp × 982dp 过不了那个 `宽 > 高`，`availableWidth = 839dp` 恰好差 1dp 落回窄屏分支，**改动完全不生效**。(b) **门槛必须统一**——曾逐角色比较（`available > 该角色基准` 才放宽），导致 340dp 的用户气泡在普通手机（412dp 屏）上被放宽到 380dp，**悄悄改掉窄屏行为**。现在只在可用宽度超过**最大**基准值（560dp）时整体放宽。**验证**：手机各形态（328/361/380/448dp）全部返回原值（与改动前逐像素一致），展开态 assistant 560 → 839dp。 | **手动合并**（宽度策略 + 参数下传） |
+| `ui/main/MainActivity.kt`（改） | `onStop()` 里 `task.taskInfo.baseActivity?...` 补安全调用 `?.`。**起因**：`compileSdk 37` 把 `RecentTaskInfo.taskInfo` 收紧为可空（此前隐式非空），编译失败。语义不变：取不到 `taskInfo` 时与「拿不到 `baseActivity`」一样跳过该任务 | **手动合并**（1 处安全调用 + 注释） |
 | `test/services/CoreDexFingerprintTest.kt`（新增） | fork 独有：13 例。锁住"该提示却返回 false"（会让用户静默跑旧代码）与"不该提示却返回 true"（提示不可信）两个方向 | 我方 |
 | `core/src/main/java/.../server/VFlowCore.kt`（改） | `tryRouteStreamRequest` 的流式白名单由**硬编码 clipboard** 改为查 `Config.STREAM_METHODS`。⚠️ 这是上游核心文件，且坑很深：Core 有**两条路由路径**（普通请求查 `ROUTING_TABLE`、流式请求查这张白名单），只改前者时流式请求会被拦下后**落到普通路径转发**，而那条路承载不了长连接 —— 表现为 `ping` 正常但流报 `ECONNREFUSED`（已实际踩过） | **手动合并**（改动集中在 `tryRouteStreamRequest` 一个方法） |
 | `core/src/main/java/.../server/common/Config.kt`（改） | ① `ROUTING_TABLE` 追加 `"logcat" to WorkerType.SHELL`；② 新增 `STREAM_METHODS`（流式订阅方法 → target，与 `ROUTING_TABLE` 同桌以便同时看到）；③ `init` 加一致性校验 —— 流式表里的 target 必须在路由表里，否则启动时报错 | **手动合并**（追加） |
@@ -170,18 +171,36 @@
 以下是上游的核心区。目前 fork **尚未改动**它们；一旦改动（尤其是结构性改动），必须在上表登记，并评估合并成本：
 
 - `app/build.gradle.kts` —— 编译配置、签名、ABI、依赖。上游可能频繁变更，改动时冲突面大。
+  - ⚠️ **已有分歧（2026-09-23）：构建工具链三级联动（compileSdk 37 / AGP 9.4.1 / Gradle 9.6.0）**。
+    起因是升 mikepenz renderer `0.39.2 → 0.45.0`，而它要求依赖方 `compileSdk >= 37`，
+    后者又要求 AGP ≥ 9.4（AGP 9.0.1 官方最高推荐 36），AGP 9.4.1 又要求 Gradle ≥ 9.6.0。
+    **一处版本号牵出四项联动，缺一不可**：
+    | 项 | 原 | 现 | 文件 |
+    |---|---|---|---|
+    | `multiplatform-markdown-renderer` | 0.39.2 | **0.45.0** | `libs.versions.toml` |
+    | `compileSdk` | 36 | **37** | `app/build.gradle.kts` |
+    | `agp` | 9.0.1 | **9.4.1** | `libs.versions.toml` |
+    | Gradle wrapper | 9.2.1 | **9.6.0** | `gradle/wrapper/gradle-wrapper.properties` |
+    | SDK Platform | 无 | **android-37.0** | 本机 SDK（注意包名是 `platforms;android-37.0`，
+      **不是** `android-37`——后者 404） |
+    **⚠️ `targetSdk` 保持 36 未动**：它决定运行时行为（新 API 兼容开关），与「能否编译」是两件事，
+    要动应单独评估 + 真机回归。**⚠️ 改了 `compileSdk` 会引入上游 API 的可空性收紧**：
+    实测 `RecentTaskInfo.taskInfo` 由隐式非空变为可空，`ui/main/MainActivity.kt:239` 因此编译失败，
+    已补安全调用（见该文件的 fork 注释）。**这类错误只有实际编译才会暴露**，只看依赖版本看不出来。
+    **合并上游时**：若上游已提升 AGP/compileSdk/Gradle，取上游；`targetSdk` 两边可能不同，逐块判断。
   - ⚠️ **已有分歧（2026-09-22）**：`implementation(libs.jetbrains.markdown)` —— **显式提升 GFM 解析器
     `org.jetbrains:markdown` 0.7.3 → 0.7.14**（配套 `libs.versions.toml` 新增 `jetbrains-markdown` 版本与
-    library 两项）。**起因**：mikepenz 0.39.2 声明依赖 0.7.3，而 **0.7.3 的 GFM 表格块前必须有空行**，
+    library 两项）。**起因**：mikepenz 声明依赖的解析器偏旧，而 **0.7.3 的 GFM 表格块前必须有空行**，
     否则整块塌成 `PARAGRAPH`、管道符原样显示（实测：`正文段落` / `**粗体行**` 紧贴表格 → 0 个表格）。
     表现为「AI 回复里表格没渲染成表格，且一部分正常一部分不正常」——**前面是标题或空行的表格正常，
     紧贴段落的被吞**。用一份真实会话（27 条含管道回复）量化：0.7.3 解析出 24 个表格、8 条消息全无表格；
-    0.7.14 解析出 40 个表格、0 条消息全无。**0.7.14 已修此行为**（新增 `TableAwareBlockQuoteMarkerProvider`
-    等类）。**升级注意**：① 必须显式声明——Gradle 默认选版本较高者，但依赖方声明的是 0.7.3，
-    不显式加会一直用旧版；② 该坐标是 KMP 根模块，Android 侧实际解析到 `markdown-jvm`，
-    用 `:app:dependencyInsight --dependency org.jetbrains:markdown` 验证应显示
-    `By conflict resolution: between versions 0.7.14 and 0.7.3`；③ **合并上游时此处取上游**，
-    若上游同步提升了 mikepenz 版本、或该库自身修复了表格行为，本行可删。冲突面小（2 文件各 1-2 行）。
+    0.7.14 解析出 40 个表格、0 条消息全无。
+    **⚠️ 升级 renderer 不能替代这条覆盖**：实测各版 renderer 声明的解析器版本都偏旧
+    （`0.39.2→0.7.3`、`0.42/0.43→0.7.5`、`0.44/0.45→0.7.9`），**0.45.0 声明的也才 0.7.9**，
+    表格空行修复在 0.7.14，故本行必须保留。
+    **验证方式**：`:app:dependencyInsight --dependency org.jetbrains:markdown` 应显示
+    `By conflict resolution: between versions 0.7.14 and 0.7.9` → 选中 0.7.14。
+    冲突面小（2 文件各 1-2 行）。
   - ⚠️ **已有分歧（2026-09-15）**：`versionCode 49 → 50`、`versionName "1.5.3-pr1" → "1.5.4"`（提交 `3360e63b`）。
     fork 首次自定版本号——此前 `1.5.3-pr1` 是上游 5 月定的。**合并上游时此处取上游**，
     然后按需重新决定 fork 号段。冲突面小（两行），但每次上游 bump 版本号都会撞上。
@@ -193,6 +212,11 @@
     签名者应为 `CN=vFlow Fork, OU=Fork, O=nightking8342`。见 `AGENTS.md`「常用命令」。
     这条**不是与上游的分歧**（两边都没跟踪这两个文件），而是本仓库的操作约定，记录于此以免再次踩坑。
 - `settings.gradle.kts` —— 模块声明（`:app` `:core`）。
+- `gradle/wrapper/gradle-wrapper.properties` —— Gradle 版本。
+  - ⚠️ **已有分歧（2026-09-23）**：`9.2.1 → 9.6.0`。是 AGP 9.4.1 的硬性要求
+    （AGP 9.4.1 启动时报 `Minimum supported Gradle version is 9.6.0`）。见上方
+    `app/build.gradle.kts` 的「构建工具链三级联动」条目。**合并上游时取上游**，
+    但需确认取到的 Gradle 版本仍满足 AGP 的下限。
 - `app/src/main/java/com/chaomixian/vflow/core/workflow/module/ModuleRegistry.kt` —— 模块注册表。**新增模块时在 `initialize()` 里按分类追加一行即可，不要重排已有注册**，否则每次上游合并都在这个文件解冲突。
 - `core/src/main` —— vFlow Core 独立进程（Master-Worker）。改动独立，应单独评估、单独 patch。
   - ⚠️ **已有分歧（2026-09-21）**：`LogcatStreamWrapper.kt` 改为**代次隔离**（`AtomicLong generation` + `@Volatile activeGen` 替代共用的 `running` 布尔）。修的是「装包后 logcat 触发器失灵」——见分歧清单。该文件是 fork 新增文件，但**改动了 Core 的流式行为**，且 `LogcatEventQueue.kt` 的 `clear()` 语义被明确（只丢事件、不清计数，新增 `resetAll()`）。
