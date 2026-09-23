@@ -1,0 +1,6 @@
+# 编译产物不入库：探针是一次性的，保留 .java 源码与打包命令即可复现
+*.class
+*.dex
+*.apk
+*.idsig
+dexout/

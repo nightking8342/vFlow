@@ -50,6 +50,9 @@ object TriggerHandlerRegistry {
         // logcat 触发器（fork 新增）。注意它继承 BaseTriggerHandler 而非
         // ListeningTriggerHandler —— 见 LogcatTriggerHandler 的类注释
         register(LogcatTriggerModule().id) { LogcatTriggerHandler() }
+        // 数据卡切换触发器（fork 新增）。注意它必须用 RECEIVER_EXPORTED 注册，
+        // 是全仓库唯一的例外 —— 见 SimDataSwitchTriggerHandler 的类注释
+        register(SimDataSwitchTriggerModule().id) { SimDataSwitchTriggerHandler() }
 
     }
 

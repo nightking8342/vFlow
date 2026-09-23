@@ -71,6 +71,9 @@ object Config {
         // 只改一处的话请求会在这里被拦下并回 `{"error":"No route"}`，
         // 表现是流建立不起来、触发器静默不工作。
         "logcat" to WorkerType.SHELL,
+        // 数据卡切换（fork 新增）。同 logcat：这张表决定"转发给谁"，
+        // 只加 serviceWrappers 会回 {"error":"No route"}（见上方注释）
+        "isub" to WorkerType.SHELL,
 
         // 必须 Root 权限
         "hotspot" to WorkerType.ROOT,

@@ -739,6 +739,46 @@
     <string name="output_vflow_trigger_fold_is_half_opened_name">半折</string>
     <string name="output_vflow_trigger_fold_posture_source_name">信号来源</string>
 
+    <!-- vflow.trigger.sim_data_switch -->
+    <string name="module_vflow_trigger_sim_data_switch_name">数据卡切换触发</string>
+    <string name="module_vflow_trigger_sim_data_switch_desc">当默认上网卡在卡1/卡2 之间切换时触发工作流</string>
+    <string name="param_vflow_trigger_sim_data_switch_slot_name">切换到</string>
+    <string name="summary_vflow_trigger_sim_data_switch_prefix">默认上网卡切到</string>
+    <string name="summary_vflow_trigger_sim_data_switch_any">默认上网卡切换</string>
+    <string name="option_vflow_trigger_sim_data_switch_any">任意</string>
+    <string name="msg_vflow_trigger_sim_data_switch_ready">数据卡切换触发器已就绪</string>
+    <string name="option_vflow_trigger_sim_data_switch_slot1">卡1</string>
+    <string name="option_vflow_trigger_sim_data_switch_slot2">卡2</string>
+    <string name="output_vflow_trigger_sim_data_switch_slot_name">当前上网卡槽</string>
+    <string name="output_vflow_trigger_sim_data_switch_is_slot1_name">是卡1</string>
+    <string name="output_vflow_trigger_sim_data_switch_is_slot2_name">是卡2</string>
+    <string name="output_vflow_trigger_sim_data_switch_card_label_name">卡名</string>
+    <string name="output_vflow_trigger_sim_data_switch_carrier_name_name">运营商</string>
+    <string name="output_vflow_trigger_sim_data_switch_sub_id_name">订阅 ID</string>
+
+    <!-- vflow.system.sim_data_switch -->
+    <string name="module_vflow_system_sim_data_switch_name">切换数据卡</string>
+    <string name="module_vflow_system_sim_data_switch_desc">把默认上网卡切换到卡1 或卡2（需 Shizuku 或 Root）</string>
+    <string name="param_vflow_system_sim_data_switch_slot_name">切换到</string>
+    <string name="summary_vflow_system_sim_data_switch_prefix">默认上网卡切换到</string>
+    <string name="option_vflow_system_sim_data_switch_slot1">卡1</string>
+    <string name="option_vflow_system_sim_data_switch_slot2">卡2</string>
+    <string name="output_vflow_system_sim_data_switch_success_name">是否成功</string>
+    <string name="output_vflow_system_sim_data_switch_sub_id_name">切换后的订阅 ID</string>
+    <string name="msg_vflow_system_sim_data_switch_resolving">正在解析卡槽对应的订阅…</string>
+    <string name="msg_vflow_system_sim_data_switch_switching">正在切换到卡%1$d…</string>
+    <string name="msg_vflow_system_sim_data_switch_verifying">正在确认切换结果…</string>
+    <string name="msg_vflow_system_sim_data_switch_done">已切换到卡%1$d</string>
+    <string name="msg_vflow_system_sim_data_switch_already">默认上网卡已是卡%1$d，无需切换</string>
+    <string name="error_vflow_system_sim_data_switch_param_error">参数错误</string>
+    <string name="error_vflow_system_sim_data_switch_unknown_slot">无效的目标卡槽：%1$s</string>
+    <string name="error_vflow_system_sim_data_switch_resolve_failed">无法解析目标卡槽</string>
+    <string name="error_vflow_system_sim_data_switch_slot_empty">卡%1$d 无可用 SIM 卡</string>
+    <string name="error_vflow_system_sim_data_switch_unavailable">读不到 SIM 卡列表，请授予「电话」权限</string>
+    <string name="error_vflow_system_sim_data_switch_not_supported">本设备不支持多卡订阅（无法切换数据卡）</string>
+    <string name="error_vflow_system_sim_data_switch_execution_failed">切换数据卡失败</string>
+    <string name="error_vflow_system_sim_data_switch_failed_hint">请确认 Shizuku 或 Root 权限可用，且设备支持双卡</string>
+
     <!-- vflow.trigger.bluetooth -->
     <string name="module_vflow_trigger_bluetooth_name">蓝牙触发器</string>
     <string name="module_vflow_trigger_bluetooth_desc">当蓝牙状态或设备连接变化时触发</string>

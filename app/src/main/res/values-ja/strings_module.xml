@@ -661,6 +661,46 @@
     <string name="output_vflow_trigger_fold_is_unfolded_name">展開済み</string>
     <string name="output_vflow_trigger_fold_is_half_opened_name">半開き</string>
     <string name="output_vflow_trigger_fold_posture_source_name">信号ソース</string>
+
+    <!-- vflow.trigger.sim_data_switch -->
+    <string name="module_vflow_trigger_sim_data_switch_name">データSIM切替トリガー</string>
+    <string name="module_vflow_trigger_sim_data_switch_desc">デフォルトのデータ通信SIMがスロット1/スロット2 間で切り替わった時にワークフローを起動します</string>
+    <string name="param_vflow_trigger_sim_data_switch_slot_name">切替先</string>
+    <string name="summary_vflow_trigger_sim_data_switch_prefix">データ通信SIMの切替先</string>
+    <string name="summary_vflow_trigger_sim_data_switch_any">データ通信SIMの切替</string>
+    <string name="option_vflow_trigger_sim_data_switch_any">任意</string>
+    <string name="msg_vflow_trigger_sim_data_switch_ready">データSIM切替トリガーは準備完了です</string>
+    <string name="option_vflow_trigger_sim_data_switch_slot1">スロット1</string>
+    <string name="option_vflow_trigger_sim_data_switch_slot2">スロット2</string>
+    <string name="output_vflow_trigger_sim_data_switch_slot_name">現在のデータスロット</string>
+    <string name="output_vflow_trigger_sim_data_switch_is_slot1_name">スロット1 か</string>
+    <string name="output_vflow_trigger_sim_data_switch_is_slot2_name">スロット2 か</string>
+    <string name="output_vflow_trigger_sim_data_switch_card_label_name">SIM 名</string>
+    <string name="output_vflow_trigger_sim_data_switch_carrier_name_name">通信事業者</string>
+    <string name="output_vflow_trigger_sim_data_switch_sub_id_name">サブスクリプション ID</string>
+
+    <!-- vflow.system.sim_data_switch -->
+    <string name="module_vflow_system_sim_data_switch_name">データSIMの切替</string>
+    <string name="module_vflow_system_sim_data_switch_desc">デフォルトのデータ通信SIMをスロット1 または スロット2 に切り替えます（Shizuku または Root が必要）</string>
+    <string name="param_vflow_system_sim_data_switch_slot_name">切替先</string>
+    <string name="summary_vflow_system_sim_data_switch_prefix">デフォルトのデータSIMを切替先</string>
+    <string name="option_vflow_system_sim_data_switch_slot1">スロット1</string>
+    <string name="option_vflow_system_sim_data_switch_slot2">スロット2</string>
+    <string name="output_vflow_system_sim_data_switch_success_name">成功したか</string>
+    <string name="output_vflow_system_sim_data_switch_sub_id_name">切替後のサブスクリプション ID</string>
+    <string name="msg_vflow_system_sim_data_switch_resolving">スロットに対応するサブスクリプションを解決中…</string>
+    <string name="msg_vflow_system_sim_data_switch_switching">スロット%1$d に切り替え中…</string>
+    <string name="msg_vflow_system_sim_data_switch_verifying">切替結果を確認中…</string>
+    <string name="msg_vflow_system_sim_data_switch_done">スロット%1$d に切り替えました</string>
+    <string name="msg_vflow_system_sim_data_switch_already">デフォルトのデータSIMは既にスロット%1$d です</string>
+    <string name="error_vflow_system_sim_data_switch_param_error">パラメータエラー</string>
+    <string name="error_vflow_system_sim_data_switch_unknown_slot">無効な切替先スロット: %1$s</string>
+    <string name="error_vflow_system_sim_data_switch_resolve_failed">切替先スロットを解決できません</string>
+    <string name="error_vflow_system_sim_data_switch_slot_empty">スロット%1$d に SIM がありません</string>
+    <string name="error_vflow_system_sim_data_switch_unavailable">SIM カード一覧を取得できません。「電話」権限を許可してください</string>
+    <string name="error_vflow_system_sim_data_switch_not_supported">この端末はマルチ SIM サブスクリプションに対応していません</string>
+    <string name="error_vflow_system_sim_data_switch_execution_failed">データSIMの切替に失敗しました</string>
+    <string name="error_vflow_system_sim_data_switch_failed_hint">Shizuku または Root が利用可能で、デュアルSIM対応端末であることを確認してください</string>
     <string name="module_vflow_trigger_bluetooth_name">Bluetooth トリガー</string>
     <string name="module_vflow_trigger_bluetooth_desc">Bluetooth 状態やデバイス接続の変化時に起動します</string>
     <string name="param_vflow_trigger_bluetooth_trigger_type_name">トリガータイプ</string>

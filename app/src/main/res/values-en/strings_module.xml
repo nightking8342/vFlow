@@ -720,6 +720,46 @@
     <string name="output_vflow_trigger_fold_is_half_opened_name">Is Half Opened</string>
     <string name="output_vflow_trigger_fold_posture_source_name">Signal Source</string>
 
+    <!-- vflow.trigger.sim_data_switch -->
+    <string name="module_vflow_trigger_sim_data_switch_name">SIM Data Switch Trigger</string>
+    <string name="module_vflow_trigger_sim_data_switch_desc">Trigger workflow when the default data SIM switches between slot 1 and slot 2</string>
+    <string name="param_vflow_trigger_sim_data_switch_slot_name">Switch To</string>
+    <string name="summary_vflow_trigger_sim_data_switch_prefix">Default data SIM switched to</string>
+    <string name="summary_vflow_trigger_sim_data_switch_any">Default data SIM switched</string>
+    <string name="option_vflow_trigger_sim_data_switch_any">Any</string>
+    <string name="msg_vflow_trigger_sim_data_switch_ready">SIM data switch trigger ready</string>
+    <string name="option_vflow_trigger_sim_data_switch_slot1">Slot 1</string>
+    <string name="option_vflow_trigger_sim_data_switch_slot2">Slot 2</string>
+    <string name="output_vflow_trigger_sim_data_switch_slot_name">Current Data Slot</string>
+    <string name="output_vflow_trigger_sim_data_switch_is_slot1_name">Is Slot 1</string>
+    <string name="output_vflow_trigger_sim_data_switch_is_slot2_name">Is Slot 2</string>
+    <string name="output_vflow_trigger_sim_data_switch_card_label_name">SIM Label</string>
+    <string name="output_vflow_trigger_sim_data_switch_carrier_name_name">Carrier</string>
+    <string name="output_vflow_trigger_sim_data_switch_sub_id_name">Subscription ID</string>
+
+    <!-- vflow.system.sim_data_switch -->
+    <string name="module_vflow_system_sim_data_switch_name">Switch Data SIM</string>
+    <string name="module_vflow_system_sim_data_switch_desc">Switch the default data SIM to slot 1 or slot 2 (requires Shizuku or Root)</string>
+    <string name="param_vflow_system_sim_data_switch_slot_name">Switch To</string>
+    <string name="summary_vflow_system_sim_data_switch_prefix">Switch default data SIM to</string>
+    <string name="option_vflow_system_sim_data_switch_slot1">Slot 1</string>
+    <string name="option_vflow_system_sim_data_switch_slot2">Slot 2</string>
+    <string name="output_vflow_system_sim_data_switch_success_name">Success</string>
+    <string name="output_vflow_system_sim_data_switch_sub_id_name">Subscription ID After Switch</string>
+    <string name="msg_vflow_system_sim_data_switch_resolving">Resolving the subscription for the target slot…</string>
+    <string name="msg_vflow_system_sim_data_switch_switching">Switching to slot %1$d…</string>
+    <string name="msg_vflow_system_sim_data_switch_verifying">Confirming the switch…</string>
+    <string name="msg_vflow_system_sim_data_switch_done">Switched to slot %1$d</string>
+    <string name="msg_vflow_system_sim_data_switch_already">Default data SIM is already slot %1$d, nothing to do</string>
+    <string name="error_vflow_system_sim_data_switch_param_error">Invalid parameter</string>
+    <string name="error_vflow_system_sim_data_switch_unknown_slot">Invalid target slot: %1$s</string>
+    <string name="error_vflow_system_sim_data_switch_resolve_failed">Cannot resolve the target slot</string>
+    <string name="error_vflow_system_sim_data_switch_slot_empty">No SIM in slot %1$d</string>
+    <string name="error_vflow_system_sim_data_switch_unavailable">Cannot read the SIM list — please grant the Phone permission</string>
+    <string name="error_vflow_system_sim_data_switch_not_supported">This device does not support multi-SIM subscriptions</string>
+    <string name="error_vflow_system_sim_data_switch_execution_failed">Failed to switch data SIM</string>
+    <string name="error_vflow_system_sim_data_switch_failed_hint">Make sure Shizuku or Root is available and the device supports dual SIM</string>
+
     <!-- vflow.trigger.bluetooth -->
     <string name="module_vflow_trigger_bluetooth_name">Bluetooth Trigger</string>
     <string name="module_vflow_trigger_bluetooth_desc">Trigger when Bluetooth state or device connection changes</string>

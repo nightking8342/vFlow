@@ -13,7 +13,7 @@
 
 ## 0. 为什么写这份文档
 
-触发器是 vFlow 里**数量最多的一类能力**（24 个模块、22 个 Handler 类），也是**注册链路最分散**的一类：
+触发器是 vFlow 里**数量最多的一类能力**（25 个模块、23 个已注册 Handler），也是**注册链路最分散**的一类：
 
 - 一个触发器要注册**两次**（模块表 + Handler 表），漏一个就是**静默失效**；
 - 触发路径跨越 4 个组件（Service → Registry → Handler → Coordinator），排障时容易只看到一段；
@@ -128,19 +128,20 @@ WorkflowManager.saveWorkflow(id, oldWorkflow)          WorkflowManager.kt:112
 
 | 基类 | 子类数 | 特点 |
 |---|---|---|
-| `ListeningTriggerHandler` | 16 | **引用计数**管理监听生命周期：第一个 `addTrigger` → `startListening`，最后一个 `removeTrigger` → `stopListening`。四个方法都是 `final`，子类只能实现 `startListening` / `stopListening` |
+| `ListeningTriggerHandler` | 17 | **引用计数**管理监听生命周期：第一个 `addTrigger` → `startListening`，最后一个 `removeTrigger` → `stopListening`。四个方法都是 `final`，子类只能实现 `startListening` / `stopListening` |
 | `BaseTriggerHandler`（直接继承） | 6 | 自行管理 add/remove 与监听启停 |
 
-`ListeningTriggerHandler` 的 16 个子类：AppPackage、AppStart、AppSwitch、Battery、Bluetooth、Call、
-Clipboard、DoNotDisturb、Element、GKD、Location、Notification、Power、Screen、Sms、Wifi。
+`ListeningTriggerHandler` 的 17 个子类：AppPackage、AppStart、AppSwitch、Battery、Bluetooth、Call、
+Clipboard、DoNotDisturb、Element、GKD、Location、Notification、Power、Screen、Sms、Wifi、
+SimDataSwitch。
 
 直接继承 `BaseTriggerHandler` 的 6 个：BackTap、Interval、KeyEvent、Pose、Time、Voice。
 
-### 4.2 按事件源分类（22 个 Handler 全覆盖）
+### 4.2 按事件源分类（23 个 Handler 全覆盖）
 
 | 事件源 | 数量 | Handler |
 |---|---|---|
-| 系统广播 | 9 | AppPackage、Battery、Bluetooth、Call、**DoNotDisturb**、Power、Screen、Sms、Wifi |
+| 系统广播 | 10 | AppPackage、Battery、Bluetooth、Call、**DoNotDisturb**、Power、Screen、Sms、Wifi、**SimDataSwitch** |
 | 无障碍事件流 | 4 | AppStart、AppSwitch、Element、GKD |
 | 传感器 | 2 | BackTap（加速度计）、Pose（ROTATION_VECTOR） |
 | AlarmManager | 2 | Interval、Time |
@@ -151,6 +152,9 @@ Clipboard、DoNotDisturb、Element、GKD、Location、Notification、Power、Scr
 | 外部 Intent（无自身监听） | 1 | KeyEvent |
 
 > `**DoNotDisturb**` 为 fork 新增，见 `../do-not-disturb-trigger.md`。
+>
+> ⚠️ `**SimDataSwitch**` 也是 fork 新增，但它是**广播型里的反例**：必须用
+> `RECEIVER_EXPORTED` 注册、且零权限。见 `../sim-data-switch-design.md` 与 §9.2 第 8 条。
 
 ### 4.3 三种特殊范式
 
@@ -254,7 +258,7 @@ addTrigger → AlarmTriggerScheduler.schedule()           handlers/AlarmTriggerS
 
 ## 7. 全量清单
 
-### 7.1 24 个触发器模块
+### 7.1 25 个触发器模块
 
 | # | 模块 id | Handler | 事件源 | 所需权限 |
 |---|---|---|---|---|
@@ -282,15 +286,24 @@ addTrigger → AlarmTriggerScheduler.schedule()           handlers/AlarmTriggerS
 | 22 | `vflow.trigger.sms` | ✅ | 广播 | `SMS` |
 | 23 | `vflow.trigger.time` | ✅ | Alarm | `EXACT_ALARM` |
 | 24 | `vflow.trigger.wifi` | ✅ | 广播 | `LOCATION` |
+| 25 | `vflow.trigger.sim_data_switch` | ✅ | 广播 | `READ_PHONE_STATE` |
 
-**统计口径**：模块全集 = `triggers/*Module.kt` 文件数（24）；
-「Handler」列以 `TriggerHandlerRegistry.kt` 的注册为准（21 个已注册）；
+**统计口径**：模块全集 = `triggers/*Module.kt` 文件数（25）；
+「Handler」列以 `TriggerHandlerRegistry.kt` 的注册为准（23 个已注册）；
 `voice_template` 有 Handler 类但**不注册**于 TriggerHandlerRegistry（由 `VoiceTriggerService` 承载）；
 `manual` / `share` 无 Handler（用户主动触发，不参与后台监听）。
 
 > **完全无权限声明的 11 个**：`manual`、`share`、`app_package`、`backtap`、`battery`、`clipboard`、
 > `element`、`gkd`、`pose`、`power`、`screen`。
-> 其余 13 个各声明一项（见上表）。
+> 其余 14 个各声明一项（见上表）。
+>
+> ⚠️ **`sim_data_switch` 值得单独记一笔**：它初版被误判为「零权限」——
+> 因为「接收 `ACTION_DEFAULT_DATA_SUBSCRIPTION_CHANGED` 无需权限」是真机实测事实。
+> 但**接收**不需要权限 ≠ **触发链路**不需要：把 subId 映射成「卡1/卡2」要读订阅列表
+> （`READ_PHONE_STATE`），而 `TriggerService.handleWorkflowChanged` 会在缺权限时
+> **静默把工作流置为未启用**。净效果是新装设备上该触发器**静默永不触发**，
+> 而权限齐全的测试设备上完全测不出来。现与 `CallTriggerModule` 对齐。
+> **判据是「缺了它这个触发器还能不能工作」，不是「用户是否被多要了一次授权」。**
 >
 > ⚠️ **`key_event` 是特例**：它的 `requiredPermissions` 是**计算属性**——
 > `get() = ShellManager.getRequiredPermissions(...)`（`KeyEventTriggerModule.kt:82`），
@@ -355,7 +368,7 @@ addTrigger → AlarmTriggerScheduler.schedule()           handlers/AlarmTriggerS
 | 7 | 图标 drawable | ⭕ |
 | 8 | `requiredPermissions` | ⭕ |
 | 9 | `AndroidManifest.xml`（仅独立 Service/Receiver 需要） | ⭕ |
-| 10 | `test/.../triggers/` 单测（现有 4 个测试文件） | ⭕ |
+| 10 | `test/.../triggers/` 单测（现有 8 个测试文件） | ⭕ |
 | 11 | **`FORK.md` 登记**（AGENTS.md 第 6 条要求「触发器联动同步补齐」） | ✅ |
 
 ### 9.2 现成的坑
@@ -372,6 +385,18 @@ addTrigger → AlarmTriggerScheduler.schedule()           handlers/AlarmTriggerS
 5. **`ListeningTriggerHandler` 四方法 `final`**，只能实现 `startListening` / `stopListening`。
 6. **新调度型触发器要改 `AlarmTriggerScheduler.calculateNextTriggerTime` 的 `when`**，否则返回 `null` 会被主动 cancel。
 7. **`triggerId.hashCode()` 作 PendingIntent requestCode**，理论上存在 hashCode 碰撞风险（未观测到）。
+8. **⚠️ 广播型触发器的注册 flag 不能一律照抄 `RECEIVER_NOT_EXPORTED`**。
+   Android 14+ 要求动态注册时显式声明 flag，本仓库既有广播型触发器（DND、Power、Screen 等）
+   惯用 `RECEIVER_NOT_EXPORTED`，且那是官方推荐写法 —— **但并非对每条广播都成立**。
+   真机实测（Android 17）：产生于 `sendBroadcastAsUser(intent, UserHandle.ALL)` 的跨应用广播
+   （如数据卡切换的 `ACTION_DEFAULT_DATA_SUBSCRIPTION_CHANGED`）**在 NOT_EXPORTED 下收不到**，
+   同一进程内两个 receiver 同时注册、`EXPORTED` 收到而 `NOT_EXPORTED` 3/3 收不到。
+   症状是「能选能配、后台永不触发」，属最难查的静默失效。
+   **判定方法**：看发送方是否用 `sendBroadcastAsUser(..., UserHandle.ALL)`
+   （`frameworks/base` 对应服务实现），是则用 `RECEIVER_EXPORTED`。
+   最可靠的做法是**真机实测**（见 `scripts/probe/apk/` 的最小接收 APK 套路），
+   不要靠推断 —— shell 进程（`app_process`）里注册的 receiver **什么广播都收不到**
+   （连自定义广播都收不到），拿它做探针会得出完全相反的结论。
 
 ### 9.3 排障顺序（「触发器没响应」）
 

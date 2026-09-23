@@ -968,6 +968,31 @@ object VFlowCoreBridge {
         return res?.optBoolean("enabled", false) ?: false
     }
 
+    // SIM / 数据卡 API（fork 新增）
+    //
+    // 只有「设置默认上网卡」必须特权（需要 MODIFY_PHONE_STATE，`svc data` 与
+    // `cmd phone` 都做不到，`settings put` 也无效 —— 详见 SimDataSwitchModule 的类注释）。
+    // 读操作（卡槽映射、当前默认卡）走 App 侧公开 API，见 SimDataSwitchSupport ——
+    // 反射猜 AIDL 签名不稳定，曾在这里踩坑。
+    //
+    // ⚠️ 失败时把 Core 返回的 error 一并带出来（见下方调用方的 errorText 参数）——
+    // 初版只回一个 false，真实原因被吞在 Core 的 stdout 里。
+    fun setDefaultDataSubId(subId: Int): Boolean {
+        val req = JSONObject()
+            .put("target", "isub")
+            .put("method", "setDefaultDataSubId")
+            .put("params", JSONObject().put("subId", subId))
+        val res = sendRaw(req)
+        val ok = res?.optBoolean("success", false) ?: false
+        if (!ok) {
+            DebugLogger.w(
+                TAG,
+                "setDefaultDataSubId($subId) 失败: ${res?.optString("error") ?: "无响应（Core 未运行？）"}",
+            )
+        }
+        return ok
+    }
+
     // WiFi Management APIs
     fun setWifiEnabled(enabled: Boolean): Boolean {
         val req = JSONObject()

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 数据卡切换触发器图标：两张卡 + 双向对调箭头（fork 独有，上游无此 drawable） -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="960"
+    android:viewportHeight="960"
+    android:tint="?attr/colorControlNormal">
+  <!-- 卡1（左上） -->
+  <path
+      android:fillColor="@android:color/white"
+      android:pathData="M260,120L400,120Q420,120 420,140L420,280Q420,300 400,300L260,300Q240,300 240,280L240,140Q240,120 260,120ZM280,160L280,260L380,260L380,160Z"/>
+  <!-- 卡2（右下） -->
+  <path
+      android:fillColor="@android:color/white"
+      android:pathData="M560,400L700,400Q720,400 720,420L720,560Q720,580 700,580L560,580Q540,580 540,560L540,420Q540,400 560,400ZM580,440L580,540L680,540L680,440Z"/>
+  <!-- 上箭头指向右（去卡2方向） -->
+  <path
+      android:fillColor="@android:color/white"
+      android:pathData="M470,150L620,150L620,190L470,190ZM620,190L560,130L590,100L680,190L590,280L560,250L620,190Z"/>
+  <!-- 下箭头指向左（回卡1方向） -->
+  <path
+      android:fillColor="@android:color/white"
+      android:pathData="M490,500L340,500L340,540L490,540ZM340,540L400,480L370,450L280,540L370,630L400,600L340,540Z"/>
+</vector>

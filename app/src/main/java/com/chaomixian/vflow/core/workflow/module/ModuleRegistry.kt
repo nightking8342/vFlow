@@ -92,6 +92,7 @@ object ModuleRegistry {
         register(LogcatTriggerModule(), context)
         register(VoiceTriggerModule(), context)
         register(FoldTriggerModule(), context)
+        register(SimDataSwitchTriggerModule(), context)
 
         // 界面交互
         register(FindTextModule(), context)
@@ -200,6 +201,7 @@ object ModuleRegistry {
         register(BrightnessModule(), context)
         register(ScreenRotationModule(), context)
         register(MobileDataModule(), context)
+        register(SimDataSwitchModule(), context)
         register(GetScreenStateModule(), context)
         register(WakeScreenModule(), context)
         register(WakeAndUnlockScreenModule(), context)

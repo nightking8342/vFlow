@@ -35,6 +35,9 @@ class ShellWorker(
         serviceWrappers["location"] = ILocationManagerWrapper()
         serviceWrappers["alarm"] = IAlarmManagerWrapper()
         serviceWrappers["activity_task"] = IActivityTaskManagerWrapper()
+        // 数据卡切换（fork 新增）。目标方法 setDefaultDataSubId 需要 MODIFY_PHONE_STATE，
+        // shell (UID 2000) 在 AOSP 里持有该权限（packages/Shell/AndroidManifest.xml）
+        serviceWrappers["isub"] = ISubWrapper()
         simpleWrappers["screenshot"] = IScreenshotWrapper()
 
         // 注意：system target 由 Master 动态路由，不在 wrappers 中注册
