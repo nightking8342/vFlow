@@ -55,10 +55,18 @@ object ShortcutPickerSupport {
 
     internal fun buildLaunchCommand(rawIntentBlock: String): String? {
         val condensed = rawIntentBlock.replace(Regex("\n\\s+"), "")
-        val match = Regex("""Intent \{(.*?)\}/(?:PersistableBundle\[(.*?)\]|null)\]""").find(condensed)
+        // 一个快捷方式可携带多个 Intent，语义是「前面的负责堆栈回退，最后一个才是启动目标」
+        // （ShortcutInfo.getIntent() 返回 mIntents[length - 1]）。取第一个会启动到错误目标：
+        // 美团「扫一扫」的首个 Intent 只是跳主界面的兜底项（extras 为 shortcuts=true），
+        // 真正触发扫一扫的 dat=imeituan://… 在最后一个，取首项会退化成「打开 App 主页」。
+        // 注意收尾不能写成 `\]`：多 Intent 时数组的 `]` 落在整段末尾，中间项后面是逗号，
+        // 会让 `.*?` 吞掉整个段、把多个 Intent 的键值混成一个。extras 用花括号界定即可。
+        val match = Regex("""Intent \{(.*?)\}/(?:PersistableBundle\[\{(.*?)\}\]|null)""")
+            .findAll(condensed)
+            .lastOrNull()
             ?: return null
         val intentData = readData(match.groupValues.getOrNull(1).orEmpty())
-        val extraData = readData(match.groupValues.getOrNull(2).orEmpty().removePrefix("{").removeSuffix("}"))
+        val extraData = readData(match.groupValues.getOrNull(2).orEmpty())
 
         if (intentData.isEmpty()) {
             return null
@@ -68,6 +76,12 @@ object ShortcutPickerSupport {
             append("am start")
             intentData["act"]?.takeIf { it.isNotBlank() }?.let {
                 append(" -a ")
+                append(shellQuote(it))
+            }
+            // pkg 是目标包限定。部分快捷方式（如小米「垃圾清理」）只有 act + pkg、没有 cmp，
+            // 丢掉就没有任何定位信息了；pkg 与 cmp 并存时两者都保留（与 dump 原文顺序一致）。
+            intentData["pkg"]?.takeIf { it.isNotBlank() }?.let {
+                append(" -p ")
                 append(shellQuote(it))
             }
             intentData["cmp"]?.takeIf { it.isNotBlank() }?.let {
