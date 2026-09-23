@@ -136,6 +136,17 @@ object CoreLauncher {
                 }
 
                 if (success) {
+                    // ⚠️ 这是"改了 core 需重启"判据的**另一半**（另一半是
+                    // VFlowCoreBridge.isCoreDexNewerThanRunning）。漏掉这一行的表现是
+                    // **永远不提示重启**：SharedPreferences 里那个 key 一直为 null，
+                    // shouldPromptCoreRestart 的「从未记录」分支恒真 → 恒返回 false。
+                    // 该缺陷曾从机制引入起潜伏至今（定义方有、调用方缺失），
+                    // 而 13 个纯函数单测全绿 —— 它们不覆盖这个集成点。
+                    //
+                    // 放在这里而非 deployDex 内部的原因：必须在**确认 Core 真的起来了**
+                    // 之后记录。部署成功但启动失败时记录，会让下次不再提示。
+                    VFlowCoreBridge.recordLaunchedDexFingerprint(context)
+
                     LaunchResult(
                         success = true,
                         mode = finalMode,

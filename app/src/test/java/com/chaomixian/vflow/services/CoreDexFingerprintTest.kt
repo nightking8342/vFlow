@@ -140,4 +140,51 @@ class CoreDexFingerprintTest {
         assertEquals("同一文件两次读取必须一致", first, second)
         assertEquals(16, first.length)
     }
+
+    // ── 集成点：记录方必须存在 ──────────────────────────────────
+
+    /**
+     * ⚠️ **这条测试的存在理由是一个真实缺陷。**
+     *
+     * `recordLaunchedDexFingerprint` 从机制引入起就**没有任何调用方** ——
+     * 定义、文档、单测都齐，就是没人调。后果是 SharedPreferences 里那个 key
+     * 永远为 null，`shouldPromptCoreRestart` 的「从未记录」分支恒真 → **永远不提示重启**，
+     * 用户静默跑旧 Core 代码（本项目已因此踩坑三次）。
+     *
+     * 上面那些测试**测不出它** —— 它们直接喂纯函数两个字符串，
+     * 把逻辑测得很透，却完全不覆盖「谁来写这个 pref」。
+     * 这正是「测试要覆盖调用链，不能只测函数」那条教训的实例。
+     *
+     * 这里用源码扫描锁住调用点存在。粗糙但有效：删掉调用会让它变红。
+     */
+    @Test
+    fun `the fingerprint recorder is actually called by the launcher`() {
+        val launcher = java.io.File("src/main/java/com/chaomixian/vflow/services/CoreLauncher.kt")
+        if (!launcher.isFile) return // 不在 app 模块根目录时跳过
+
+        val source = launcher.readText()
+        assertTrue(
+            "CoreLauncher 必须调用 recordLaunchedDexFingerprint —— " +
+                "缺了它 isCoreDexNewerThanRunning 永远返回 false，用户静默跑旧 Core 代码",
+            source.contains("VFlowCoreBridge.recordLaunchedDexFingerprint("),
+        )
+    }
+
+    @Test
+    fun `the recorder is called only after a successful launch`() {
+        val launcher = java.io.File("src/main/java/com/chaomixian/vflow/services/CoreLauncher.kt")
+        if (!launcher.isFile) return
+
+        val source = launcher.readText()
+        val callIndex = source.indexOf("VFlowCoreBridge.recordLaunchedDexFingerprint(")
+        val deployIndex = source.indexOf("deployDex(context)")
+
+        assertTrue("调用点应存在", callIndex >= 0)
+        assertTrue("deployDex 调用点应存在", deployIndex >= 0)
+        // 必须在部署之后：提前记录的话，部署失败就再也不会提示
+        assertTrue(
+            "recordLaunchedDexFingerprint 必须在 deployDex 之后调用",
+            callIndex > deployIndex,
+        )
+    }
 }
