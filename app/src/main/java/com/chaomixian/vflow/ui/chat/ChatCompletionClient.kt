@@ -3,6 +3,8 @@ package com.chaomixian.vflow.ui.chat
 import com.chaomixian.vflow.core.logging.DebugLogger
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -25,16 +27,9 @@ import okhttp3.RequestBody.Companion.toRequestBody
 
 internal const val CHAT_MAX_TOOL_RESULT_INPUT_CHARS = 1_600
 
-internal fun stripInlineToolMarkup(content: String): String {
-    return content
-        .replace(Regex("(?is)<tool_call\\b[^>]*>.*?</tool_call>"), " ")
-        .replace(Regex("(?is)</?function_calls?\\b[^>]*>"), " ")
-        .replace(Regex("(?is)</?tool_calls?\\b[^>]*>"), " ")
-        .replace(Regex("(?m)^[ \t]+$"), "")
-        .replace(Regex("[ \t]+\n"), "\n")
-        .replace(Regex("""\n\s*\n+"""), "\n")
-        .trim()
-}
+// ⚠️ `stripInlineToolMarkup` / `normalizeAssistantReply` / `firstNonBlank` 已搬到
+// `ChatReplyNormalizer.kt` —— 因为流式路径必须与它们**共用同一份定义**
+// （复制一份必然漂移，且漂移是静默的，见该文件头部说明）。
 
 internal object ChatToolResultInputFormatter {
     fun format(
@@ -166,6 +161,45 @@ internal class ChatCompletionClient(
         }
     }
 
+    /**
+     * **流式入口**（`chat-streaming-design.md` §4.2 / §5.1）。
+     *
+     * 与非流式 [generateReply] 并列，但**不替代**它：
+     * `ChatBenchmarkRunner`（`:352`）继续用 `generateReply`——基准测试不需要中间态。
+     *
+     * ⚠️ 三个易错点：
+     * 1. **Responses 路径自动退化为非流式**（`stream()` 的默认实现），
+     *    调用方**无需**分支——`useResponsesApi=true` 时本方法仍可用，只是不发中间事件。
+     * 2. **本方法不 `withContext`**：线程切换由 SSE 层内部的 [ChatSse.frames] `flowOn` 负责。
+     *    若在这里包 `withContext(IO)`，Flow 的收集仍会回到调用方线程（Flow 不是 suspend 值），
+     *    看起来「切了线程」其实没切。
+     * 3. **HTTP 非 2xx 时抛异常**（不是发个事件就算了）——上层需要「这轮失败」的信号，
+     *    否则会走正常收尾、把半截内容当完整回复落盘。
+     */
+    fun streamReply(
+        preset: ChatPresetConfig,
+        history: List<ChatMessage>,
+        skillSelection: ChatAgentSkillSelection = ChatAgentSkillSelection.EMPTY,
+    ): Flow<ChatStreamEvent> {
+        DebugLogger.i(
+            LOG_TAG,
+            "Streaming reply provider=${preset.providerEnum.storageValue} model=${preset.model} history=${history.size}"
+        )
+        val request = ChatProviderRequest(
+            preset = preset,
+            history = history.filter { it.role != ChatMessageRole.ERROR },
+            skillSelection = skillSelection,
+        )
+        val adapter = when (preset.providerEnum) {
+            ChatProvider.OPENAI -> OpenAICompatibleChatAdapter(httpClient, preset.providerEnum)
+            ChatProvider.DEEPSEEK -> OpenAICompatibleChatAdapter(httpClient, preset.providerEnum)
+            ChatProvider.OPENROUTER -> OpenAICompatibleChatAdapter(httpClient, preset.providerEnum)
+            ChatProvider.OLLAMA -> OpenAICompatibleChatAdapter(httpClient, preset.providerEnum)
+            ChatProvider.ANTHROPIC -> AnthropicChatAdapter(httpClient)
+        }
+        return adapter.stream(request)
+    }
+
     private companion object {
         private const val LOG_TAG = "ChatCompletion"
         private val json = Json {
@@ -190,6 +224,22 @@ internal class ChatCompletionClient(
 
     private interface ChatProviderAdapter {
         suspend fun complete(request: ChatProviderRequest): ChatCompletionResult
+
+        /**
+         * 流式。**默认实现退化为 [complete]**（`chat-streaming-design.md` §5.1）。
+         *
+         * ⚠️ 这个默认实现是**收敛不确定性的关键**：`ChatProviderAdapter` 是内部接口、
+         * 未来加新 provider（或 Responses 路径要做流式）时无需立刻实现流式，
+         * 也不会破坏任何调用点——表现为「不发中间事件的流」，行为与改动前完全一致。
+         *
+         * ⚠️ 默认实现是**非 suspend** 的，且用 `flow {}` 包住 suspend 的 [complete]：
+         * `flow` 的 block 本身是 suspend 的，故合法。**不要**改成
+         * `fun stream(...) = flowOf(Completed(runBlocking { complete() }))`——
+         * 那会阻塞调用线程，而这里需要的是「收集时才执行」的懒语义。
+         */
+        fun stream(request: ChatProviderRequest): Flow<ChatStreamEvent> = flow {
+            emit(ChatStreamEvent.Completed(complete(request)))
+        }
     }
 
     private inner class OpenAICompatibleChatAdapter(
@@ -225,6 +275,50 @@ internal class ChatCompletionClient(
             }
         }
 
+        /**
+         * 流式实现（`chat-streaming-design.md` §4.3.1）。
+         *
+         * ⚠️ **Responses 路径不在此实现流式**——`useResponsesApi=true` 时
+         * **含 Responses 路径**（`useResponsesApi = true` 时走 [ChatStreamProtocol.OPENAI_RESPONSES]）。
+         *
+         * ⚠️ v5 起 Responses **不再退化为非流式**：它的流式事件模型此前被判为
+         * 「无权威源」（U1），但官方 SDK 从 OpenAPI spec 自动生成的类型定义
+         * （`openai/types/responses/response_stream_event.py`）是完整可得的权威源，
+         * 故两套协议都走真正的流式。
+         */
+        override fun stream(request: ChatProviderRequest): Flow<ChatStreamEvent> {
+            val useResponses = request.preset.providerEnum == ChatProvider.OPENAI &&
+                request.preset.useResponsesApi
+            val mode = if (useResponses) {
+                ChatEndpointMode.RESPONSES
+            } else {
+                ChatEndpointMode.CHAT_COMPLETIONS
+            }
+            val protocol = if (useResponses) {
+                ChatStreamProtocol.OPENAI_RESPONSES
+            } else {
+                ChatStreamProtocol.OPENAI_CHAT
+            }
+            val url = ChatEndpointResolver.resolve(
+                provider = provider,
+                rawBaseUrl = request.preset.baseUrl,
+                mode = mode,
+            )
+            val payload = when (mode) {
+                ChatEndpointMode.RESPONSES -> buildResponsesPayload(request, streaming = true)
+                else -> buildChatCompletionPayload(request, streaming = true)
+            }
+            val httpRequest = Request.Builder()
+                .url(url)
+                .post(payload.toString().toRequestBody(jsonMediaType))
+                .apply { buildStreamHeaders(request.preset).forEach { (k, v) -> header(k, v) } }
+                .build()
+            return ChatStreamRunner.run(
+                frames = ChatSse.frames(httpRequest),
+                assembler = ChatStreamAssembler(protocol),
+            )
+        }
+
         private fun buildHeaders(preset: ChatPresetConfig): Map<String, String> {
             val headers = linkedMapOf(
                 "Content-Type" to "application/json",
@@ -239,11 +333,42 @@ internal class ChatCompletionClient(
             return headers
         }
 
-        private fun buildChatCompletionPayload(request: ChatProviderRequest): JsonObject {
+        /**
+         * 流式请求头。
+         *
+         * ⚠️ **B3 / F19：`Accept` 必须是 `text/event-stream`**，不能沿用 [buildHeaders] 的
+         * `application/json`。多数服务端不校验 `Accept`（所以沿用也能跑），但严格的会
+         * 拒绝或**返回非流式响应**——后者被当 SSE 解析时没有任何 `data:` 行，
+         * 表现为**静默无输出**，继而退化成「一直转圈、没有报错」的挂死形态。
+         *
+         * ⚠️ 认证头等其余字段与 [buildHeaders]**保持一致**，只换 `Accept`。
+         */
+        private fun buildStreamHeaders(preset: ChatPresetConfig): Map<String, String> {
+            return buildHeaders(preset) + ("Accept" to "text/event-stream")
+        }
+
+        /**
+         * @param streaming 是否走流式。⚠️ 非流式路径恒传 `false`（默认值），
+         *   故既有调用点**无需改动**。
+         */
+        private fun buildChatCompletionPayload(
+            request: ChatProviderRequest,
+            streaming: Boolean = false,
+        ): JsonObject {
             return buildJsonObject {
                 put("model", request.preset.model)
                 put("temperature", request.preset.temperature)
-                put("stream", false)
+                put("stream", streaming)
+                // ⚠️ **按 provider 开关，不是无条件加**（§3.3-6）：
+                // 有些 OpenAI 兼容网关不认 `stream_options`，**直接报错**（不是忽略）。
+                // Ollama 与 OpenRouter 的支持情况未实测（设计文档 §5.3 的 U4），
+                // 故**只对确定支持的 provider 开启**——保守取「宁可不报 usage，也不要整条流失败」。
+                if (streaming && supportsUsageInStreaming(request.preset.providerEnum)) {
+                    put(
+                        "stream_options",
+                        buildJsonObject { put("include_usage", true) },
+                    )
+                }
                 if (request.skillSelection.availableTools.isNotEmpty()) {
                     put("parallel_tool_calls", false)
                     put(
@@ -262,11 +387,19 @@ internal class ChatCompletionClient(
             }
         }
 
-        private fun buildResponsesPayload(request: ChatProviderRequest): JsonObject {
+        private fun buildResponsesPayload(
+            request: ChatProviderRequest,
+            streaming: Boolean = false,
+        ): JsonObject {
             return buildJsonObject {
                 put("model", request.preset.model)
                 put("temperature", request.preset.temperature)
                 put("store", false)
+                // ⚠️ Responses 用 `stream: true` 开启流式，**不需要** `stream_options`——
+                // 它的 usage 直接挂在 `response.completed` 事件的 `response.usage` 里
+                // （官方类型定义 `response_completed_event.py` 明确如此），
+                // 故不存在 chat/completions 那个「必须显式请求才给 usage」的问题（§3.3-6 只适用于后者）。
+                if (streaming) put("stream", true)
                 if (request.skillSelection.availableTools.isNotEmpty()) {
                     put("parallel_tool_calls", false)
                     put(
@@ -526,61 +659,112 @@ internal class ChatCompletionClient(
         private val httpClient: OkHttpClient,
     ) : ChatProviderAdapter {
 
+        /**
+         * 流式实现（`chat-streaming-design.md` §4.3.2）。
+         *
+         * ⚠️ payload 与 `complete()` **共用** [buildMessagesPayload]，只多一个 `stream: true`。
+         * 两个 `cache_control` 断点的位置对缓存命中是**关键**的
+         * （断点前移/减少都会让缓存每轮重写），故绝不能各写一份。
+         */
+        override fun stream(request: ChatProviderRequest): Flow<ChatStreamEvent> {
+            val url = ChatEndpointResolver.resolve(
+                provider = ChatProvider.ANTHROPIC,
+                rawBaseUrl = request.preset.baseUrl,
+                mode = ChatEndpointMode.ANTHROPIC_MESSAGES,
+            )
+            val payload = buildMessagesPayload(request, streaming = true)
+            val httpRequest = Request.Builder()
+                .url(url)
+                .post(payload.toString().toRequestBody(jsonMediaType))
+                .apply {
+                    anthropicHeaders(request.preset, streaming = true).forEach { (k, v) -> header(k, v) }
+                }
+                .build()
+            return ChatStreamRunner.run(
+                frames = ChatSse.frames(httpRequest),
+                assembler = ChatStreamAssembler(ChatStreamProtocol.ANTHROPIC_MESSAGES),
+            )
+        }
+
+        /**
+         * Anthropic 的请求头。
+         *
+         * ⚠️ **B3 / F19：流式必须把 `Accept` 换成 `text/event-stream`**，
+         * 理由同 OpenAI 路径的 [buildStreamHeaders]。
+         */
+        private fun anthropicHeaders(
+            preset: ChatPresetConfig,
+            streaming: Boolean,
+        ): Map<String, String> = linkedMapOf(
+            "Content-Type" to "application/json",
+            "Accept" to if (streaming) "text/event-stream" else "application/json",
+            "x-api-key" to preset.apiKey,
+            "anthropic-version" to "2023-06-01",
+        )
+
+        /**
+         * Anthropic messages 的请求体。`complete()` 与 `stream()` **共用**本函数。
+         *
+         * Anthropic 的 prompt 缓存是「前缀缓存」：给某个块打上 cache_control，
+         * 该块及其之前的全部内容（system + tools 前缀）都会被缓存复用。
+         *
+         * 打两个断点（参照 Pi 的做法）：
+         *   1. system 段末尾——覆盖系统提示词
+         *   2. tools 数组最后一个工具——覆盖「system + 全部工具定义」
+         * 这两段在会话内是稳定的（工具固定 16 个、技能目录为空），故每轮都能命中；
+         * 而 messages 每轮都变，缓存价值低且会挤占断点额度（Anthropic 上限 4 个），故不予标记。
+         *
+         * ⚠️ 流式下这两个断点**同样有效**，但要注意 prompt 缓存的命中还取决于
+         * 请求的**前缀是否逐字节一致**——故 `stream` 字段的位置不影响缓存
+         * （它在 JSON 里的位置与缓存前缀无关，缓存看的是渲染后的内容块）。
+         */
+        private fun buildMessagesPayload(
+            request: ChatProviderRequest,
+            streaming: Boolean = false,
+        ): JsonObject = buildJsonObject {
+            put("model", request.preset.model)
+            put("max_tokens", 4096)
+            put("temperature", request.preset.temperature)
+            if (streaming) put("stream", true)
+            put(
+                "system",
+                buildJsonArray {
+                    add(
+                        buildJsonObject {
+                            put("type", "text")
+                            put("text", buildSystemPrompt(request))
+                            put("cache_control", ephemeralCacheControl())
+                        }
+                    )
+                }
+            )
+            if (request.skillSelection.availableTools.isNotEmpty()) {
+                put(
+                    "tools",
+                    buildJsonArray {
+                        buildAnthropicToolDefinitions(request.skillSelection.availableTools).forEach(::add)
+                    }
+                )
+            }
+            put(
+                "messages",
+                buildJsonArray {
+                    buildAnthropicHistoryMessages(request).forEach(::add)
+                }
+            )
+        }
+
         override suspend fun complete(request: ChatProviderRequest): ChatCompletionResult {
             val url = ChatEndpointResolver.resolve(
                 provider = ChatProvider.ANTHROPIC,
                 rawBaseUrl = request.preset.baseUrl,
                 mode = ChatEndpointMode.ANTHROPIC_MESSAGES,
             )
-            val payload = buildJsonObject {
-                put("model", request.preset.model)
-                put("max_tokens", 4096)
-                put("temperature", request.preset.temperature)
-                // Anthropic 的 prompt 缓存是「前缀缓存」：给某个块打上 cache_control，
-                // 该块及其之前的全部内容（system + tools 前缀）都会被缓存复用。
-                //
-                // 打两个断点（参照 Pi 的做法）：
-                //   1. system 段末尾——覆盖系统提示词
-                //   2. tools 数组最后一个工具——覆盖「system + 全部工具定义」
-                // 这两段在会话内是稳定的（P1-1c 后工具固定 16 个、技能目录为空），
-                // 故每轮都能命中；而 messages 每轮都变，缓存价值低且会挤占断点额度
-                // （Anthropic 上限 4 个），故不予标记。
-                put(
-                    "system",
-                    buildJsonArray {
-                        add(
-                            buildJsonObject {
-                                put("type", "text")
-                                put("text", buildSystemPrompt(request))
-                                put("cache_control", ephemeralCacheControl())
-                            }
-                        )
-                    }
-                )
-                if (request.skillSelection.availableTools.isNotEmpty()) {
-                    put(
-                        "tools",
-                        buildJsonArray {
-                            buildAnthropicToolDefinitions(request.skillSelection.availableTools).forEach(::add)
-                        }
-                    )
-                }
-                put(
-                    "messages",
-                    buildJsonArray {
-                        buildAnthropicHistoryMessages(request).forEach(::add)
-                    }
-                )
-            }
+            val payload = buildMessagesPayload(request)
             val root = executeJsonRequest(
                 url = url,
                 payload = payload,
-                headers = mapOf(
-                    "Content-Type" to "application/json",
-                    "Accept" to "application/json",
-                    "x-api-key" to request.preset.apiKey,
-                    "anthropic-version" to "2023-06-01",
-                ),
+                headers = anthropicHeaders(request.preset, streaming = false),
             )
             extractServiceError(root)?.let { throw IllegalStateException(it) }
 
@@ -801,8 +985,27 @@ internal class ChatCompletionClient(
         return usage[field]?.jsonPrimitive?.intOrNull
     }
 
-    private fun firstNonBlank(vararg values: String?): String? {
-        return values.firstOrNull { !it.isNullOrBlank() }?.trim()
+    // 注：`firstNonBlank` 已迁为 `ChatReplyNormalizer.kt` 的顶层函数（同一语义），
+    // 本文件内的调用点（`extractReasoningValue` 等）解析到那一份，故不再保留类内副本。
+
+    /**
+     * 该 provider 是否支持 `stream_options.include_usage`。
+     *
+     * ⚠️ **不开只有代价、不报错**：拿不到 usage ⇒ 页脚不显示 token（`tokenCount = null`）。
+     * 而**开错会整条流失败**（部分网关对未知字段直接 400）。
+     * 故策略是「只对确定支持的开启」，其余留待实测（设计文档 §5.3 的 U4）。
+     *
+     * | provider | 依据 |
+     * |---|---|
+     * | `openai` / `deepseek` | 官方支持该字段 |
+     * | `openrouter` | 透传上游，但**未实测** ⇒ 暂不开 |
+     * | `ollama` | 走 `/v1/chat/completions` 兼容层，**未实测** ⇒ 暂不开 |
+     */
+    private fun supportsUsageInStreaming(provider: ChatProvider): Boolean {
+        return when (provider) {
+            ChatProvider.OPENAI, ChatProvider.DEEPSEEK -> true
+            ChatProvider.OPENROUTER, ChatProvider.OLLAMA, ChatProvider.ANTHROPIC -> false
+        }
     }
 
     private fun buildSystemPrompt(request: ChatProviderRequest): String {
@@ -967,32 +1170,9 @@ internal class ChatCompletionClient(
         return items
     }
 
-    private fun normalizeAssistantReply(
-        content: String,
-        reasoningContent: String?,
-    ): ChatCompletionResult {
-        val thinkRegex = Regex("(?is)<(?:think|thinking)>(.*?)</(?:think|thinking)>")
-        val matches = thinkRegex.findAll(content).toList()
-        val inlineReasoning = matches.joinToString(separator = "\n\n") { it.groupValues[1].trim() }
-            .trim()
-            .ifBlank { null }
-        val visibleContent = if (matches.isEmpty()) {
-            stripInlineToolMarkup(content)
-        } else {
-            stripInlineToolMarkup(thinkRegex.replace(content, ""))
-        }
-        val mergedReasoning = firstNonBlank(reasoningContent, inlineReasoning)
-        val normalizedContent = when {
-            visibleContent.isNotBlank() -> visibleContent
-            mergedReasoning != null -> ""
-            else -> content.trim()
-        }
-        return ChatCompletionResult(
-            content = normalizedContent,
-            reasoningContent = mergedReasoning,
-            totalTokens = null,
-        )
-    }
+    // ⚠️ 原 `normalizeAssistantReply` / `firstNonBlank` / `stripInlineToolMarkup` 三个私有函数
+    // 已迁到 `ChatReplyNormalizer.kt`。下方三处调用点现在解析到**同包的顶层函数**——
+    // 流式路径共用同一份定义，避免两条路径产出不一致（§8 验收要求逐字段一致）。
 
     private fun String.compactForLog(maxLength: Int = 180): String {
         val compact = replace(Regex("""\s+"""), " ").trim()

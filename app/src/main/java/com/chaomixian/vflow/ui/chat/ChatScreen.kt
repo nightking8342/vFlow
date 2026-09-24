@@ -370,7 +370,30 @@ fun ChatScreen(
         webSearchSelected = false
     }
 
-    LaunchedEffect(activeConversation?.messages?.size) {
+    // ⚠️ key 必须包含「最后一条的身份」，不能只看 `messages.size`。
+    //
+    // 起因：AI 回复到达时 `size` **不变**（占位消息被替换），于是滚动从不触发。
+    // 而真消息比「正在生成…」占位高得多，新内容顺着屏幕底下长出去、只剩顶部一条缝，
+    // 被吞掉的恰是审批卡片下半部分的「批准 / 拒绝」按钮。这是最初的 bug。
+    // key 含 `lastOrNull()?.id` 后，追加（id 变）会触发；用户上翻读历史时
+    // 不产生新对象、id 也不变，所以不会被打断。
+    //
+    // ⚠️⚠️ **已知失效（2026-09-24，流式改造引入）**：
+    // 流式下消息改为**原位增长、id 恒定**（`ChatMessagePatch.kt`），故本 effect
+    // **在流式期间与收尾时都不会触发** ⇒
+    // ① 内容增长时不跟随滚动；② **审批卡片出现时不会滚到它——0.1 会复发**。
+    //
+    // 这是 `chat-streaming-design.md` §4.6 末尾**预先警告过**的组合：
+    // 「P4 落地成稳定 id 之后，id 不再变 ⇒ (1) 失效 ⇒ 必须同时上 (3) 的指纹机制」。
+    // 本次改造**尚未接上 (3)** ⇒ 属**已知待修**，不是新发现的意外。
+    // 修法见该文档 §4.6(3) 的 `FollowSignal`（内容指纹），属 P6 范围。
+    //
+    // ⚠️ 下面那句 `lastIndex + 1` 是**越界索引**，但**刻意保持原样**：
+    // 它越界后被 LazyList 内部钳制，对矮于一屏的卡片（审批卡片）净效果是
+    // 「卡片底部贴住视口底部」，审批按钮因而可见。
+    // 曾试图"修正"这个越界写法并重写落点，改出两个新 bug 且真机验证无效（已回退）。
+    // 教训：这个位置只需要修 key，不要动落点 —— 落点的事另行评估。
+    LaunchedEffect(activeConversation?.id, activeConversation?.messages?.lastOrNull()?.id) {
         val lastIndex = activeConversation?.messages?.lastIndex ?: -1
         if (lastIndex >= 0) {
             listState.animateScrollToItem(lastIndex + 1)
@@ -1238,7 +1261,18 @@ private fun AssistantMessageCard(
                     }
                 }
 
-                if (message.isPending) {
+                // ⚠️ **流式改造（`chat-streaming-design.md` §4.4）**：
+                // 原判据是 `if (message.isPending)`——**只要 pending 就不渲染正文**，
+                // 只显示一个「正在思考…」。
+                //
+                // 那在「整条替换」模型下没问题（pending 期间内容是空的），但流式下
+                // 消息**全程 `isPending = true`**、内容**逐字增长** ⇒ 用原判据会
+                // **一个字都看不见**，直到收尾那一刻整段跳出来——流式白做。
+                //
+                // 改为：**内容为空时才显示占位**；有内容就正常渲染，占位让位。
+                // 这样「首字到达前」有「正在思考…」，「首字到达后」立刻变成正文，
+                // 且收尾时不会再有跳变（`isPending` 置 false 只影响复制按钮的出现）。
+                if (message.isPending && message.content.isBlank()) {
                     Text(
                         text = stringResource(R.string.chat_generating),
                         style = MaterialTheme.typography.bodyLarge,

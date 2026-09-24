@@ -1,5 +1,7 @@
 package com.chaomixian.vflow.ui.chat
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
@@ -7,6 +9,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mikepenz.markdown.compose.components.markdownComponents
 import com.mikepenz.markdown.compose.elements.MarkdownHighlightedCodeBlock
@@ -18,6 +21,7 @@ import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
 import com.mikepenz.markdown.m3.markdownTypography
 import com.mikepenz.markdown.model.MarkdownTypography
+import com.mikepenz.markdown.model.markdownAnimations
 import com.mikepenz.markdown.model.rememberMarkdownState
 
 /**
@@ -89,13 +93,40 @@ private fun chatMarkdownTypography(): MarkdownTypography {
  */
 private const val CHAT_TABLE_CELL_MAX_LINES = Int.MAX_VALUE
 
+/**
+ * Markdown 处于 `Loading` 态时的**最小高度**（dp）。
+ *
+ * ⚠️ 为什么要有这个值：库的 `loading` 槽位默认是**空 `Box`**（高度 0）。
+ * 流式下解析尚未产出结果的瞬间，消息区会**塌为 0 高**、紧接着又展开，
+ * 布局因此上下跳一下。给一行高即可消除这个跳动。
+ *
+ * 取值接近一行正文（正文 16sp / 行高约 24dp），偏保守。
+ */
+private const val CHAT_MARKDOWN_LOADING_MIN_HEIGHT = 24
+
 @Composable
 fun ChatMarkdownContent(
     markdown: String,
     modifier: Modifier = Modifier,
     contentColor: Color = MaterialTheme.colorScheme.onSurface,
 ) {
-    val state = rememberMarkdownState(markdown)
+    // ⚠️⚠️ **`retainState = true` 是流式能否正常显示的前提**（`chat-streaming-design.md` §3.4(c)）。
+    //
+    // 库的默认值是 `false`，此时 `MarkdownState.updateInput` 一旦发现输入变化就执行
+    // （`MarkdownState.kt:195`）：
+    //
+    // ```kotlin
+    // if (!newInput.retainState) stateFlow.value = State.Loading(...)
+    // ```
+    //
+    // 也就是**先把状态打回 Loading**，再异步解析新内容。而 `loading` 槽位的库默认值是
+    // **空 `Box`** ⇒ 流式下每个 delta 都会让整条消息**闪一下空白**再重绘。
+    // 真机表现是「整段文字反复闪烁刷新」，而不是逐字追加（2026-09-24 实测确认）。
+    //
+    // ⚠️ 这个值必须为 `true` **且** 配合下面的 `loading` 槽位兜底：
+    // `retainState` 只保证「不主动打回 Loading」，首次解析（或解析尚未产出结果时）
+    // 仍会短暂处于 Loading 态。
+    val state = rememberMarkdownState(markdown, retainState = true)
     // ⚠️ `SelectionContainer` 包在 `Markdown` 外层，使消息内容可长按选中复制。
     //
     // 包在**这一层**（而不是各个调用点）是为了让 assistant 正文 / 思考过程 /
@@ -172,6 +203,28 @@ fun ChatMarkdownContent(
                     )
                 },
             ),
+            // ⚠️⚠️ **关掉 `animateContentSize`**——它是「卡片反复闪烁」的**第二个**根源。
+            //
+            // 库的默认值（`markdownAnimations()`）是 `animateTextSize = { animateContentSize() }`。
+            // 该动画的本意是「内容变化时平滑过渡」，但在**高频、单调增长**的流式输入下：
+            //
+            // 1. 每次 delta 都触发一次尺寸动画，而上一次动画还没结束；
+            // 2. `animateContentSize` 会**自己触发重组**（动画每帧回调）⇒ 与流式 delta 叠加成交叉重组；
+            // 3. 净效果是文本块**持续处于动画中间态**，观感即为「闪烁/抖动」。
+            //
+            // ⇒ 返回 `this`（不加任何修饰）即为不动画。稳态下（非流式）的尺寸变化
+            // 本来也不需要动画——消息是一次性出现的，用户看不到过程。
+            animations = markdownAnimations(animateTextSize = { this }),
+            // ⚠️ `retainState = true` 只保证「不主动打回 Loading」，**首次**解析
+            //（或极端时序下解析尚未产出结果）仍会短暂处于 Loading 态。
+            // 库默认的 `loading` 是**空 `Box`** ⇒ 那一瞬间消息区高度塌为 0，
+            // 布局跟着跳一下。
+            //
+            // 这里给一个**一行高**的占位：既保留最小高度（不塌陷），
+            // 又不放任何文字（避免出现一个「加载中」文案在真机上被误当成卡死）。
+            loading = { loadingModifier ->
+                Box(loadingModifier.heightIn(min = CHAT_MARKDOWN_LOADING_MIN_HEIGHT.dp))
+            },
         )
     }
 }

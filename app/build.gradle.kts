@@ -230,11 +230,21 @@ dependencies {
     //
     // 版本必须与 `core/build.gradle.kts` 的一致，否则测出来的行为可能与 Core 侧不同。
     testImplementation("org.json:json:20251224")
+    // ⚠️ MockWebServer：Chat 流式层（P2）的**失败路径**只有它能测——
+    // 「HTTP 400 带 JSON 错误体」「content-type 不是 text/event-stream」「中途断连」
+    // 这三种形态用真机手工极难复现，而它们的失败表现都是**静默挂死**。
+    // ⚠️ 版本必须与下面的 okhttp 一致（同为 4.12.0）。
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
 
     // 网络库
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // ⚠️ SSE 分帧**不手写**（`split("\n\n")` 会在分片边界、UTF-8 跨 chunk、CRLF/BOM
+    // 上出错，且这些错误都是静默的）。okhttp-sse 负责分帧。
+    // ⚠️ 版本**必须与 okhttp 同 minor**——它是 okhttp 的官方配套模块，两者不匹配会
+    // 在运行时抛 NoSuchMethodError。okhttp 是硬编码字面量（未走 catalog），故这里同样硬编码。
+    implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")
     implementation("org.apache.commons:commons-compress:1.27.1")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.1")
 

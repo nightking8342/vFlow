@@ -1,0 +1,16 @@
+data: {"id":"chatcmpl-2","object":"chat.completion.chunk","created":2,"model":"gpt-x","choices":[{"index":0,"delta":{"role":"assistant","content":"Let me check."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-2","object":"chat.completion.chunk","created":2,"model":"gpt-x","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-2","object":"chat.completion.chunk","created":2,"model":"gpt-x","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"loc"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-2","object":"chat.completion.chunk","created":2,"model":"gpt-x","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ation\": \"Paris\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-2","object":"chat.completion.chunk","created":2,"model":"gpt-x","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_def","type":"function","function":{"name":"get_time","arguments":"{}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-2","object":"chat.completion.chunk","created":2,"model":"gpt-x","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: {"id":"chatcmpl-2","object":"chat.completion.chunk","created":2,"model":"gpt-x","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120}}
+
+data: [DONE]
+

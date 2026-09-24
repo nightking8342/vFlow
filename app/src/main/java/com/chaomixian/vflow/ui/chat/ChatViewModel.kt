@@ -305,6 +305,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             _events.tryEmit("Benchmark 正在运行，当前版本不支持中途停止。")
             return
         }
+        // ⚠️ **必须在清空之前**取出目标会话（§4.7 / F14）。
+        // 原实现在下一步就把 `currentAgentConversationId` 置 null，且后续变换只处理
+        // `state.activeConversationId`——两者组合的后果是：
+        // 「流式期间用户切到别的会话（**浮窗场景下这是常态**）后点停止」时，
+        // 那条正在流式的消息**永远停在 isPending = true** ⇒
+        // `persistSessionState` 的 `filterNot { it.isPending }` **永久过滤掉它**
+        // ⇒ 用户切回来看到卡住的「正在生成…」，重启后内容消失。
+        val targetConversationId = currentAgentConversationId
+
         currentAgentJob?.cancel()
         currentAgentJob = null
         currentAgentConversationId = null
@@ -312,25 +321,26 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         queuedUserPrompts.clear()
         val now = System.currentTimeMillis()
         updateUiStateAndPersist { state ->
-            val activeId = state.activeConversationId
             state.copy(
                 isSending = false,
                 isAgentRunning = false,
                 pendingPermissionRequest = null,
                 queuedPromptCount = 0,
                 conversations = state.conversations.map { conversation ->
-                    if (conversation.id != activeId) return@map conversation
+                    // ⚠️ 用 target 而**不是** active —— 见上方 F14 说明。
+                    // 若 target 为 null（没有在跑的请求），退化为原来的活动会话行为，
+                    // 以便仍能处理「有 PENDING 审批但 Agent 未运行」的情形。
+                    val effectiveId = targetConversationId ?: state.activeConversationId
+                    if (conversation.id != effectiveId) return@map conversation
                     val stoppedMessages = buildList {
                         conversation.messages.forEach { message ->
                             when {
+                                // ⚠️ §4.7 / 共识 C4：**保留**已生成的文本，不再换成「已停止。」。
+                                // 原写法把它替换成一条 ERROR 消息，等于抹掉用户已经读到的内容。
+                                // 现在只把 `isPending` 置 false（内容原样留下），
+                                // 是否给提示由下方 `_events` 承担。
                                 message.isPending -> {
-                                    add(
-                                        ChatMessage(
-                                            role = ChatMessageRole.ERROR,
-                                            content = "已停止。",
-                                            timestampMillis = now,
-                                        )
-                                    )
+                                    add(message.copy(isPending = false))
                                 }
 
                                 message.role == ChatMessageRole.ASSISTANT &&
@@ -865,6 +875,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         currentAgentConversationId = updatedConversation.id
         currentAgentJob = viewModelScope.launch {
+            // ⚠️ 这三个变量必须在 `try` **之外**声明：`catch` 块也要用它们
+            // （中断/失败时要保留已收到的内容，见 §4.7 与 C4）。
+            // 若声明在 try 内，catch 访问不到 ⇒ 已生成的文本拿不回来。
+            var streamedContent = StringBuilder()
+            var streamedReasoning = StringBuilder()
+            var result: ChatCompletionResult? = null
             try {
                 val skillSelection = ChatAgentSkillRouter.availableTools(
                     _uiState.value.availableTools,
@@ -873,51 +889,101 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     LOG_TAG,
                     "Tools conversation=${updatedConversation.id} tools=${skillSelection.availableTools.joinToString { it.name }}"
                 )
-                val result = chatClient.generateReply(
+                // ⚠️ 流式接线（`chat-streaming-design.md` §4.4）。改动前是一次性
+                // `generateReply(...)`，拿到结果后**整条替换**占位消息（换 id）。
+                // 现在改为：占位消息的 id **活到成品**，正文**原位增长**。
+                //
+                // 三条约束：
+                // 1. 流式期间只写 `_uiState`，**绝不**走 `updateUiStateAndPersist`
+                //    （它每次把整个会话表序列化成大 JSON 写盘，流式下每秒十几次）；
+                // 2. `Completed` 携带的是**权威值**（§4.4 的 B4），累积 delta 只用于过程显示；
+                // 3. 收尾必须走 `finalizeStreamingMessage`，它负责 §4.4 那 11 项里的 7 项。
+                chatClient.streamReply(
                     preset = preset,
                     history = historyForRequest,
                     skillSelection = skillSelection,
-                )
+                ).collect { event ->
+                    when (event) {
+                        is ChatStreamEvent.TextDelta -> {
+                            streamedContent.append(event.text)
+                            patchStreamingMessage(
+                                conversationId = updatedConversation.id,
+                                messageId = pendingMessage.id,
+                                content = streamedContent.toString(),
+                                reasoning = streamedReasoning.toString().ifBlank { null },
+                            )
+                        }
+
+                        is ChatStreamEvent.ReasoningDelta -> {
+                            streamedReasoning.append(event.text)
+                            patchStreamingMessage(
+                                conversationId = updatedConversation.id,
+                                messageId = pendingMessage.id,
+                                content = streamedContent.toString(),
+                                reasoning = streamedReasoning.toString().ifBlank { null },
+                            )
+                        }
+
+                        is ChatStreamEvent.Completed -> result = event.result
+
+                        // 工具调用的中间态**不进 UI**：三家头部 Agent 一致反对逐 token
+                        // 渲染工具参数（共识 C1），且 ApprovalCard 只认收尾后的完整调用。
+                        is ChatStreamEvent.ToolCallDelta,
+                        is ChatStreamEvent.ToolCallCompleted,
+                        is ChatStreamEvent.Usage,
+                        -> Unit
+                    }
+                }
+                val streamedResult = result
+                    ?: error("流已结束但没有收到 Completed 事件。")
                 DebugLogger.i(
                     LOG_TAG,
                     "Model reply conversation=${updatedConversation.id} tokens=${result.totalTokens ?: -1} reasoningChars=${result.reasoningContent?.length ?: 0} cacheCreate=${result.cacheCreationTokens ?: "-"} cacheRead=${result.cacheReadTokens ?: "-"} cacheDeleted=${result.cacheDeletedTokens ?: "-"} toolCalls=${result.toolCalls.summarizeToolCalls()} content=${result.content.compactForLog()}"
                 )
-                val timestamp = System.currentTimeMillis()
-                var shouldAutoApproveMessageId: String? = null
-                val replacement = if (result.toolCalls.isNotEmpty()) {
-                    val normalizedToolCalls = result.toolCalls.mapIndexed { index, toolCall ->
-                        toolCall.copy(
-                            id = toolCall.id ?: "call_${updatedConversation.id}_${pendingMessage.id}_$index"
-                        )
-                    }
-                    ChatMessage(
-                        role = ChatMessageRole.ASSISTANT,
-                        content = result.content,
-                        reasoningContent = result.reasoningContent,
-                        timestampMillis = timestamp,
-                        tokenCount = result.totalTokens,
-                        toolCalls = normalizedToolCalls,
-                        toolApprovalState = ChatToolApprovalState.PENDING,
-                    ).also { message ->
-                        if (shouldAutoApproveToolCalls(updatedConversation.id, normalizedToolCalls)) {
-                            shouldAutoApproveMessageId = message.id
-                        }
-                    }
-                } else {
-                    ChatMessage(
-                        role = ChatMessageRole.ASSISTANT,
-                        content = result.content.ifBlank { "模型返回了空内容。" },
-                        reasoningContent = result.reasoningContent,
-                        timestampMillis = timestamp,
-                        tokenCount = result.totalTokens,
+                // ⚠️ 工具调用的 id 兜底：与原实现同一规则（缺 id 时按 `call_<会话>_<消息>_<序号>` 生成），
+                // 但**消息 id 沿用占位消息的 id**（不再新建）——下沉到纯函数层之外的唯一原因
+                // 是它依赖 `updatedConversation.id` / `pendingMessage.id` 两个局部变量。
+                val normalizedToolCalls = result.toolCalls.mapIndexed { index, toolCall ->
+                    toolCall.copy(
+                        id = toolCall.id ?: "call_${updatedConversation.id}_${pendingMessage.id}_$index"
                     )
                 }
-                replacePendingMessage(
+                val hasToolCalls = normalizedToolCalls.isNotEmpty()
+                val shouldAutoApprove = hasToolCalls &&
+                    shouldAutoApproveToolCalls(updatedConversation.id, normalizedToolCalls)
+
+                // ⚠️ 收尾走**纯函数**（`ChatMessagePatch.kt`）：VM 内的逻辑无法单测
+                // （无 Robolectric/mockk，`repository` 无注入缝），而 §4.4 的清单漏一项就是静默错误。
+                // 本处只做「取状态 → 调纯函数 → 写回」三件事，不含任何判断逻辑。
+                //
+                // ⚠️ `content` 用 `result.content`（**权威值**，见 §4.4 的 B4），
+                // **不是** `streamedContent`——后者是未经规范化的过程值。
+                // 空内容兜底沿用 `:909` 的同一句文案（不在这里另写一份，避免两份漂移）。
+                val finalResult = _uiState.value.conversations.finalizeStreamingMessage(
                     conversationId = updatedConversation.id,
-                    pendingMessageId = pendingMessage.id,
-                    replacement = replacement,
+                    messageId = pendingMessage.id,
+                    patch = StreamingFinalizePatch(
+                        content = result.content.ifBlank { "模型返回了空内容。" },
+                        reasoningContent = result.reasoningContent,
+                        tokenCount = result.totalTokens,
+                        toolCalls = normalizedToolCalls,
+                        toolApprovalState = if (hasToolCalls) ChatToolApprovalState.PENDING else null,
+                    ),
                 )
-                val autoApproveMessageId = shouldAutoApproveMessageId
+                _uiState.update { state ->
+                    state.copy(
+                        conversations = finalResult.conversations,
+                        // §4.4 清单第 9-10 项（收尾字段，不属消息本身）
+                        isSending = false,
+                        // ⚠️ 有工具待审批时 Agent **仍在运行**（等用户点批准），
+                        // 与原 `replacePendingMessage` 的判断一致。
+                        isAgentRunning = hasToolCalls,
+                        pendingPermissionRequest = null,
+                    )
+                }
+                persistSessionState()
+
+                val autoApproveMessageId = if (shouldAutoApprove) pendingMessage.id else null
                 if (autoApproveMessageId != null) {
                     DebugLogger.i(
                         LOG_TAG,
@@ -928,6 +994,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     processNextQueuedPromptIfIdle()
                 }
             } catch (cancellation: CancellationException) {
+                // ⚠️ §4.7 / 共识 C4：**取消时保留已生成的文本**，而非整条换成「已停止。」。
+                // 四家头部 Agent（CCB / dsh / OpenCode / Pi）一致如此——
+                // 用户已经读到一半了，把它抹掉换成一句「已停止。」是净损失。
+                //
+                // ⚠️ 这里**不**用 `currentAgentJob` 做守卫（原 `:950-954` 那个模式在本处必然失效）：
+                // `stopAgent` 是 `cancel()` **紧接着同步置 null**，等本 `finally` 在调度上跑起来时
+                // `currentAgentJob` 已是 null ⇒ 守卫恒为 false ⇒ 收尾被跳过。
+                // 故取消的收尾由 `stopAgent` 主动负责（见 F14 的处理），此处只**兜底**：
+                // 若消息仍是 pending（说明不是 `stopAgent` 触发的取消，例如父作用域被取消），
+                // 把已收到的内容固化下来。
+                finalizeOnInterruption(
+                    conversationId = updatedConversation.id,
+                    messageId = pendingMessage.id,
+                    content = streamedContent.toString(),
+                    reasoning = streamedReasoning.toString().ifBlank { null },
+                )
                 throw cancellation
             } catch (throwable: Throwable) {
                 DebugLogger.e(
@@ -936,14 +1018,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     throwable
                 )
                 pendingToolExecution = null
-                replacePendingMessage(
+                // ⚠️ §4.7：失败时**已收到的正文必须保留**，错误以**独立消息**追加，
+                // 而不是把半截回复整条换成错误文案（那会让用户刚读到的一段凭空消失）。
+                finishWithError(
                     conversationId = updatedConversation.id,
-                    pendingMessageId = pendingMessage.id,
-                    replacement = ChatMessage(
-                        role = ChatMessageRole.ERROR,
-                        content = throwable.message?.trim().orEmpty().ifBlank { "请求失败，请检查当前模型配置。" },
-                        timestampMillis = System.currentTimeMillis(),
-                    )
+                    messageId = pendingMessage.id,
+                    partialContent = streamedContent.toString(),
+                    partialReasoning = streamedReasoning.toString().ifBlank { null },
+                    errorText = throwable.message?.trim().orEmpty().ifBlank { "请求失败，请检查当前模型配置。" },
                 )
                 processNextQueuedPromptIfIdle()
             } finally {
@@ -1135,6 +1217,124 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun updateUiStateAndPersist(transform: (ChatUiState) -> ChatUiState) {
         _uiState.update(transform)
+        persistSessionState()
+    }
+
+    /**
+     * 流式期间**原位增长**一条消息的正文与思考内容（`chat-streaming-design.md` §4.4）。
+     *
+     * ⚠️ **只更新内存，不落盘**。这是与 [updateUiStateAndPersist] 的关键区别：
+     * 后者每次都把**整个会话表**序列化成一个大 JSON 写 SharedPreferences，
+     * 而流式每个 delta 都会调一次本方法 ⇒ 用它会导致**每秒十几次全量序列化**。
+     * 落盘只在收尾时做一次（见 `requestAssistantReply` 的 `persistSessionState()`）。
+     *
+     * ⚠️ 变换本身在 `ChatMessagePatch.patchStreamingMessage`（纯函数、有单测）。
+     */
+    private fun patchStreamingMessage(
+        conversationId: String,
+        messageId: String,
+        content: String,
+        reasoning: String?,
+    ) {
+        _uiState.update { state ->
+            state.copy(
+                conversations = state.conversations.patchStreamingMessage(
+                    conversationId = conversationId,
+                    messageId = messageId,
+                    content = content,
+                    reasoningContent = reasoning,
+                )
+            )
+        }
+    }
+
+    /**
+     * **中断**时的兜底收尾（`chat-streaming-design.md` §4.7 / 共识 C4）：
+     * 保留已收到的文本，把消息从 pending 状态固化下来。
+     *
+     * ⚠️ 与 [finishWithError] 的区别：这里**不追加错误消息**——取消是用户的主动意图，
+     * 不是失败，不该在对话里留下一条错误记录。
+     *
+     * ⚠️ **幂等**：若消息已是 `isPending = false`（已被 `stopAgent` 收尾过），本方法什么都不做。
+     * 这是必要的——取消路径有 `stopAgent` 与协程 `catch` 两个可能的触发点。
+     */
+    private fun finalizeOnInterruption(
+        conversationId: String,
+        messageId: String,
+        content: String,
+        reasoning: String?,
+    ) {
+        val state = _uiState.value
+        val message = state.conversations
+            .firstOrNull { it.id == conversationId }
+            ?.messages?.firstOrNull { it.id == messageId }
+            ?: return
+        if (!message.isPending) return  // 已被收尾过，不重复
+
+        DebugLogger.i(LOG_TAG, "Interrupted, keeping partial content chars=${content.length}")
+        val outcome = state.conversations.finalizeStreamingMessage(
+            conversationId = conversationId,
+            messageId = messageId,
+            patch = StreamingFinalizePatch(
+                content = content,
+                reasoningContent = reasoning,
+                tokenCount = null,
+            ),
+        )
+        _uiState.update { it.copy(conversations = outcome.conversations) }
+        persistSessionState()
+    }
+
+    /**
+     * **失败**时收尾：保留已收到的正文（若有），把错误作为**独立消息**追加。
+     *
+     * ⚠️ 为什么是独立消息而非覆盖：流式下用户**已经读到了部分内容**，
+     * 覆盖掉等于让他刚看到的东西消失。追加还让「在第几个字失败的」可被用户判断。
+     *
+     * ⚠️ 完全没收到内容时（连第一个 delta 都没来）只保留错误消息，
+     * **不留空气泡**——与改动前「只剩一条错误」的观感一致。
+     */
+    private fun finishWithError(
+        conversationId: String,
+        messageId: String,
+        partialContent: String,
+        partialReasoning: String?,
+        errorText: String,
+    ) {
+        val outcome = _uiState.value.conversations.finalizeStreamingMessage(
+            conversationId = conversationId,
+            messageId = messageId,
+            patch = StreamingFinalizePatch(
+                content = partialContent,
+                reasoningContent = partialReasoning,
+                tokenCount = null,
+            ),
+        )
+        val now = System.currentTimeMillis()
+        _uiState.update { current ->
+            val found = current.conversations.any { it.id == conversationId }
+            current.copy(
+                // 会话还在就追加错误消息；会话已被删除则不再污染数据
+                conversations = if (found) {
+                    outcome.conversations.map { conversation ->
+                        if (conversation.id != conversationId) return@map conversation
+                        conversation.copy(
+                            messages = conversation.messages + ChatMessage(
+                                role = ChatMessageRole.ERROR,
+                                content = errorText,
+                                timestampMillis = now,
+                            ),
+                            updatedAtMillis = now,
+                        )
+                    }
+                } else {
+                    current.conversations
+                },
+                isSending = false,
+                isAgentRunning = false,
+                pendingPermissionRequest = null,
+            )
+        }
         persistSessionState()
     }
 
