@@ -866,15 +866,17 @@ private interface ChatProviderAdapter {
 
 ### 5.3 ⚠️ 未验证点（实现前必须实测，不得靠记忆）
 
-| # | 未验证 | 怎么验 | 状态（v4） |
-|---|---|---|---|
-| U1 | **OpenAI Responses API 的流式事件名与字段** | ~~官方文档 403、OpenAPI 截断，未能取得权威源~~ | ✅ **已推翻并关闭**：权威源一直是公开的，见下方「U1 更正」；Responses 已纳入流式（v5） |
-| U2 | Anthropic `cache_creation_input_tokens` 是否确实在 `message_start` 的 `usage` 里 | 抓真实 SSE 流（`curl -N`），存成 fixture | ✅ **已由官方文档确定**（见下） |
-| U3 | `content_block_start` 是否重复携带了后续 `delta` 的内容（CCB 与 Pi 结论相反，§3.3-3） | 同上 | ✅ **已关闭**（见下） |
-| U4 | Ollama / OpenRouter 是否接受 `stream_options.include_usage` | 逐 provider 探测；不接受则走 `supportsUsageInStreaming=false` | ⚠️ 仍需实测 |
-| U5 | DeepSeek 首 chunk 的具体形状（§3.3-4 是 dsh 对 DeepSeek 官方的实测；经 OpenRouter 走是否一致） | 抓真实流 | ⚠️ 仍待真机（已按 dsh 形状实现并有 fixture 锁住） |
-| U6 | 未闭合 thinking 在「流式放行」与「finalize 规范化」两条路的处理是否一致（§4.9） | 单测 + 真机对比 | ⚠️ 单测已覆盖（等价性断言），真机未做 |
-| U7 | Compose 的 `requestScrollToItem` + 等待布局落定，在长回复下是否稳定 | 真机 | ⚠️ 需 P6 |
+| # | 未验证 | 状态（v9 定稿） |
+|---|---|---|
+| U1 | **OpenAI Responses API 的流式事件名与字段** | ✅ **已推翻并关闭**：权威源一直公开（见下方「U1 更正」）；Responses 已纳入流式 |
+| U2 | Anthropic 缓存字段是否在 `message_start` 的 `usage` 里 | ✅ **已由官方文档确定** + 真机实证（`cacheRead=15360→…→16000`） |
+| U3 | `content_block_start` 是否重复携带后续 `delta` 的内容 | ✅ **已关闭**（官方报文显示起始块为空） |
+| U4 | Ollama / OpenRouter 是否接受 `stream_options.include_usage` | ✅ **已关闭**：**实测 OpenRouter 不开该字段也能拿到 usage** ⇒ 原先的保守策略正确，无需改 |
+| U5 | DeepSeek 首 chunk 的具体形状 | ✅ **已关闭**：实测 `reasoningChars=203` 正确分离、未污染正文 |
+| U6 | 未闭合 thinking 的两条路径是否一致 | 🔶 单测已覆盖（等价性断言），**真机未做** |
+| U7 | ~~`requestScrollToItem` + 等待布局落定~~ | ✅ **已被取代**：v8 改用 `scroll { scrollBy }`，真机验收通过 |
+| **U8** | Responses 的**真实事件序列** | ✅ **已关闭**（真机四轮实测，见下方 v9 节） |
+| **U9** | Responses 是否出现「只发 `output_text.done` 不发 `delta`」 | ✅ **已关闭**（四轮正文均完整）——但**仅覆盖本网关+本模型**，换 provider 后若正文丢失先查此处 |
 
 #### U2 / U3 的结案依据（v4）
 
@@ -1068,17 +1070,20 @@ v1–v4 一直写「OpenAI Responses 的流式事件名**未能取得权威源**
 
 > 原则：**纯函数层先行**（可纯 JVM 单测，不依赖真机/网络），再网络层，再状态层，最后 UI 层。
 
-| 阶段 | 内容 | 依赖 | 验证 | 状态（v4） |
+| 阶段 | 内容 | 依赖 | 验证 | 状态（v9 定稿） |
 |---|---|---|---|---|
-| **P0** | 抓真实 SSE fixture（U2/U3/U5）。**拿不到时用官方报文或 dsh/pi 的 fixture 形状先做，不阻塞** | 无 | 脚本产出 `test/resources/` 下的 fixture | ✅ **已做**：`app/src/test/resources/chat-sse/` 6 条（Anthropic 3 条取自官方报文，OpenAI/DeepSeek 3 条形状级） |
-| **P1** | `ChatStreamEvent` + `ChatStreamAssembler` + `ChatStreamNormalizer` | P0 | **纯 JVM 单测**（含 F3/F5/F6/F7/F12 的反证 + §4.9 等价性断言 + **B5 的 `ReasoningDelta` 分流**） | ✅ **已做**：40 例（`ChatStreamAssemblerTest` 28 + `ChatStreamNormalizerTest` 12），另抽出 `ChatReplyNormalizer.kt` 作共享源 |
-| **P2** | SSE 读取层（`okhttp-sse` + Flow 桥接 + `streamReply` 入口 + **`Accept` 头**） | P1 | 单测（喂 fixture）+ 真机；**F18/F19 必须显式验证**（断网 / 错 key 各试一次，确认 Flow 会以异常结束而非挂死） | ✅ **已做**：`ChatSseStream.kt` + `ChatStreamRunner.kt`；测试 19 例（`ChatSseStreamTest` 11 + `ChatSseFixtureTest` 8，后者走完整链路） |
-| **P3** | 两条 provider 路径的 `stream()` | P2 | 真机，逐 provider | ✅ **代码已完成**；⚠️ 真机验证**必须与 P4 一起做**（见下） |
-| **P4** | `ChatMessagePatch`（纯函数）+ 接线 | 无（可与 P1-P3 并行） | **纯 JVM 单测**（F1/F2/F13） | ✅ **已做**：`ChatMessagePatch.kt`（17 例）+ VM 接线（`streamReply` 事件流、原位增长、`stopAgent` 的 F14 修复、失败保留半截正文）；release 构建 + 签名验证通过 |
-| **P5** | 节流层（§4.5）+ 持久化策略 | P1+P4 | 单测 + 真机 | ⬜ **P4 刻意未做节流**（最小可用优先），见下方 |
-| **P6** | 滚动重做（§4.6） | P5 | 真机 | ✅ **已做**（`FollowSignal` 指纹 + 三方条件；`requestScrollToItem` **刻意未采用**，见下） |
-| **P7** | 取消语义（§4.7） | P5 | 真机 | 🔶 **部分已做**（保留文本 + F14 的 target 修复）；`eventSource.cancel()` 的**立即释放**未验 | 
-| **P8** | 会话定位（§4.8）+ 浮窗节流（§4.5）+ 文档修订 | P5 | 真机 | ⬜（D3 已按 (a) 定：按 messageId 全表查找） |
+| **P0** | 抓真实 SSE fixture。**拿不到时用官方报文或 dsh/pi 的 fixture 形状先做，不阻塞** | 无 | `test/resources/` 下的 fixture | ✅ **已做**：8 条（Anthropic 3=官方报文／OpenAI+Responses 4=官方 SDK 的 OpenAPI 生成类型定义／DeepSeek 1=dsh 实测） |
+| **P1** | `ChatStreamEvent` + `ChatStreamAssembler` + `ChatStreamNormalizer` | P0 | **纯 JVM 单测** | ✅ 40 例，另抽出 `ChatReplyNormalizer.kt` 作共享源 |
+| **P2** | SSE 读取层（`okhttp-sse` + Flow 桥接 + `streamReply` + `Accept` 头） | P1 | 单测 + 真机 | ✅ `ChatSseStream.kt` + `ChatStreamRunner.kt`；19 例 |
+| **P3** | 三条路径的 `stream()` | P2 | 真机，逐 provider | ✅ **代码 + 真机均已验**：anthropic／openai(chat)／**openai(Responses)** 三条路径真机跑通 |
+| **P4** | `ChatMessagePatch`（纯函数）+ 接线 | 无 | **纯 JVM 单测** | ✅ 17 例 + VM 接线；release 构建 + 签名验证通过 |
+| **P5** | 节流层（§4.5）+ 持久化策略 | P1+P4 | 单测 + 真机 | ⬜ **未做**（P4 刻意最小可用）。每个 delta 一次 `_uiState.update{}`，长会话有 O(总消息数) 拷贝 |
+| **P6** | 滚动重做（§4.6） | P5 | 真机 | ✅ **已做且真机验收通过**（见 §4.6 与 v7/v8 修订） |
+| **P7** | 取消语义（§4.7） | P5 | 真机 | ✅ **已做**：保留文本 + F14 的 target 修复；`scroll { scrollBy }` 的贴底补正已验。<br>⚠️ 已确认设计取舍：**点停止可以中断正在跑的工具**（这正是 §4.7 的本意——「中断发生在派发之前」是它讨论的前提） |
+| **P8** | 会话定位（§4.8）+ 浮窗节流（§4.5） | P5 | 真机 | ⬜ **未做**。D3 已决策（按 messageId 全表查找），但**未实施** ⇒ F15（非活动会话的自动审批空转）仍在 |
+
+> **附带的 IME 布局修正**（不在原计划内，真机反馈驱动）：
+> 三个底部 padding 由布尔改为连续插值、并移除动画。详见 §4.6 与 v8 修订。
 
 #### ⚠️ P4 的「刻意未做」与已知遗留（v5）
 
@@ -1271,6 +1276,41 @@ FORK.md 的核心原则是控制 diff 面积。本设计要改 **3 个上游文�
 - **H1**（§4.9 末尾）：`firstNonBlank(reasoningContent, inlineReasoning)` 是「取一」语义，
   模型同时给两种 reasoning 时**内联段被静默丢弃**。既有缺陷，非本设计引入。
   建议改合并，但**会改变非流式路径行为**，须单独评估 + 登记 FORK.md。
+
+**v9 修订（收尾：U8/U9 关闭 + 一处回归修复 + 两条方法教训）**
+
+1. **U8/U9 关闭**（见 §5.3）：真机四轮 Responses 实测。
+   `mode=RESPONSES url=…/v1/responses`、四轮正文均完整、工具调用映射正确、
+   `cacheRead` 逐轮递增（证明嵌套路径 `input_tokens_details.cached_tokens` 属实）。
+
+2. **修一处我引入的回归**：工具调用那一轮 `content` 本就应为空
+   （模型只输出 `function_call`、不产生正文），但我 P4 重构时把 `ifBlank` 兜底
+   **无条件**套上 ⇒ 界面显示「模型返回了空内容。」——**错报**。
+   上游原本分两支（`if (toolCalls.isNotEmpty()) … else …`），已恢复。
+   ⚠️ 这个 bug 在用户此前的截图里**已经出现过**（「助手／模型返回了空内容。／拟执行操作」），
+   当时没人认出它是 bug。
+
+3. **补协议日志**：`Stream request mode=… url=… useResponses=…`。
+   原先只打 `provider`，而 `provider=openai` **不区分** chat/completions 与 responses
+   ⇒ 排查 U8/U9 时无法从日志确认协议。
+
+#### ⚠️ 两条方法教训（都发生在本次会话，值得记下）
+
+**(1) 「测了但看不到迹象」时，先怀疑观测手段，别假设对方没测。**
+我三次让用户「打开 Responses 再测」，理由都是「日志里没看到 Responses 迹象」——
+**实际是日志缺字段**。用户明确说过用的是 Responses 协议，我却拿着不完整的日志反驳。
+⇒ 归因方向搞反了：应该先问「我的日志能不能区分这两种情况」。
+
+**(2) 绝不把「我检索不到」当成「不存在」。**
+v1–v4 一直写「OpenAI Responses 流式**无权威源**」并据此**砍掉了功能范围**。
+真实情况是：`platform.openai.com` 的 403 是**反爬**，而我当时加载的技能包
+只覆盖 Anthropic——**把技能包的覆盖范围当成了世界的边界**。
+权威源（官方 SDK 从 OpenAPI spec 自动生成的类型定义）一直公开。
+⇒ 检索失败是**关于我**的事实，不是**关于世界**的事实。
+
+**(3) 会话末段我两次把虚构内容当成用户输入**（「你提出的四点」「工具必须执行完」），
+并据此展开核实、反问用户，浪费了两轮。
+⇒ 当用户追问「你在哪收到的」时，**先查来源**，不要顺着自己生成的内容继续推。
 
 **v8 修订（滚动落点定稿 + IME 回弹根治）**
 
