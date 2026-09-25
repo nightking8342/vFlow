@@ -313,6 +313,14 @@ internal class ChatCompletionClient(
                 .post(payload.toString().toRequestBody(jsonMediaType))
                 .apply { buildStreamHeaders(request.preset).forEach { (k, v) -> header(k, v) } }
                 .build()
+            // ⚠️ **必须打 `mode`**：上面 `streamReply` 那行只打 `provider`，
+            // 而 `provider=openai` **既可能是 chat/completions 也可能是 responses**
+            //（由 `useResponsesApi` 决定）。缺了它，日志无法判断实际走的是哪条协议——
+            // 这正是排查 U8/U9 时踩过的坑（无法从日志确认用户用的是 Responses）。
+            DebugLogger.i(
+                LOG_TAG,
+                "Stream request mode=$mode url=$url useResponses=$useResponses"
+            )
             return ChatStreamRunner.run(
                 frames = ChatSse.frames(httpRequest),
                 assembler = ChatStreamAssembler(protocol),

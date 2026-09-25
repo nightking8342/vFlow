@@ -957,13 +957,23 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 // 本处只做「取状态 → 调纯函数 → 写回」三件事，不含任何判断逻辑。
                 //
                 // ⚠️ `content` 用 `result.content`（**权威值**，见 §4.4 的 B4），
-                // **不是** `streamedContent`——后者是未经规范化的过程值。
-                // 空内容兜底沿用 `:909` 的同一句文案（不在这里另写一份，避免两份漂移）。
+                // **不是** `streamedContent`（那是未经规范化的过程值）。
+                //
+                // ⚠️⚠️ **空内容兜底只在「没有工具调用」时才加**——必须与上游
+                // `:906-909` 的 `if (toolCalls.isNotEmpty()) … else …` 结构一致。
+                //
+                // 工具调用那一轮 `content` **本就该是空的**（模型只输出 `tool_call`、
+                // 不产生正文），属**正常情况**。若无条件兜底，界面会显示
+                // 「模型返回了空内容。」⇒ **错报**（真机日志实证：`toolCalls=…` 且 `content=` 为空）。
                 val finalResult = _uiState.value.conversations.finalizeStreamingMessage(
                     conversationId = updatedConversation.id,
                     messageId = pendingMessage.id,
                     patch = StreamingFinalizePatch(
-                        content = result.content.ifBlank { "模型返回了空内容。" },
+                        content = if (hasToolCalls) {
+                            result.content
+                        } else {
+                            result.content.ifBlank { "模型返回了空内容。" }
+                        },
                         reasoningContent = result.reasoningContent,
                         tokenCount = result.totalTokens,
                         toolCalls = normalizedToolCalls,

@@ -978,17 +978,49 @@ v1–v4 一直写「OpenAI Responses 的流式事件名**未能取得权威源**
 ⇒ **OpenAI 系的 fixture 从「形状级」上调为「字段级」**（v4 那句「无权威源」是错的），
 但**事件序列仍未经真实报文验证**，故 U4/U5 仍需真机（见下）。
 
-#### 新增未验证点（v5）
+#### ✅ U8 / U9 已关闭（v9，真机 Responses 实测）
 
-| # | 未验证 | 怎么验 |
+真机日志（`mode=RESPONSES url=…/v1/responses`，四轮请求）证明：
+
+| 判据 | 实测结果 |
+|---|---|
+| **协议确实走 Responses** | `mode=RESPONSES useResponses=true`，URL 为 `/v1/responses` |
+| **正文完整（U9 关键）** | `content=我是 vFlow 里的聊天助手…`、`content=已完成：1. ✅ 打开手电筒…` **均非空** ⇒ **不存在「只发 `done` 不发 `delta`」的形态** |
+| **工具调用映射正确** | `toolCalls=vflow_agent_query_module_schema` / `vflow_agent_run_temporary_workflow` 都被正确解出 |
+| **usage 字段路径猜对了** | `cacheRead=15360→15488→15616→16000`（逐轮递增）⇒ **`input_tokens_details.cached_tokens` 这条嵌套路径属实** |
+| 工具调用轮的空正文 | `content=`（空）——**正确**，模型只输出 `function_call` 无正文 |
+
+> **U9 为什么能因此关闭**：本项目的权威值来自**累积的 delta**（`finish()` 走
+> `normalizeAssistantReply(rawContent, …)`）。若模型只发 `output_text.done` 而不发 delta，
+> 累积值会是空串。四轮实测正文均完整 ⇒ 该形态**在实测路径上不存在**。
+> ⚠️ 保留为「已知限制」的表述：这只覆盖了**本网关 + 本模型**，
+> 换 provider 后若出现正文丢失，第一个该查的就是这里。
+
+#### ⚠️ 一条过程教训：日志缺字段导致误判（v9）
+
+排查 U8/U9 时我三次让用户「打开 Responses 再测」，理由是日志里看不到 Responses 迹象。
+**实际是日志本身缺字段**：
+
+```kotlin
+// 旧：只打 provider
+"Streaming reply provider=${preset.providerEnum.storageValue} model=…"
+//                        ↑ openai 既可能是 chat/completions 也可能是 responses
+```
+
+`provider=openai` **不区分**两条子路径（由 `useResponsesApi` 决定），
+而我据此断言「未验到」——**把自己的日志缺陷当成了数据缺失**。
+⇒ 现已补 `Stream request mode=… url=… useResponses=…`。
+
+**教训**：当「测了但看不到迹象」时，先怀疑**观测手段**，而不是假设对方没测。
+
+#### 仍未验证
+
+| # | 未验证 | 现状 |
 |---|---|---|
-| **U8** | Responses 流式的**真实事件序列**（本项目按字段定义构造 fixture，但「实际会发哪些事件、顺序如何、`output_index` 怎么取」未经真实报文验证） | 真机抓一条 Responses 流 |
-| **U9** | Responses 流是否会出现**只发 `output_text.done` 而不发 `delta`** 的形态（若有，本实现会丢内容——因为权威值来自累积 delta，不从 `output.done` 重建） | 同上 |
-
-> U9 的理由：本项目流式的权威值来自**累积的 delta**（`finish()` 走
-> `normalizeAssistantReply(rawContent, …)`），而**非流式** `parseResponsesCompletion`
-> 是解析 `output` 数组。两条路径的取值来源不同 ⇒ 若某些形态只走 `done` 事件，
-> 两者会产出不同结果。这是**已知限制**，已在 `decodeResponses` 的注释中标注。
+| **U4** | Ollama / OpenRouter 的 `stream_options` 兼容性 | ✅ **已关闭**（实测 OpenRouter 不开该字段也能拿到 usage，保守策略正确） |
+| **U5** | DeepSeek 经网关的形状 | ✅ **已关闭**（`reasoningChars=203` 正确分离，未污染正文） |
+| **U6** | 未闭合 thinking 的两条路径一致性 | 单测覆盖，真机未做 |
+| **U7** | `requestScrollToItem` 相关 | ✅ 已被 v8 取代（改用 `scroll { scrollBy }`，真机验收通过） |
 
 > **P0 的替代路径（v4 修订）**：v2 写「抓不到真实流就用 dsh/Pi 的 fixture 形状」——
 > 现在有更好的选择：**Anthropic 一侧直接抄官方报文**（权威、且不需要 key/网络）。
