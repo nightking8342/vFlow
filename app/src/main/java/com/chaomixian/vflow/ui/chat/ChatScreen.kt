@@ -1,7 +1,7 @@
 package com.chaomixian.vflow.ui.chat
 
-import android.app.Activity
 import android.Manifest
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ContentUris
@@ -18,16 +18,16 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -41,6 +41,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
@@ -78,8 +79,8 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DividerDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
-import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -111,8 +112,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -131,6 +135,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.lerp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.chaomixian.vflow.R
@@ -143,6 +148,14 @@ import kotlinx.serialization.json.Json
 
 private const val MAX_RECENT_PHOTOS = 18
 private const val MAX_PICKED_PHOTOS = 10
+
+/**
+ * 「滚到列表末尾」用的位移量（像素）。
+ *
+ * 只是一个**足够大**的值：`scrollBy` 超出可滚范围的部分会被边界挡住，
+ * 自然停在底部，故无需精确计算。
+ */
+private const val CHAT_SCROLL_TO_TAIL_DELTA = 100_000f
 
 /** 消息列表左右 padding（`LazyColumn` 的 horizontal padding）。卡片宽度预算要扣掉它。 */
 private val MESSAGE_LIST_HORIZONTAL_PADDING = 16.dp
@@ -263,24 +276,43 @@ fun ChatScreen(
     }
     val listState = rememberLazyListState()
     val imeBottom = WindowInsets.ime.getBottom(density)
-    val navBottom = WindowInsets.navigationBars.getBottom(density)
-    val imeVisible = imeBottom > navBottom
-    val imeExtraPadding = with(density) {
-        (imeBottom - navBottom).coerceAtLeast(0).toDp()
+    // ⚠️ 这几个 padding **连续跟随键盘、且不加动画**。
+    // 模型：底部留白 = 该留白「未被键盘覆盖的比例」（键盘逐帧盖住屏幕底部）。
+    //
+    // ⚠️ **分母必须是留白自身（`padPx`），不是 `navBottom`**——真机日志实证的坑：
+    // 用 `(navBottom - imeBottom) / navBottom` 时，分母只是系统导航栏（实测 35px≈12dp），
+    // 而留白 `contentPadding.bottom` 约 99dp≈297px（本 App 底部导航栏 + 系统导航栏）
+    // ⇒ 分母小 8.5 倍，99dp 的变化被压进 35px 的 IME 行程 ⇒ 一帧内跳 70dp（观感：回弹）。
+    // 用 `padPx` 作分母则留白恰好在「键盘盖到它」的过程中线性让出。
+    val padPx = with(density) { contentPadding.calculateBottomPadding().toPx() }
+    val navbarAllowanceScale = if (padPx > 0.5f) {
+        ((padPx - imeBottom).coerceAtLeast(0f) / padPx)
+    } else {
+        1f
     }
-    val messageListBottomPadding by animateDpAsState(
-        targetValue = contentPadding.calculateBottomPadding() + 132.dp + imeExtraPadding,
-        label = "chatMessageListBottomPadding"
-    )
-    val composerBottomPadding by animateDpAsState(
-        targetValue = if (imeVisible) 14.dp else contentPadding.calculateBottomPadding() + 14.dp,
-        label = "chatComposerBottomPadding"
-    )
-    val snackbarBottomPadding by animateDpAsState(
-        targetValue = if (imeVisible) 24.dp else contentPadding.calculateBottomPadding() + 104.dp,
-        label = "chatSnackbarBottomPadding"
-    )
-    val showJumpToBottom by remember(activeConversation?.id, activeConversation?.messages?.size) {
+    val navbarAllowance = contentPadding.calculateBottomPadding() * navbarAllowanceScale
+
+    // ⚠️ 三个的常量部分各不相同，端点值与改前的布尔写法**逐一相同**：
+    // - 列表 132dp：输入框高度预算（始终需要）
+    // - 输入框 14dp：贴在键盘/导航栏之上的固定间距
+    // - Snackbar 除导航栏外还有一个额外 80dp，它**只在键盘收起时**需要
+    //   （收起 24+80=104，展开 24）⇒ 方向是「收起时取 80」。
+    //   ⚠️ `lerp(a, b, t)` 是 `a + (b-a)*t`，而 `navbarAllowanceScale` 在**收起时为 1**
+    //   ⇒ 必须写成 `lerp(0.dp, 80.dp, scale)`（t=1 收起 → 80）。写反会得到
+    //   「收起 72 / 展开 104」，与改前的 152/24 完全不同。
+    val snackbarExtra = lerp(0.dp, 80.dp, navbarAllowanceScale)
+
+    val messageListBottomPadding = navbarAllowance + 132.dp
+    val composerBottomPadding = navbarAllowance + 14.dp
+    val snackbarBottomPadding = navbarAllowance + 24.dp + snackbarExtra
+    // ⚠️ 这里**不需要** `remember(...)` 的 key：`derivedStateOf` 内部读的都是
+    // `SnapshotState`（`listState` 与 `activeConversation` 都来自 state），
+    // 依赖变化时 Compose 会自行重算。
+    //
+    // 原先写的是 `remember(conversationId, messages.size)`，那在流式下**是错的**：
+    // 内容原位增长时 `size` 不变 ⇒ key 不变 ⇒ `derivedStateOf` 复用旧 lambda
+    // ⇒ 按钮可见性**不更新**。删掉 key 后由快照依赖驱动，反而正确。
+    val showJumpToBottom by remember {
         derivedStateOf {
             activeConversation?.messages?.isNotEmpty() == true && listState.canScrollForward
         }
@@ -370,34 +402,121 @@ fun ChatScreen(
         webSearchSelected = false
     }
 
-    // ⚠️ key 必须包含「最后一条的身份」，不能只看 `messages.size`。
+    // 跟随意图：**只在用户滚动结束时记录，内容到达时只读**。
     //
-    // 起因：AI 回复到达时 `size` **不变**（占位消息被替换），于是滚动从不触发。
-    // 而真消息比「正在生成…」占位高得多，新内容顺着屏幕底下长出去、只剩顶部一条缝，
-    // 被吞掉的恰是审批卡片下半部分的「批准 / 拒绝」按钮。这是最初的 bug。
-    // key 含 `lastOrNull()?.id` 后，追加（id 变）会触发；用户上翻读历史时
-    // 不产生新对象、id 也不变，所以不会被打断。
-    //
-    // ⚠️⚠️ **已知失效（2026-09-24，流式改造引入）**：
-    // 流式下消息改为**原位增长、id 恒定**（`ChatMessagePatch.kt`），故本 effect
-    // **在流式期间与收尾时都不会触发** ⇒
-    // ① 内容增长时不跟随滚动；② **审批卡片出现时不会滚到它——0.1 会复发**。
-    //
-    // 这是 `chat-streaming-design.md` §4.6 末尾**预先警告过**的组合：
-    // 「P4 落地成稳定 id 之后，id 不再变 ⇒ (1) 失效 ⇒ 必须同时上 (3) 的指纹机制」。
-    // 本次改造**尚未接上 (3)** ⇒ 属**已知待修**，不是新发现的意外。
-    // 修法见该文档 §4.6(3) 的 `FollowSignal`（内容指纹），属 P6 范围。
-    //
-    // ⚠️ 下面那句 `lastIndex + 1` 是**越界索引**，但**刻意保持原样**：
-    // 它越界后被 LazyList 内部钳制，对矮于一屏的卡片（审批卡片）净效果是
-    // 「卡片底部贴住视口底部」，审批按钮因而可见。
-    // 曾试图"修正"这个越界写法并重写落点，改出两个新 bug 且真机验证无效（已回退）。
-    // 教训：这个位置只需要修 key，不要动落点 —— 落点的事另行评估。
-    LaunchedEffect(activeConversation?.id, activeConversation?.messages?.lastOrNull()?.id) {
-        val lastIndex = activeConversation?.messages?.lastIndex ?: -1
-        if (lastIndex >= 0) {
-            listState.animateScrollToItem(lastIndex + 1)
+    // ⚠️ 不要在内容到达时现查 `!canScrollForward`：该值为真表示「新内容**已加入后**
+    // 还能往前滚」，而需要判断的是「加入**之前**用户在不在底部」——新消息刚加入时
+    // 它恰好为真 ⇒ 判据在最需要时为假 ⇒ 永不跟随。
+    var followTail by rememberSaveable(activeConversation?.id) { mutableStateOf(true) }
+
+    // 用**手势事件**（`DragInteraction`）而非「自置标记 + 下降沿清除」来区分用户滚动。
+    // ⚠️ 后者的坑：跟随滚动若没有产生位移，`isScrollInProgress` 不变 true ⇒
+    // 清除标记的下降沿永不到来 ⇒ 标记泄漏 ⇒ 吞掉用户下次滚动的记录 ⇒ 跟随卡在开启。
+    var userDragging by remember { mutableStateOf(false) }
+    var dragStartIndex by remember { mutableStateOf(-1) }
+    var dragStartOffset by remember { mutableStateOf(0) }
+    LaunchedEffect(listState) {
+        listState.interactionSource.interactions.collect { interaction ->
+            when (interaction) {
+                // 起手即停止跟随，否则「拖拽中内容到达」会触发滚动、把手势打断。
+                is DragInteraction.Start -> {
+                    userDragging = true
+                    followTail = false
+                    dragStartIndex = listState.firstVisibleItemIndex
+                    dragStartOffset = listState.firstVisibleItemScrollOffset
+                }
+
+                is DragInteraction.Stop, is DragInteraction.Cancel -> {
+                    userDragging = false
+                    // ⚠️ 区分「轻点」与「上翻」的判据是**位置有没有变**（两种错法都试过）：
+                    //   判 `!canScrollForward` → 错（轻点时流式内容正追加，该值已为 true
+                    //     ⇒ 一次轻点永久关掉跟随）；
+                    //   无条件置 true → 错（上翻后抬手即恢复 ⇒ 把用户拽回底部）。
+                    val moved = listState.firstVisibleItemIndex != dragStartIndex ||
+                        listState.firstVisibleItemScrollOffset != dragStartOffset
+                    // 轻点 ⇒ 位置没变 ⇒ 不该改变意图（且只在确实贴底时才恢复）。
+                    // 上翻 ⇒ 不在这里判定：抬手后还有惯性滑动，此刻位置不是最终位置。
+                    if (!moved && !listState.canScrollForward) followTail = true
+                }
+
+                else -> Unit
+            }
         }
+    }
+
+    // 滚动**彻底停止后**（含惯性 fling）重估跟随意图：贴底恢复、离开则关闭。
+    //
+    // ⚠️ 必须等「滚动停止」而不是「手势结束」：手势抬起后还有惯性滑动，
+    // 那一刻的位置**不是**最终位置，用它判断会在中途就误判。
+    //
+    // ⚠️ 这里是**唯一**决定「上翻后是否恢复」的地方（DragInteraction 那边只管起手时先关掉）。
+    // 两个分支都写出来，语义才完整：离开底部 ⇒ 关闭；回到贴底 ⇒ 恢复。
+    // ⚠️ 程序化滚动走到这里时：`animateScrollToItem` 停在末端 ⇒ 判为「贴底」⇒ 置 true，
+    // 与跟随逻辑自身的意图一致，**幂等**，不会误改用户意图。
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress }
+            .collect { scrolling ->
+                if (scrolling || userDragging) return@collect
+                followTail = !listState.canScrollForward
+            }
+    }
+
+    // 输入法弹出/收起时重新贴底：`imePadding()` 只改视口，不会重建滚动位置
+    //（inset 变化既非内容变化也非滚动事件），故需手动补一次。
+    //
+    // ⚠️ key 用 `imeBottom` 而非 `snapshotFlow { imeBottom }`：后者捕获的是普通 val，
+    // snapshotFlow 只认 lambda 内读取的 snapshot state，写成那样只会在首次发射一次。
+    //
+    // ⚠️ 用**同步**位移滚动。三个 API 都试过，只有它同时满足「跟手」与「到底」：
+    //   `animateScrollToItem` → suspend，键盘逐帧变化时被下一次 effect 重启取消 ⇒ 不跟手
+    //   `requestScrollToItem` → 同步，但语义是「项顶部对齐视口顶部」，无法表达「到底」
+    //   `scroll { scrollBy(足够大) }` → 同步 + 位移语义，超出部分被边界挡住、自然停在底部 ✓
+    LaunchedEffect(imeBottom) {
+        if (!followTail) return@LaunchedEffect
+        listState.scroll { scrollBy(CHAT_SCROLL_TO_TAIL_DELTA) }
+    }
+
+    // ⚠️ **触发条件是「内容指纹变化」**（`chat-streaming-design.md` §4.6(3)）：
+    // 指纹含 `lastMessageId`（新消息出现）、`lastContentLength`（末尾消息增长）
+    // 与 `lastHasToolCalls`（审批卡片出现），覆盖三种形态。
+    // 这正是替代原先「只看 `lastOrNull()?.id`」的关键——流式改为**原位增长、id 恒定**后，
+    // 只看 id 的 key **永不触发** ⇒ 不跟随滚动、审批卡片出现时也不滚过去（0.1 复发）。
+    val followSignal = FollowSignal.of(activeConversation?.messages, activeConversation?.id)
+    // 上一次见到的「最后一条用户消息 id」，用于识别「用户刚发了新消息」。
+    var lastUserMessageId by remember(activeConversation?.id) {
+        mutableStateOf(followSignal.lastUserMessageId)
+    }
+    LaunchedEffect(followSignal) {
+        // ⚠️ **用户刚发出消息 ⇒ 无条件滚到底**，不受 `followTail` 约束。
+        // 语义上必然如此：用户刚发完消息，意图就是看回复。
+        // 这一条同时兜住了「用户上翻读历史后接着发言」的情形——那种情况 `followTail`
+        // 是 false，但用户此刻的意图明确是「看我这条和它的回复」。
+        // ⚠️ 判据是「**最后一条用户消息的 id 变了**」——用户刚发了消息。
+        // 用它而不是「末尾消息是否来自用户」：`sendMessage` 追加用户消息后**紧接着**
+        // 追加助手占位消息，两者可能同帧到达；那时末尾已是助手占位，
+        // 「末尾是否用户」判据**不成立**（真机表现：历史会话里发消息不滚到底）。
+        val sentByUser = followSignal.lastUserMessageId != lastUserMessageId
+        lastUserMessageId = followSignal.lastUserMessageId
+        // ⚠️ 用户发消息时**顺带把跟随意图复位为 true**：
+        // 否则「上翻读历史 → 发消息 → 回复流式增长」这条路径上，
+        // 首次滚动虽由 `sentByUser` 兜住，但 `followTail` 仍是 false
+        // ⇒ **紧接着的流式回复不跟随**（表现为只有用户消息滚到了底，回复却长在屏幕外）。
+        if (sentByUser) followTail = true
+        // 只读**已记录**的跟随意图，不在此处重新判断位置（见上方说明）。
+        // ⚠️ 也**不要**在这里前置判断 `canScrollForward`：`LaunchedEffect` 可能在
+        // 布局完成前执行，那时的 `canScrollForward` 还是**旧内容**的几何值
+        // （往往是 `false`）⇒ 会漏掉本该执行的那次滚动。`animateScrollToItem`
+        // 本来就能安全处理「已经在底部」的情形（空操作），不需要我们替它判断。
+        if (!followTail) return@LaunchedEffect
+        val lastIndex = activeConversation?.messages?.lastIndex ?: -1
+        if (lastIndex < 0) return@LaunchedEffect
+        // ⚠️ `lastIndex + 1` 是**越界索引**，但**刻意保持原样**：
+        // 它越界后被 LazyList 内部钳制（`LazyListMeasure` 中
+        // `currentFirstItemIndex >= itemsCount` 会钳到 `itemsCount - 1`），
+        // 对矮于一屏的卡片净效果是「卡片底部贴住视口底部」，审批卡片因而可见。
+        // 曾试图"修正"这个越界写法并重写落点，改出两个新 bug 且真机验证无效（已回退）。
+        // ⇒ 换用 `requestScrollToItem` 会**丢掉**这个钳制副作用，故本处继续用它。
+        listState.animateScrollToItem(lastIndex + 1)
     }
 
     LaunchedEffect(attachmentSheetVisible) {
@@ -472,6 +591,14 @@ fun ChatScreen(
         LazyColumn(
             state = listState,
             modifier = Modifier
+                // ⚠️ `imePadding()` 让列表**视口**止于输入法之上（而不是在内部垫高度）。
+                // 这是「输入法弹出时消息卡片跟着上移」的关键：只靠 `contentPadding`
+                // 垫高度的话，视口仍延伸到输入法之下，内容只是「不被遮住」而不移动。
+                //
+                // 注：与 `fillMaxSize()` 的先后顺序在本场景下**不影响结果**
+                //（两者的约束算术等价：外层强制满高、内层扣掉 ime，净得同样的视口）。
+                // 之所以写在前面，只是为了读起来与意图一致：「先让出输入法，再占剩余空间」。
+                .imePadding()
                 .fillMaxSize()
                 .padding(top = contentPadding.calculateTopPadding())
                 .padding(horizontal = 16.dp),

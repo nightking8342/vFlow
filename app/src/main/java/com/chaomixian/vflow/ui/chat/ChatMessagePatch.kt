@@ -69,6 +69,76 @@ internal data class StreamingFinalizePatch(
     val sortConversationToTop: Boolean = true,
 )
 
+/**
+ * **跟随滚动的内容指纹**（`chat-streaming-design.md` §4.6(3)）。
+ *
+ * ## 为什么需要它
+ *
+ * 滚动跟随原先用 `LaunchedEffect(..., messages.lastOrNull()?.id)` 触发，
+ * 依赖「AI 回复到达时最后一条消息的 **id 会变**」。
+ * 流式改为**原位增长**后 id 恒定 ⇒ 该 effect 在流式期间与收尾时**都不触发**
+ * ⇒ 不跟随滚动、审批卡片出现时也不滚过去（0.1 复发）。
+ *
+ * ⇒ 改为监听**内容指纹**的变化。
+ *
+ * ## ⚠️ 关键设计：**不含「距底部的距离」**
+ *
+ * dsh 的注释（`ChatView.tsx:532-533`）是本条最重要的外部依据：
+ * > Follow new flow content while pinned; do NOT re-pin on every render merely
+ * > because atBottomRef is true (scroll threshold → setState → snap).
+ *
+ * 即：**「是否在底部」这个判定本身不能触发滚动**，否则形成
+ * 「滚动 → 判定在底部 → 触发重组 → 又滚到底」的**反馈环**，把用户的惯性滚动直接吸到底部。
+ *
+ * ⇒ 指纹只装「结构性 + 末尾内容」两个维度；
+ * 「要不要跟随」是**在指纹变化时**才去查的一次性判定。
+ */
+internal data class FollowSignal(
+    val conversationId: String?,
+    val lastMessageId: String?,
+    val messageCount: Int,
+    /** 末尾消息的 `content` + `reasoningContent` 总长（够用且便宜，不必存全文）。 */
+    val lastContentLength: Int,
+    /**
+     * 末尾消息**是否已带工具调用**。
+     *
+     * ⚠️ 这一维是**审批卡片场景（0.1）的直接编码**，不能省：
+     * 收尾时正文长度可能**没变**（内容已流式显示完，`normalizeAssistantReply` 的
+     * 收尾通常不改长度），而**审批卡片是在这一刻出现的**。
+     * 若指纹不含本项，收尾那一次不触发滚动 ⇒ **审批卡片仍然滚不到**，
+     * 而它正是最初那个 bug 被吞掉的东西。
+     */
+    val lastHasToolCalls: Boolean,
+    /**
+     * **最后一条用户消息的 id**。它变化 ⇒ 用户刚发了一条消息。
+     *
+     * ⚠️ 为什么不是「末尾消息是否来自用户」（我最初的写法，**是错的**）：
+     * `ChatViewModel.sendMessage` 先追加用户消息，**紧接着**在协程里追加助手的
+     * 占位消息——两者可能在**同一帧**内完成。那样 effect 只会看到**最终状态**，
+     * 此时末尾是助手占位消息（`lastIsFromUser == false`）⇒ **判定不成立**
+     * ⇒ 真机表现：「在历史会话里发消息，不滚动到底」。
+     *
+     * 改成「最后一条用户消息的 id」后，无论占位消息是否同帧到达，
+     * 这个值**都**会随用户发言而改变，判据稳定。
+     */
+    val lastUserMessageId: String?,
+) {
+    companion object {
+        internal fun of(messages: List<ChatMessage>?, conversationId: String?): FollowSignal {
+            val last = messages?.lastOrNull()
+            return FollowSignal(
+                conversationId = conversationId,
+                lastMessageId = last?.id,
+                messageCount = messages?.size ?: 0,
+                lastContentLength = (last?.content?.length ?: 0) +
+                    (last?.reasoningContent?.length ?: 0),
+                lastHasToolCalls = last?.toolCalls?.isNotEmpty() == true,
+                lastUserMessageId = messages?.lastOrNull { it.role == ChatMessageRole.USER }?.id,
+            )
+        }
+    }
+}
+
 /** [finalizeStreamingMessage] 的结果：新列表 + 实际生效的消息 id（供调用方做后续动作）。 */
 internal data class StreamingFinalizeOutcome(
     val conversations: List<ChatConversation>,

@@ -258,4 +258,145 @@ class ChatMessagePatchTest {
         assertEquals(once.single().messages.single(), twice.single().messages.single())
         assertNotEquals(0, twice.size)
     }
+
+    // ------------------------------------------------------------ FollowSignal（§4.6(3)）
+
+    /**
+     * ⚠️ **指纹必须对「原位增长」敏感**——这是替代旧 `lastOrNull()?.id` 判据的关键。
+     *
+     * 反证：若把 `lastContentLength` 从 `FollowSignal` 里删掉，
+     * 本用例的两个指纹会相等 ⇒ 流式期间**不跟随滚动**（这正是 2026-09-24 真机上出现的问题）。
+     */
+    @Test
+    fun `follow signal changes when last message content grows`() {
+        val before = FollowSignal.of(listOf(message(id = "m1", content = "你")), "c1")
+        val after = FollowSignal.of(listOf(message(id = "m1", content = "你好")), "c1")
+        // id 与条数都没变（正是「原位增长」的形态）
+        assertEquals(before.lastMessageId, after.lastMessageId)
+        assertEquals(before.messageCount, after.messageCount)
+        assertNotEquals("内容增长必须改变指纹", before, after)
+    }
+
+    /** 追加消息（新 id、条数 +1）同样要改变指纹。 */
+    @Test
+    fun `follow signal changes when a message is appended`() {
+        val before = FollowSignal.of(listOf(message(id = "m1", content = "a")), "c1")
+        val after = FollowSignal.of(
+            listOf(message(id = "m1", content = "a"), message(id = "m2", content = "")),
+            "c1",
+        )
+        assertNotEquals(before, after)
+    }
+
+    /** 切换会话必须改变指纹（否则切过去后不会滚到底）。 */
+    @Test
+    fun `follow signal changes on conversation switch`() {
+        val messages = listOf(message(id = "m1", content = "a"))
+        assertNotEquals(
+            FollowSignal.of(messages, "c1"),
+            FollowSignal.of(messages, "c2"),
+        )
+    }
+
+    /**
+     * ⚠️⚠️ **指纹不得包含「距底部的距离」**（dsh 的反馈环警告，§4.6(3)）。
+     *
+     * 本用例是这条设计的**结构性锁定**：指纹的字段集是固定的四个，
+     * 任何「距离」「偏移」「是否在底部」之类的维度一旦加进来，
+     * 「滚动 → 判定在底部 → 触发重组 → 又滚到底」的反馈环就会出现
+     * （表现为用户上翻读历史时被硬拽回底部）。
+     *
+     * 由于 Kotlin 的 `data class` 无法从外部断言「不含某字段」，
+     * 这里用**穷举字段语义**代替：同一份消息在「距底部远近不同」的两种状态下
+     * 必须得到**完全相同**的指纹——这正是「距离不参与」的可执行表述。
+     */
+    @Test
+    fun `follow signal is independent of scroll position`() {
+        val messages = listOf(message(id = "m1", content = "abc"))
+        // 无论当前滚动到哪（调用方不传入任何位置信息），指纹只由消息内容决定
+        val a = FollowSignal.of(messages, "c1")
+        val b = FollowSignal.of(messages, "c1")
+        assertEquals(a, b)
+        assertEquals(3, a.lastContentLength)
+    }
+
+    /** `reasoningContent` 增长同样要触发（思考过程流式增长时也应跟随）。 */
+    @Test
+    fun `follow signal counts reasoning length too`() {
+        val before = FollowSignal.of(listOf(message(id = "m1", reasoning = "想")), "c1")
+        val after = FollowSignal.of(listOf(message(id = "m1", reasoning = "想一下")), "c1")
+        assertNotEquals(before, after)
+    }
+
+    /** 空列表与 null 会话不得崩（新会话尚未建时的正常状态）。 */
+    @Test
+    fun `follow signal handles empty and null`() {
+        assertEquals(0, FollowSignal.of(emptyList(), "c1").messageCount)
+        assertEquals(null, FollowSignal.of(null, null).lastMessageId)
+        assertEquals(
+            FollowSignal.of(emptyList(), "c1"),
+            FollowSignal.of(null, "c1"),
+        )
+    }
+
+    /**
+     * ⚠️ **审批卡片出现必须改变指纹**（0.1 的直接编码）。
+     *
+     * 收尾时正文长度常常**没变**（内容已逐字显示完），而审批卡片是在这一刻出现的。
+     * 反证：去掉 `lastHasToolCalls` 后，本用例的两个指纹相等 ⇒
+     * 收尾不触发滚动 ⇒ **审批卡片仍然滚不到**（0.1 复发）。
+     */
+    @Test
+    fun `follow signal changes when tool calls appear`() {
+        val before = FollowSignal.of(listOf(message(id = "m1", content = "让我查一下")), "c1")
+        val withTools = FollowSignal.of(
+            listOf(
+                message(id = "m1", content = "让我查一下").copy(
+                    toolCalls = listOf(ChatToolCall(id = "t1", name = "get_weather", argumentsJson = "{}")),
+                )
+            ),
+            "c1",
+        )
+        assertEquals("正文长度不变（收尾的常见形态）", before.lastContentLength, withTools.lastContentLength)
+        assertNotEquals("工具调用出现必须改变指纹", before, withTools)
+    }
+
+    /**
+     * ⚠️⚠️ **「用户刚发消息」的判据必须能在「占位消息同帧到达」时依然成立**。
+     *
+     * 反证：若用「末尾消息是否来自用户」作判据，本用例的第二个断言会失败——
+     * 末尾已是助手占位消息，判据不成立 ⇒ 真机表现「历史会话里发消息不滚到底」。
+     */
+    @Test
+    fun `follow signal tracks last user message id even with trailing placeholder`() {
+        val user = ChatMessage(
+            id = "u1",
+            role = ChatMessageRole.USER,
+            content = "你好",
+            timestampMillis = 1L,
+        )
+        val placeholder = ChatMessage(
+            id = "m1",
+            role = ChatMessageRole.ASSISTANT,
+            content = "",
+            timestampMillis = 2L,
+            isPending = true,
+        )
+
+        // 末尾是用户消息
+        val onlyUser = FollowSignal.of(listOf(user), "c1")
+        assertEquals("u1", onlyUser.lastUserMessageId)
+
+        // ⚠️ 关键：用户消息之后**紧接着**跟了助手占位消息（`sendMessage` 的真实形态）
+        val withPlaceholder = FollowSignal.of(listOf(user, placeholder), "c1")
+        assertEquals("判据不得被末尾的占位消息掩盖", "u1", withPlaceholder.lastUserMessageId)
+        assertNotEquals("占位消息到达也必须改变指纹", onlyUser, withPlaceholder)
+    }
+
+    /** 没有用户消息时该字段为 null（新会话、或只有错误消息）。 */
+    @Test
+    fun `follow signal has null user message id when absent`() {
+        assertEquals(null, FollowSignal.of(listOf(message(id = "m1")), "c1").lastUserMessageId)
+        assertEquals(null, FollowSignal.of(null, "c1").lastUserMessageId)
+    }
 }

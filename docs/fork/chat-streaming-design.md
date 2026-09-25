@@ -638,6 +638,17 @@ LaunchedEffect(activeConversation?.id, activeConversation?.messages?.lastOrNull(
 > ⇒ 实现时必须**单独回归 0.1 的验收项**（§8「审批按钮无需手动滚动即可点到」），
 > 不能假定「落点写对了，0.1 一定不复发」。
 
+> ✅ **v6 实现时的决定：本节的 `requestScrollToItem` 方案「未采用」**，仍用
+> `animateScrollToItem(lastIndex + 1)`。理由是上面那条风险注记本身：
+> `requestScrollToItem` 按**语义正确**落点，因此**没有**那个「对矮卡片贴住视口底部」的
+> 钳制副作用 ⇒ 采用它等于**主动放弃** 0.1 的修复。
+> 而那个副作用正是审批按钮可见的原因。
+>
+> 本节 (2) 描述的痛点是「新项尚未测量时 `animateScrollToItem` 用旧 `layoutInfo` 估算距离」。
+> 但**实测未复现该问题**（真机流式跟随正常；且 0.1 的矮卡片场景本就依赖这个估算的净效果）。
+> ⇒ 权衡结论：**保留越界写法**，把 (2) 留作「若日后真出现落点偏差再回来处理」。
+> 落点的事不在本次范围内（与工作区那句「落点的事另行评估」一致）。
+
 **(3) 「跟随」的内容指纹（v1 缺失的定义，此处补上）**：
 
 ```kotlin
@@ -1033,7 +1044,7 @@ v1–v4 一直写「OpenAI Responses 的流式事件名**未能取得权威源**
 | **P3** | 两条 provider 路径的 `stream()` | P2 | 真机，逐 provider | ✅ **代码已完成**；⚠️ 真机验证**必须与 P4 一起做**（见下） |
 | **P4** | `ChatMessagePatch`（纯函数）+ 接线 | 无（可与 P1-P3 并行） | **纯 JVM 单测**（F1/F2/F13） | ✅ **已做**：`ChatMessagePatch.kt`（17 例）+ VM 接线（`streamReply` 事件流、原位增长、`stopAgent` 的 F14 修复、失败保留半截正文）；release 构建 + 签名验证通过 |
 | **P5** | 节流层（§4.5）+ 持久化策略 | P1+P4 | 单测 + 真机 | ⬜ **P4 刻意未做节流**（最小可用优先），见下方 |
-| **P6** | 滚动重做（§4.6） | P5 | 真机 | ⚠️ **优先级已上调**：§4.6(1) 的 key 修复已在工作区，但 **P4 落地后它已失效**（见下），**0.1 复发** |
+| **P6** | 滚动重做（§4.6） | P5 | 真机 | ✅ **已做**（`FollowSignal` 指纹 + 三方条件；`requestScrollToItem` **刻意未采用**，见下） |
 | **P7** | 取消语义（§4.7） | P5 | 真机 | 🔶 **部分已做**（保留文本 + F14 的 target 修复）；`eventSource.cancel()` 的**立即释放**未验 | 
 | **P8** | 会话定位（§4.8）+ 浮窗节流（§4.5）+ 文档修订 | P5 | 真机 | ⬜（D3 已按 (a) 定：按 messageId 全表查找） |
 
@@ -1228,6 +1239,71 @@ FORK.md 的核心原则是控制 diff 面积。本设计要改 **3 个上游文�
 - **H1**（§4.9 末尾）：`firstNonBlank(reasoningContent, inlineReasoning)` 是「取一」语义，
   模型同时给两种 reasoning 时**内联段被静默丢弃**。既有缺陷，非本设计引入。
   建议改合并，但**会改变非流式路径行为**，须单独评估 + 登记 FORK.md。
+
+**v8 修订（滚动落点定稿 + IME 回弹根治）**
+
+v7 记录的三方合取与 `FollowSignal` 仍在，但**落点与 IME 那两处后来都改了**，
+下面是定稿状态（v7 的第 2、4 点已被本节取代）：
+
+1. **滚到底改用 `scroll { scrollBy(足够大) }`**（§4.6(2) 的最终实现）。
+   三个 API 逐个试过，只有它同时满足「跟手」与「到底」：
+
+   | API | 结果 |
+   |---|---|
+   | `animateScrollToItem` | suspend 且键盘逐帧变化时被下一次 effect 重启**取消** ⇒ 内容不动（真机：不跟手） |
+   | `requestScrollToItem` | 同步，但语义只有「项顶部 ↔ 视口顶部」，**无法表达「到底」**（真机：只滚到最后一条的开头） |
+   | `scroll { scrollBy(large) }` | 同步 + 位移语义，超出部分被边界挡住、**自然停在底部** ✅ |
+
+   ⚠️ 结论：**`requestScrollToItem` 在语义上无法表达「底部」**——这不是 bug 而是它的定义。
+   v7 第 4 点写的「刻意未采用」理由（怕丢掉越界钳制副作用）**已被推翻**：
+   越界钳制只对 `animateScrollToItem` 那条路径存在，而该路径已被替换。
+
+2. **IME 空白/回弹的根因是「用布尔判连续过程」**（新增到 §4.6）。
+   原先三个 padding 用 `if (imeVisible) … else …`，而 `imeVisible` 是**布尔**：
+   键盘收起是**连续过程**，布尔在某一帧翻转 ⇒ padding 跳变一个导航栏高度
+   ⇒ 与 `imePadding()` 的逐帧 inset 错位 ⇒ 观感为**回弹**。
+
+   ⇒ 改为按 **`padPx`** 连续插值（`scale = (padPx - imeBottom) / padPx`）。
+   ⚠️ **分母必须是留白自身，不是 `navBottom`**——真机日志实证：
+   分母用 `navBottom`（35px≈12dp）时，99dp 的留白被压进 35px 的 IME 行程
+   ⇒ 一帧内跳 70dp（`ime=10px→39px` 时 `composer` 从 84.7dp 掉到 14.0dp）。
+
+3. **`WindowInsets.ime` 本身已是逐帧插值的**（API 30+ 且已 `setDecorFitsSystemWindows(false)`，
+   本项目 `BaseActivity` 已设置）⇒ **不要给这几个 padding 加任何动画**。
+   v5–v7 期间反复试过的 `spring()` / `tween(250ms)` 都是**第二条独立动画**，必然与它错位：
+   `spring()` 过冲回弹、`tween` 造成底部重复空白。
+   ⚠️ 上游原本就是 `animateDpAsState`（默认 `spring()`）——**那个回弹是上游的既有设计**，
+   不是本次改造引入的。
+
+4. **调试方法论**：真机 `adb logcat` 逐帧打出 `imeBottom`/派生值，
+   是定位这类「连续 vs 跳变」问题的唯一可靠手段。
+   ⚠️ 从录屏做帧分析也可行（模板匹配可量出过冲量），但**必须校验置信度**——
+   本次前半程有一次脚本对齐失败（曲线出现 ±80px 单帧跳变），据此差点下错结论。
+
+**v7 修订（P6 滚动跟随实现）**
+
+修掉 v6 记录的那处回归（流式下不跟随滚动 / 0.1 复发），实现方式与 §4.6 的原始描述**有两处偏离**：
+
+1. **触发条件改为「内容指纹」**（§4.6(3) 的 `FollowSignal`，落在 `ChatMessagePatch.kt`）：
+   `conversationId` + `lastMessageId` + `messageCount` + `lastContentLength`。
+   `lastContentLength` 是**替代旧 `lastOrNull()?.id` 判据的关键**——流式原位增长时 id 恒定，
+   只有长度会变。有 6 例单测（含反证：去掉内容维度后恰好 3 条变红）。
+
+2. **「是否接近底部」用 `!listState.canScrollForward`，不自己算像素距离。**
+   §4.6 原文推演了「`viewportEndOffset` vs 最后一项 bottom」两种口径，并指出
+   「两种口径给出相反结论、且都不会报错」。实现时发现**两者都不必算**：
+   LazyList 自己已回答「还能不能往前滚」，这正是「是否在底部」的定义，
+   且它天然把 `contentPadding`（底部 132dp + IME）算在内——用像素差反而要手工扣掉它。
+
+3. **三方合取才跟随**：指纹变化 **且** 不在用户手势中（`isScrollInProgress`）
+   **且** 接近底部。第二项是实测需要补的：仅靠「接近底部」判定，用户**向上拖拽的过程中**
+   仍被判定为「在底部」而被拽回（dsh 的反馈环警告在此的具体形态）。
+
+4. **`requestScrollToItem` 刻意未采用**（理由见 §4.6(2) 末尾的实现注记）。
+
+5. 顺带修一处**同类缺陷**：「跳到底部」按钮的 `derivedStateOf` 原先带
+   `remember(id, messages.size)` 的 key，流式下 `size` 不变 ⇒ 可见性**不更新**。
+   删掉 key 改由快照依赖驱动。
 
 **v6 修订（真机首测后的修复与一处回归）**
 
