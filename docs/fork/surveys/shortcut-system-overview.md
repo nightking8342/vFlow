@@ -1,6 +1,6 @@
 # vFlow 快捷方式能力梳理（fork 参考文档）
 
-> 版本：v1.2（2026-09-26）
+> 版本：v1.3（2026-09-26）
 > 状态：代码走查 + **真机实测**（小米 2308CPXD0C / 澎湃 OS，2026-09-23 起，含 09-26 的米家故障排查）
 > 目录归属：**fork 独有**（冲突归我方），上游无此文件
 > 用途：改动「启动快捷方式」模块或其选择器前的**现状地图**。回答「现在能看到哪些快捷方式、为什么某些启动不了、扩展要动哪一处」。
@@ -436,28 +436,70 @@ b.append(mData.toSafeString());
 
 #### 「固定的快捷方式」的机制：在系统**写入时刻截获对象**
 
-ShortX hook 了 `com.android.server.pm.ShortcutService.requestPinItem`，在用户于桌面创建固定快捷方式时**截获那个 `ShortcutInfo` 对象**并存进自己的列表：
+**完整证据链（四环，均为反编译源码实证）**：
+
+```
+① 用户在桌面 pin 快捷方式
+     → 系统 ShortcutService.requestPinItem(...)
+        ↓ Xposed hook (afterMethod)
+② ShortcutInfo 对象 → VE2.OooOOOO.add(shortcutInfo)
+        ↓ AIDL 跨进程（进程边界：系统侧 → ShortX 主进程）
+③ ShortXService$serviceBinder$1.getRequestPinShortcuts()
+        → return VE2.OooOOOO
+        ↓ 客户端调用
+④ 构造 PinedItem(label, intent, userHandle) 供用户选择
+```
+
+**逐环源码**：
 
 ```java
-// ShortcutServiceHook.java —— hookPinItem
+// ① ShortcutServiceHook.java —— hook 系统方法
 Class cls = findClass(classLoader, "com.android.server.pm.ShortcutService");
 Method m = findMethod(cls, "requestPinItem");
-HooksKt.afterMethod(m, ...);            // hook 之后
+HooksKt.afterMethod(m, new C5063kT1(22));
 
-// 回调里（hookPinItem$lambda$4$lambda$3）
-ShortcutInfo shortcutInfo = (ShortcutInfo) param.getArgs()[2];   // ← 系统的真实对象
+// ② 回调（hookPinItem$lambda$4$lambda$3）—— 截获真实对象
+ShortcutInfo shortcutInfo = (ShortcutInfo) param.getArgs()[2];
 if (shortcutInfo != null) {
-    ve2.OooOOOO.add(shortcutInfo);      // ← 存进内存列表
+    VE2 ve2 = ((UX1) C7546oY1.OooOO0o.OooO00o).OooO;
+    ve2.OooOOOO.add(shortcutInfo);        // ← 字段：VE2.OooOOOO（ArrayList）
+}
+
+// ③ AIDL 服务端暴露（ShortXService$serviceBinder$1.java:5839）
+public List<ShortcutInfo> getRequestPinShortcuts() {
+    return ((UX1) C7546oY1.OooOO0o.OooO00o).OooO.OooOOOO;   // ← 同一个列表
+}
+
+// ④ 客户端消费（C7551oa0.java:355-380）
+objOooOOo3 = tornaco.apps.shortx.core.OooO00o.OooO00o().OooO00o.getRequestPinShortcuts();
+for (ShortcutInfo shortcutInfo : (List) obj2) {
+    Intent intent2 = shortcutInfo.getIntent();          // ← 真实 Intent 对象，类型完整
+    CharSequence shortLabel = shortcutInfo.getShortLabel();
+    ...
+    pinedItem = new Action.LaunchPinedItem.PinedItem(string, intent2, KE2.OooO00o(userHandle));
 }
 ```
 
+> ⚠️ **方法论教训（记录以免重蹈）**：本文 v1.2 初稿只查到 ①②，随后搜「谁读 `VE2.OooOOOO`」时
+> 把范围限定在 `kaa/tjo/ufanjca/`（混淆包），**漏了 `tornaco/apps/shortx/`**（ShortX 自身包），
+> 于是得出「该列表只写不读、机制可能不成立」的**错误反证**，并据此要把本节降级为未定论。
+> **实际读取方在 `ShortXService$serviceBinder$1`（AIDL 服务端）**——跨进程那一层。
+> 教训：**混淆包名会把同类符号打散到多个包，搜引用时不要按包限定范围**。
+
 **这解释了用户观察到的全部现象**：
 
-- 为什么「固定的快捷方式」里**只有手动在米家创建的**那条 —— 因为它**只在 pin 的那一刻采集**，未 pin 的根本没有
+- 为什么「固定的快捷方式」里**只有手动在米家创建的**那条 —— 它**只在 pin 的那一刻采集**，未 pin 的根本没有
 - 为什么另一个入口（应用快捷方式）里**没有米家** —— 米家不响应 `ACTION_CREATE_SHORTCUT`
 - 为什么 ShortX 启动米家场景**能成功** —— 它存的是**对象**，`extra_scene_account` 保持 String 类型，米家 `getString` 读得到
 
-**ShortX 这套做法的本质是「取巧」**：不在事后查询，而在**系统写入的瞬间截获**。好处是零权限门槛、类型完整；代价是**必须 Xposed 常驻**，且**只能覆盖 pin 之后新增的**。
+**ShortX 这套做法的本质是「取巧」**：不在事后查询，而在**系统写入的瞬间截获**。
+好处是零权限门槛、类型完整；代价是**必须 Xposed 常驻**，且**只能覆盖 pin 之后新增的**。
+
+> ⚠️ **这是纯内存列表，无持久化**（已核实）：全仓库对 `VE2.OooOOOO` 只有**两处**访问——
+> 写入 `ShortcutServiceHook.java:374`、读取 `ShortXService$serviceBinder$1.java:5840`，
+> **既无序列化落盘，也无启动回填**。因此 **ShortX 进程重启后 pin 历史即丢失**，
+> 用户需重新 pin 才会被再次采集（或依赖其 Xposed 层另有机制，本次未见）。
+> **若要照搬此方案，持久化是必须自行补上的一环。**
 
 ### 5.5 完整 Intent 的四条路径总表
 
@@ -468,7 +510,7 @@ if (shortcutInfo != null) {
 | `dumpsys` 文本（vFlow 现用） | ❌ **类型丢失**（§3.3.1） | Shell | ⚠️ 能列，**启动报错** | 本仓库当前实现 |
 | `ACTION_CREATE_SHORTCUT` | ✅ | **零权限** | ❌ App 不响应 | ShortX 的「应用快捷方式」 |
 | `LauncherApps.getShortcuts()` | ✅ | **须是当前默认桌面**，或活跃语音交互服务 | 理论上可用 | AOSP javadoc 明确限定（见下） |
-| Xposed hook | ✅ | Root + Xposed | ✅ | ShortX 的「固定的快捷方式」 |
+| Xposed hook | ✅ | Root + Xposed | ✅ | ShortX 的「固定的快捷方式」，四环证据链见 §5.4 |
 
 `LauncherApps` 的门槛来自 AOSP 源码的 javadoc（`LauncherApps.java:1391-1396`）：
 
@@ -667,3 +709,4 @@ adb shell 'find /data -name "shortcuts.xml" 2>/dev/null'
 | v1.0 | 2026-09-23 | 初稿。基于一次真机实测（408 条）+ AOSP `android-34/36/36.1` 源码直读 + ShortX 反编译源码直读。含：解析层健壮性实测（408/408 全中）、dumpsys dat 残缺的 AOSP 根因定位（`ShortcutInfo.java:2681` 漏传 secure）、多 Intent 取末项语义、ShortX `ACTION_CREATE_SHORTCUT` 方案对照。**§7.2 覆盖率数据待补**（设备离线）。 |
 | **v1.1** | 2026-09-23 | **补实测数据 + 两处自我更正**。① §3.5 改为按**末项定位信息形态**的量化分型（有 `cmp` 304 / dat 残缺无 cmp **74** / 无 dat 无 cmp **26** / dat 完整 4），并把「可修（A 类 74）」与「先天不可得（B 类 26）」拆开；② §7.2 `ACTION_CREATE_SHORTCUT` 由「待验证」改为**实测否决**（28 个响应者 vs 100 条受影响，净收益 ≈ 0，目标 App 全部不响应）；③ **更正 v1.0 的错误**——原文称 `toInsecureString()` 能拿到完整 dat，**实际走同一 bug**（`ShortcutInfo.java:2667-2686` 的 `secure` 无 Intent 层面作用）；真正的分野是 `Uri.toString()`（`toUri` 用，完整）vs `Uri.toSafeString()`（`toString` 用，脱敏）；④ §7.3 新增 `shortcuts.xml` 线索（真机确认真实路径 `/data/system_ce/0/shortcut_service/shortcuts.xml`，**`intent-base` 返回 0 待解**）。 |
 | **v1.2** | 2026-09-26 | **由一处真实故障（米家场景「无账号权限」）深挖出的体系性更正**。① **新增 §3.3.1**——发现比 dat 省略**更根本**的信息损失：**extras 的「类型」在 dumpsys 文本里彻底丢失**，vFlow 只能按数字形态猜（`--ei`/`--el`/`--es`）。米家 `extra_scene_account=1462285899`（10 位数字）被猜成 Long，而米家 `getString()` 读它 → `null` → 报「无账号权限」。三种类型强制停止实测：`--el` 报错 1 次 / `--es` 0 次 / `--ei` 报错 1 次。② **§3.3 口径澄清**——原文「dat 结构性残缺」易被读成「系统里存的就残缺」，实测（传完整 URI 回显仍省略）证明**数据完整、仅打印省略**。③ **§5.4 新增**——发现 ShortX 有**两个**入口、走**两条不同**数据源：「应用快捷方式」=`ACTION_CREATE_SHORTCUT`，「**固定的快捷方式**」=**Xposed hook `requestPinItem` 采集对象**。**更正 §5.1-5.3「只有一条路径」的旧结论**。④ **§5.5 新增**「完整 Intent 的四条路径总表」（含 `LauncherApps` 须为**默认桌面**的 AOSP javadoc 依据）。⑤ **§3.5 新增 C 类失败**——指出旧量化**低估问题面**（只统计组件定位，未统计 extras 类型，米家那条被算进 ✅ 的 304 条里）。⑥ §4 更正「参数一律无效」的半错结论（服务层 `parseDumpArgs` 确实解析参数，穷举后结论不变）。⑦ §7.3 **已证伪**（该文件是元信息）；**§7.5 新增** Xposed 采集方案评估（结论：并入 `xposed-channel-design.md`，不单独立项）。 |
+| **v1.3** | 2026-09-26 | **补齐 §5.4 的完整证据链（v1.2 只查到前两环）**，并纠正一次**因搜索范围错误导致的反证**。完整链路四环均为源码实证：① Xposed hook `ShortcutService.requestPinItem`（`ShortcutServiceHook.java`）→ ② `VE2.OooOOOO.add(shortcutInfo)`（`:374`）→ ③ **AIDL 服务端** `ShortXService$serviceBinder$1.getRequestPinShortcuts()`（`:5840`）→ ④ 客户端 `C7551oa0.java:355-380` 读 `getIntent()` 构造 `PinedItem`。**v1.2 初稿搜「谁读该列表」时把范围限定在混淆包 `kaa/tjo/ufanjca/`、漏了 `tornaco/apps/shortx/`**，据此得出「只写不读、机制存疑」的**错误反证**——实为跨进程那层。教训已写入该节（**混淆项目搜引用不可按包限定**）。另核实该列表**纯内存、无持久化无回填**（全仓库仅上述两处访问），故此方案**必须自行补持久化**。 |
