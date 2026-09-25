@@ -1,7 +1,7 @@
 # vFlow 快捷方式能力梳理（fork 参考文档）
 
-> 版本：v1.0
-> 状态：代码走查 + **真机实测**（小米 2308CPXD0C / 澎湃 OS，2026-09-23）
+> 版本：v1.2（2026-09-26）
+> 状态：代码走查 + **真机实测**（小米 2308CPXD0C / 澎湃 OS，2026-09-23 起，含 09-26 的米家故障排查）
 > 目录归属：**fork 独有**（冲突归我方），上游无此文件
 > 用途：改动「启动快捷方式」模块或其选择器前的**现状地图**。回答「现在能看到哪些快捷方式、为什么某些启动不了、扩展要动哪一处」。
 > 与相邻文档的区别：本文件是**现状梳理**，不写需求与改造方案；§7 的候选方案仅记录取舍依据，不作为定稿。
@@ -111,10 +111,25 @@ LaunchShortcutUIProvider（编辑器里的「选择快捷方式」按钮）
 
 被合并的 7 条中有 4 条属 `com.android.contacts`「新建/扫描名片/拨打」类，它们 **同 label、不同 `activity`、命令不同**，因此**未被合并**，在列表里会看到同名多条（属正常现象，非缺陷）。
 
-### 3.3 核心缺陷：dumpsys 里 dat 是**结构性地**残缺
+### 3.3 核心缺陷：dumpsys 的 `intents=` 是**打印层省略**（数据本身完整）
+
+> ⚠️ **口径澄清（v1.2 修正）**：本节早期版本写作「dat **结构性地**残缺」，容易读成「系统里存的就残缺」。
+> **实测证明相反**：数据在系统内部是**完整的**，残缺只发生在 `dumpsys` 的**打印**这一步。
+> 区分这两者很关键——前者无解，后者意味着「换个出口就能拿到完整值」。
 
 **现象**（真机实测）：180 处 `dat=` 中 **176 处**形如 `imeituan://www.meituan.com/...`——path 被替换为 `...`。
 决定性证据：美团「扫一扫」「搜索」「我的订单」「深度解锁」**四个不同功能**的 dat **完全相同**。不同功能的 URI 不可能相同。
+
+**决定性实验（证明是打印省略而非数据残缺）**：向 `am start` 传入**完整**的 URI，回显的仍是省略形态：
+
+```bash
+$ adb shell "am start -a android.intent.action.VIEW -d 'imeituan://www.meituan.com/AAAABBBBCCCCDDDD'"
+  dat=imeituan://www.meituan.com/...          ← 传入完整，回显被省略
+$ adb shell "am start -a android.intent.action.VIEW -d 'https://a.com/very/long/path/here'"
+  dat=https://a.com/...                        ← 对 https 同样生效
+```
+
+**即**：调用方拿到的是完整 URI，`...` 纯粹是**打印时的省略**。这条实验排除了「数据缺失」的可能。
 
 **根因**（AOSP 源码直读，SDK `android-36`）：
 
@@ -155,7 +170,68 @@ if (secure) {
 
 **版本核查**：`sb.append(mIntents[i])` 在 `android-34` / `android-36` / `android-36.1` 三份源码中**完全一致，从未修复**。
 
-**为什么 `extras=` 是完整的**：同一段里 `sb.append(mExtras)`（`:2693`）走 `PersistableBundle.toString()`，没有 secure 概念——所以 `{shortcuts=true}` 这类 extras 一直可见。这也与实测吻合，**可用来交叉验证**：**print 出的 extras 是真的，dat 不是**。
+**为什么 `extras=` 的「值」是完整的**：同一段里 `sb.append(mExtras)`（`:2693`）走 `PersistableBundle.toString()`，没有 secure 概念——所以 `{shortcuts=true}` 这类 extras 的**值**一直可见。
+
+> ⚠️ **但「值可见」不等于「信息完整」——extras 的 `类型` 在文本里彻底丢失**。
+> 这是比 dat 省略**更根本**的一处信息损失，详见 §3.3.1。
+
+### 3.3.1 更根本的损失：extras 的**类型**无法从文本还原
+
+`PersistableBundle.toString()` 只打印 `key=value`，**不带类型标签**：
+
+```
+extra_scene_account=1462285899        ← 这是 String？Int？还是 Long？文本看不出来
+```
+
+而 `dumpsys` 的输出里**没有任何地方记录类型**。于是 vFlow 只能**按数字形态猜**（`ShortcutPickerSupport.buildLaunchCommand`）：
+
+```kotlin
+isBoolean(value) -> " --ez "
+isInteger(value) && value.length < 10 -> " --ei "    // ← 数字且 <10 位 → 猜 Int
+isLong(value)  -> " --el "                            // ← 其他数字 → 猜 Long
+isFloat(value) -> " --ef "
+else           -> " --es "                            // ← 非数字 → 猜 String
+```
+
+**这个猜测必然出错。** 因为同一个数字文本在 A 应用可能是 String、在 B 应用可能是 Long，而文本无法区分。
+
+#### 真机实证：米家场景「无账号权限」（2026-09-26）
+
+用户报「米家固定自动化场景，ShortX 能启动，vFlow 报无账号权限」。根因即本节所述：
+
+```
+米家的 extras：extra_scene_account=1462285899
+vFlow 推断：1462285899 是 10 位数字 → 不是 <10 位 → 走 --el（Long）
+米家的实际读取：bundle.getString("extra_scene_account")   ← 它要 String！
+```
+
+**米家的报错（logcat 原文）**：
+
+```
+W Bundle: Key extra_scene_account expected String but value was a java.lang.Long.
+          The default value <null> was returned.
+W Bundle: java.lang.ClassCastException: java.lang.Long cannot be cast to java.lang.String
+    at android.os.Bundle.getString(BaseBundle.java:1456)
+    at com.xiaomi.smarthome.scene.SmartHomeLauncherActivity.onCreate(SourceFile:57)
+```
+
+**`getString` 拿到 `null` → 账号为空 → 用户看到「无账号权限」**（不是权限问题，是类型不匹配）。
+
+**强制停止后逐类型实测**（排除 Activity 复用干扰，米家每次重建 `onCreate`）：
+
+| vFlow 传的类型 | 米家报 ClassCastException |
+|---|---|
+| `--el`（Long）——**vFlow 当前行为** | **1（报错）** |
+| `--es`（String） | **0（正常）** |
+| `--ei`（Int） | **1（报错）** |
+
+**触发条件是 10 位数字**：`1462285899` 恰好卡在 `length < 10` 的边界外，于是被当成 Long。
+（若换个位数会落到别的分支，**同样可能猜错**——这正说明「靠形态猜类型」不可能对所有 App 都对。）
+
+#### 为什么 ShortX 没这个问题
+
+ShortX 存的是**真实的 `ShortcutInfo` / `Intent` 对象**，类型信息随 Parcel 完整保留——该是 String 就是 String。
+**vFlow 与 ShortX 最本质的差异在此**，而非调用身份（详见 §5.4）。
 
 ### 3.4 「取末项」语义（已在 fork 修复）
 
@@ -207,7 +283,7 @@ com.miui.securitymanager  垃圾清理 / 微信专清 / 病毒扫描（3 条）
 com.miui.notes / com.android.vending / com.sinovatech.unicom.ui …
 ```
 
-微信那 6 条尤其典型：**App 有意让快捷方式无法被第三方重放**，ShortX 同样拿不到（§5.3 实测其不响应 `CREATE_SHORTCUT`）。
+微信那 6 条尤其典型：**App 有意让快捷方式无法被第三方重放**，ShortX 亦拿不到（§7.2 实测其不响应 `CREATE_SHORTCUT`）。
 
 #### 为何「只有 18%」但痛感远高于 18%
 
@@ -221,20 +297,40 @@ com.miui.notes / com.android.vending / com.sinovatech.unicom.ui …
 - **银行类** 付款码/账户（招行、交行、工行、建行…）→ dat 残缺，**比主界面更糟**：可能直接报错。
 - **ChatGPT** 相机/语音/图片 → 同上，退化到主界面。
 
-> ⚠️ 三个数据源（本文写作时）已实测**互不重叠**：`dumpsys` 全量但 dat 残缺；
-> `ACTION_CREATE_SHORTCUT` dat 完整但**恰好不覆盖这批 App**（§5.3）；`shortcuts.xml` 待验证（§7.3）。
+#### C. 第三类失败：extras **类型**猜错（§3.3.1）——本表**未覆盖**
+
+上面的表格按「**能否定位到目标组件**」分型，**但还有一类失败是「定位对了、参数传错了」**，
+它在上表中会被算进 ✅ 那 304 条里（因为米家那条有 `cmp`），**实际却是坏的**：
+
+| 案例 | 上表归类 | 实际 |
+|---|---|---|
+| 米家「关闭灯与投影仪」`extra_scene_account` | ✅ 有 `cmp`，看似可靠 | ❌ **Long 传成 String，米家报「无账号权限」** |
+
+**即**：上一版量化（74.5% / 18.1% / 6.4% / 1.0%）**低估了问题面**——它只统计了「组件定位」，
+没统计「extras 类型」。后者**无法从 dumpsys 文本判定**，因此**也无法离线量化**，
+只能逐 App 实测（已知 1 例）。
+
+> ⚠️ **三个数据源（本文写作时）已实测互不重叠**：`dumpsys` 全量但 dat 打印省略 + extras 类型丢失；
+> `ACTION_CREATE_SHORTCUT` 完整但**恰好不覆盖这批 App**（§7.2）；`shortcuts.xml` 待验证（§7.3）。
+> **第四条是 Xposed 采集（§5.4）**，ShortX 的「固定的快捷方式」即此路——**唯一能覆盖米家这类的手段**。
 
 ---
 
 ## 4. 决策边界（事实部分）
 
-由 §3.3 可直接推出，不依赖任何进一步实测：
+由 §3.3 / §3.3.1 可直接推出，不依赖任何进一步实测：
 
-> **只要数据源是 `dumpsys shortcut`，就不可能拿到完整的 dat。**
-> 这不是配置问题、不是解析问题，是 AOSP 打印层的固有缺失，应用侧无解。
+> **只要数据源是 `dumpsys shortcut` 的文本，就同时丢掉两样东西：**
+> 1. **dat 的内容**（打印层省略，§3.3）
+> 2. **extras 的类型**（文本不带类型标签，§3.3.1）
+>
+> 这不是配置问题、不是解析问题，是「**从文本重建 Intent**」这一路线的固有损失，应用侧无解。
 
-受此影响，**所有 dat 驱动**的快捷方式（美团、拼多多、中国银行、酷安、迅雷、闲鱼、钉钉、1688、招行…）
-**在本模块下永远只能退化启动**（多数会落到 App 主界面）。
+受此影响：
+
+- **所有 dat 驱动**的快捷方式（美团、拼多多、中国银行、酷安、迅雷、闲鱼、钉钉、1688、招行…）**只能退化启动**（多数落到 App 主界面）。
+- **extras 含数字参数的**（如米家 `extra_scene_account`）**可能静默传错类型**，App 侧报出与真实原因无关的错误（「无账号权限」）。
+  这类失败**无法离线枚举**——文本里看不出类型，只能逐 App 实测。
 
 `dumpsys` 的一切变体都走同一段代码，实测确认无效：
 
@@ -242,7 +338,14 @@ com.miui.notes / com.android.vending / com.sinovatech.unicom.ui …
 |---|---|
 | `dumpsys shortcut`（无参） | ❌ 走 `toDumpString` |
 | `cmd shortcut get-shortcuts --flags N` | ❌ 同样走 `toDumpString`（实测输出逐字一致） |
-| `dumpsys shortcut <其他参数>` | ❌ `ShortcutPackage.dump()` 的 `DumpFilter` 参数**在方法体内未被引用** |
+| `dumpsys shortcut -a` / `--all` | ❌ **被接受但无差别**：实测与默认输出**逐字节一致**（仅时间戳噪声） |
+| `dumpsys shortcut -c` / `--checkin` | ❌ 输出统计 JSON（每包 dynamic/manifest/pinned 计数），**不含 Intent** |
+| `dumpsys shortcut <其他参数>` | ❌ 抛 `Unknown option`（`ShortcutService.parseDumpArgs:4650`）——注意**服务层确实解析参数**，只是没有能改 `intents=` 输出的选项 |
+
+> **更正（v1.2）**：早期版本称「`ShortcutPackage.dump()` 的 `DumpFilter` 参数在方法体内未被引用」，
+> 并据此断言「参数一律无效」。**只对了一半**——`ShortcutPackage` 层确实没引用它，
+> 但**服务层 `ShortcutService.parseDumpArgs` 会先解析参数**并可能走不同分支（`-c` 即走 JSON 统计路径）。
+> 穷举后结论不变（**没有能拿到完整 Intent 的开关**），但推理依据已修正。
 
 ---
 
@@ -250,7 +353,12 @@ com.miui.notes / com.android.vending / com.sinovatech.unicom.ui …
 
 参照对象：ShortX `tornaco.apps.shortx`（Xposed 框架），源码在 `D:/develop/references/shortx/`（仓库外，不进 git）。
 
-**ShortX 完全不走 dumpsys**，而是用 `ACTION_CREATE_SHORTCUT` 让**目标 App 自己交出 Intent 对象**。
+**ShortX 的快捷方式功能有两个独立入口，走两条不同数据源**（§5.4 汇总）：
+
+- **「应用快捷方式」** → `ACTION_CREATE_SHORTCUT`（零权限，但只覆盖响应该 action 的 App）——本节 §5.1 讲这条
+- **「固定的快捷方式」** → **Xposed hook `requestPinItem` 采集**（覆盖用户手动 pin 的）——见 §5.4
+
+**两条都完全不走 `dumpsys`。**
 
 ### 5.1 完整链路（四步）
 
@@ -314,16 +422,69 @@ b.append(mData.toSafeString());
 > ⚠️ **易混淆点（勿重蹈）**：ShortX 里 `dumpsys` 与 `toInsecureString()` **都与它的快捷方式数据链路无关**，容易误读成「ShortX 也在用」。
 > - **`dumpsys`**：ShortX 全仓库仅一处使用，为 `dumpsys display`（`services/ctrl/OooO00o.java:38`，取屏幕信息）；**`dumpsys shortcut` / `cmd shortcut` 零命中**。
 > - **`toInsecureString()`**：仅出现在 Xposed hook 的**日志打点**里（`services/xposed/hooks/hook/ShortcutServiceHook.java:202`、`:210`，喂给 `logger`），**不在数据获取路径上**，且**即便用了也拿不到完整 dat**（上表）。
-> - ShortX 的 hook（`ShortcutServiceHook`）hook 的是 `LauncherAppsService.getShortcuts` / `ShortcutService$LocalService.getShortcuts` / `startShortcut` 等**系统方法**，用途是**给自己的动作注入动态快捷方式**与**记录调用**，而非「列出别家 App 的快捷方式」。
->
-> ShortX 获取快捷方式数据的路径**只有一条**：`getParcelableExtra(EXTRA_SHORTCUT_INTENT)`（§5.1 ③）→ `toUri(1)`（§5.1 ④）。
 
-### 5.3 两条路的互补性
+### 5.4 ShortX 有**两个**入口，走**两条不同**的数据源
 
-| | `dumpsys` 路径（vFlow 现用） | `ACTION_CREATE_SHORTCUT` 路径（ShortX 用） |
+> ⚠️ **本节更正 §5.1–5.3 的旧结论**：早期版本称「ShortX 获取快捷方式数据只有一条路径」。**错了。**
+> 实测（用户反馈 + 文案 + 源码三方印证）——ShortX 的快捷方式功能分**两个独立入口**，
+> **数据源完全不同**，`ACTION_CREATE_SHORTCUT` 只是其中之一。
+
+| ShortX 入口 | 文案（`_i18n_zh.json`） | 数据源 | 覆盖 |
+|---|---|---|---|
+| **应用快捷方式** | `ui.action.shortcut = 应用快捷方式` | `ACTION_CREATE_SHORTCUT`（§5.1） | 仅响应该 action 的 App（米家**不**响应） |
+| **固定的快捷方式** | `ui.action.launch.pined.item = 固定的快捷方式`<br>`...tip = 你需要先在桌面添加目标应用的快捷方式，随后该快捷方式就会被记录在这个列表中供你选择` | **Xposed hook 采集**（下） | 仅用户**手动 pin 过**的快捷方式 |
+
+#### 「固定的快捷方式」的机制：在系统**写入时刻截获对象**
+
+ShortX hook 了 `com.android.server.pm.ShortcutService.requestPinItem`，在用户于桌面创建固定快捷方式时**截获那个 `ShortcutInfo` 对象**并存进自己的列表：
+
+```java
+// ShortcutServiceHook.java —— hookPinItem
+Class cls = findClass(classLoader, "com.android.server.pm.ShortcutService");
+Method m = findMethod(cls, "requestPinItem");
+HooksKt.afterMethod(m, ...);            // hook 之后
+
+// 回调里（hookPinItem$lambda$4$lambda$3）
+ShortcutInfo shortcutInfo = (ShortcutInfo) param.getArgs()[2];   // ← 系统的真实对象
+if (shortcutInfo != null) {
+    ve2.OooOOOO.add(shortcutInfo);      // ← 存进内存列表
+}
+```
+
+**这解释了用户观察到的全部现象**：
+
+- 为什么「固定的快捷方式」里**只有手动在米家创建的**那条 —— 因为它**只在 pin 的那一刻采集**，未 pin 的根本没有
+- 为什么另一个入口（应用快捷方式）里**没有米家** —— 米家不响应 `ACTION_CREATE_SHORTCUT`
+- 为什么 ShortX 启动米家场景**能成功** —— 它存的是**对象**，`extra_scene_account` 保持 String 类型，米家 `getString` 读得到
+
+**ShortX 这套做法的本质是「取巧」**：不在事后查询，而在**系统写入的瞬间截获**。好处是零权限门槛、类型完整；代价是**必须 Xposed 常驻**，且**只能覆盖 pin 之后新增的**。
+
+### 5.5 完整 Intent 的四条路径总表
+
+拿到**类型完整**的 Intent 的全部途径（米家这类「不响应 CREATE_SHORTCUT」的 App 为准）：
+
+| 路径 | 类型完整 | 门槛 | 对米家 | 备注 |
+|---|---|---|---|---|
+| `dumpsys` 文本（vFlow 现用） | ❌ **类型丢失**（§3.3.1） | Shell | ⚠️ 能列，**启动报错** | 本仓库当前实现 |
+| `ACTION_CREATE_SHORTCUT` | ✅ | **零权限** | ❌ App 不响应 | ShortX 的「应用快捷方式」 |
+| `LauncherApps.getShortcuts()` | ✅ | **须是当前默认桌面**，或活跃语音交互服务 | 理论上可用 | AOSP javadoc 明确限定（见下） |
+| Xposed hook | ✅ | Root + Xposed | ✅ | ShortX 的「固定的快捷方式」 |
+
+`LauncherApps` 的门槛来自 AOSP 源码的 javadoc（`LauncherApps.java:1391-1396`）：
+
+> Access is currently available to: **The current launcher** (or default launcher if there is no set current launcher). / The currently active voice interaction service.
+
+**即：不 root 的合法路径只有「让 vFlow 成为默认桌面」** —— 对一个非桌面 App 是很重的代价（用户切过去后手机没有正常桌面）。
+
+---
+
+### 5.6 两条路的互补性
+
+| | `dumpsys` 路径（vFlow 现用） | `ACTION_CREATE_SHORTCUT` 路径（ShortX「应用快捷方式」用） |
 |---|---|---|
 | 枚举方式 | 解析调试输出文本 | `queryIntentActivities` |
-| dat 完整性 | ❌ 结构性残缺 | ✅ 完整 |
+| dat 完整性 | ❌ 打印省略 | ✅ 完整 |
+| extras 类型 | ❌ **丢失**（§3.3.1） | ✅ 完整 |
 | 需要 shell | ✅ Shizuku/Root | ❌ **零权限** |
 | 覆盖范围 | **全量**（本机 408 条） | 仅**实现该 action** 的 App——实测本机 **28 个**，且**与 dat 残缺的那批几乎不相交**（§7.2）。**净收益 ≈ 0，已否决** |
 | 交互形态 | 自弹 BottomSheet 单选 | 两级：先选 App → 跳出到该 App 界面选 |
@@ -389,7 +550,10 @@ com.ghisler.android.TotalCommander   com.mixplorer   com.estrongs.android.pop �
 **结论：不引入该路径。** 收益 4/100 远不值得一条新交互链路（两级跳转 + 状态同步）。
 附带确认：vFlow 自身也不响应 `CREATE_SHORTCUT`（无妨，其快捷方式走 `cmp` 形态，dumpsys 路径正常）。
 
-### 7.3 ⏳ 下一步线索：直接读 `shortcuts.xml`（**待验证**）
+**⚠️ 但要补一句 v1.2 的更正**：本节标题原写作「两路合并」，暗示 `dumpsys + CREATE_SHORTCUT` 就是 ShortX 的全部。
+**实际 ShortX 还有第二个入口（「固定的快捷方式」，走 Xposed 采集，§5.4）**——见 §7.5。
+
+### 7.3 ⏳ 下一步线索：直接读 `shortcuts.xml`（**已部分验证：路径下是元信息**）
 
 由 §5.2 的推论可得：**系统磁盘上的持久化文件是完整的**——因为
 `ShortcutService.writeAttr` 的 Intent 重载用的是 `intent.toUri(/* flags = */ 0)`（**非** `toString()`）。
@@ -400,42 +564,57 @@ com.ghisler.android.TotalCommander   com.mixplorer   com.estrongs.android.pop �
 /data/system_ce/0/shortcut_service/shortcuts.xml
 ```
 
-（CE 存储 = 凭据加密，**需用户解锁后可读**；且 `/data/system*` 需 **root**，Shizuku/shell 通常不可读。）
+（CE 存储 = 凭据加密，**需用户解锁后可读**；且 `/data/system*` 需 **root**，Shizuku/shell 通常不可读。
+adb（UID 2000）实测 `Permission denied`，且本机无 `su`、production build 无法 `adb root`。）
 
-**为什么这条路比 7.2 有希望**：它**不依赖目标 App 配合**——**所有** App 的快捷方式都在同一个文件里。
+#### ❌ 实测结论（v1.2 更新）：该文件是**元信息**，不含快捷方式数据
 
-#### 待解决的问题：`grep -c 'intent-base'` 返回 **0**
+用户以 root 读取该文件，内容仅：
 
-说明**属性名与预期不符**，可能：① 厂商改了属性名；② 该属性仅用于备份路径而非主存储；
-③ 文件结构与 AOSP 主分支有差异。**注意**：v1.0 写作时 `ATTR_INTENT_NO_EXTRA = "intent-base"`
-来自 WebFetch 转述（当时它已明示「The attribute's encoding is not shown in this file」），
-**未经本地源码核实**——0 命中可能是属性名错，也可能是数据确实不在。
-
-#### 下一步（按序执行，任一步成功即可判断）
-
-```bash
-# ① 看文件实际结构（最重要：直接看有没有 <intent> 标签及内容是完整还是 ...）
-head -c 2000 /data/system_ce/0/shortcut_service/shortcuts.xml
-
-# ② 规模确认（若 ① 显示有内容）
-wc -c /data/system_ce/0/shortcut_service/shortcuts.xml
-
-# ③ 不依赖属性名，直接按内容搜（能搜到带 path 的完整 URI 即说明数据在）
-grep -o 'imeituan[^"]\{0,120\}' /data/system_ce/0/shortcut_service/shortcuts.xml | head -6
+```xml
+<user
+    locales="zh-CN"
+    last-app-scan-time2="1790118976684"
+    last-app-scan-fp="Xiaomi/babylon/babylon:17/CP2A.260605.016/OS4.0.0.21.XPACNXM:user/release-keys" />
 ```
 
-**判读**：
+**没有 `<intent>` 标签、没有包名、没有任何快捷方式条目** —— 这解释了早期 `grep -c 'intent-base'` 返回 0。
+**该路径不是快捷方式主数据的存放处**（澎湃 OS 的布局与 AOSP 默认不同 / 数据在别处）。
 
-- ③ 出现 `imeituan://www.meituan.com/scan…`（**带具体 path、四个功能各不相同**）→ **数据完整**，
-  则 §3.5 的 **A 类 74 条可救**（B 类 26 条仍无解）。这是当前**最大的单点改进**。
-- 仍是 `...` 结尾 → 磁盘上也已截断，此路亦堵死，**接受现状**（此时应回到本文「事实」部分如实记录边界）。
+#### 若要继续（未做完）
 
-> ⚠️ **XML 转义**：`&` → `&amp;`、`"` → `&quot;`。若日后要解析，须先反解义。
+```bash
+# 在该目录下找其他文件
+ls -la /data/system_ce/0/shortcut_service/
+# 或全盘按内容搜（哪里出现美团 URI，数据就在哪）
+grep -rl 'imeituan://' /data/system_ce/ /data/system_de/ 2>/dev/null
+```
+
+> ⚠️ **XML 转义**：若日后找到真文件，注意 `&` → `&amp;`、`"` → `&quot;`，解析前须反解义。
 
 ### 7.4 若 7.3 也失败：接受现状
 
-届时「启动快捷方式」的能力边界就是：**74.5% 可靠 + 18% 退化（可修但无路径）+ 6.4% 先天不可得**。
+届时「启动快捷方式」的能力边界就是：**74.5% 可靠 + 18% 退化（可修但无路径）+ 6.4% 先天不可得**
+**+ 未知比例的 extras 类型错（§3.3.1，离线无法量化）**。
 本文 §3.5 的量化即为其最终交付说明。
+
+### 7.5 候选方案：Xposed 采集（ShortX「固定的快捷方式」同款，**未实现**）
+
+**这是唯一能覆盖米家这类 App 的路径**（§5.4/§5.5）。
+机制：hook `ShortcutService.requestPinItem`，在用户于桌面创建固定快捷方式时**截获 `ShortcutInfo` 对象**。
+
+**优势**：
+- **类型完整**（拿到的是对象，`extra_scene_account` 保持 String）
+- 零权限门槛（不需要成为默认桌面）
+- **有现成参照**：ShortX 已实测该 hook 点可用
+
+**代价 / 前提**（与 `docs/fork/xposed-channel-design.md` 的地基问题同源）：
+- 需 Root + Xposed 框架（vFlow 目前**没有** Xposed 通道）
+- 需 hook 常驻，且**只能覆盖 pin 之后新增的**快捷方式（历史 pin 需用户重新 pin 或由该 hook 之外的路径补）
+- 该文档 §8 列的 4 个地基问题（hook 点存在性 / 冷启动取条件 / hook 层能否读 `/sdcard/vFlow/` / 秘密信道）
+  尚未答完，**不应单独为快捷方式开新路**
+
+**结论**：**并入 Xposed 通道一起评估**，不单独立项。
 
 ---
 
@@ -445,7 +624,9 @@ grep -o 'imeituan[^"]\{0,120\}' /data/system_ce/0/shortcut_service/shortcuts.xml
 2. **`cat=` / `typ=` 未解析**：`buildLaunchCommand` 只认 `act`/`cmp`/`dat`/`flg`/`pkg`。实测含 `cat=[android.intent.category.LAUNCHER]` 的条目（如系统录音机）会丢掉 category。
 3. **`dumpsys shortcut` 输出量大**（本机 8250 行 / 436 KB）且**无限流**——与本项目在 logcat 侧明确处理过的「大数据量命令」风险同类，值得对照 `docs/fork/logcat-debug-tool.md` 的处理方式。
 4. **`distinctBy` 的 `stableId` 含完整命令**，故同 label 不同 `activity` 的条目（如联系人「新建」）会**并列显示**。是否为期望行为需产品决定。
-5. **§7.3 未完成**：`shortcuts.xml` 的读取验证是唯一未走完的线索，也是 A 类 74 条唯一的救法。
+5. **§7.3 已证伪**：`/data/system_ce/0/shortcut_service/shortcuts.xml` 是**元信息**（locales / scan-time），非快捷方式数据。真数据位置未找到。
+6. **extras 类型错误无法量化**（§3.3.1）：只能逐 App 实测，已知 1 例（米家）。**§3.5 的百分比低估了实际失败面**——它只统计组件定位，未统计 extras 类型。
+7. **`length < 10` 阈值是启发式**：`buildLaunchCommand` 用它区分 Int/Long，边界值行为**未被任何真实数据依据支持**。米家案例正是卡在该边界。若要缓解，**不能简单调阈值**（别的 App 可能需要 Long），只能逐 App 建映射表或换数据源。
 
 ---
 
@@ -485,3 +666,4 @@ adb shell 'find /data -name "shortcuts.xml" 2>/dev/null'
 |---|---|---|
 | v1.0 | 2026-09-23 | 初稿。基于一次真机实测（408 条）+ AOSP `android-34/36/36.1` 源码直读 + ShortX 反编译源码直读。含：解析层健壮性实测（408/408 全中）、dumpsys dat 残缺的 AOSP 根因定位（`ShortcutInfo.java:2681` 漏传 secure）、多 Intent 取末项语义、ShortX `ACTION_CREATE_SHORTCUT` 方案对照。**§7.2 覆盖率数据待补**（设备离线）。 |
 | **v1.1** | 2026-09-23 | **补实测数据 + 两处自我更正**。① §3.5 改为按**末项定位信息形态**的量化分型（有 `cmp` 304 / dat 残缺无 cmp **74** / 无 dat 无 cmp **26** / dat 完整 4），并把「可修（A 类 74）」与「先天不可得（B 类 26）」拆开；② §7.2 `ACTION_CREATE_SHORTCUT` 由「待验证」改为**实测否决**（28 个响应者 vs 100 条受影响，净收益 ≈ 0，目标 App 全部不响应）；③ **更正 v1.0 的错误**——原文称 `toInsecureString()` 能拿到完整 dat，**实际走同一 bug**（`ShortcutInfo.java:2667-2686` 的 `secure` 无 Intent 层面作用）；真正的分野是 `Uri.toString()`（`toUri` 用，完整）vs `Uri.toSafeString()`（`toString` 用，脱敏）；④ §7.3 新增 `shortcuts.xml` 线索（真机确认真实路径 `/data/system_ce/0/shortcut_service/shortcuts.xml`，**`intent-base` 返回 0 待解**）。 |
+| **v1.2** | 2026-09-26 | **由一处真实故障（米家场景「无账号权限」）深挖出的体系性更正**。① **新增 §3.3.1**——发现比 dat 省略**更根本**的信息损失：**extras 的「类型」在 dumpsys 文本里彻底丢失**，vFlow 只能按数字形态猜（`--ei`/`--el`/`--es`）。米家 `extra_scene_account=1462285899`（10 位数字）被猜成 Long，而米家 `getString()` 读它 → `null` → 报「无账号权限」。三种类型强制停止实测：`--el` 报错 1 次 / `--es` 0 次 / `--ei` 报错 1 次。② **§3.3 口径澄清**——原文「dat 结构性残缺」易被读成「系统里存的就残缺」，实测（传完整 URI 回显仍省略）证明**数据完整、仅打印省略**。③ **§5.4 新增**——发现 ShortX 有**两个**入口、走**两条不同**数据源：「应用快捷方式」=`ACTION_CREATE_SHORTCUT`，「**固定的快捷方式**」=**Xposed hook `requestPinItem` 采集对象**。**更正 §5.1-5.3「只有一条路径」的旧结论**。④ **§5.5 新增**「完整 Intent 的四条路径总表」（含 `LauncherApps` 须为**默认桌面**的 AOSP javadoc 依据）。⑤ **§3.5 新增 C 类失败**——指出旧量化**低估问题面**（只统计组件定位，未统计 extras 类型，米家那条被算进 ✅ 的 304 条里）。⑥ §4 更正「参数一律无效」的半错结论（服务层 `parseDumpArgs` 确实解析参数，穷举后结论不变）。⑦ §7.3 **已证伪**（该文件是元信息）；**§7.5 新增** Xposed 采集方案评估（结论：并入 `xposed-channel-design.md`，不单独立项）。 |
