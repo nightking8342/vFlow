@@ -50,6 +50,18 @@
 > ⑥ §4.4.1 补齐**两个必需依赖**（`api` + **`service`**）与 `module.prop` 的写法坑。
 > **§8 中 #1 / #18 转为已答**。
 >
+> **v2.6（2026-09-26 深夜）：#17 热更新实测通过 —— system_server 热更新可用。**
+> ① ✅✅ **`autoHotReload=true` + 重装 APK ⇒ 在 system_server 里触发热更新，无需重启手机**；
+>    `HookHandle.replaceHook()` **原子替换成功**，之后 hook 立刻恢复命中（§4.6）。
+>    **这推翻了 §4.6 旧的「推断」**（曾怀疑框架对 system_server 策略不同）。
+> ② ⚠️ **两条实现要点**（都靠实测才发现）：
+>    **`HotReloadedParam` 没有 `getClassLoader()`**（全 API 只有 `PackageReadyParam` /
+>    `SystemServerStartingParam` 有）；**且不能用静态字段传跨代际状态** ——
+>    热更新是**新 classloader 加载新代码，静态字段在新代际是全新的**
+>    （我实测缓存 ClassLoader 到静态字段 ⇒ 在新代际读到 `null`）。
+>    **正解：`replaceHook()`，不需要 ClassLoader；回调需的类从 `chain.getExecutable()` 推。**
+> ③ ✅ **P0 的 5 条验证项全部有结论**：**#1/#18/#14/#17 通过**、**#15 方法无效**。
+>
 > **v2.5（2026-09-26 深夜）：⚠️ 推翻 v2.3/v2.4 的两处过头结论 —— 主通道已实证通过。**
 > ① ✅✅ **`bindService` 主通道成立** —— 实测拿到 `BinderProxy@1adc174`。
 >    **此前 v2.3 写的「实测推翻了核心论据」、v2.4 的「选型进入重评」【都是错的，已撤回】**。
@@ -1592,11 +1604,35 @@ default void   onHotReloaded(HotReloadedParam param)     // 运行在【新】�
 - ✅ **改为**：hook 变更可即时生效，但**需要走「触发热更新」这个动作**
   ——UI 上应提供/提示该动作，而**不是让用户去重启 App**
 
-> ⚠️ **仍未验证的两点**（【推断】→ 待测，写进 §6/§8）：
-> ① **hot reload 对 system_server（5b）是否适用**——官方文档未区分进程，但 system_server
-> 的重启成本远高于普通 App，**框架对它的策略可能不同**；
-> ② **`autoHotReload` 在实际 LSPosed 版本上的行为**——需实测（HyperCeiler/InxLocker 用了 102，
-> 但它们是否真的启用了热更新、效果如何，我没验）。
+> ## ✅ 2026-09-26 **两点都已实测** —— **system_server 热更新可用**
+>
+> 实测（`autoHotReload=true` + 重装 APK，**未重启手机**）：
+>
+> ```
+> 22:41:30  ════ onHotReloading（旧代码 · 热更新即将发生）════
+> 22:41:30  ════ onHotReloaded（新代码 · 已接管）════
+> 22:41:30    旧 hook 句柄数 = 1 个
+> 22:41:30    替换旧 hook: static void ...ActivityRecord.activityResumedLocked(...)
+> 22:41:30    ✅ replaceHook 成功
+>           ─────────── 分界线 ───────────
+> 22:41:36    ★ activityResumedLocked 命中 ✅   ← 热更新后 hook 立刻恢复
+> 22:41:59    ★ 命中 ✅ …（此后持续命中）
+> ```
+>
+> | # | 结论 |
+> |---|---|
+> | ① | ✅ **hot reload 对 system_server（5b）适用** —— 该结论推翻了本节的旧「推断」（曾怀疑框架对 system_server 策略不同） |
+> | ② | ✅ **`autoHotReload` 在 LSPosed 2.2.0 上生效** —— 重装 APK 即触发，**无需重启手机** |
+> | ③ | ✅ **hook 不会自动重挂**（官方约束实测印证）—— 必须自己在 `onHotReloaded` 里做 |
+>
+> ### ⚠️ 实现要点（**正式实现必须遵守**）
+>
+> | 要点 | 说明 |
+> |---|---|
+> | **用 `HookHandle.replaceHook()`** | `getOldHookHandles()` 拿旧句柄 → `replaceHook(新 Hooker)` **原子替换**。**不需要 ClassLoader。** |
+> | ⚠️ **不要用静态字段传跨代际状态** | **实测踩坑**：曾用静态字段缓存 `ClassLoader`，`onHotReloaded` 里读到 **`null`** —— 因为热更新是**新 classloader 加载新代码，静态字段在新代际是全新的**。这正印证官方那条「saved state must **not** contain objects created under the old module classloader」 |
+> | **hook 回调需要的类怎么拿** | 从 **`chain.getExecutable().getDeclaringClass()`** 推（探针实测可行），**不要缓存** |
+> | **回调必须 `proceed()`** | 否则被 hook 的原方法不执行 ⇒ **破坏整机行为** |
 >
 > ⚠️ **另注**：ShortX 的那套「每次命中时回查」**仍有参考价值**——
 > 热更新解决的是「hook 定义变了」，而**「规则/条件变了」本来就该走回查**（本方案是 App 侧判定）。
@@ -1879,14 +1915,14 @@ Abstract Namespace socket 无文件系统节点、无网络面，只能本机 `b
 | ~~1~~ | ~~`ActivityRecord.activityResumedLocked` 是否仍存在~~ | ✅ **存在、已挂上、真的被调用**（§4.2.9） |
 | ~~18~~ | ~~`onSystemServerStarting` 是否触发~~ | ✅ **触发**（§4.2.9） |
 | ⭐ | **能否拿到 Activity 的 Intent**（通道存在的理由） | ✅ **能拿到 `pkg`/`component`/`intent`（含 extras）**（§4.2.9） |
+| ~~**14**~~ | ~~system_server 内的 hook 层能否 `bindService` 到 vFlow~~ | ✅✅ **可以** —— 拿到 `BinderProxy`（§4.2.1）。⚠️ 曾两次误判，真因是**没解锁** |
+| ~~**17**~~ | ~~hot reload 对 system_server 是否适用~~ | ✅✅ **适用** —— `autoHotReload` + 重装 APK 即触发，**`replaceHook()` 原子替换成功、无需重启手机**（§4.6） |
 
 **🧱 仍需回答**：
 
 | # | 问题 | 影响 | 状态 |
 |---|---|---|---|
-| **14** | 🧱 **system_server 内的 hook 层能否 `bindService` 到 vFlow**（v2.0 主通道）——含**主线程重入/阻塞**风险 | **地基：主通道的可行性** | ⚠️ **未拿到有效结论**（见下注） |
-| **15** | 🧱 **system_server 能否持有 vFlow 的 `signature` 权限** | **决定鉴权形态** | ⚠️ **未拿到有效结论**（见下注） |
-| **17** | **hot reload 对 system_server 是否适用**（§4.6 注①） | 决定「改 hook 规则要不要重启」 | 未测 |
+| **15** | 🧱 **system_server 能否持有 vFlow 的 `signature` 权限** | **决定鉴权形态** | ❌ **方法无效**：`checkPermission(自己pid,自己uid)` 恒 GRANTED（含无关对照）⇒ **需换方法**（§5.2 of P0-FINDINGS） |
 | 16 | LSPosed 注入时序 vs 连接建立时序 | 决定实际窗口期长短（§4.2.5） | 未测 |
 | 2 | hook 进程能否连 Core 的 unix socket（SELinux） | 备选方案可行性 | 低优先 |
 | 3 | LSPosed 的 scope 配置对用户的实际操作成本 | 产品设计 | 未测 |

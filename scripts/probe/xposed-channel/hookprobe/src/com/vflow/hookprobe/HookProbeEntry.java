@@ -113,7 +113,7 @@ public class HookProbeEntry extends XposedModule {
         }
 
         // 基线日志：确认注入成功
-        say( "  注入成功 ✅");
+        say( "  注入成功 ✅ 【v3-replaceHook】");
     }
 
     /**
@@ -127,6 +127,8 @@ public class HookProbeEntry extends XposedModule {
         say( "════ onSystemServerStarting ════");
         say( "  ✅ 5b 入口回调【触发】了");
         ClassLoader cl = param.getClassLoader();
+        // ⚠️ 不缓存它 —— 热更新后静态字段在新代际里是 null（实测）。
+        //    hook 回调需要的类改从 `chain.getExecutable()` 推（见 onActivityResumedLockedHook）。
 
         // ⭐ #1：hook ActivityRecord.activityResumedLocked（纯 hook，不需要系统服务）
         hookActivityResumedLocked(cl);
@@ -137,6 +139,147 @@ public class HookProbeEntry extends XposedModule {
         //    IActivityManager 均为 null ⇒ NullPointerException。
         //    改为延迟到服务就绪后再做（见 scheduleServiceProbe）。
         scheduleServiceProbe(cl);
+    }
+
+    // ---------------------------------------------------------------- #17 热更新
+
+    /**
+     * ⭐ #17：热更新 —— 旧代码即将退休。
+     *
+     * 官方（102 源码逐字）：{@code Hot reload allows modules to be updated without restarting the process.}
+     *
+     * ⚠️ 本回调**运行在【旧】代码里**。官方要求：
+     * 「须先停掉自己的线程/回调、释放 JNI 引用」，否则可能崩。
+     * **探针这里只打日志**（它本来就没有需要停的线程）；
+     * 正式实现若起了采集线程，**必须在这里停掉**。
+     *
+     * @return {@code true} = 放行热更新；{@code false} = 拒绝。探针放行。
+     */
+    @Override
+    public boolean onHotReloading(XposedModuleInterface.HotReloadingParam param) {
+        say( "════ onHotReloading（旧代码 · 热更新即将发生）════");
+        // ⚠️ 只放行，不在此处重挂 hook（要等新代码的 onHotReloaded）
+        return true;
+    }
+
+    /**
+     * ⭐ #17：热更新 —— **新代码已接管**。
+     *
+     * ⚠️ **官方明确：hook 不会自动重挂** ——
+     * 「Hot reload does not automatically replay this callback or package lifecycle callbacks」
+     * ⇒ **必须在这里自己重新挂**，否则热更新后 hook 全失效（且是静默的）。
+     *
+     * ⚠️ **正确做法：用 `HookHandle.replaceHook()` 原子替换，【不需要 ClassLoader】。**
+     *
+     *     官方源码逐字（102）：
+     *     「Hooks can be **atomically replaced** by api or same id.」
+     *     `HookHandle` 上有：`getExecutable()` / `unhook()` / `getId()` /
+     *     **`replaceHook(Hooker)`** —— 后者正是为此设计的。
+     *
+     * ⚠️⚠️ **我在此处踩了两个坑（都靠实测才发现）**：
+     *   ① `HotReloadedParam` **没有 `getClassLoader()`** —— 与它父接口
+     *      `ModuleLoadedParam` 都没有；全 API 只有 `PackageReadyParam` 和
+     *      `SystemServerStartingParam` 有。（我最初想当然写了，编译失败才发现）
+     *   ② 我改用「静态字段缓存 ClassLoader」，结果 **`onHotReloaded` 里读到 null** ——
+     *      因为热更新是**新 classloader 加载新代码**，
+     *      **新代际里的静态字段是全新的、拿不到旧代际赋的值**。
+     *      这正好印证官方警告：「The saved state must **not** contain objects
+     *      created under the old module classloader」。
+     *   **⇒ 事实上根本不需要 ClassLoader：`replaceHook()` 就够了。**
+     *
+     * ⚠️ 另一个必须验的点：**这是否在 system_server 里也会触发** ——
+     * 官方文档没区分进程，但 system_server 重启成本极高，
+     * **框架对它的策略可能不同**（§4.6 注①）。
+     */
+    @Override
+    public void onHotReloaded(XposedModuleInterface.HotReloadedParam param) {
+        say( "════ onHotReloaded（新代码 · 已接管）════");
+        java.util.List<io.github.libxposed.api.XposedInterface.HookHandle> old = null;
+        try {
+            old = param.getOldHookHandles();
+            say( "  旧 hook 句柄数 = " + describeHandles(old));
+            say( "  savedState = " + param.getSavedInstanceState());
+        } catch (Throwable t) {
+            warn( "  读 HotReloadedParam 失败", t);
+        }
+        say( "  ⇒ 若此后 activityResumedLocked 仍能命中，说明【system_server 热更新可用】（§8-17）");
+
+        // ⭐ 正解：**原子替换**旧 hook（不需要 ClassLoader）
+        if (old != null && !old.isEmpty()) {
+            for (io.github.libxposed.api.XposedInterface.HookHandle h : old) {
+                try {
+                    java.lang.reflect.Executable ex = h.getExecutable();
+                    say( "  替换旧 hook: " + ex + " (id=" + h.getId() + ")");
+                    // ⚠️ replaceHook 用的是**旧句柄**，但回调是**新代码**里的 Hooker
+                    h.replaceHook(this::onActivityResumedLockedHook);
+                    say( "  ✅ replaceHook 成功");
+                } catch (Throwable t) {
+                    warn( "  ❌ replaceHook 失败", t);
+                }
+            }
+        } else {
+            say( "  ⚠️ 没有旧 hook 句柄 ⇒ 退化为「找不到 ClassLoader、无法重挂」");
+        }
+    }
+
+    /**
+     * hook 回调的**公共逻辑**（原在 `hookActivityResumedLocked` 的 lambda 里）。
+     *
+     * ⚠️ 提到独立方法是为了**热更新后能复用同一份逻辑**
+     * （`replaceHook` 需要的 `Hooker` 必须是新代际里的对象）。
+     */
+    private Object onActivityResumedLockedHook(io.github.libxposed.api.XposedInterface.Chain chain) throws Throwable {
+        try {
+            Object arg0 = chain.getArg(0);
+            Object arg1 = chain.getArg(1);
+            say( "  ★ activityResumedLocked | arg0="
+                    + (arg0 == null ? "null" : arg0.getClass().getName())
+                    + " arg1=" + arg1);
+
+            // ⚠️⚠️ **不再用静态字段缓存类** —— 热更新时静态字段在新代际里是 null
+            //     （我用静态字段缓存 ClassLoader，实测读到 null，就是这个原因）。
+            //     `ActivityRecord` 的 Class **能从 chain 自身推出来**：
+            //     被 hook 的方法就是 `ActivityRecord` 的静态方法。
+            Class<?> recordCls = null;
+            try {
+                java.lang.reflect.Executable ex = chain.getExecutable();
+                if (ex != null) recordCls = ex.getDeclaringClass();
+            } catch (Throwable ignored) {
+            }
+            if (recordCls == null) {
+                warn( "    ⚠️ 拿不到被 hook 方法的声明类，无法反查");
+                return chain.proceed();   // ⚠️ 必须 proceed，否则原方法不执行
+            }
+
+            Object record = resolveActivityRecord(recordCls, arg0);
+            if (record != null) {
+                say( "    ✅ 反查到 ActivityRecord: " + record.getClass().getName()
+                        + " | pkg=" + readField(record, "packageName")
+                        + " component=" + readField(record, "mActivityComponent")
+                        + " intent=" + readShort(record, "intent"));
+            } else {
+                warn( "    ⚠️ 未能由 token 反查到 ActivityRecord");
+            }
+        } catch (Throwable t) {
+            warn( "  回调内取值失败（不影响调用方）", t);
+        }
+        // ⚠️ 必须调用 proceed() —— 否则被 hook 的方法不会执行（整机行为会被破坏！）
+        return chain.proceed();
+    }
+
+    /**
+     * 把句柄列表描述成一行文本（探针用，只读）。
+     *
+     * ⚠️ **实测**：`XposedInterfaceWrapper`（`XposedModule` 的基类）**没有**
+     * `getHookHandles()` 方法（我用 `javap` 查过本地 aar 的 `classes.jar`）。
+     * 旧 hook 句柄只能从 `HotReloadedParam.getOldHookHandles()` 拿。
+     */
+    private static String describeHandles(Object handles) {
+        if (handles == null) return "null";
+        if (handles instanceof java.util.List) {
+            return ((java.util.List<?>) handles).size() + " 个";
+        }
+        return handles.getClass().getName();
     }
 
     /**
@@ -249,40 +392,12 @@ public class HookProbeEntry extends XposedModule {
             }
 
             // 逐个挂（可能有多个重载）
-            // ⚠️ lambda 要捕获 cls，故先提为 final 局部变量
-            final Class<?> recordCls = cls;
             for (Method m : cls.getDeclaredMethods()) {
                 if (!M_ACTIVITY_RESUMED_LOCKED.equals(m.getName())) continue;
                 try {
-                    hook(m).intercept(chain -> {
-                        // ⚠️ 只取值 + 打日志。绝不阻塞、绝不改结果。
-                        try {
-                            // ★ 关键：本方法是 **static**，没有 this。
-                            //   实测签名：(android.os.IBinder, boolean)
-                            //   第 0 个参数是 ActivityRecord 的 **token（IBinder）**，
-                            //   要由它反查 ActivityRecord 实例，再读 intent / packageName。
-                            Object arg0 = chain.getArg(0);
-                            Object arg1 = chain.getArg(1);
-                            say( "  ★ activityResumedLocked | arg0="
-                                    + (arg0 == null ? "null" : arg0.getClass().getName())
-                                    + " arg1=" + arg1);
-
-                            // 反查：ActivityRecord 有一个静态方法 forToken(IBinder) 或
-                            //       字段 mToken。逐个试（探针阶段穷举，正式实现要确定其一）。
-                            Object record = resolveActivityRecord(recordCls, arg0);
-                            if (record != null) {
-                                say( "    ✅ 反查到 ActivityRecord: " + record.getClass().getName()
-                                        + " | pkg=" + readField(record, "packageName")
-                                        + " component=" + readField(record, "mActivityComponent")
-                                        + " intent=" + readShort(record, "intent"));
-                            } else {
-                                warn( "    ⚠️ 未能由 token 反查到 ActivityRecord");
-                            }
-                        } catch (Throwable t) {
-                            warn( "  回调内取值失败（不影响调用方）", t);
-                        }
-                        return chain.proceed();
-                    });
+                    // ⚠️ 回调体**提到独立方法** `onActivityResumedLockedHook`，
+                    //    因为热更新后 `replaceHook()` 需要复用同一个 Hooker。
+                    hook(m).intercept(this::onActivityResumedLockedHook);
                     say( "  ✅ 已挂上: " + m);
                 } catch (Throwable t) {
                     warn( "  ❌ 挂载失败: " + m, t);

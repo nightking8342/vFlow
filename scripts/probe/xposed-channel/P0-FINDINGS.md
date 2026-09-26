@@ -16,7 +16,7 @@
 | **18** | `onSystemServerStarting` 是否触发 | ✅ **触发** |
 | **15** | system_server 能否持有 signature 权限 | ❌ **「不可信」**——对照组判定成立，该方法取不到有效结论（§5.2） |
 | **14** | system_server 内 `bindService` | ✅✅ **成功** —— 拿到 `BinderProxy@1adc174`（§5.1）。<br/>⚠️ 曾一度全失败，真因是**探针跑得比设备解锁早**（目标 Service `directBootAware=false`）⇒ 加 `isUserUnlocked()` 判据后通过 |
-| **17** | 热更新对 system_server | ⬜ 未测 |
+| **17** | 热更新对 system_server | ✅✅ **可用** —— `autoHotReload=true` + 重装 APK 即触发，**hook 原子替换成功、无需重启手机**（§5.4） |
 
 **本轮最重要的成果：§1 —— Xposed 通道的核心价值（拿到 Intent）已实证。**
 
@@ -271,11 +271,47 @@ onSystemServerStarting  ✅
 
 **⇒ 「5b 形态能否加载」此前已答（§2），本次再次确认。**
 
-### 5.4 仍未测
+### 5.4 ✅ #17：**system_server 热更新可用**（已实测）
 
-| # | 项 | 状态 |
+**测法**：`module.prop` 加 `autoHotReload=true` → 装 v1 → 重启 → 装 v3（**不重启**）。
+
+**实测输出**：
+```
+22:41:30  ════ onHotReloading（旧代码 · 热更新即将发生）════
+22:41:30  ════ onHotReloaded（新代码 · 已接管）════
+22:41:30    旧 hook 句柄数 = 1 个
+22:41:30    替换旧 hook: static void ...ActivityRecord.activityResumedLocked(...)
+22:41:30    ✅ replaceHook 成功
+          ─────────── 分界线 ───────────
+22:41:36    ★ activityResumedLocked 命中 ✅        ← hook 立刻恢复
+22:41:59    ★ 命中 ✅ …（持续到 22:42:47）
+```
+
+| # | 结论 | 证据 |
 |---|---|---|
-| **17** | 热更新对 system_server 是否适用 | ⬜ 未测 |
+| ① | **热更新对 system_server 适用** | **实测**（推翻 §4.6 旧「推断」——曾怀疑框架对 system_server 策略不同） |
+| ② | **`autoHotReload=true` 在 LSPosed 2.2.0 生效** | **实测**：重装 APK 即触发，**无需重启手机** |
+| ③ | **hook 不会自动重挂** | **实测**印证官方约束；必须自己在 `onHotReloaded` 里重挂 |
+
+#### 5.4.1 ⚠️ 实现要点（正式实现必须遵守）
+
+| 要点 | 说明 |
+|---|---|
+| **用 `HookHandle.replaceHook()`** | `getOldHookHandles()` → `replaceHook(新 Hooker)` **原子替换**。**不需要 ClassLoader。** |
+| ⚠️ **不要用静态字段传跨代际状态** | **实测踩坑**：曾缓存 `ClassLoader` 到静态字段，`onHotReloaded` 里读到 **`null`** —— 热更新是**新 classloader 加载新代码**，**静态字段在新代际是全新的**。印证官方「saved state must not contain objects created under the old module classloader」 |
+| **hook 回调需要的类** | 从 **`chain.getExecutable().getDeclaringClass()`** 推（实测可行），**不要缓存** |
+| ⚠️ **回调必须 `proceed()`** | 否则被 hook 的原方法不执行 ⇒ **破坏整机行为** |
+
+#### 5.4.2 我在此处犯的两个错（都被实测抓出来）
+
+1. **想当然写 `param.getClassLoader()`** ⇒ 编译失败。用 `javap` 查本地 aar 才确认：
+   `HotReloadedParam` 及其父 `ModuleLoadedParam` **都没有**该方法 ——
+   全 API 只有 `PackageReadyParam` 和 `SystemServerStartingParam` 有。
+2. **改用静态字段缓存** ⇒ 运行时读到 `null`（原因见上）。
+   **⇒ 我根本没意识到「热更新 = 新 classloader」这层语义。**
+
+**教训**：**用 `javap`/源码确认 API 存在性，别凭记忆写**——
+这条我在本轮**第一次做到了**（先查后写），但**第二次（静态字段）仍是想当然**。
 
 ---
 
