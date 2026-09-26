@@ -50,6 +50,20 @@
 > ⑥ §4.4.1 补齐**两个必需依赖**（`api` + **`service`**）与 `module.prop` 的写法坑。
 > **§8 中 #1 / #18 转为已答**。
 >
+> **v2.7（2026-09-26 深夜）：查清 `getRemotePreferences` —— 它是配置下行，**不能**用于事件上行。**
+> ① ❌ **方向相反**（官方源码逐字）：`XposedInterface.getRemotePreferences` 的 javadoc 写明
+>    「**read-only in hooked apps**」；**只有模块 App 能写**（`XposedService` 侧）。
+>    ⇒ 数据流是「**App 写 → hook 读**」，与事件上行需要的方向正好相反。**新增 §4.2.2.1。**
+> ② ⚠️ **新增 §4.6.1「热更新 ≠ 配置通道」**（官方明文）：
+>    「Hot reload is intended for loading a new module generation after the module app is updated.
+>    **It should not be used to propagate configuration changes.** For configuration updates, use
+>    `getRemotePreferences(String)` and `OnSharedPreferenceChangeListener`.」
+>    ⇒ **两条链路必须分开**：hook **定义**变了走热更新（低频）；hook **规则**变了走通信通道（高频）。
+>    本方案架构天然避开此坑（§3.4.1 硬约束「Hook 层不知道工作流的存在」，判定全在 App 侧）。
+> ③ ✅ **独立印证了 §4.2.2 的选型**：`bindService` 仍是 Xposed 通道里**唯一的双向通道**。
+> ④ ⚠️ **一处未能判定**（两份来源冲突）：system_server 里 `RemotePreferences` 的变更回调是否投递 ——
+>    项目方实测断言「不投递」vs 源码分析「会投递」。**仅影响配置下行的实时性，不影响事件上行。**
+>
 > **v2.6（2026-09-26 深夜）：#17 热更新实测通过 —— system_server 热更新可用。**
 > ① ✅✅ **`autoHotReload=true` + 重装 APK ⇒ 在 system_server 里触发热更新，无需重启手机**；
 >    `HookHandle.replaceHook()` **原子替换成功**，之后 hook 立刻恢复命中（§4.6）。
@@ -992,6 +1006,7 @@ if (callingAppId < Process.FIRST_APPLICATION_UID      // FIRST_APPLICATION_UID =
 |---|---|---|---|
 | **1** | **`bindService`（AIDL）** | ✅ **已实证** | ⭐ **主通道**：① 5b 不受可见性限制 —— **包级实测豁免**；② **连接状态天然就是 §3.3 要的「hook 挂载态」判据**（`onServiceConnected`/`onServiceDisconnected`）；③ 双向，无广播的频率/大小限制。**实测拿到 `BinderProxy`（§4.2.1）** |
 | **2** | 广播 | ✅ | 备选：不需连接管理，App 被杀时靠静态接收器；但**拿不到连接状态**，且 §3.3 状态位 B 需另想办法 |
+| ❌ | **`getRemotePreferences`**（libxposed 自带） | ❌ **不可用于上行** | ⚠️ **方向相反**：它是「模块 App 写 → hook 层**只读**」的**单向下行**配置通道。hook 侧 `edit()` 抛 `UnsupportedOperationException`（官方 javadoc：「read-only in hooked apps」）。**详见 §4.2.2.1** |
 | ~~3~~ | ~~共享文件~~ | ❌ | **实测读不到**（`EACCES`，见 §4.2.7） |
 | ~~4~~ | ~~LocalSocket → Core~~ | ⚠️ | 强依赖 Core 在运行；且鉴权面更差（§5.3.1） |
 | ~~5~~ | ~~`startService`~~ | ⚠️ | 撞后台启动限制（§4.2.3）；且 `bindService` 已覆盖其用途 |
@@ -1007,6 +1022,50 @@ if (callingAppId < Process.FIRST_APPLICATION_UID      // FIRST_APPLICATION_UID =
 >
 > **⚠️ 归因教训**：我在此处连错两次（先写成「推翻了核心论据」、后又怀疑「组件没装」），
 > **两次都是没有对照、没有排除时序变量就下结论**。详见 §4.2.1 的「归因反面教材」。
+
+#### 4.2.2.1 ⭐ `getRemotePreferences` 为什么**不能**用于事件上行（已核实）
+
+libxposed 自带一条**跨进程配置通道** `getRemotePreferences(String group)`，
+看起来像是「现成的通信方案」。**核实结论：它是单向的配置下行，方向与我们相反。**
+
+**证据（全部来自 Maven Central 的 sources jar，逐字）**：
+
+| # | 事实 | 原文 |
+|---|---|---|
+| ① | **hook 层只读** | `XposedInterface.getRemotePreferences` 的 javadoc：<br/>「Gets remote preferences stored in Xposed framework. **Note that those are read-only in hooked apps.**」 |
+| ② | **只有模块 App 能写** | 两个**同名不同类**的 API：hook 侧的 `XposedInterface.getRemotePreferences`（只读）vs 模块 App 侧的 `XposedService.getRemotePreferences`（可写，走 AIDL 上送） |
+| ③ | **官方明确它的用途不是热更新** | `XposedService.hotReloadModule` 的 javadoc：<br/>「Hot reload is intended for loading a new module generation after the module app is updated.<br/>**It should not be used to propagate configuration changes.** For configuration updates, use `getRemotePreferences(String)` and `SharedPreferences.OnSharedPreferenceChangeListener`.」 |
+
+**⇒ 数据方向是 `模块 App（唯一写者）→ hook 层（只读）`。**
+**事件上行需要的是反方向 + 推送语义，它两条都不满足。**
+
+**另外几条警告**（来自其它真实项目 / 源码，非我实测，**引用时须标注**）：
+
+| 警告 | 来源 | 等级 |
+|---|---|---|
+| ⚠️ **system_server 里 `registerOnSharedPreferenceChangeListener` 可能不投递回调** | `thetvplus/customiuizer-a14` 的 `SystemServerPreferenceInvalidation.kt` 文件头注释（**自建广播兜底**，注明 "Confirmed device evidence 2026-08-19"） | 【项目方实测断言】 |
+| ⚠️ **但另有源码分析认为会投递** | 读 LSPosed 源码得到的完整调用链（`updateRemotePreferences` → `ConfigManager.updateModulePrefs` → `onUpdateRemotePreferences` → `callback.onUpdate`） | 【源码推断】 |
+| **listener 是弱引用持有**（`WeakHashMap`），不自己强引用会被 GC 静默回收 | libxposed `service` 源码逐字；多个项目专门注释了这条 | 【源码逐字】 |
+| **`remove(key)` 疑似不生效**，需用空串覆盖 | `TakotsuboChen/ala-mobile-tool` 文档（未复现） | 【第三方声明】 |
+| **`PROP_CAP_REMOTE` 能力判据** | 见下 | 【源码】 |
+
+> **⚠️ 上面第一条与第二条【互相冲突】，我无法判定。**
+> 两者的影响面相同：**只影响「配置下行 + 实时更新」**——
+> **对「事件上行」没有影响**（那个方向根本不成立）。
+> **⇒ 若将来真要用它做配置下行，必须先真机实测这一条。**
+
+**能力判据**：`PROP_CAP_REMOTE`（值 `1L << 1` = `2L`），与 `PROP_CAP_SYSTEM`（`1L`）相或后由框架暴露。
+**⚠️ 不要只靠 API 版本号判能力** —— 旧版框架可能报 API 101 却没有该能力，
+**应按 `getFrameworkProperties()` 的位标志判，或按实际调用成败降级。**
+
+**⇒ 结论：`bindService` 仍是 Xposed 通道里唯一的双向通道。**
+`RemotePreferences` 的**正确用途**是「App 动态下发采集规则/开关给 hook 层」（如果将来需要），
+**不是事件上行**。这条调查**独立印证了 §4.2.2 的选型**。
+
+> ⚠️ **顺带捡到一条对 #17 热更新有用的官方原文**（同一个 javadoc）：
+> 「The optional data should contain only **classloader-neutral** values...
+> **Do not put module-defined `Parcelable` or `Serializable` objects in this bundle.**」
+> ——这与我们在热更新里踩的「静态字段在新代际为 null」**是同一件事的两种表述**（§4.6）。
 
 > **为什么 `bindService` 优于广播**：
 > - **§3.3 的挂载态判定**：广播接收器「收下即返回、不能回包确认」，判不出挂载态；
@@ -1638,6 +1697,37 @@ default void   onHotReloaded(HotReloadedParam param)     // 运行在【新】�
 > 热更新解决的是「hook 定义变了」，而**「规则/条件变了」本来就该走回查**（本方案是 App 侧判定）。
 > 两者不冲突。
 
+#### 4.6.1 ⚠️ **热更新 ≠ 配置通道**（官方明文，别想歪）
+
+**一句话**：**热更新是给「模块代码换代」用的，不能拿来传配置。**
+
+**官方原文（`service-102.0.0` 源码逐字，`XposedService.hotReloadModule` 的 javadoc）**：
+
+> Hot reload is intended for loading a new module generation after the module app is updated.
+> **It should not be used to propagate configuration changes.** For configuration updates, use
+> `getRemotePreferences(String)` and `SharedPreferences.OnSharedPreferenceChangeListener`.
+
+**机制上也说不通**：用户改个配置，**代码没变** ⇒ **根本不会触发热更新**
+（触发条件只有 `autoHotReload` + App 更新，或主动调 `hotReloadModule`）。
+
+**同一条 javadoc 里还有一句，正好解释了我们踩的坑**：
+
+> The optional data should contain only **classloader-neutral** values...
+> **Do not put module-defined `Parcelable` or `Serializable` objects in this bundle.**
+
+⇒ 与「**不能用静态字段传跨代际状态**」（上面的实测坑）**是同一件事的两种表述**。
+
+##### 两条链路的分工（**必须分开，不要混用**）
+
+| 变化的东西 | 频率 | 走哪条 |
+|---|---|---|
+| **hook 定义**（代码：hook 哪些方法、怎么取值） | **低**（发版才变） | **热更新**（§4.6） |
+| **hook 规则/条件**（用户配的：哪个 App、什么条件、做什么） | **高**（用户随时改） | **通信通道**（`bindService`，§4.2.2）**或** `getRemotePreferences`（§4.2.2.1） |
+
+**本方案的架构天然避开了这个坑**：§3.4.1 定的是
+**「Hook 层不知道工作流的存在」**（第 499 行的硬约束）——
+**判定逻辑全在 App 侧** ⇒ **改规则根本不需要碰 hook 层**。
+
 ---
 
 ## 5. 风险与缓解
@@ -1926,6 +2016,7 @@ Abstract Namespace socket 无文件系统节点、无网络面，只能本机 `b
 | 16 | LSPosed 注入时序 vs 连接建立时序 | 决定实际窗口期长短（§4.2.5） | 未测 |
 | 2 | hook 进程能否连 Core 的 unix socket（SELinux） | 备选方案可行性 | 低优先 |
 | 3 | LSPosed 的 scope 配置对用户的实际操作成本 | 产品设计 | 未测 |
+| — | **system_server 里 `RemotePreferences` 的变更回调是否投递**（§4.2.2.1） | **仅影响「配置下行 + 实时更新」**，不影响事件上行 | ⚠️ **两份来源冲突，未实测**<br/>（项目方实测断言「不投递」vs 源码分析「会投递」） |
 | 5 | `MethodHook` 的表达式能力边界（是否允许写副作用，还是只读求值） | 能力上限 | 第五步设计时 |
 | 6 | `MethodHook` 是否需要「目标类白名单」来降低误用面 | 安全 / 易用性 | 第五步设计时 |
 | 10 | **5a 档如何向用户表达「可读目标 App 全部凭据」**（§5.3） | 产品 / 合规 | 第五步设计时 |

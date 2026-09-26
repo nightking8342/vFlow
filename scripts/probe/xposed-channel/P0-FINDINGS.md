@@ -17,6 +17,8 @@
 | **15** | system_server 能否持有 signature 权限 | ❌ **「不可信」**——对照组判定成立，该方法取不到有效结论（§5.2） |
 | **14** | system_server 内 `bindService` | ✅✅ **成功** —— 拿到 `BinderProxy@1adc174`（§5.1）。<br/>⚠️ 曾一度全失败，真因是**探针跑得比设备解锁早**（目标 Service `directBootAware=false`）⇒ 加 `isUserUnlocked()` 判据后通过 |
 | **17** | 热更新对 system_server | ✅✅ **可用** —— `autoHotReload=true` + 重装 APK 即触发，**hook 原子替换成功、无需重启手机**（§5.4） |
+| **附带** | `getRemotePreferences` 能否做事件上行 | ❌ **不能** —— 方向相反（App 写、hook **只读**），是配置下行通道（§5.5） |
+| **附带** | 热更新能否传配置 | ❌ **官方明文禁止** —— 「should not be used to propagate configuration changes」（§5.5.1） |
 
 **本轮最重要的成果：§1 —— Xposed 通道的核心价值（拿到 Intent）已实证。**
 
@@ -315,7 +317,67 @@ onSystemServerStarting  ✅
 
 ---
 
-## 5.5 ⚠️ 读取结论的正确姿势（**下次直接用这个，不要重复我的弯路**）
+### 5.5 ⭐ 附带查清：`getRemotePreferences` **不能**用于事件上行
+
+libxposed 自带一条跨进程配置通道 `getRemotePreferences(String group)`，
+看起来像「现成的通信方案」。**查清结论：它是单向下行，方向与我们相反。**
+
+**证据（Maven Central 的 sources jar，我逐字核实）**：
+
+```java
+// api-102.0.0，XposedInterface.java:536
+* Gets remote preferences stored in Xposed framework.
+* Note that those are read-only in hooked apps.          ← ① hook 层只读
+
+// service-102.0.0，XposedService.java:302
+* It should not be used to propagate configuration changes.   ← ② 见 §5.5.1
+```
+
+| 侧 | 读 | 写 |
+|---|---|---|
+| **模块 App**（`XposedService.getRemotePreferences`） | ✅ | ✅ **唯一写者** |
+| **hook 层**（`XposedInterface.getRemotePreferences`） | ✅ | ❌ **`edit()` 抛 `UnsupportedOperationException`** |
+
+**⇒ 数据流 = 「App 写 → hook 读」。事件上行需要的是反方向，它不满足。**
+
+#### 5.5.1 热更新 ≠ 配置通道（官方明文）
+
+同一条 javadoc（`hotReloadModule`）里：
+
+> Hot reload is intended for loading a new module generation after the module app is updated.
+> **It should not be used to propagate configuration changes.** For configuration updates, use
+> `getRemotePreferences(String)` and `SharedPreferences.OnSharedPreferenceChangeListener`.
+
+**机制上也说不通**：用户改配置时**代码没变** ⇒ **根本不会触发热更新**。
+
+**⇒ 两条链路必须分开**：
+
+| 变化的东西 | 频率 | 走哪条 |
+|---|---|---|
+| hook **定义**（代码） | 低 | **热更新** |
+| hook **规则/条件**（用户配置） | 高 | **通信通道**（`bindService`） |
+
+**本方案天然避开此坑**：§3.4.1 硬约束「**Hook 层不知道工作流的存在**」，判定全在 App 侧。
+
+#### 5.5.2 ⚠️ 一处**未能判定**（两份来源冲突，未实测）
+
+**system_server 里 `RemotePreferences` 的变更回调是否投递**：
+
+| 来源 | 说法 |
+|---|---|
+| `thetvplus/customiuizer-a14` 的 `SystemServerPreferenceInvalidation.kt` 文件头注释（注明 "Confirmed device evidence 2026-08-19"，并**自建广播兜底**） | ❌ 不投递 |
+| 读 LSPosed 源码得到的完整调用链（`updateRemotePreferences` → `ConfigManager.updateModulePrefs` → `onUpdateRemotePreferences` → `callback.onUpdate`） | ✅ 会投递 |
+
+**我无法判定**，**未实测**。⇒ **若将来要用它做配置下行，必须先真机验这一条。**
+
+> **其它警告**（均【第三方声明】，未复现）：
+> - **listener 是 `WeakHashMap` 弱引用**，不自己强引用会被 GC 静默回收
+> - **`remove(key)` 疑似不生效**，需用空串覆盖
+> - **能力判据是 `PROP_CAP_REMOTE`**（`2L`），**不要只靠 API 版本号判能力**
+
+---
+
+## 5.6 ⚠️ 读取结论的正确姿势（**下次直接用这个，不要重复我的弯路**）
 
 1. **探针里只 `say()`，不引入任何新机制**（§7）
 2. **重启后** → **LSPosed 管理器导出 verbose 日志** → 读文件
