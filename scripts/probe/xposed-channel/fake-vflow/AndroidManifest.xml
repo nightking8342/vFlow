@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  探针：假 vFlow（用 vFlow.jks 签名，与真 vFlow 同签）
+
+  它扮演真 vFlow 在通信链路里的角色：
+    - 提供一个真的返回 binder 的 Service  → 验证「第三方能否 bind 上来」（Q1）
+    - 提供一个 signature 权限保护的 Receiver → 验证权限方向与拦截效果（Q2/Q3）
+    - 声明 signature 级 HOOK_CONTROL 权限   → 鉴权方案的核心
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.vflow.hookprobe.vflow">
+
+    <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="36" />
+
+    <!--
+      ⚠️ 鉴权方案的核心：signature 级权限。
+      同签应用自动持有；异签应用拿不到。这是「下行广播有鉴权」的全部依据。
+    -->
+    <permission
+        android:name="com.vflow.hookprobe.permission.HOOK_CONTROL"
+        android:protectionLevel="signature" />
+
+    <!-- 假 vFlow 自己用这个权限（同 APK 自动持有，显式声明只为可读性） -->
+    <uses-permission android:name="com.vflow.hookprobe.permission.HOOK_CONTROL" />
+
+    <!--
+      ★ 阳性对照用：normal 级权限 —— 任何应用都能持有。
+      用途：证明「广播确实能投递到本 app」，从而把「没收到」归因到【权限】而非【投递失败】。
+      没有这个对照，就无法区分「权限拦住了」和「广播压根没送到」。
+    -->
+    <permission
+        android:name="com.vflow.hookprobe.permission.OPEN_CONTROL"
+        android:protectionLevel="normal" />
+
+    <application android:label="FakeVFlow (probe)">
+
+        <!-- 入口 Activity：让本进程能进前台，排除「cached 进程收不到广播」的干扰 -->
+        <activity
+            android:name="com.vflow.hookprobe.FakeVFlowActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Q1/Q4: 第三方能否 bind / startService 上来 -->
+        <service
+            android:name="com.vflow.hookprobe.FakeVFlowService"
+            android:exported="true" />
+
+        <!--
+          Q2/Q3: 带权限保护的下行接收器。
+          android:permission 的语义 =「发送方必须持有该权限」。
+        -->
+        <receiver
+            android:name="com.vflow.hookprobe.GuardedReceiver"
+            android:exported="true"
+            android:permission="com.vflow.hookprobe.permission.HOOK_CONTROL">
+            <intent-filter>
+                <action android:name="com.vflow.hookprobe.PUSH_CONDITIONS" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+          ★ 阳性对照接收器：同样 exported，但只要求 normal 权限。
+          无权限限制的旁路 —— 任何应用发这条广播都应能送达。
+          若这条也收不到，说明是【投递/包可见性/进程】问题，不是权限问题。
+        -->
+        <receiver
+            android:name="com.vflow.hookprobe.OpenReceiver"
+            android:exported="true"
+            android:permission="com.vflow.hookprobe.permission.OPEN_CONTROL">
+            <intent-filter>
+                <action android:name="com.vflow.hookprobe.PUSH_OPEN" />
+            </intent-filter>
+        </receiver>
+
+        <receiver android:name="com.vflow.hookprobe.FreeReceiver" android:exported="true">
+            <intent-filter><action android:name="com.vflow.hookprobe.PUSH_FREE"/></intent-filter>
+        </receiver>
+    </application>
+</manifest>

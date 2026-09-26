@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  探针：假 hook 层（第三方身份）
+
+  ⚠️⚠️ 本 manifest 刻意【不声明 <queries>】—— 这是 Q1 的全部意义。
+  普通第三方 App 不会声明能看到 vFlow，而 hook 层在目标 App 进程里
+  用的正是目标 App 的包可见性。所以「不声明 queries 的第三方能否 bind 到 vFlow」
+  等价于「hook 层能否 bind 到 vFlow」。
+
+  对照实验：build.sh 可用 -DwithQueries=true 生成一个【声明了 queries】的变体，
+  两者对比即可确认「queries 是不是那个决定因素」。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.vflow.hookprobe.hook">
+
+    <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="36" />
+
+    <!--
+      ★ 本 APK 声明并申请这两个权限，构成完整的对照矩阵：
+        HOOK_CONTROL (signature 级) —— 本 APK 异签 ⇒ 申请必然被拒 ⇒ 发不出去（预期）
+        OPEN_CONTROL (normal 级)    —— 任何应用都能拿到 ⇒ 能发出去（阳性对照）
+      只有两个都申请，才能把「收不到」归因到【权限级别】而非【没申请权限】。
+    -->
+    <uses-permission android:name="com.vflow.hookprobe.permission.HOOK_CONTROL" />
+    <uses-permission android:name="com.vflow.hookprobe.permission.OPEN_CONTROL" />
+
+    <!--
+      QUERY_FLAG_PLACEHOLDER —— build.sh 在此注入
+      （默认不注入任何东西 = 不声明 queries = 测「hook 层的真实处境」）
+    -->
+
+    <application android:label="FakeHook (probe)">
+        <activity
+            android:name="com.vflow.hookprobe.ProbeActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
