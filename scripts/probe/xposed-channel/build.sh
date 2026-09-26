@@ -195,6 +195,117 @@ install_both() {
     echo "（对照变体 fake-hook-withqueries.apk 与 fake-hook 同包名，装它会覆盖，需分开测）"
 }
 
+
+# ═══════════════════════════════════════════════════════════════
+# hookprobe：libxposed 模块（P0 探针，注入 system_server）
+# ═══════════════════════════════════════════════════════════════
+#
+# ⚠️ 与上面两个探针 APK 不同，这个要：
+#   1. 依赖 io.github.libxposed:api（从 aar 取 classes.jar）
+#   2. 打 META-INF/xposed/ 三个文件（模块元数据 —— aapt2 不管这些，要 jar 注入）
+#   3. 声明 minApiVersion=101（见 module.prop 注释：写成 102 会被拒载）
+build_hookprobe() {
+  local src="$HERE/hookprobe"
+  local w="$WORK/hookprobe"
+  rm -rf "$w"; mkdir -p "$w/classes"
+
+  echo "── [hookprobe] 准备 API + service 的 classes.jar ──"
+  # ⚠️ 两个 artifact 缺一不可（对照 islandSupport 的 build.gradle.kts）：
+  #    io.github.libxposed:api       — compileOnly，模块**编译期**用（XposedModule 基类等）
+  #    io.github.libxposed:service   — implementation，**必须打进 APK**！
+  #      它的 classes.jar 含 XposedProvider 的实现 + XposedService（含热更新回调），
+  #      它自己的 manifest 声明了 <provider authority="${applicationId}.XposedService">。
+  #    ⚠️ 只依赖 api、手写 provider 声明 ⇒ 没有实现类 ⇒ 模块【静默不加载】
+  #       （症状：勾选+重启后 logcat 一条日志都没有）。已实际踩过。
+  local api_aar="$src/libs/api-102.0.0.aar"
+  local svc_aar="$src/libs/service-102.0.0.aar"
+  [ -f "$api_aar" ] || { echo "✗ 缺 $api_aar" >&2; return 1; }
+  [ -f "$svc_aar" ] || { echo "✗ 缺 $svc_aar（io.github.libxposed:service:102.0.0 的 aar）" >&2; return 1; }
+  ( cd "$w" && unzip -o -q "$api_aar" classes.jar && mv classes.jar api.jar )
+  ( cd "$w" && unzip -o -q "$svc_aar" classes.jar && mv classes.jar service.jar )
+  # service 的 manifest（含 XposedProvider 声明）——后面 link 时作为 overlay 合入
+  ( cd "$w" && unzip -o -q "$svc_aar" AndroidManifest.xml && mv AndroidManifest.xml service-manifest.xml )
+
+  echo "── [hookprobe] javac ──"
+  local sources; sources="$(find "$src/src" -name '*.java')"
+  # ⚠️ classpath 上的 jar 必须【同一种路径风格】：
+  #    $ANDROID_JAR 是 Windows 风格（D:/...），而 $w 在 Git Bash 下是 Unix 风格（/d/...）。
+  #    混用时 Windows javac 会把 "D:/x.jar:/d/y.jar" 整体当成一个路径 ⇒ 都找不到
+  #    （症状：import android.util 都报「找不到符号」）。已实际踩过。
+  local aj; aj="$(cygpath -w "$ANDROID_JAR")"
+  local api_jar; api_jar="$(cygpath -w "$w/api.jar")"
+  local svc_jar; svc_jar="$(cygpath -w "$w/service.jar")"
+  # shellcheck disable=SC2086
+  javac -nowarn -classpath "$aj;$api_jar;$svc_jar" -d "$w/classes" $sources
+  [ -n "$(find "$w/classes" -name '*.class' 2>/dev/null)" ] || { echo "✗ javac 失败" >&2; return 1; }
+
+  echo "── [hookprobe] d8（模块类 + service 实现类，一次编译）──"
+  # ⚠️ service 的类必须一起进 dex —— 那是 XposedProvider 的实现，框架要加载它。
+  #    把 service.jar 解出来，与模块自己的 .class 一起交给 d8（一次调用，避免合并 dex）。
+  ( cd "$w" && rm -rf svcclasses && mkdir -p svcclasses \
+      && unzip -o -q service.jar 'io/github/libxposed/service/*' -d svcclasses )
+  # shellcheck disable=SC2086
+  "$D8" --min-api 29 --lib "$ANDROID_JAR" \
+        --classpath "$(cygpath -w "$w/api.jar")" \
+        --output "$w" \
+        $(find "$w/classes" -name '*.class') \
+        $(find "$w/svcclasses" -name '*.class')
+  [ -f "$w/classes.dex" ] || { echo "✗ d8 失败" >&2; return 1; }
+  # 校验 provider 实现类真的进了 dex
+  grep -aq "io/github/libxposed/service/XposedProvider" "$w/classes.dex" \
+    || { echo "✗ XposedProvider 实现类没进 dex" >&2; return 1; }
+
+  echo "── [hookprobe] aapt2 compile + link ──"
+  # ⚠️ XposedProvider 的 <provider> 声明已手写进本工程的 manifest
+  #    （内容取自 service aar 的 manifest，${applicationId} 换成实际包名）——
+  #    比用 --auto-add-overlay 合 aar manifest 简单可靠（aapt2 不接受未编译的 XML 输入）。
+  "$AAPT2" compile --dir "$src/res" -o "$w/res.zip"
+  "$AAPT2" link -o "$w/base.apk" -I "$ANDROID_JAR" \
+       --manifest "$src/AndroidManifest.xml" \
+       --min-sdk-version 29 --target-sdk-version 36 "$w/res.zip"
+  # 校验 provider 声明在
+  "$AAPT2" dump xmltree --file AndroidManifest.xml "$w/base.apk" 2>/dev/null \
+    | grep -q "XposedProvider" \
+    || { echo "✗ XposedProvider 不在 manifest 里（模块将不被加载）" >&2; return 1; }
+
+  echo "── [hookprobe] 注入 dex + META-INF/xposed ──"
+  # ⚠️ META-INF/xposed/ 必须手动注入：aapt2 不处理它，Gradle 才会
+  cp "$w/base.apk" "$w/merged.apk"
+  ( cd "$w" && jar uf merged.apk classes.dex )
+  [ -f "$w/classes2.dex" ] && ( cd "$w" && jar uf merged.apk classes2.dex )
+  ( cd "$src/resources" && jar uf "$w/merged.apk" META-INF/xposed )
+  # 校验关键文件真的进包了
+  unzip -l "$w/merged.apk" | grep -q "META-INF/xposed/java_init.list" \
+    || { echo "✗ META-INF/xposed/ 未进包（LSPosed 将无法识别为模块）" >&2; return 1; }
+
+  # ⚠️ 校验这三个文件【不含注释】—— 实测：带 '#' 注释会让模块【静默不加载】
+  #    （对照设备上三个能跑的模块：module.prop / scope.list / java_init.list 全是纯内容、零注释）
+  #    这是本探针踩过的坑：15:42 给 module.prop 加了一段说明性注释 ⇒ 此后模块再未被加载，且零报错。
+  for f in module.prop scope.list java_init.list; do
+    if unzip -p "$w/merged.apk" "META-INF/xposed/$f" 2>/dev/null | grep -q '^#'; then
+      echo "✗ META-INF/xposed/$f 含注释行 —— 会导致模块静默不加载，必须去掉" >&2
+      return 1
+    fi
+  done
+
+  echo "── [hookprobe] 最终校验 ──"
+  local apk_manifest_ok=0
+  unzip -p "$w/merged.apk" AndroidManifest.xml > "$w/chk.bin" 2>/dev/null
+  "$AAPT2" dump xmltree --file AndroidManifest.xml "$w/merged.apk" 2>/dev/null \
+    | grep -q "XposedProvider" && apk_manifest_ok=1
+  [ "$apk_manifest_ok" = "1" ] || { echo "✗ 最终 APK 里没有 XposedProvider" >&2; return 1; }
+  echo "    ✓ XposedProvider 在 · ✓ META-INF/xposed/ 在"
+
+  "$ZIPALIGN" -f -p 4 "$w/merged.apk" "$w/aligned.apk"
+
+  echo "── [hookprobe] 签名 ──"
+  local dbg="$HOME/.android/debug.keystore"
+  "$APKSIGNER" sign --ks "$dbg" --ks-key-alias androiddebugkey \
+      --ks-pass pass:android --key-pass pass:android \
+      --out "$OUT/hookprobe.apk" "$w/aligned.apk"
+  echo "✓ $OUT/hookprobe.apk"
+}
+
 # ---------- 主流程 ----------
 MODE="${1:-}"
 build_apk "$HERE/fake-vflow/src" "$HERE/fake-vflow/AndroidManifest.xml" \
@@ -208,10 +319,22 @@ if [ "$MODE" = "queries" ] || [ "$MODE" = "verify" ]; then
             "$OUT/fake-hook-withqueries.apk" debug "com.vflow.hookprobe.hookq"
 fi
 
+# hookprobe（libxposed 模块）：构建较慢且需要 aar，只在明确要求时构建
+case "$MODE" in
+  hookprobe|all|install-hookprobe)
+    build_hookprobe
+    ;;
+esac
+
 case "$MODE" in
   install|verify) install_both ;;
+  install-hookprobe)
+    adb uninstall com.vflow.hookprobe.xposed >/dev/null 2>&1
+    adb install -r -t "$OUT/hookprobe.apk"
+    ;;
 esac
 
 echo
 echo "══ 产出 ══"
 ls -la "$OUT"/*.apk
+

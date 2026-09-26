@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="module_description">P0 探针：验证 Xposed 通道在 system_server 中的可行性（只打日志，不做业务）</string>
+</resources>

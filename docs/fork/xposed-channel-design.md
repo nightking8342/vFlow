@@ -1,6 +1,6 @@
 # Xposed 通道架构设计 —— 第四条通道（事件源 + MethodHook）
 
-> **版本**：v2.1 · 2026-09-26（**设计定稿，未实现**）
+> **版本**：v2.2 · 2026-09-26（**设计定稿，未实现**）
 > **对应分支**：`dev`（基于 `versionName 1.5.4` / `versionCode 50`）
 > **目录归属**：fork 独有文档 → 冲突归**我方**（上游无此文件）
 > **目标设备**：小米 MIX Fold 3（Android 17 / API 37 / 澎湃 OS4.0，LSPosed 1.0 + Zygisk 已运行）
@@ -28,6 +28,57 @@
 >
 > **共同教训**：**平台行为先查文档/源码，再用实验验细节**。
 > 实验只回答「此条件下发生什么」，不是普适规律。
+>
+> **v2.2 修订（P0 探针实测，见 §4.2.9）**：**通道的核心能力已实证。**
+> ① ⭐ **能拿到 Activity 的 Intent（含 extras）** —— 这是本通道存在的理由，前三条通道做不到。
+>    hook 点：`com.android.server.wm.ActivityRecord.activityResumedLocked(IBinder, boolean)`，
+>    经 `ActivityRecord.forToken(IBinder)` 反查实例后读 `intent`。
+> ② **两条实现级坑**（都靠实测才发现）：**类名**必须是 `com.android.server.wm.*`（不是 `android.app.*`）；
+>    该方法**是 `static``、没有 `this`**，**不能用 `getThisObject()` 取值**。
+> ③ ⚠️ **新硬约束**：`onSystemServerStarting` 时**系统服务尚未就绪**
+>    （`PackageManager` / `IActivityManager` 均为 null），**约 11 秒后**才可用
+>    ⇒ **启动期做 IPC 要带「等服务就绪」的等待**（是「要等时机」，**不是「禁止 IPC」**）。
+> ④ ⚠️ **调试方法**（能省大量时间）：**`adb logcat` 读不到启动期日志**，
+>    因**开机洪流把 2 MiB 环形缓冲填满**、启动日志第一个被挤掉。
+>    抓启动期日志**必须重启后立刻抓**，或用 LSPosed 管理器导出的 verbose 日志。
+>    ⚠️ **不要为了绕过它而改探针代码**（见 ⑤）。
+> ⑤ ⚠️ **三次「模块不加载」**（P0 期间探针改三次、每次都不加载）。
+>    ⚠️ **此前我把它写成铁律「启动期整条路径不要新增 IPC / I/O」——
+>    该结论【已被反证】，现降级为「现象记录」**：当前已实测可用的探针版本，
+>    启动期路径上就有**四处跨进程调用**（含 `isUserUnlocked()`），运行正常。
+>    **真因未查明**（三次都只做整体回退，**从未二分定位**）——详见 §4.2.9 六。
+> ⑥ §4.4.1 补齐**两个必需依赖**（`api` + **`service`**）与 `module.prop` 的写法坑。
+> **§8 中 #1 / #18 转为已答**。
+>
+> **v2.5（2026-09-26 深夜）：⚠️ 推翻 v2.3/v2.4 的两处过头结论 —— 主通道已实证通过。**
+> ① ✅✅ **`bindService` 主通道成立** —— 实测拿到 `BinderProxy@1adc174`。
+>    **此前 v2.3 写的「实测推翻了核心论据」、v2.4 的「选型进入重评」【都是错的，已撤回】**。
+>    **真因：探针跑得比设备解锁早**（约早 47 秒），而目标 Service
+>    `directBootAware=false` ⇒ 未解锁时组件在解析阶段就被排除，
+>    **表现与「包不可见」一模一样**（`getServiceInfo` 抛 `NameNotFoundException`、
+>    `resolveService` 返 `null`、`bindService` 返 `false`）。
+> ② ⚠️ **必须写进正式实现**：hook 层要等 **`UserManager.isUserUnlocked()`** 再通信，
+>    否则会得到一堆**假的「连不上」**。
+> ③ ❌❌ **归因反面教材（连错两次，方向还相反）**：先据一次无对照的 `null` 写成
+>    「推翻核心论据」并改了选型；后又怀疑「组件没装」。**两次都没排除时序变量。**
+>    **教训：`null`/`false`/异常 ⇒ 先做对照项框范围；优先怀疑时序/状态类变量
+>    （解锁、stopped、进程存活），再谈能力/权限，最后才是平台行为。**
+> ④ 本轮「能查清」的关键是**用户提出的方向**（「能不能延迟一下/加个按钮」），
+>    而非我的源码推理。**用户对系统的直觉多次比我的推理准。**
+>
+> **v2.3（2026-09-26 晚，#14/#15 结论取得，经 LSPosed verbose 日志）**：
+> **两条结论都是负面，且第 1 条动摇了本方案的通道选型依据。**
+> ① ~~⚠️⚠️ **#14 `bindService` 失败**……~~
+>    **❌ 本条已于 v2.5 撤回** —— 真因是**探针跑得比设备解锁早**，
+>    加 `isUserUnlocked()` 后 **`bindService` 成功拿到 `BinderProxy`**。
+>    **v2.3 曾据此写成「推翻核心论据、选型重评」，是过头结论**（§4.2.1 / §4.2.2）。
+> ② ❌ **#15 取不到有效结论** —— 目标权限 + **两个无关第三方 signature 权限全 GRANTED**
+>    ⇒ 「自己查自己一律放行」，`checkPermission(自己pid, 自己uid)` 这个方法本身无效（§5.2）。
+> ③ ✅ **读取途径定案**：`adb logcat` **拿不到**（实测 `main` 缓冲仅覆盖约 **50 秒**，
+>    开机高峰 1220 条/秒）；`logcat -G 16M` **重启即失效**
+>    ⇒ **唯一正路是 LSPosed 管理器导出的 verbose 日志**（持久化、不丢）。
+>    **⚠️ 文档 §4.1 早就写着这个方法，我却绕了三轮（改代码/调缓冲/抢时间）才用上。**
+> ④ **归因过程的反面教材**（#14 我错了三次，两次把自己的问题归因到外部）见 §8 下方。
 >
 **证据来源**：
 
@@ -639,7 +690,7 @@ EventEnvelope {
 
 | 环节 | 策略 | 理由 |
 |---|---|---|
-| **hook 回调内** | **只做「取值 + 入队」**，绝不做耗时操作 | system_server 主线程，阻塞即整机卡顿（§5.1） |
+| **hook 回调内** | **只做「取值 + 入队」**，绝不做耗时操作 | **system_server 主线程，阻塞即整机卡顿**（§5.1）——这条依据充分 |
 | **队列** | **有界**（容量是常量，不随触发器数量增长） | 无界 = OOM 风险 |
 | **满了** | ⚠️ **丢弃并计数**（**不阻塞**） | 阻塞会拖垮宿主进程 |
 | **计数的去处** | 随下一个信封上报（`dropped_count`），**或独立 topic** | ⚠️ **丢弃必须让用户知道**——这是本仓库 `LogcatEventQueue` 的既有设计（`drainDropped()`） |
@@ -648,6 +699,12 @@ EventEnvelope {
 > **⚠️ 这是「改错了不报错」的那一类地方**：丢弃策略写错的表现是
 > 「平时正常，高峰时静默丢事件」——用户只知道「有时候没触发」。
 > **必须按 `LogcatEventQueue` 的既有语义做**（丢事件但**不清丢弃计数**，留到上报为止），并有单测锁住。
+
+> ### ❌ 本表此前有过一行「启动期整条路径不新增 IPC / I/O」——**已删除**
+>
+> **它是我的推断，且已被反证**：当前**已实测可用**的探针版本，
+> 启动期路径上就有**四处跨进程调用**（含我新加的 `isUserUnlocked()`），**运行正常**。
+> **详见 §4.2.9 六**（该节已降级为「现象记录」，真因未查明）。
 
 #### 3.4.5 协议版本与兼容（**第 N 个触发器会踩的坑**）
 
@@ -688,9 +745,14 @@ App 升级了，但注入的 hook 层可能还是**旧版本代码**。
 
 | 模块 id | 采集什么 | 输出 | 依赖 |
 |---|---|---|---|
-| `vflow.trigger.activity_changed` | Activity 生命周期（含 Intent） | `package_name` / `class_name` / `intent_uri` / `extras` | ⭐ ② 类 |
+| `vflow.trigger.activity_changed` | Activity 生命周期（含 Intent） | `package_name` / `class_name` / `intent_uri` / `extras` | ⭐ ② 类 —— **hook 点与取值方式已实测确证**（§4.2.9） |
 | `vflow.trigger.key_combination` | 组合键（如音量上下同按） | `keys` / `timestamp` | ② 类 |
 | `vflow.trigger.edge_gesture` | 边缘手势 | `gesture_type` / `edge` / `distance` | ② 类 |
+
+> ⭐ **`activity_changed` 的数据来源已确认可用**（§4.2.9 实测）：
+> hook `com.android.server.wm.ActivityRecord.activityResumedLocked(IBinder, boolean)`，
+> 用 `ActivityRecord.forToken(IBinder)` 反查实例，读 `packageName` / `mActivityComponent` / `intent`。
+> **能拿到完整 Intent（含 extras）** —— 这正是前三条通道拿不到的东西。
 
 **`activity_changed` 是首要目标**——它同时解决了：
 
@@ -811,14 +873,84 @@ if (callingAppId < Process.FIRST_APPLICATION_UID      // FIRST_APPLICATION_UID =
 }
 ```
 
-`system_server` 是 **uid 1000 < 10000** ⇒ **第一个分支就豁免**，后续逻辑都不走。
+`system_server` 是 **uid 1000 < 10000** ⇒ 按此源码，**第一个分支就豁免**，后续逻辑都不走。
+
+> ## ✅ 2026-09-26 实测：**本条论据成立，且 `bindService` 已实证通过**
+>
+> **实测数据（本机 Android 17 / 小米 MIX Fold 3，system_server uid 1000 内查询）**：
+> ```
+> --- 包级（getPackageInfo）---
+> getPackageInfo(com.vflow.hookprobe.vflow) = ✅可见 (targetSdk=36)   ← 第三方包
+> getPackageInfo(bin.mt.plus)               = ✅可见 (targetSdk=30)   ← 第三方普通应用
+> getPackageInfo(com.android.settings)      = ✅可见 (targetSdk=37)
+> --- 组件级 ---
+> resolveService(显式组件)  = null ❌
+> getServiceInfo(显式组件)  = ❌ NameNotFoundException
+> --- bindService ---
+> bindService() 返回 false ⇒ 被拒 ❌
+> ```
+>
+> ## ✅✅ 2026-09-26 晚【已查清】：**`bindService` 通道成立，主通道选型不变**
+>
+> **真因：探针跑得太早 —— 设备尚未解锁。**
+>
+> ### 实测数据（成功版本）
+>
+> ```
+> 21:35:20   等待用户解锁…（已等 20500ms）      ← 旧版在这时就已经跑了（解锁前）
+> 21:35:59   #14/#15 系统服务已就绪【且已解锁】（等待 59500ms）
+> 21:35:59   #14 resolveService(...) = com.vflow.hookprobe.FakeVFlowService  ✅
+> 21:35:59   #14 bindService() 返回 true ⇒ 已提交 ✅
+> 21:36:00   ★★★ #14 bindService 成功，拿到 binder=android.os.BinderProxy@1adc174  ✅✅
+> ```
+>
+> ### 机制：**未解锁时，`directBootAware=false` 的组件在 package 解析阶段就被排除**
+>
+> 目标 Service 是 `directBootAware=false`（实测 `query-services` 输出）。
+> 设备未解锁时，这类组件**不可见**，表现与「包不可见」**一模一样**：
+>
+> | 现象 | 未解锁时 | 解锁后 |
+> |---|---|---|
+> | `getServiceInfo` | ❌ `NameNotFoundException` | ✅ 命中 |
+> | `resolveService` | ❌ `null` | ✅ 命中 |
+> | `bindService` | ❌ `false` | ✅ `true` + 拿到 `BinderProxy` |
+>
+> ### ✅ 因此本文档 §4.2.1 的论据【成立】，不需要改
+>
+> - **「uid 1000 豁免包可见性」** —— 包级实测成立（system_server 能看见 `bin.mt.plus` 等第三方包）
+> - **组件级**：解锁后**三组对照全部 ✅**（系统应用 / 第三方普通应用 / 我们的包）
+> - **主通道 `bindService`** —— 实证可用，且拿到 binder
+>
+> ### ⚠️ 但这条**必须写进正式实现**：hook 层要等「用户已解锁」再通信
+>
+> 未解锁时去连 vFlow、或去解析 vFlow 的组件，会得到**一堆假的「连不上」**。
+> **判据**：`UserManager.isUserUnlocked()`。
+> **这不是探针的临时措施，是正式实现的必需环节。**
+>
+> ### ❌❌ 归因反面教材（我在这里连错两次，方向还相反）
+>
+> | 我当时的结论 | 真相 |
+> |---|---|
+> | 「**实测推翻了文档核心论据**（包可见性）」 | ❌ **过头结论** —— 一次实验、**零对照项**，次日被对照矩阵反转 |
+> | 「组件可能没装 / 装错版本」 | ❌ **又错** —— 组件一直在（APK manifest 里就有） |
+> | 「是未解锁」 | ✅ **实测确证** |
+>
+> **教训（本仓库反复出现，务必记住）**：
+> ① **拿到 `null`/`false`/异常时，先做【对照项】把范围框住，再谈结论**；
+> ② **优先怀疑「时序 / 状态类变量」**（解锁、stopped、进程存活），
+>    它们最容易被误判成「能力/权限」问题；
+> ③ **要推翻一条有源码支撑的论据时，门槛必须更高** ——
+>    推翻它意味着文档、选型、后续设计全要改。
+>
+> **⚠️ 另一个具体教训**：`getServiceInfo` 抛的 `NameNotFoundException`
+> **不代表「组件不存在」** —— 组件**被过滤**（含未解锁）时也抛它。**别被异常名误导。**
 
 | | 5a：hook 目标 App | **5b：hook system_server** ← 我们要做的 |
 |---|---|---|
 | 执行位置 | 那个 App 的进程 | **system_server** |
 | uid | 目标 App | **1000** |
-| 包可见性 | ⚠️ **受限**（用目标 App 的 manifest，改不了） | ✅ **豁免**（源码保证） |
-| `bindService` 到 vFlow | ❌ **不可用**（需可见性） | ✅ **可用** |
+| 包可见性 | ⚠️ **受限**（用目标 App 的 manifest，改不了） | ✅ **豁免**（AOSP 源码 + **实测**：包级可见第三方应用） |
+| `bindService` 到 vFlow | ❌ **不可用**（需可见性） | ✅✅ **可用** —— **实测拿到 `BinderProxy@1adc174`** |
 | 广播 | ✅ 可用（不受可见性影响） | ✅ 可用 |
 
 > **我们的 `activity_changed` 是 5b**：`ActivityRecordHook` 走 `systemServerLoaded` 路径、
@@ -842,15 +974,27 @@ if (callingAppId < Process.FIRST_APPLICATION_UID      // FIRST_APPLICATION_UID =
 
 > ⚠️ 官方文档**没有**明确写过「广播是否受可见性影响」——结论 1 是【实测】得来的。
 
-#### 4.2.2 通道选型（v2.0：主通道 = `bindService`）
+#### 4.2.2 通道选型（**v2.5：主通道 = `bindService` —— 已实证通过**）
 
 | 排序 | 方案 | 5b 可用性 | 理由 |
 |---|---|---|---|
-| **1** | **`bindService`（AIDL）** | ✅ | ⭐ **主通道**：① 5b 不受可见性限制，源码保证；② **连接状态天然就是 §3.3 要的「hook 挂载态」判据**（`onServiceConnected`/`onServiceDisconnected`）；③ 双向，无广播的频率/大小限制 |
+| **1** | **`bindService`（AIDL）** | ✅ **已实证** | ⭐ **主通道**：① 5b 不受可见性限制 —— **包级实测豁免**；② **连接状态天然就是 §3.3 要的「hook 挂载态」判据**（`onServiceConnected`/`onServiceDisconnected`）；③ 双向，无广播的频率/大小限制。**实测拿到 `BinderProxy`（§4.2.1）** |
 | **2** | 广播 | ✅ | 备选：不需连接管理，App 被杀时靠静态接收器；但**拿不到连接状态**，且 §3.3 状态位 B 需另想办法 |
 | ~~3~~ | ~~共享文件~~ | ❌ | **实测读不到**（`EACCES`，见 §4.2.7） |
 | ~~4~~ | ~~LocalSocket → Core~~ | ⚠️ | 强依赖 Core 在运行；且鉴权面更差（§5.3.1） |
 | ~~5~~ | ~~`startService`~~ | ⚠️ | 撞后台启动限制（§4.2.3）；且 `bindService` 已覆盖其用途 |
+
+> ### ✅ 选型状态：**不变，且已由实测支撑**
+>
+> `bindService` 此前是**唯一没实测过、只凭 AOSP 源码推断**的环节。
+> 现已实测通过（拿到 `BinderProxy@1adc174`），**三条理由全部落地**。
+>
+> **⚠️ 一次失败插曲（已查清）**：曾出现 `resolveService=null` + `bindService=false`，
+> 真因是**探针跑得比设备解锁早**（目标 Service `directBootAware=false`）。
+> **修法是加 `isUserUnlocked()` 判据** —— 这条**同时是正式实现的必需环节**（§4.2.1）。
+>
+> **⚠️ 归因教训**：我在此处连错两次（先写成「推翻了核心论据」、后又怀疑「组件没装」），
+> **两次都是没有对照、没有排除时序变量就下结论**。详见 §4.2.1 的「归因反面教材」。
 
 > **为什么 `bindService` 优于广播**：
 > - **§3.3 的挂载态判定**：广播接收器「收下即返回、不能回包确认」，判不出挂载态；
@@ -987,6 +1131,176 @@ int result = system(command.c_str());   // ← 借 am（shell uid）越权，绕
    5a 的 hook 层用目标 App 的 manifest，**改不了**
 3. **不要**当作 `<queries>` 的替代品
 
+#### 4.2.9 ⭐ P0 探针实测结果（注入 system_server）
+
+> **探针代码**：`scripts/probe/xposed-channel/hookprobe/`
+> **完整记录**：`scripts/probe/xposed-channel/P0-FINDINGS.md`
+> **环境**：小米 MIX Fold 3 / Android 17 / **LSPosed 2.2.0** / libxposed API 102
+
+##### 一、⭐ 核心能力已确证：能拿到 Activity + Intent
+
+**这是 Xposed 通道存在的理由**（前三条通道原理上做不到），**已实证**：
+
+```
+★ activityResumedLocked | arg0=ActivityRecord$Token arg1=false
+   反查路径 ①: ActivityRecord.forToken(IBinder) 命中
+   ✅ 反查到 ActivityRecord
+      pkg=com.miui.home    component={com.miui.home/com.miui.home.launcher.Launcher}
+      intent=Intent { act=android.intent.action.MAIN cat=[android.intent.category.HOME]
+                      flg=0x10000100 cmp=com.miui.home/.launcher.Launcher (has extras) }
+
+      pkg=bin.mt.plus      component={bin.mt.plus/bin.mt.plus.Main}
+      intent=Intent { act=android.intent.action.VIEW dat=file:///... xflg=0x4 cmp=... }
+```
+
+**拿到了 `pkg` + `component` + 完整 `intent`（含 `dat` URI、extras）**。
+
+##### 二、实现要点（**正式实现必须按这个来**）
+
+| 项 | 值 |
+|---|---|
+| 类名 | **`com.android.server.wm.ActivityRecord`**（API 12+；9~11 是 `com.android.server.am.ActivityRecord`） |
+| 方法签名 | `static void activityResumedLocked(`**`android.os.IBinder`**`, `**`boolean`**`)` |
+| ⚠️ **关键** | **它是 `static`** ⇒ **没有 `this`**，**不能用 `chain.getThisObject()`** |
+| **取值路径** | 第 0 个参数是 **`ActivityRecord$Token`**（`IBinder` 子类）<br/>用 **`ActivityRecord.forToken(IBinder)`** 反查实例，再读 `packageName` / `mActivityComponent` / `intent` |
+
+> ⚠️ **两个曾写错、都靠实测才发现的点**（**修改本节前先读**）：
+> 1. **类名写成 `android.app.ActivityRecord`** ⇒ `ClassNotFoundException`
+>    （那是个**不存在的包名**，想当然写错了）
+> 2. **用 `getThisObject()` 取值** ⇒ **恒为 null**（因为方法是 static）
+>    —— 当时误以为「hook 失败」，实际是取值方式错
+>
+> `forToken(IBinder)` 是**唯一需要的反查路径**（另一条「遍历活动列表」的兜底不必用）。
+
+##### 三、`onSystemServerStarting` 触发 ✅（5b 入口可用）
+
+```
+框架 API 版本 = 102
+框架名/版本   = LSPosed / 2.2.0
+进程名        = system
+isSystemServer = true
+```
+
+##### 四、⚠️ 一条新发现的硬约束：`onSystemServerStarting` 时系统服务**尚未就绪**
+
+```
+#15 探测失败  NullPointerException: PackageManager.getPackagesForUid(...)
+              on a null object reference
+#14 bindService 抛异常  NullPointerException: IActivityManager.bindServiceInstance(...)
+              on a null object reference
+```
+
+**`onSystemServerStarting` 是「即将启动」，不是「已启动」** —— 那一刻
+`ContextImpl.mPackageManager` 与 `IActivityManager` **都还是 null**。
+
+**实测需等待约 11 秒**系统服务才就绪：
+
+```
+#14/#15 系统服务已就绪（等待 11000ms）
+```
+
+> **对设计的直接影响**：**启动期做 IPC 必须带「等服务就绪」的等待/重试**。
+> §4.2.5 的「冷启动时序」讨论的是「App 未启动时怎么办」，
+> 而这条是**另一个**问题：**时机太早** —— 服务还没注册好，调用会拿到 `null`/失败。
+>
+> ⚠️ **注意措辞**：是「**要等就绪**」，**不是「禁止 IPC」**。
+> 探针实测：启动期路径上做 IPC（`getPackageManager` / `getSystemService` /
+> `isUserUnlocked`）**完全可行**，只要**带等待**。
+> **另有一条独立的必需等待**：**`UserManager.isUserUnlocked()`** ——
+> 目标组件 `directBootAware=false`，**未解锁时解析不到**（§4.2.1）。
+> **这两条是同一个模式：不是「不能做」，是「要等对时机」。**
+
+##### 五、⚠️ 调试方法（**这一段能省下大量时间**）
+
+**`adb logcat` 读不到启动期日志** —— 但原因**不是**「模块没加载」，而是：
+
+| 现象 | 真因 |
+|---|---|
+| 开机后头 10 分钟看不到 | **系统日志洪流把 2 MiB 环形缓冲填满**，而启动日志（开机第 1 秒打的）**第一个被挤出去** |
+| 之后能看到事件日志 | 系统安静下来，缓冲留得住 |
+
+**实测证据**：设备启动 18:43、查询时刻 18:57（仅 14 分钟），
+**18:54 之后的事件日志都在，而启动期的 `════` 标记日志一条不剩**（`grep -c "════"` → 0）。
+
+**因此**：
+- 抓启动期日志 ⇒ **必须重启后立刻抓**，或用 **LSPosed 管理器导出的 verbose 日志**（持久化、不丢）
+- 读日志用 `adb logcat | grep "E HookProbe"`（**不要**用 `-s` 过滤，也别指望 `-b all` 能救）
+
+**探针曾尝试的技巧**（⚠️ **已废弃，不要用**）：
+「启动期把结果缓存到静态字段，等首个事件回调（`activityResumedLocked`）时再打」。
+
+> **⚠️ 这条技巧是第 2 轮失败的一部分**（新增静态缓存 + 在 hook 回调里
+> 调 `flushProbeResultIfReady()` ⇒ **模块不加载**）。**同批次一起回退的**。
+> **注意**：那一轮我一次改了三处（改签名 + 静态缓存 + 加对照组），回退时也是**一起回退**，
+> 因此**无法断定是静态缓存单独导致的**——只知它在失败批次里。
+> **在没有做二分定位前，不要把它当可用技巧。**
+
+##### 六、⚠️ 现象记录：三次「模块不加载」（**真因未查明**，勿当规则用）
+
+> ## ❌❌ **本节此前写成了「铁律」，但那条结论已被实证反证，现降级为「现象记录」**
+>
+> **此前写法**：「**启动期整条路径上不要新增 IPC / I/O**」，
+> 并声称「**这是可推广的规则**」。
+>
+> **⚠️ 它已被反证**：**当前【已实测可用】的探针版本**（就是拿到
+> `BinderProxy@1adc174` 的那一版），**启动期路径上就有四处跨进程调用**：
+> ```
+> getSystemContext()                   ← 反射
+> ctx.getPackageManager()              ← 跨进程
+> ctx.getSystemService(USER_SERVICE)   ← 跨进程
+> um.isUserUnlocked()                  ← 跨进程   ← 还是我为了解决解锁问题【新加的】
+> ```
+> **模块加载正常、hook 正常、bindService 正常。**
+> **⇒「启动期不能有 IPC」不成立。**
+
+### 6.1 我实际观察到的事实（**这部分是可靠的**）
+
+P0 期间探针**三次在改动后完全不加载**（连 `onModuleLoaded` 都不触发）：
+
+| 轮次 | 改动内容 | 结果 |
+|---|---|---|
+| 1 | 往 `say()` 里加**写文件** | ❌ 不加载 |
+| 2 | `probeCommunication` 改签名 + 新增**静态缓存** + 在 hook 回调里调 `flushProbeResultIfReady()` | ❌ 不加载 |
+| 3 | 新增 `report()` —— 在 `probeCommunication` 里**写 `Settings.Global`** | ❌ 不加载 |
+
+**「能跑的版本 ↔ 不能跑的版本」对照是有效的** —— 每次都是回退后立刻恢复，
+且设备、LSPosed、重启流程都没变。**⇒ 这三次确实与我的改动有关。**
+
+### 6.2 ⚠️ 但「启动期 IPC/I/O 是元凶」**只是我的假设，不是结论**
+
+**我的推断链**：观察到三次不加载 → 找共性 → 都落在启动期 → **写成规则**。
+
+**错在第 3 步**：那是**假设**，需要二分定位才能确认，**而我直接写成了结论**。
+
+**而且我连二分定位都没做过**：
+- 第 2 轮**一次改了三处**（签名 + 静态缓存 + hook 回调 flush），
+  回退时**三处一起退** ⇒ **无法知道是哪一处**
+- 三次都是**整体回退**，**从未逐处验证**
+
+**⇒ 真因至今未知。** 可能的候选（**均未验证**）：
+- 静态字段缓存（轮次 2）
+- hook 回调里新增调用（轮次 2）——**这条与 §3.4.4 的「回调内只做取值+入队」一致，嫌疑最大**
+- 具体某个 API 在这台设备/这个 LSPosed 版本上有问题
+- 与启动期无关的其它因素
+
+### 6.3 保留唯一一条**有依据**的纪律
+
+> **改 hook 路径时：一次只改一处，且始终保留一个「确认可用的版本」可回退。**
+
+**理由**：这不是从平台行为推出的规则，而是**从上表三次失败的直接教训**得到的
+——**一次性改多处会让失败无法归因**（我自己就因此连真因都没查出来）。
+**它约束的是「我的改动方式」，不是「平台能做什么」。**
+
+### 6.4 归因纪律（改成非绝对表述）
+
+> 遇到「模块不加载」：**先自查代码改动**（回退 → **逐处二分**），
+> 但**不要预设「一定是我的代码」** —— 也可能是环境。
+> **关键是：不要凭一次观察就断定是谁的问题，要做对照实验。**
+>
+> ⚠️ **我在此处的实际教训是「归因太快」，不是「归因方向错」**：
+> 三次我先怀疑框架、三次都错 —— 但更本质的问题是
+> **我三次都没有做二分定位**，所以既没证明自己、也没排除环境。
+
 ### 4.3 数据契约：Intent 与 extras 的表达
 
 **这是 vFlow 特有的难点。** 参考实测数据（legado 阅读页的真实 intent URI）：
@@ -1031,7 +1345,7 @@ extras.<key>     : String   —— 常用键提升为独立输出？（需评估
 |---|---|---|
 | 新增 Hook 层 | `app/src/main/java/.../xposed/`（新目录） | **纯新增** |
 | 模块入口类 | `xposed/VFlowHookEntry.kt`（继承 `XposedModule`） | 纯新增（§4.4.1） |
-| Rhino/API 依赖 | `app/build.gradle.kts` 加 `compileOnly("io.github.libxposed:api:102.0.0")` | ⚠️ **改上游文件**（敏感点） |
+| Rhino/API 依赖 | `app/build.gradle.kts` 加 **两个**依赖（**缺一不可**，见 §4.4.1） | ⚠️ **改上游文件**（敏感点） |
 | 框架声明（meta-data + Provider） | `AndroidManifest.xml` 追加 `xposedmodule` 等 meta-data + `io.github.libxposed.service.XposedProvider` | 追加（§4.4.1） |
 | keep 规则 | `proguard-rules.pro` 追加 | 追加 |
 | 新增触发器 | `triggers/` + `handlers/`（新文件） | **纯新增** |
@@ -1070,9 +1384,50 @@ extras.<key>     : String   —— 常用键提升为独立输出？（需评估
 可用版本 `101.0.0` / `101.0.1` / **`102.0.0`**，`<latest>` 与 `<release>` 均为 **102.0.0**。
 
 ```kotlin
-// app/build.gradle.kts —— compileOnly（不进 APK，由框架提供）
-compileOnly("io.github.libxposed:api:102.0.0")
+// app/build.gradle.kts
+// ⚠️⚠️ 两个 artifact 缺一不可（对照能跑的 islandSupport 的 build.gradle.kts）
+compileOnly("io.github.libxposed:api:102.0.0")        // 模块基类等【编译期】依赖
+implementation("io.github.libxposed:service:102.0.0")  // ⚠️ 【必须打进 APK】
 ```
+
+##### ⚠️ 关于 `service` 依赖（本仓库实际踩过的坑）
+
+| artifact | 作用 | 打包方式 |
+|---|---|---|
+| `api` | 提供 `XposedModule` 等**编译期**依赖 | `compileOnly`（运行时由框架给） |
+| **`service`** | ⭐ 提供 **`XposedProvider` 的实现类** + `XposedService`（含热更新回调） | **`implementation`（必须打进 dex）** |
+
+**只依赖 `api`、手工往 manifest 写 `<provider>` 声明会怎样**：
+声明了名字却**没有实现类** ⇒ 框架加载失败 ⇒ **模块静默不加载、零报错**。
+（表现：LSPosed 里勾选了、重启了，`adb logcat` 一条日志都没有。）
+
+> `service` 的 aar 自带一份 manifest，里面有：
+> ```xml
+> <provider android:name="io.github.libxposed.service.XposedProvider"
+>           android:authorities="${applicationId}.XposedService"
+>           android:exported="true" />
+> ```
+> **手写打包时要把这段抄进自己的 manifest**（`${applicationId}` 换成实际包名），
+> 并把 `service` 的 `classes.jar` **一起交给 d8** 打进 dex。
+
+##### ⚠️ `module.prop` 的写法（另一个坑）
+
+```properties
+minApiVersion=101      # ⚠️ 写 101，不是 102
+targetApiVersion=102
+staticScope=true
+exceptionMode=protective
+```
+
+**`minApiVersion` 是「兼容下限」，不是「我要用哪个版本」** ——
+写成 102 会让模块在 API 等级 101 的框架上**被拒载**。
+设备上三个能跑的模块（HyperCeiler / InxLocker / CorePatch）**全部是 `minApiVersion=101`**。
+
+**⚠️ 且这三个文件（`module.prop` / `scope.list` / `java_init.list`）不要写注释。**
+对照能跑的模块，它们**全是纯内容、零注释**。
+（注：本仓库实测中**注释与「不加载」无相关性** —— 带注释的版本也跑通过；
+但既然对标实现都不写，就不写，减少变量。）
+
 
 **✅ 102 在目标设备上已被验证可用**（【实测】反编译设备上已装模块）：
 
@@ -1376,10 +1731,33 @@ Abstract Namespace socket 无文件系统节点、无网络面，只能本机 `b
 | 包可见性是否拦广播 | ✅ **不拦**（A 组不可见仍送达） | §4.2.1 |
 | `broadcastPermission` 方向 | ✅ 「发送方需持有」 | §4.2.4 |
 | `signature` 权限能否挡异签方 | ✅ **能** | §4.2.4 |
-| `bindService` 是否需要可见性 | ⚠️ **需要**（A 组失败 / C 组成功） | §4.2.1 |
-| 5b 是否受可见性限制 | ✅ **不受**（AOSP 源码） | §4.2.1 |
+| `bindService` 是否需要可见性（**5a**） | ⚠️ **需要**（A 组失败 / C 组成功） | §4.2.1 |
+| 5b 是否受可见性限制 | ✅ **不受**（AOSP 源码 + **实测**：包级豁免成立） | §4.2.1 |
+| **5b 内 `bindService` 到第三方 App** | ✅✅ **可用** —— 拿到 `BinderProxy@1adc174`（**主通道已实证**） | §4.2.1 |
 | 共享文件可读性 | ❌ **读不到**（`EACCES`） | §4.2.7 |
 | `<uses-permission>` 与可见性 | ⚠️ 有，但**官方未记载**且绑定定义方 | §4.2.8 |
+
+**已推进到 1b/1c 并取得结果（2026-09-26）**：
+
+| 阶段 | 结果 | 详情 |
+|---|---|---|
+| **1a** | ✅ **通过** | 注入 system_server 成功、系统稳定、`activityResumedLocked` 正常命中 |
+| **1b** | ✅ **通过**（**修正**） | `bindService` 到第三方 App ⇒ **拿到 `BinderProxy@1adc174`**。<br/>⚠️ 曾一度报 `false`，真因是**探针跑得比设备解锁早**（目标 Service `directBootAware=false`）；加 `isUserUnlocked()` 判据后通过（§4.2.1） |
+| **1c** | ❌ **取不到有效结论** | `checkPermission(自己pid, 自己uid)` **三查三 GRANTED**（含两个无关第三方权限）⇒ **「自检放行」，方法本身无效**，需换方法（P0-FINDINGS §5.2） |
+
+> ### ⚠️ 1b 的插曲暴露了两个问题（都值得记住）
+>
+> **① 一条从未实测的论据，撑起了整个通道选型。**
+> `bindService` 此前是**唯一没实测过、只凭 AOSP 源码推断**的环节
+> —— 而它恰好是主通道。**推断出来的论据必须优先实测。**
+>
+> **② 我把「时序变量」误判成了「能力/权限」问题**（连错两次，方向还相反）。
+> 真因是**设备还没解锁**，一个和可见性毫无关系的变量。
+> **⇒ 排查顺序应是：先时序/状态（解锁、stopped、进程存活），再能力/权限，最后平台行为。**
+>
+> **③ 一个必须写进正式实现的结论**：
+> **hook 层要等「用户已解锁」再开始通信**（`UserManager.isUserUnlocked()`）。
+> 未解锁时去解析 vFlow 的组件会得到**假的「连不上」**。
 
 **⚠️ 剩余部分：必须真注入（部分有整机软重启风险）**
 
@@ -1498,22 +1876,60 @@ Abstract Namespace socket 无文件系统节点、无网络面，只能本机 `b
 | ~~12~~ | ~~`signature` 权限能否挡住异签方~~ | ✅ **能**（对照矩阵，§4.2.4） |
 | ~~4b~~ | ~~冷启动时序~~ | ✅ **方案层面已解**（挂点不上报 + 连上后下发，§4.2.5） |
 | — | 包可见性对 5b 是否构成障碍 | ✅ **不构成**（AOSP 源码：`callingAppId < FIRST_APPLICATION_UID ⇒ 不过滤`，§4.2.1） |
+| ~~1~~ | ~~`ActivityRecord.activityResumedLocked` 是否仍存在~~ | ✅ **存在、已挂上、真的被调用**（§4.2.9） |
+| ~~18~~ | ~~`onSystemServerStarting` 是否触发~~ | ✅ **触发**（§4.2.9） |
+| ⭐ | **能否拿到 Activity 的 Intent**（通道存在的理由） | ✅ **能拿到 `pkg`/`component`/`intent`（含 extras）**（§4.2.9） |
 
-**🧱 仍需回答（真未知，需注入 system_server 才能验）**：
+**🧱 仍需回答**：
 
-| # | 问题 | 影响 | 何时能答 |
+| # | 问题 | 影响 | 状态 |
 |---|---|---|---|
-| **14** | 🧱 **system_server 内的 hook 层能否 `bindService` 到 vFlow**（这是 v2.0 主通道）——含**主线程重入/阻塞**风险（system_server 是 Binder 主线程模型，不能阻塞） | **地基：主通道的可行性** | **需注入 system_server 探针** |
-| **15** | 🧱 **system_server 能否持有 vFlow 的 `signature` 权限**——若不能，`bindService` 的权限保护失效，鉴权需**完全靠 token**（§4.2.4） | **决定鉴权形态** | **同上** |
-| 1 | Android 17 上 `ActivityRecord.activityResumedLocked` 是否仍存在 | **地基**（hook 点本身） | 同上（一次注入可同时验） |
-| **17** | **hot reload 对 system_server 是否适用**（§4.6 注①）——官方未区分进程，但 system_server 重启成本远高于普通 App，框架策略可能不同 | 决定「改 hook 规则要不要重启系统进程」 | 需注入 system_server |
-| **18** | **`onSystemServerStarting` 在 Android 17 上是否真的触发**（§4.4.1） | 5b 的入口 | 需注入 system_server |
-| 16 | LSPosed 注入时序 vs 连接建立时序 | 决定实际窗口期长短（§4.2.5） | 同上 |
+| **14** | 🧱 **system_server 内的 hook 层能否 `bindService` 到 vFlow**（v2.0 主通道）——含**主线程重入/阻塞**风险 | **地基：主通道的可行性** | ⚠️ **未拿到有效结论**（见下注） |
+| **15** | 🧱 **system_server 能否持有 vFlow 的 `signature` 权限** | **决定鉴权形态** | ⚠️ **未拿到有效结论**（见下注） |
+| **17** | **hot reload 对 system_server 是否适用**（§4.6 注①） | 决定「改 hook 规则要不要重启」 | 未测 |
+| 16 | LSPosed 注入时序 vs 连接建立时序 | 决定实际窗口期长短（§4.2.5） | 未测 |
 | 2 | hook 进程能否连 Core 的 unix socket（SELinux） | 备选方案可行性 | 低优先 |
-| 3 | LSPosed 的 scope 配置对用户的实际操作成本 | 产品设计 | 第一步探针 |
+| 3 | LSPosed 的 scope 配置对用户的实际操作成本 | 产品设计 | 未测 |
 | 5 | `MethodHook` 的表达式能力边界（是否允许写副作用，还是只读求值） | 能力上限 | 第五步设计时 |
 | 6 | `MethodHook` 是否需要「目标类白名单」来降低误用面 | 安全 / 易用性 | 第五步设计时 |
 | 10 | **5a 档如何向用户表达「可读目标 App 全部凭据」**（§5.3） | 产品 / 合规 | 第五步设计时 |
+
+> ### ✅ #14/#15 的结论已取得（2026-09-26 晚，经 LSPosed verbose 日志）
+>
+> **读取途径**：**`adb logcat` 拿不到**（实测 `main` 缓冲仅覆盖约 **50 秒**，
+> 开机高峰期 1220 条/秒）⇒ 改用 **LSPosed 管理器导出的 verbose 日志**（持久化、不丢）。
+> **这是唯一可靠的途径**（详见 `scripts/probe/xposed-channel/P0-FINDINGS.md` §5.0）。
+>
+> | # | 结论 | 说明 |
+> |---|---|---|
+> | **#14** | ❌ **失败** | `resolveService(...)` 返 **`null`**、`bindService()` 返 **`false`**。目标 Service **确实存在**（`query-services` 验证）⇒ **是 system_server 看不见它** |
+> | **#15** | ❌ **「不可信」** | 目标权限 GRANTED，但**两个无关的第三方 signature 权限也全 GRANTED** ⇒ 「自己查自己一律放行」，**该方法取不到有效结论** |
+>
+> ### ⚠️⚠️ #14 的结果与本文档 §4.2 的核心论据**直接冲突**
+>
+> §4.2 的论据是「**uid 1000 完全豁免包可见性**」，依据 AOSP
+> `AppsFilterBase.shouldFilterApplication` 首行
+> `callingAppId < Process.FIRST_APPLICATION_UID ⇒ return false`。
+>
+> **但实测：system_server 看不到第三方 App 的 Service。**
+>
+> **必须查清原因，在此之前【不得再把「5b 不受可见性限制」当作前提】。**
+> 候选解释（**均未验证，不得臆断**）：
+> 1. AOSP 基线行为在 Android 17 有变；
+> 2. 小米/MIUI 定制改动了过滤逻辑；
+> 3. 拦截发生在**别的环节**（`ContextImpl.bindService` → `ActivityManager` 可能另有一条校验，
+>    未必经过 `AppsFilter`）。
+>
+> ### 归因过程的反面教材（我在此处错了三次）
+>
+> | 尝试 | 我当时的归因 | 真相 |
+> |---|---|---|
+> | 第一次（17:28） | 「目标没装」 | ✅ 对（当时装的确实是不含 Service 的旧版） |
+> | 第二次（18:08 起） | 「日志被冲」 | ❌ **是包可见性**，与日志无关 |
+> | 第三次（20:06） | 「LSPosed 勾选被重置」 | ❌ **是我改坏了代码**（在启动期路径加了 `Settings.Global` 写入） |
+>
+> **教训**：拿到 `false` / `null` 这类结果时，**先穷尽「我自己这边有什么问题」**（代码、目标组件、
+> 观测方法），**再谈平台行为**。三次里我有两次是把**自己的问题**归因到了外部。
 
 > **编号说明**：上表的 `#` 是**历史编号**（正文多处按它交叉引用，重编号会断链），**因此不连续**。
 > **引用时请按号找，不要按顺序数。**
