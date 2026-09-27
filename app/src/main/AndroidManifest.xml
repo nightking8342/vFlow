@@ -72,6 +72,18 @@
         </intent>
     </queries>
 
+    <!-- ═══ Xposed 通道（fork 新增，设计文档 docs/fork/xposed-channel-design.md）═══
+         ⚠️ `protectionLevel="signature"` 是**下行鉴权的根**：hook 层与主 App
+         是**同一个 APK**（同签），所以这条权限能把「别的 App 冒充 vFlow 给 hook 层
+         下条件」挡住。实测已确认 signature 级权限**能挡住异签发送方**。
+         ⚠️ 但它**不能**用于上行真伪 —— hook 层运行在 system_server（uid 1000），
+         而「uid 1000 能否持有本 App 的 signature 权限」至今未定论
+         （探针的 checkPermission(自己pid,自己uid) 方法无效，恒 GRANTED）。
+         上行真伪一律由 token 承担，见 P1b。 -->
+    <permission
+        android:name="com.chaomixian.vflow.permission.HOOK_CONTROL"
+        android:protectionLevel="signature" />
+
 
     <application
         android:name=".VFlowApplication"
@@ -86,6 +98,17 @@
         android:requestLegacyExternalStorage="true"
         android:networkSecurityConfig="@xml/network_security_config"
         tools:targetApi="31">
+
+        <!-- Xposed 模块的 provider（fork 新增）。⚠️ 它的实现类来自
+             `io.github.libxposed:service` 依赖，**必须打进 dex** ——
+             只声明不打包 ⇒ 框架加载失败 ⇒ 模块静默不加载（见 build.gradle.kts 的说明）。
+             ⚠️ 它也被 R8 当死代码（只被 manifest 字符串引用）⇒ proguard 第 31 节有 keep。
+             authorities 照 `service` aar 自带 manifest 的 `${applicationId}.XposedService`。 -->
+        <provider
+            android:name="io.github.libxposed.service.XposedProvider"
+            android:authorities="${applicationId}.XposedService"
+            android:exported="true"
+            tools:ignore="ExportedContentProvider" />
 
         <activity
             android:name=".ui.main.MainActivity"
@@ -207,6 +230,20 @@
             android:name=".services.TriggerService"
             android:exported="true" android:permission="android.permission.FOREGROUND_SERVICE"
             android:foregroundServiceType="specialUse" />
+
+        <!-- Xposed 通道的 App 侧端点（fork 新增）。被 hook 层（system_server）bindService 连上。
+             ⚠️ 它是本仓库**第一个真正返回 binder 的 Service** —— 现有全部 Service 的
+             onBind 都返回 null（含 TriggerService），因为它们靠 startService 存活。
+             ⚠️ `android:permission` 是 signature 级下行加固。**system_server 能否持有本 App
+             的 signature 权限至今未定论**（探针的 checkPermission(自己pid,自己uid) 方法无效，
+             恒 GRANTED）。因此设计上**不依赖它**：若 bind 失败，去掉这行、下行纯靠 token；
+             上行真伪**一律**由 token 判定。
+             ⚠️ **刻意不设 foregroundServiceType / 不做 startForeground** ——
+             被 system_server bind 这一事实本身就让 AMS 保着 App 进程。 -->
+        <service
+            android:name=".services.HookChannelService"
+            android:exported="true"
+            android:permission="com.chaomixian.vflow.permission.HOOK_CONTROL" />
 
         <service
             android:name=".services.VoiceTriggerService"

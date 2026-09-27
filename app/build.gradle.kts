@@ -265,6 +265,21 @@ dependencies {
     // Umeng analytics / crash telemetry
     implementation("com.umeng.umsdk:common:9.9.1")
     implementation("com.umeng.umsdk:asms:1.8.7.2")
+
+    // ═══ Xposed 通道（fork 新增，设计文档 docs/fork/xposed-channel-design.md §4.4.1）═══
+    // ⚠️ 两个 artifact **缺一不可**，且打包方式不同：
+    //   api     —— 提供 `XposedModule` 等**编译期**依赖，运行期由框架提供。
+    //              故用 compileOnly（**不打包进 APK**，这是本文件的首个 compileOnly）。
+    //   service —— ⚠️ 提供 `XposedProvider` 的**实现类**，**必须打进 dex**。
+    //              只依赖 api、手工往 manifest 写 `<provider>` 声明会怎样：
+    //              声明了名字却没有实现类 ⇒ 框架加载失败 ⇒ **模块静默不加载、零报错**
+    //              （表现：LSPosed 里勾选了、重启了，logcat 一条日志都没有）。已实际踩过。
+    // ⚠️ 版本选 102 而非 101：102 原生支持热更新（`onHotReloading`/`onHotReloaded`
+    //   + `HookHandle.replaceHook()`），且 `onSystemServerStarting` 是一等公民。
+    //   设备上 HyperCeiler / InxLocker 均已在用 102 独有符号并正常运行（实测）。
+    // ⚠️ 选了 102 就**不能混用传统 `de.robv.android.xposed` API**（官方行为变更）。
+    compileOnly("io.github.libxposed:api:102.0.0")
+    implementation("io.github.libxposed:service:102.0.0")
 }
 
 afterEvaluate {

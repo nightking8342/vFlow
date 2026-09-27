@@ -1,0 +1,9 @@
+# Xposed 模块的三个谱文件必须保持 LF 行尾。
+#
+# 依据：探针 `scripts/probe/xposed-channel/hookprobe/resources/META-INF/xposed/`
+# 下三份文件均为 LF，且仓库无 `.gitattributes` —— Windows 上极易被编辑器
+# 改成 CRLF，而框架读取时不会友好报错（表现是「模块静默不加载」）。
+# 同时这三个文件**不能含注释行**（探针 build.sh 里有对应断言）。
+app/src/main/resources/META-INF/xposed/module.prop    text eol=lf
+app/src/main/resources/META-INF/xposed/scope.list     text eol=lf
+app/src/main/resources/META-INF/xposed/java_init.list text eol=lf

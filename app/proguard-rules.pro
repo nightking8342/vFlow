@@ -221,3 +221,39 @@
 -keep class com.umeng.** { *; }
 -keep interface com.umeng.** { *; }
 -dontwarn com.umeng.**
+
+# ═══ 31. Xposed 通道（fork 新增）═══
+# 设计文档：docs/fork/xposed-channel-design.md §4.4 / §4.4.1。
+#
+# ⚠️ 本段的三条规则**都是「静默失效」的防线**，写错的表现一律是
+#    「模块装了、LSPosed 勾了、重启了，但什么都没发生、零报错」。
+
+# ① ⚠️⚠️ 最易漏的一条：`XposedProvider` 只被【合并后的 manifest 字符串】引用，
+#    代码里**零引用** ⇒ R8 默认会把它当死代码剥掉 ⇒ 框架加载不到 provider
+#    ⇒ 模块静默不加载。探针（未混淆）踩不到这条，只有 release 才暴露。
+#    注意 `io.github.libxposed:service` 自带的 proguard.txt 只有一条
+#    `-dontwarn io.github.libxposed.annotation.**`，**不含任何 keep**。
+-keep class io.github.libxposed.service.** { *; }
+
+# ② 入口类由 APK 根 `META-INF/xposed/java_init.list` 按**类名字符串**加载，
+#    被混淆 = 模块完全不生效。keepnames 保证类名不被重命名。
+-keep class com.chaomixian.vflow.xposed.VFlowHookEntry { *; }
+-keepnames class com.chaomixian.vflow.xposed.VFlowHookEntry
+
+# ③ `io.github.libxposed:api` 是 compileOnly（运行期由框架提供），
+#    R8 在 release 阶段看不到它 ⇒ 会报 missing class。
+-dontwarn io.github.libxposed.api.**
+
+# ④ AIDL 接口（P1b）。跨进程按**接口名 / 方法名**协商，
+#    混淆掉的表现是 binder 事务找不到方法（静默失败，不报错）。
+#    形态照第 10 节 Shizuku & AIDL 的写法：接口 + $Stub + 实现类分别 keep。
+-keep class com.chaomixian.vflow.xposed.IHookHost { *; }
+-keep class com.chaomixian.vflow.xposed.IHookHost$Stub { *; }
+-keep class com.chaomixian.vflow.xposed.IHookCallback { *; }
+-keep class com.chaomixian.vflow.xposed.IHookCallback$Stub { *; }
+-keep class com.chaomixian.vflow.services.HookChannelService { *; }
+# ⑤ hook 层其余类：它们被入口类引用，但入口类若被 keep 而它们被混淆，
+#    内部调用仍成立（同一次混淆），故**不逐个 keep** —— 只有「按名字被外部
+#    找到的」才需要 keep（入口类、AIDL、provider）。
+#    ⚠️ 但 wire 层被两端共享，且**不允许**被 inline 成 App 侧依赖，故保留类名。
+-keepnames class com.chaomixian.vflow.xposed.wire.**
