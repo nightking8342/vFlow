@@ -85,6 +85,16 @@ class JsExecutor(private val executionContext: ExecutionContext) {
             }
             ScriptableObject.putProperty(scope, "global", globalObj)
 
+            // 注入 console（浏览器习语）。
+            // 缺失时从 ShortX / Auto.js 移植的脚本会抛 ReferenceError 或被 try/catch 静默吞掉，
+            // 表现为「脚本跑了但什么都没发生」。见 JsConsole 的类注释。
+            JsConsole.install(context, scope)
+
+            // 注入变量写入 API。
+            // `global` 是只读快照（上方），脚本改它不会影响真实存储 ——
+            // 此前脚本完全无法写入全局变量。这里补上写路径，落到 GlobalVariableStore。
+            injectVariableWriters(context, scope)
+
             // 自动构建并注入 vFlow 模块树
             injectVFlowModules(context, scope)
 
@@ -121,6 +131,106 @@ class JsExecutor(private val executionContext: ExecutionContext) {
         } finally {
             Context.exit()
         }
+    }
+
+    /**
+     * 注入变量写入 API（`setGlobalVar` / `removeGlobalVar`）。
+     *
+     * ## 为什么需要
+     *
+     * 上方注入的 `global` 是**只读快照** —— 脚本里 `global.foo = 1` 只改内存对象，
+     * 不影响 `GlobalVariableStore`，下次执行读到的还是旧值。
+     * 在此之前脚本**没有任何写路径**（ShortX 有 `writeGlobalVar`）。
+     *
+     * ## 设计取舍
+     *
+     * - **不做成 `global.foo = 1` 就能写**（Proxy）：那会让「读快照」与「写存储」的
+     *   语义混淆 —— 用户无法判断一次赋值是否落盘。显式函数名更清楚。
+     * - 落盘是**同步**的（`GlobalVariableStore.save` 用 `commit = true`），
+     *   因为脚本执行完就可能被回收，不能依赖异步刷盘。
+     * - 失败不抛给脚本 —— 返回 `false`，让脚本自己决定。抛异常会中断那些
+     *   「写日志失败也要继续」的场景。
+     *
+     * @return 注入对象，供测试断言用。
+     */
+    private fun injectVariableWriters(context: Context, scope: Scriptable): Scriptable {
+        val appContext = executionContext.applicationContext
+        val api = context.newObject(scope)
+
+        // setGlobalVar(name, value) -> boolean
+        val setter = object : BaseFunction() {
+            override fun call(
+                cx: Context,
+                s: Scriptable,
+                thisObj: Scriptable,
+                args: Array<Any?>,
+            ): Any? {
+                val name = (args.getOrNull(0) as? CharSequence)?.toString().orEmpty()
+                if (name.isBlank()) return false
+                val value = JsValueConverter.coerceToKotlin(args.getOrNull(1))
+                return runCatching {
+                    GlobalVariableStore.put(appContext, name, value)
+                    true
+                }.onFailure { error ->
+                    DebugLogger.w(TAG, "setGlobalVar 失败: $name", error)
+                }.getOrDefault(false)
+            }
+
+            override fun getFunctionName(): String = "setGlobalVar"
+            override fun getArity(): Int = 2
+        }
+        api.put("setGlobalVar", api, setter)
+
+        // removeGlobalVar(name) -> boolean
+        val remover = object : BaseFunction() {
+            override fun call(
+                cx: Context,
+                s: Scriptable,
+                thisObj: Scriptable,
+                args: Array<Any?>,
+            ): Any? {
+                val name = (args.getOrNull(0) as? CharSequence)?.toString().orEmpty()
+                if (name.isBlank()) return false
+                return runCatching {
+                    GlobalVariableStore.remove(appContext, name)
+                    true
+                }.onFailure { error ->
+                    DebugLogger.w(TAG, "removeGlobalVar 失败: $name", error)
+                }.getOrDefault(false)
+            }
+
+            override fun getFunctionName(): String = "removeGlobalVar"
+            override fun getArity(): Int = 1
+        }
+        api.put("removeGlobalVar", api, remover)
+
+        // reloadGlobalVars() -> 重新读一遍存储，覆盖 global 快照。
+        // 用途：脚本内自己写完再读回，验证是否落盘（省得再跑一次工作流）。
+        val reload = object : BaseFunction() {
+            override fun call(
+                cx: Context,
+                s: Scriptable,
+                thisObj: Scriptable,
+                args: Array<Any?>,
+            ): Any? {
+                val target = scope.get("global", scope) as? Scriptable ?: return false
+                return runCatching {
+                    GlobalVariableStore.getAll(appContext).forEach { (key, vObj) ->
+                        target.put(key, target, JsValueConverter.coerceToJs(cx, target, vObj))
+                    }
+                    true
+                }.onFailure { error ->
+                    DebugLogger.w(TAG, "reloadGlobalVars 失败", error)
+                }.getOrDefault(false)
+            }
+
+            override fun getFunctionName(): String = "reloadGlobalVars"
+            override fun getArity(): Int = 0
+        }
+        api.put("reloadGlobalVars", api, reload)
+
+        ScriptableObject.putProperty(scope, "vars_api", api)
+        return api
     }
 
     /**
