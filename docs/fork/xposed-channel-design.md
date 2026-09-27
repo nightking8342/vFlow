@@ -1,10 +1,14 @@
 # Xposed 通道架构设计 —— 第四条通道（事件源 + MethodHook）
 
-> **版本**：v2.2 · 2026-09-26（**设计定稿，未实现**）
+> **版本**：v3.0 · 2026-09-27（**第一层已实现并真机验证**）
 > **对应分支**：`dev`（基于 `versionName 1.5.4` / `versionCode 50`）
 > **目录归属**：fork 独有文档 → 冲突归**我方**（上游无此文件）
-> **目标设备**：小米 MIX Fold 3（Android 17 / API 37 / 澎湃 OS4.0，LSPosed 1.0 + Zygisk 已运行）
-> **状态**：📐 **设计阶段**，尚无任何代码改动
+> **目标设备**：小米 MIX Fold 3（Android 17 / API 37 / 澎湃 OS4.0，LSPosed 2.2.0 + Zygisk 已运行）
+> **状态**：✅ **第一层（事件源）已落地** —— P1a/P1b/P2/P3 完成，`vflow.trigger.activity_changed` 可用。
+> **剩余**：P4（状态位 + UI 展示）与第二层 `MethodHook`（见 §6）。
+>
+> **⚠️ 各节标题里的「未实现 / 尚未」多为写作时的措辞，未必反映当前状态** ——
+> 以本块与 §6「实施进度对照」为准。已核实并保留的既有风险见 §7 决策 11/16。
 >
 > **本文的定位**：这是 vFlow **唯一会引入「在别人的进程里运行代码」**的通道，风险性质与前三条通道不同。
 > 因此本文的重点不是「怎么做」，而是**「边界划在哪、为什么」**。
@@ -49,7 +53,44 @@
 >    **真因未查明**（三次都只做整体回退，**从未二分定位**）——详见 §4.2.9 六。
 > ⑥ §4.4.1 补齐**两个必需依赖**（`api` + **`service`**）与 `module.prop` 的写法坑。
 > **§8 中 #1 / #18 转为已答**。
+
+> ### 🟢 实施期（P1/P2）新得的四条**实测**结论（2026-09-27）
 >
+> 前两条是**实现时才暴露**的，探针阶段没碰到（因为探针没接真实通道、也没重装过）：
+>
+> **① ⚠️ `onHotReloaded` 里必须自己重建通道 —— 官方「不重放回调」的后果比文档写的更广。**
+> 文档 §4.6 只说了「hook 需要重挂」。实测发现：**通道本身**也会永久消失 ——
+> 热更新是新 classloader 加载新代码，`runtime` / `transport` **字段全是 null**，
+> 而 `onSystemServerStarting` 不会被重放。
+> 第一版只打日志 ⇒ 重装 APK 后**通道消失、日志里却只有一行 `onHotReloaded`**，
+> 看起来一切正常。现已在 `onHotReloaded` 里显式 `startChannel()`。
+>
+> **② ⚠️ `HotReloadedParam` 拿不到 ClassLoader ⇒ 但 `ActivityThread` 的 classLoader 也**不是**它。**
+> §4.6 记的是「`HotReloadedParam` 没有 `getClassLoader()`」（确认）。
+> 实施时我试图用 `Class.forName("android.app.ActivityThread").classLoader` 替代 ——
+> **那是错的**：它给的是**模块自己的** classloader，`loadClass("com.android.server.wm.ActivityRecord")`
+> 必然失败，而日志会打成「找不到 hook 点（系统版本不兼容？）」，**误导性极强**。
+> 正解是 **system context 的 `classLoader`**（即 system_server 的 `PathClassLoader`）。
+> 这条已写进 `VFlowHookEntry.systemServerClassLoader()` 的注释。
+>
+> **③ ✅ 老代码没有 hook 时，热更新后能自己挂上（不必重启设备）。**
+> 实测路径：`oldHookHandles` 为空 ⇒ 用第 ② 条的 ClassLoader 自行 `mountSources`。
+> 日志：`无旧句柄可接手（上一代未挂 hook？）` → `hook 点已找到` → `✅ hook 已挂上`。
+> 有旧句柄时走 `replaceHook`：`✅ replaceHook 成功：static void
+> com.android.server.wm.ActivityRecord.activityResumedLocked(android.os.IBinder,boolean)`。
+>
+> **④ ✅ 端到端数据验证：能拿到完整 Intent（含 extras），且类型不丢。**
+> 真机切换实测（`HookChannelController` 日志）：
+> ```
+> 📱 bin.mt.plus/bin.mt.plus.Main  intent=intent:#Intent;...component=bin.mt.plus/.MainLightIcon;end
+> 📱 com.miui.home/...Launcher     extras={"android.intent.extra.EXTRA_START_REASON":"systemReady"}
+> 📱 com.android.settings/...Settings$WifiSettingsActivity
+>     extras={":settings:is_second_layer_page":true,"android.intent.extra.START_TIME":4624390}
+> ```
+> 三个要点：**完整 intent URI**、**extras 且 `true` 仍是 Boolean / `4624390` 仍是数字**（类型未丢，
+> 与 `dumpsys` 那条「把 String 猜成 Long」的路形成对照）、
+> **同包内 Activity 切换被捕获**（`Settings` → `MiuiSettings` → `Settings$WifiActivity`，
+> 正是 `AppSwitchTriggerHandler` 按包名去重丢弃的那部分）。>
 > **v2.7（2026-09-26 深夜）：查清 `getRemotePreferences` —— 它是配置下行，**不能**用于事件上行。**
 > ① ❌ **方向相反**（官方源码逐字）：`XposedInterface.getRemotePreferences` 的 javadoc 写明
 >    「**read-only in hooked apps**」；**只有模块 App 能写**（`XposedService` 侧）。
@@ -1837,17 +1878,223 @@ Abstract Namespace socket 无文件系统节点、无网络面，只能本机 `b
 这也是为什么 §2.3 说「ShortX 的 Binder 走私不可照抄」时，vFlow 自己的 Core 通道**不是同等危险**——
 **但这个结论只在 Unix socket 路径下成立。**
 
-**独立于本方案的建议**：`BIND_ADDRESS = "0.0.0.0"` 是否必要？
-若远程 API 场景不需要 Core 直连，**改为 `127.0.0.1` 是零成本加固**。
-这条属既有代码问题，**建议单独修**，不必等本方案落地。
+~~**独立于本方案的建议**：`BIND_ADDRESS = "0.0.0.0"` 是否必要？
+若远程 API 场景不需要 Core 直连，改为 `127.0.0.1` 是零成本加固。~~
+
+> ### ⚠️ 本条已改判：**保留 `0.0.0.0`，风险接受**（2026-09-27，见 §5.3.3 第 ② 条）
+> 理由：外部自动化工具可能有直连 Core 的用法，改掉会**静默断掉**它们。
+> 风险（19999 无鉴权、可执行 root 命令）在有知情的前提下接受。
+> 另需澄清：**「局域网调用」是 `:8080` 那条（有 `AuthManager`），不是这条。**
 （注：远程 Web 服务走的是 `:8080` 的 `api/` 层，有 `AuthManager`；Core 的 `:19999` 是另一条，两者别混。）
 
 ---
+
+### 5.3.3 ⚠️ 两条**已核实、决定保留**的既有风险（2026-09-27）
+
+> 这两条原本作为「建议加固」挂在决策台账里。**经核实后结论是「不动」** ——
+> 但理由必须写清，否则将来会有人把它们当成「遗漏」再提一遍。
+
+#### ① `TriggerService` 的 `exported=true` —— **必需，不能收**
+
+**原判断（§5.3 第 1 条 / 决策 11）说「必须加固」，方向错了。**
+
+**核实依据**：
+
+```
+core/src/cpp/key_event_trigger_handler.cpp:179
+    "am start-service -n <pkg>/com.chaomixian.vflow.services.TriggerService ..."
+```
+
+该 C++ 守护进程部署在 `/data/local/tmp/vflow/`，**由 shell/Shizuku(root) 拉起，是独立于 app 的进程**（uid 2000 或 0）
+——`am start-service` 是跨进程组件调用，**没有 `exported=true` 它根本起不来**，
+而键事件触发器是 vFlow 的功能完整的一项。
+
+**补充核实**：app 内部所有调用点（`AccessibilityKeepAliveManager`、`WorkflowManager` 经 `TriggerServiceProxy`）
+用的都是**显式 Intent**（`Intent(context, TriggerService::class.java)`），那不需要 `exported`。
+⇒ **`exported=true` 唯一的存在理由就是给那个 C++ 守护进程。**
+
+**⚠️ 但风险是真实的**：`android:permission="android.permission.FOREGROUND_SERVICE"` 是 **normal 级**权限，
+**任何 App 都能持有**。所以本机任意应用都能发 `ACTION_RELOAD_TRIGGERS`，
+甚至伪造 `ACTION_KEY_EVENT_RECEIVED` 让用户的工作流跑起来。
+
+**真正的加固方向**（**未实施，决定接受现状**）：
+在 `onStartCommand` 内部校验调用方 ——
+`ACTION_KEY_EVENT_RECEIVED` 只接受 shell/root 或签名匹配的来源，其余 action 只接受自家 uid。
+**manifest 层收窄是做不到的**（会同时打断那条必需的路径）。
+
+#### ② Core 的 `BIND_ADDRESS = "0.0.0.0"` —— **保留**
+
+**核实**：全仓引用 `PORT_MASTER` 的只有两处 ——
+`VFlowCoreBridge.kt:73`（App 主进程，本机）与 Core 自身。**没有任何跨设备调用方**。
+
+**⚠️ 澄清一个容易混的点**：文档 §5.3.1 早就指出
+「远程 Web 服务走的是 `:8080` 的 `api/` 层，有 `AuthManager`；Core 的 `:19999` 是另一条，两者别混」。
+⇒ **用户说的「局域网调用」指的是 8080 那条（有鉴权），不是 Core 的 19999。**
+
+**保留的理由**（用户决定，2026-09-27）：外部自动化工具可能有直连 Core 的用法
+（vFlow 的 Core 能执行 root/shell 命令，对第三方自动化是可用能力），
+改成 `127.0.0.1` 会**静默断掉**那些用法 —— 而这属于「用户自己搭的自动化」，
+不是 vFlow 该替他们关掉的门。
+
+**⚠️ 风险如实记录**：Core 的 19999 **无任何鉴权**（`VFlowCore.kt:189` 起的
+`handleMasterClientLoop` 读一行 JSON 就 `routeRequest`，没有 token、没有调用方校验），
+而 `ROUTING_TABLE` 里有 `system_root` / `hotspot` / `uinput` → `ROOT`。
+⇒ 同一局域网内任意设备可连它执行 **root 命令**。**这是用户在知情下接受的风险。**
+
+> **与 Xposed 通道的关系**：**无**。本通道不经过 Core（它走 Binder 直连 App），
+> 所以这两条无论怎么决定都不影响本方案。
 
 ## 6. 实施分期
 
 **原则：每期都可独立验证，且失败可回退。**
 
+### 📊 实施进度对照（2026-09-27）
+
+> **本节与下面各「第 N 步」的关系**：下面那几节是**写作时的规划**，
+> 编号与措辞都没改（改了会断交叉引用）。**实际进度以本表为准。**
+
+| 计划中的步骤 | 实际状态 | 对应提交/阶段 |
+|---|---|---|
+| 第一步：可行性探针 | ✅ **完成**（v2.0–v2.5） | `scripts/probe/xposed-channel/` |
+| 第二步：通信链路验证 | ✅ **完成** | P1a（打包与加载）+ P1b（`bindService` + AIDL + token） |
+| 第三步：首个触发器 + 闭环 | ✅ **完成** | P1a/P1b/P2/P3 —— `vflow.trigger.activity_changed` 可用 |
+| 第四步：能力扩展 | ⬜ **未开始** | 手势/组合键（② 类）、系统栏（③ 类） |
+| 第五步：`MethodHook` | ⬜ **未开始** | 第二层，形态分级见下 |
+| **P4：状态位 + UI 展示** | ✅ **完成**（2026-09-27） | 状态判据（两组状态位）/ 授权引导 / 首页状态卡 / 移除探针 —— 见 `xposed-channel-p4-design.md` |
+
+**实际落地的文件**（新增为主）：`app/src/main/java/.../xposed/`（入口 / 运行时 / 传输 / hook 点 / 适配器 / 共享 wire 层）、
+`app/src/main/aidl/.../xposed/`（双向 AIDL）、`services/HookChannelService.kt`、
+`core/xposed/`（App 侧控制器与能力探测）、`triggers/ActivityChangedTrigger*.kt`。
+登记见 `FORK.md`。
+
+~~**⚠️ P4 是当前唯一影响「可用性」的缺口**~~ → ✅ **已补**（2026-09-27）：
+首页状态卡 + 授权引导对话框 + 官方 `requestScope` 接入。
+⚠️ 过程中额外修掉 6 处实测暴露的缺陷（重连缺失 / 授权入口静默失效 / 点击分类用错判据 /
+包下推判据过严 / 下推白名单选择性 / 日志措辞误导），其中一条是**事件消费者单槽位**
+（加第二个 hook 触发器前必修）—— 均已修，详见 `FORK.md`。
+
+**⚠️ §4.5 的版本适配是占位而非实现**：`HookTargets` 里 API ≤ S 的候选类名是**虚构的**
+（本项目 `minSdk 29`，那两个分支永远走不到）。真要向下适配时须照 §4.5 的历史路径重写，别信当前代码里的字符串。
+
+### ✅ 官方框架信息 API 实测通过（2026-09-27，探针）
+
+**发现**：libxposed 的 `service` artifact 自带 **App 侧的框架查询入口** ——
+`XposedServiceHelper.registerListener` → `XposedService`。
+这比我们**自造的两套判据**权威得多。
+
+**实测输出**（`core/xposed/XposedFrameworkProbe.kt`，设置在「调试」区点按钮触发）：
+
+```
+✅ 框架服务已绑定
+  框架 = LSPosed / 2.2.0 (code=7854)
+  apiVersion = 102
+  properties = 0x7  (CAP_SYSTEM=true CAP_REMOTE=true RT_API_PROTECTION=true)
+  scope = [system]
+  runningTargets = 1 个
+    · process=system uid=1000 state=UP_TO_DATE
+```
+
+**四条结论**：
+
+| # | 结论 | 影响 |
+|---|---|---|
+| ① | **`onServiceBind` 确实会触发** | 我此前标的风险（「可能依赖 LSPosed 管理器主动 bind，未必触发」）**不成立** |
+| ② | **`scope = [system]` 可读** | 「未勾选作用域」这个**最高频故障可以直读**，不用猜 |
+| ③ | ⭐ **`runningTargets` 可用**（`process=system uid=1000 state=UP_TO_DATE`） | **因此「补一条挂载结果上报」那条待办被取消** —— 官方 API 本来就有。状态位 B 的判据直接来自它 |
+| ④ | `properties = 0x7`（三位全开） | §4.2.2.1 警告的「旧版框架可能报 101 却无该能力」在本机不存在；按位判与按版本判一致 |
+
+**对 P4 设计的修正**：
+
+| 原方案 | 现在 |
+|---|---|
+| `XposedCapability`（SharedPreferences 记「曾经连上过」） | ⚠️ **可能整个不需要** —— `onServiceBind` / `onServiceDied` 是官方权威信号 |
+| 自己 bind 的连接状态当挂载态 | ⚠️ 降级为**辅助** —— `runningTargets` 更权威（它说的是「模块注入到哪些进程」，而我们那个只是「App 与自己的 Service 连上了没」） |
+| **待补「挂载结果上报」协议** | ✅ **取消**（见 ③） |
+
+> ⚠️ 但「曾经连上过」那个**语义**仍有价值 —— 它防的是「异步窗口期误禁工作流」（见 §3.3）。
+> 只是判据可以换成「`onServiceBind` 至少触发过一次」。
+
+**⭐ 副产品：`hotReloadModule()` 有实测基础了。**
+官方还有 `hotReloadModule(target, bundle, callback)`，`runningTargets` 里的 `HookedTarget` 正是它的入参。
+⇒ 文档 §3.3 `PENDING_APPLY` 那条「提示用户触发一次热更新」，
+现在可以从「建议重装 APK」升级为**「点一下按钮」**。
+
+> **⚠️ 探针本身是临时的**：`XposedFrameworkProbe.kt` + 设置页按钮**验证完应移除**（或在 P4 里转成正式的状态展示）。
+
+### 🚫 为什么不给「在 system_server 内执行脚本」开口子（2026-09-27）
+
+**背景**：用户问「后续有没有像 ShortX 那样在 system_server 执行 JS 的通道」。
+派子代理对 ShortX 反编译源码做了逐项调研，报告见
+**[`surveys/shortx-script-capability.md`](surveys/shortx-script-capability.md)**。
+
+**结论：不做。** 理由按证据强度：
+
+1. **收益端归错了账** —— system_server 带来的脚本增益，真正不可替代的只有
+   「读/改 hook 宿主进程内对象」与「拿宿主 `Application`」，
+   **那是 hook 能力，不是脚本能力**，且必须先有 hook 才谈得上。
+2. **成本端是量级跃变** —— `shell_command` / `js` 的崩溃半径都是**自己的进程**，
+   system_server 内脚本是**整机**。这是 §1.2「差异 1（本质）」在脚本维度上的重演。
+3. ⭐ **ShortX 自己也没这么做** —— `MethodHookExpressions` **只有 MVEL 字段、没有 `expressionJS`**；
+   且它**主动装 `NoSecurityController`** 关掉沙箱、**脚本路径无任何超时/熔断**
+   （那六条防御全属 **hook 回调**路径）。**可参考的防御为零。**
+4. **大头缺口在 App 侧就能补** —— 调研把差距分成两类，其中
+   **B 类（规则自省 API / `console` / 代码库 / 轻量表达式）全部 App 侧可补**，
+   且 vFlow 的模块树（~192）远强于 ShortX 的 `shortx` API（~15）。
+5. **vFlow 有两处反而做得更好** —— 变量注入用 `gson.toJson` **转义了**
+   （ShortX 是 `'"' + value + '"'` **不转义**，共享规则时是 SSTE/RCE 面）；
+   模块树覆盖面更大。
+
+**⚠️ 顺带一条 vFlow 自身的短板**（与 system_server 无关，但调研时暴露）：
+**vFlow 现在连 App 侧的 JS 都没有超时**（`script-system-overview.md` 已记为已知短板）。
+若将来真要往 system_server 推进，「超时」是**硬前提**。
+
+> **本节的定位**：它不是「否决」，而是**记录取舍依据**。
+> 若将来出现「某个具体动作只能靠读宿主对象实现」的真实需求，
+> 应按**固定模块**做（如 §4.1 的 `CloseActivity` 那样），**而不是**通用脚本通道。
+
+### ✅ 已修：事件消费者单槽位（2026-09-27）
+
+**发现于 2026-09-27**（用户提问「后续加新触发器方便吧」时核对出来的）。
+
+```kotlin
+// HookChannelController.kt:63
+private var eventSink: ((EventEnvelope) -> Unit)? = null    // ← 单个槽位，不是注册表
+```
+
+`setEventSink` 的语义是**后注册的覆盖先注册的**。现在只有一个 hook 触发器
+（`ActivityChangedTriggerHandler`）所以没暴露，但**加第二个就会出事**：
+
+```
+ActivityChangedTriggerHandler.start() → setEventSink(activity 的)
+    KeyComboTriggerHandler.start()    → setEventSink(组合键的)  ← 覆盖
+    ⇒ Activity 触发器静默不再收到任何事件
+```
+
+**且是双向的**：谁后 `start` 谁的活。而 `TriggerHandlerRegistry` 是按**注册顺序**
+建实例再统一 `start()` ⇒ **注册顺序靠后的那个会赢** —— 改一行注册顺序就换一个触发器失灵。
+
+**修法**（小，约 20 行 + 单测）：改成按 topic 分发的注册表
+（`registerSink(topic, sink)` / `unregisterSink(topic)`），`onReport` 里按 `envelope.topic` 查表，
+未知 topic 忽略（本就符合 §3.4.5）。
+
+> **为什么必须记在这里**：这是「改动面积看着很小、失效形态极难查」的典型 ——
+> 表现是「新加的触发器能用，原来那个不触发了」，
+> 而 `HookSource` / `HookRuntime` 那两层**看起来毫无问题**（它们确实没问题，
+> 坏的是 App 侧分发）。**加第二个 hook 触发器之前必须先修。**
+
+> ### ✅ 已修（2026-09-27）
+> 改为 `ConcurrentHashMap<String, (EventEnvelope) -> Unit>` + `registerSink(topic, sink)`，
+> `onReport` 按 `envelope.topic` 查表（未知 topic 忽略）。`stop()` 从「清空唯一槽位」
+> 改为「只注销自己的 topic」——后者在注册表语义下会**误伤其他消费者**。
+>
+> ⚠️ **测试时的教训（值得单独记）**：第一版用例**反证时不变红** ——
+> 因为 token 由 `SecureRandom` 生成、测试拿不到 ⇒ `onReport` 全部在
+> **token 校验那步 return** ⇒ **测试永远走不到分发**。写了「看起来在测分发」
+> 的用例、实际什么都没测。加 `injectTokenForTest()` 接缝后才真正覆盖，
+> 反证随即成立（退化成 `eventSinks.clear()` ⇒ 两条同时变红）。
+> **与本仓库既有教训同源：测试要经过调用点，否则反证不会变红。**
+
+### 第一步：可行性探针 —— ✅ **大部分已完成**（v2.0）
 ### 第一步：可行性探针 —— ✅ **大部分已完成**（v2.0）
 
 **已完成部分（`scripts/probe/xposed-channel/`，不进 vFlow 代码）**：
@@ -1965,12 +2212,12 @@ Abstract Namespace socket 无文件系统节点、无网络面，只能本机 `b
 | 8 | `MethodHook` **允许做**，但**优先 hook 目标 App 进程**而非 system_server | 前者崩溃半径 = 那个 App；后者 = 整机（§1.2 差异 1） | 中 |
 | 9 | Intent 的 extras 用 **JSON 表达**，不为每个键建输出 | 键不可枚举（§4.3） | 高 |
 | 10 | hook 点全部收敛在 `HookTargets`，按 API 分级 | 版本适配可维护（§4.5） | 高 |
-| 11 | `TriggerService` 的 `exported` 通道**必须加固** | 现有代码就存在的问题（§4.2） | — |
+| 11 | ~~`TriggerService` 的 `exported` 通道必须加固~~ → ⚠️ **`exported=true` 是必需的，保留**（2026-09-27 核实） | **原判断方向错了**：键事件触发器靠 `core/src/cpp/key_event_trigger_handler.cpp:179` 的 `am start-service` 拉起 `TriggerService`，那是**独立于 app 的 shell/root 进程**，收回 `exported` 会让该触发器失效。⚠️ 风险仍真实存在（`FOREGROUND_SERVICE` 是 normal 级，任何 App 都能发 `ACTION_RELOAD_TRIGGERS`），但**加固手段只能是 `onStartCommand` 里校验调用方**，不能在 manifest 收窄。**决定：保持现状，风险接受**（§5.3.3） | — |
 | **12** | **Hook 层与主 App 用同一 APK**（§0.1） | ⭐ **它是鉴权基础**：`signature` 级 `HOOK_CONTROL` 只有在同签下才成立，**这是整条信道的根** | **低**（改路线 2 则鉴权方案整个失效） |
 | **13** | **不上「无鉴权的公开入口」**——用 `HOOK_CONTROL` 保护下行，token 保护上行 | 让伪造事件不可能；但**注意危害定性**：攻击者只能误触发**用户已配好的**触发器，不是获得 hook（§4.2.4） | 中 |
 | **14** | ~~共享条件文件：App 单写、Hook 只读~~ → **改为「hook 层不落盘，条件只在内存」** | ❌ 共享文件证否（**实测** `EACCES`，§4.2.7）；现方案不需要文件 | 高 |
 | **15** | **`MethodHook` 的 5a 档必须向用户说明「可读取目标 App 全部凭据」**（§5.3） | 信息面高于 root，不能只按崩溃半径定档 | 高 |
-| **16** | **Core 的 `BIND_ADDRESS` 应改 `127.0.0.1`**（§5.3.1） | 零成本加固；属既有代码问题，可独立先修 | 高 |
+| **16** | ~~Core 的 `BIND_ADDRESS` 应改 `127.0.0.1`~~ → ⚠️ **保留 `0.0.0.0`**（2026-09-27 决定） | 改不改都**不影响 Xposed 通道**（本通道不经过 Core）。保留的理由：外部自动化工具可能有直连 Core 的用法，改动会静默断掉它们。**决定：保持现状，风险接受**（§5.3.3） | 高 |
 | **17** | **hook 层不缓存过期条件**（宁可丢事件，不用过期条件误触发） | 与「静默失效」教训一致（§4.2.5） | 高 |
 | **18** | **能用真机 adb 直接验的假设，不留到「探针阶段」** | 一条 `ls -nd` 就能推翻的假设在文档里活了三个版本 | — |
 | **19** | ⭐ **必须区分 5a / 5b 的可见性处境，不得混用结论**（v2.0 核心教训） | v1.4–v1.6 把 5a 的结论（`bindService` 出局）套到 5b 上，**导致方案排序整体错了一轮**。源码：uid < 10000 豁免过滤（§4.2.1） | — |
@@ -2012,14 +2259,48 @@ Abstract Namespace socket 无文件系统节点、无网络面，只能本机 `b
 
 | # | 问题 | 影响 | 状态 |
 |---|---|---|---|
-| **15** | 🧱 **system_server 能否持有 vFlow 的 `signature` 权限** | **决定鉴权形态** | ❌ **方法无效**：`checkPermission(自己pid,自己uid)` 恒 GRANTED（含无关对照）⇒ **需换方法**（§5.2 of P0-FINDINGS） |
-| 16 | LSPosed 注入时序 vs 连接建立时序 | 决定实际窗口期长短（§4.2.5） | 未测 |
+| **15** | ~~system_server 能否持有 vFlow 的 `signature` 权限~~ | ~~决定鉴权形态~~ | ✅ **已答（2026-09-27，实施期）**：见下方「#15 的最终结论」<br/>（探针阶段标的是「方法无效」，那是对的 —— 换了个问法就有答案了） |
+| 16 | ~~LSPosed 注入时序 vs 连接建立时序~~ | ~~决定窗口期长短~~ | ✅ **已被官方 API 绕开**：`onServiceBind/onServiceDied` + `runningTargets` 直接给状态，不必再推时序（探针实测，见 §6 前） |
 | 2 | hook 进程能否连 Core 的 unix socket（SELinux） | 备选方案可行性 | 低优先 |
-| 3 | LSPosed 的 scope 配置对用户的实际操作成本 | 产品设计 | 未测 |
+| 3 | ~~LSPosed 的 scope 配置对用户的实际操作成本~~ | ~~产品设计~~ | ⚠️ **已实际踩到**：同 APK 路线下 `scope.list=system`，用户须勾**「系统框架」而非 vFlow 自己**（十有八九会搞错）。✅ 且**现在能直读**（`getScope()`，探针实测） |
 | — | **system_server 里 `RemotePreferences` 的变更回调是否投递**（§4.2.2.1） | **仅影响「配置下行 + 实时更新」**，不影响事件上行 | ⚠️ **两份来源冲突，未实测**<br/>（项目方实测断言「不投递」vs 源码分析「会投递」） |
 | 5 | `MethodHook` 的表达式能力边界（是否允许写副作用，还是只读求值） | 能力上限 | 第五步设计时 |
 | 6 | `MethodHook` 是否需要「目标类白名单」来降低误用面 | 安全 / 易用性 | 第五步设计时 |
 | 10 | **5a 档如何向用户表达「可读目标 App 全部凭据」**（§5.3） | 产品 / 合规 | 第五步设计时 |
+
+#### #15 的最终结论（2026-09-27，实施期实测）
+
+**问题换了个问法就有答案了** —— 探针阶段的错在于问的是
+「system_server **持有**这个权限吗」（`checkPermission(自己pid,自己uid)`，恒 GRANTED，方法无效）。
+
+**实测（P1b 真机）**：
+
+```
+HookChannelService: hook 层已连接：callerUid=1000 callerPid=2969
+VFlowHook: ✅ registerCallback 成功
+```
+
+`HookChannelService` 挂着 `android:permission="...HOOK_CONTROL"`（`signature` 级），
+而 hook 层（uid 1000）**成功 bind 并注册**了。
+
+**但这不能读成「system_server 持有 vFlow 的签名」** —— 真实机制是：
+
+> **`uid < Process.FIRST_APPLICATION_UID`（10000）时，签名权限检查天然豁免。**
+
+同源证据（本仓库已记）：§4.2.1 的包可见性豁免也是同一条
+（`AppsFilterBase.shouldFilterApplication` 首行 `callingAppId < FIRST_APPLICATION_UID ⇒ return false`），
+且 P0-FINDINGS §5.2 当时就把它列为**候选解释第 1 条**。
+
+**⇒ 对设计的实际影响：加固的定性变了，但方案不变。**
+
+| | |
+|---|---|
+| `android:permission` 防的是 | ✅ **普通 App 冒充**下行（有效 —— 异签方拿不到） |
+| 它**防不住** | ❌ system_server（uid 1000 豁免），但**那本来就不是威胁模型**（system_server 已被完全信任） |
+| 上行真伪 | ✅ 仍由 **token** 承担（见 §4.2.4），与权限无关 |
+
+**结论：`android:permission` 保留、token 保留，两者防的是不同对象。**
+（我一度以为这是「二选一」，实测后才分清 —— 见 §4.2.4 的鉴权结构。）
 
 > ### ✅ #14/#15 的结论已取得（2026-09-26 晚，经 LSPosed verbose 日志）
 >

@@ -184,6 +184,107 @@
 | `scripts/sim-data-verify.sh`（新增） | fork 独有：数据卡切换跨机型验证脚手架（全 adb 零代码）。`snapshot` 快照 / `broadcast` 清日志→切卡→抓广播（含 extras 实测）/ `raw` 全量转储。**刻意不实现 `service call` 事务码扫描**——事务码逐机型漂移、调错码会改到相邻设置项 | 我方 |
 | `scripts/probe/`（`SimDataProbe.java` + `SimDataReceiverProbe.java` + `apk/`） | fork 独有：本次真机验证用的一次性探针（切换探针 / 广播探针 / 最小接收 APK 源码与打包链路）。⚠️ 只提交 `.java` / `.xml` 源码与 `.gitignore`（编译产物不入库）。其中**打包链路可直接复用**：javac(带 platform android.jar) → d8（⚠️ **必须显式列出所有 `*.class`**，否则匿名内部类丢失）→ aapt2 link → 注入 classes.dex → zipalign → apksigner | 我方 |
 
+### Xposed 通道（第四条通道，P1a，2026-09-27）
+
+> 设计文档 `docs/fork/xposed-channel-design.md`（v2.7 定稿），探针结论 `scripts/probe/xposed-channel/`。
+> **路线 1：hook 层与主 App 同一 APK**（它是 `signature` 级 `HOOK_CONTROL` 成立的前提）。
+> 本批只做 **P1a（打包与加载骨架）**——不挂 hook、不通信、不采事件。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `app/src/main/resources/META-INF/xposed/{module.prop,scope.list,java_init.list}`（均新增） | fork 独有：**Xposed 模块的三个谱文件**（仓库首次创建 `src/main/resources`）。入口由 `java_init.list` 里的**类名字符串**指定；`scope.list` 为 `system`（system_server 的特殊虚拟包名）。⚠️ **三文件必须零注释、LF 行尾**——注释会让模块**静默不加载**（探针 `build.sh` 里有对应断言）；已加 `.gitattributes` 锁 LF。⚠️ `minApiVersion` **必须写 101**（写 102 会被 API 等级 101 的框架拒载），实测 `targetApiVersion=102` | 我方 |
+| `.gitattributes`（新增） | fork 独有文件（上游无此文件）。目前只有一条用途：**锁上述三个谱文件为 `text eol=lf`** —— Windows 下极易被编辑器改成 CRLF，而框架读错时不会友好报错 | 我方 |
+| `app/src/main/java/.../xposed/VFlowHookEntry.kt`（新增） | fork 独有：Xposed 模块入口（`io.github.libxposed.api.XposedModule` 子类）。**运行在 system_server 进程里**，故引用面有硬约束：只允许 `io.github.libxposed.*` / `java.*` / `org.json` / `android.util.Log` / `xposed.**` 内部；**禁止** `core.*` / `services.*` / Gson / `DebugLogger`（同 dex 里 App 类都在，但**只有被引用才会在 system_server 里被解析加载**，引用 App 重类会**把崩溃半径扩大到整机**；日志刻意用 `android.util.Log` 而非 `DebugLogger` 正是这条的后果）。⚠️ 必须用普通 `class`（**不是 Kotlin `object`**，object 的 JVM 名带 `INSTANCE`）。⚠️ 入口被 `java_init.list` 按名加载 ⇒ **必须 R8 keep** | 我方 |
+| `app/build.gradle.kts`（改） | **本文件首个 `compileOnly`**：`compileOnly("io.github.libxposed:api:102.0.0")`（运行期由框架提供、**不打包**）+ `implementation("io.github.libxposed:service:102.0.0")`（⚠️ **必须打进 dex**——它提供 `XposedProvider` 的**实现类**；只声明 provider 不打包实现 ⇒ 框架加载失败 ⇒ **模块静默不加载、零报错**，已实际踩过）。选 102 而非 101：102 原生支持热更新 + `onSystemServerStarting` 是一等公民；⚠️ 选 102 就**不能混用传统 `de.robv.android.xposed` API** | **手动合并**（追加） |
+| `app/proguard-rules.pro`（改） | 新增第 31 节（3 条规则，**都是「静默失效」的防线**）：① ⚠️ **`-keep class io.github.libxposed.service.**`**——`XposedProvider` **只被合并后的 manifest 字符串引用、代码零引用**，R8 默认当死代码剥掉 ⇒ 模块静默不加载；探针（未混淆）踩不到这条，**只有 release 才暴露**，而 `service` aar 自带的 `proguard.txt` 只有一条 `-dontwarn`、**不含任何 keep**。② keep 入口类（`java_init.list` 按类名加载）。③ ⚠️ `-dontwarn io.github.libxposed.api.**`——`api` 是 `compileOnly`，R8 阶段看不到它、会报 missing class | **手动合并**（追加） |
+| `app/src/main/AndroidManifest.xml`（改） | ① 首个自定义 `<permission>`：`com.chaomixian.vflow.permission.HOOK_CONTROL`（`protectionLevel="signature"`）——**下行鉴权的根**（hook 层与 App 同签，故能挡住异签方冒充下发）。⚠️ 但它**不能**用于上行真伪：hook 层跑在 system_server，「uid 1000 能否持有本 App 的 signature 权限」**至今未定论**（探针的 `checkPermission(自己pid,自己uid)` 方法无效，恒 GRANTED）。② `<provider io.github.libxposed.service.XposedProvider>`，`authorities="${applicationId}.XposedService"`（照 `service` aar 自带 manifest） | **手动合并**（追加 2 处） |
+
+### Xposed 通道 P1b（双向心跳，2026-09-27）—— **已真机验证打通**
+
+> P1a 的验证：`isSystemServer = true`、`apiVersion = 102`、uid 1000（截图证据）。
+> P1b 的验证：`bindService` 成功 + `registerCallback` 成功 + App 侧 `callerUid=1000`。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `app/src/main/aidl/.../xposed/IHookHost.aidl` + `IHookCallback.aidl`（均新增） | fork 独有：Xposed 通道的**双向 AIDL 面**。`IHookHost`（App 提供：`registerCallback` / `report`）+ `IHookCallback`（hook 层实现：`pushConditions` / `ping`）。⚠️ **`report` 是 `oneway`**（hook 层可能在 system_server 任何线程上调，绝不能阻塞等待 App 处理完）；而 **`registerCallback` / `pushConditions` 刻意不用 `oneway`** —— 它们的成败必须能被感知（失败通常是鉴权没放行，oneway 会把原因静默吞掉，只剩心跳超时可推）。⚠️ `Binder.getCallingUid()` **只在 binder 事务内有效**，必须在 `Stub` 实现里第一行读、赋给局部变量（进协程/跨 suspend 点就取不到；`onBind` 里读到的更是**自己**的 uid，探针实测踩过） | 我方 |
+| `app/src/main/java/.../xposed/wire/EventEnvelope.kt` + `EventQueue.kt`（均新增） | fork 独有：**hook 层与 App 侧共享的统一信封 + 有界队列**（`{topic,seq,ts,payload,dropped,token,protocol_version}`）。⚠️⚠️ **共享一份实现，而非照 logcat 做两份拷贝** —— `FORK.md` 已记录 logcat 双份的代价（「语义改动必须同时改两处，不一致的表现是调试工具能匹配而触发器匹配不到」）；本通道同 APK 同 dex，不必重复该代价。**但共享带来新风险**：wire 层跑在两个进程里（App + 注入 system_server 的 hook 层），**只有被引用才会在 system_server 里被解析加载** ⇒ 它**禁止**引用 `android.*` / Gson / `DebugLogger` / `core.*` / `services.*`（否则把 App 侧重类的静态初始化拖进 system_server，**崩溃半径从「那个 App」扩大到整机**）。这条由 **`WireLayerPurityTest` 源码扫描**锁住，且已做反证（塞一个 `android.util.Log` import ⇒ 三条同时变红）。⚠️ `EventQueue.clear()` **故意只丢积压、不清 `dropped` 计数**（丢弃数是用户知道「丢过事件」的唯一途径，留到 `drainDropped()` 上报），有测试锁住；`seq` 用连接级全局计数、缺失时解码为 **-1 而非 0**（0 是合法首序号，用 0 会让「缺失」与「第一条」混同，丢包检测失效） | 我方 |
+| `app/src/main/java/.../xposed/{HookRuntime,BinderTransport}.kt`（均新增） | fork 独有：hook 层骨架。`HookRuntime`=信封装配 + **`emit()` 只入队、立即返回**（发送由独立线程 `drainLoop` 做）+ topic 订阅集合（**只认 topic、不认业务字段**——「Hook 层不知道工作流的存在」在数据层的落实）。`BinderTransport`=**两个等待 + bind**：① `UserManager.isUserUnlocked()`（目标 Service `directBootAware=false`，未解锁时组件在 package 解析阶段就被排除，表现与「包不可见」**一模一样**——这是 P0 那个「假的连不上」的真因）；② 系统服务就绪（`onSystemServerStarting` 时 `PackageManager` 为 null，约 11 秒后可用）。等待上限 **150 秒**（实测探针比设备解锁早约 47 秒，30 秒上限会过早放弃）。⚠️ **绝不用 `directBootAware=true` 来「修好连不上」**——那会掩盖真因。⚠️ `start()` **立即返回**（真实连接在后台线程），因为它跑在 `onSystemServerStarting` 调用栈上，**在那里阻塞会拖住 system_server 启动** | 我方 |
+| `app/src/main/java/.../services/HookChannelService.kt`（新增） | fork 独有：App 侧端点，**本仓库第一个真正返回 binder 的 Service**（现有全部 Service 含 `TriggerService` 的 `onBind` 都返回 null，它们靠 `startService` 存活）。⚠️ **刻意不设 `foregroundServiceType`、不做 `startForeground`** —— 被 system_server bind 这一事实本身就让 AMS 保着 App 进程，加 FGS 只会白引入常驻通知 + 额外权限负担。⚠️ `registerCallback` 里读到的 `callerUid` **只用于诊断日志、不作放行依据**——它区分不了「system_server 本人」与「任何 uid 1000 的东西」 | 我方 |
+| `app/src/main/java/.../core/xposed/HookChannelController.kt`（新增） | fork 独有：App 侧控制器（连接 / token / 丢包检测 / 路由）。⚠️⚠️ **实测抓出的真实漏洞**：未连接时本侧 token 是空串，而伪造者送 `token:""` 也是空串 ⇒ **空串比空串恒等**，无凭证信封会被放行。已加「本侧无 token 直接拒绝」的前置闸，并做反证确认变红。⚠️ token 用 `SecureRandom`（可预测的 token 等于没有）、比较用**恒定时间**（逐字符 `==` 会泄漏前缀信息）。⚠️ 丢包检测与丢弃计数上报都在这里（**必须显式告知用户**，否则他只看到「触发器偶尔没反应」） | 我方 |
+| `app/src/main/java/.../xposed/VFlowHookEntry.kt`（改） | 接入 `startChannel()` / `stopChannel()`。⚠️⚠️ **`onHotReloaded` 必须显式重建通道**（**实测踩出来的**）：官方明文「Hot reload **does not automatically replay** this callback or package lifecycle callbacks」⇒ `onSystemServerStarting` **不会**在新代际里被重放；而热更新是新 classloader 加载新代码，新代际的 `runtime`/`transport` 字段**全是 null**。第一版只打日志 → 重装 APK 后通道**永久消失**（表现「触发器再也不工作」，日志里只有一行 onHotReloaded、看起来一切正常）。⚠️ `onHotReloading` 里必须 `stopChannel()`（官方要求停掉自己的线程）——否则旧代际的等待线程与新代际的并存，两个线程抢同一个 Service | **我方**（fork 新增文件内完善） |
+| `app/src/main/AndroidManifest.xml`（改） | 追加 `HookChannelService` 声明（`exported="true"` + `android:permission="com.chaomixian.vflow.permission.HOOK_CONTROL"`） | **手动合并**（追加声明） |
+| `app/proguard-rules.pro`（改） | 第 31 节追加 ④⑤：keep `IHookHost`/`IHookCallback`（含 `$Stub`，形状照第 10 节 Shizuku & AIDL）+ `HookChannelService` + `keepnames` wire 层。⚠️ 其余 hook 层类**不逐个 keep**——只有「按名字被外部找到的」才需要（入口类 / AIDL / provider）；`BinderTransport`、`HookRuntime` 实测被重命名但功能正常（线程名 `VFlowHook-connect` / `VFlowHook-drain` 在 dex 里可证仍在） | **手动合并**（追加） |
+| `test/.../xposed/{EventEnvelopeCodecTest,EventQueueTest,WireLayerPurityTest}.kt` + `test/.../core/xposed/HookChannelControllerTest.kt`（均新增） | fork 独有：**30 例**。重点是「改错了不报错、只静默变差」的地方：坏 JSON 必须返回 null 而非抛（binder 线程上抛异常无人处理）、未知 topic 保留给上层忽略、信封层不解析 payload（键顺序/转义都不能变）、`clear()` 不清丢弃计数、容量 0 不崩（构造期崩溃发生在 system_server 里）、token 恒定时间比较与长度安全、**wire 层依赖白名单**（含「注释剥离不能剥过头」的元测试）。关键用例均已**反证**（改回 bug 版本确认变红） | 我方 |
+
+### Xposed 通道 P3（触发器闭环，2026-09-27）—— 已接入现有触发器体系
+
+> P3 的目标：让 `vflow.trigger.activity_changed` 能在编辑器里配、真正触发工作流。
+> 设计文档 §3.4.3 要求：**新增 hook 触发器 = 框架 + 适配器**，
+> 而「触发器模块 / Handler / 两处注册 / 文案」这几步与**非 Xposed 触发器完全一致**
+> —— 刻意不另立平行注册体系，否则将来会有两个触发器体系。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `core/workflow/module/triggers/ActivityChangedTriggerModule.kt`（新增） | fork 独有：Activity 切换触发器模块定义（`vflow.trigger.activity_changed`）。4 个输入（包名 / Activity 类名 / 匹配方式 / 冷却）+ 6 个输出（含 `intent_uri` / `extras_json` / `truncated`）。⚠️ **空参数 = 任意**（不是「都不匹配」）——反过来会让「新建触发器还没填条件」表现为「配了但永不触发」。⚠️ **`extras_json` 不逐键建输出**：extras 的键**不可枚举**（任何 App 都能塞任意键），故只给一个 JSON 字符串由下游解析（与 `OutputDefinition.dictionaryKeys` 机制一致）。⚠️ 冷却**默认 1000ms**：`activityResumedLocked` 每次 resume 都触发（含返回、锁屏解锁、同 Activity 重入），默认不冷却会瞬间刷爆工作流。⚠️ 匹配方式存**稳定常量** `contains`/`exact`（不存本地化文案，否则切语言后已保存的工作流失配） | 我方 |
+| `core/workflow/module/triggers/ActivityChangedTriggerData.kt`（新增） | fork 独有：`@Parcelize` 载荷。⚠️ `truncated` 字段**必须传下去** —— 载荷可能因 Binder 1 MB 事务上限被截断，不告诉用户的话「extras 少了几个键」会被当成「那个 App 本来就没传」，他会去查错的地方 | 我方 |
+| `core/workflow/module/triggers/handlers/ActivityChangedTriggerHandler.kt`（新增） | fork 独有：Handler。⚠️⚠️ **必须继承 `BaseTriggerHandler`，不能用 `ListeningTriggerHandler`** —— 后者四个方法全 `final`、只在「空↔非空」边界触发，会导致**已有 1 个触发器时再加第 2 个、条件永远下不去**（第 2 个静默不触发）。这是 `LogcatTriggerHandler` 类注释里记的同一条教训。⚠️ 条件下发是**全量替换**（每次增删都重发）。⚠️ **过滤分两层**：hook 层只按「包是否被关心」粗筛（避免 hook 所有进程/洪泛），App 侧按 `TriggerSpec.parameters` 精确匹配 —— **判定权在 App 侧**（§3.2 硬约束）。⚠️ 冷却**窗口内的命中不记账**（若每次都记账，持续高频切换会让窗口无限顺延、触发器永远不再触发）。⚠️ `normalizeMatchMode` 手工兜旧本地化值：模块的 `legacyValueMap` 只在**编辑器**路径生效，**读参数不走它** —— 不兜的话「用户选了精确匹配、实际按包含匹配」且不报错 | 我方 |
+| `core/xposed/XposedCapability.kt`（新增） | fork 独有：Xposed 通道的**能力探测**。⚠️⚠️ 判据是「**曾经**成功连上过」而不是「此刻连着」—— 这是本文件唯一需要解释的决策：`TriggerService.handleWorkflowChanged`（`:275`）在权限缺失时会**静默把整个工作流置为 `isEnabled=false`**（`:330-341`），而 hook 层的连接是**异步**的（要等系统服务就绪 + 用户解锁，可能几秒到几十秒）。判「此刻连着」会让「开机后 hook 还没连上」那个窗口期把用户的工作流关掉，表现为「明明装好了，开机后触发器就是不工作，手动重开一次才行」。⚠️ 代价：**首次配好 LSPosed 后需要连上一次**（重启设备）才算具备能力，这一步已写进权限描述 | 我方 |
+| `permissions/PermissionManager.kt`（改） | 新增 `XPOSED_HOOK` 能力权限常量 **+ `xposedHookStrategy` 策略**（两处缺一不可）。⚠️⚠️ **只加常量不加策略是本改动最容易漏的一半**：`strategies` 是不可变 map，`isGranted` 对未登记的权限会**回落到 `runtimeStrategy`** ⇒ 恒判「缺权限」⇒ 又是静默禁用整个工作流。形态照 `shizukuStrategy`（判「Shizuku 服务是否在跑」），本权限判「XposedCapability」 | **手动合并**（追加常量 + 策略 + map 一行） |
+| `core/workflow/module/ModuleRegistry.kt` / `.../triggers/handlers/TriggerHandlerRegistry.kt`（改） | 按分类**各追加一行**注册（不重排既有注册） | **手动合并**（追加一行） |
+| `res/values{,-en,-ja}/strings_module.xml`（改） | 追加 Activity 切换触发器文案 18 条 ×3 语言 | **手动合并**（追加条目） |
+| `res/values{,-en,-ja}/strings.xml`（改） | 追加权限文案 `permission_name_xposed_hook` / `permission_desc_xposed_hook` ×3 语言 | **手动合并**（追加条目） |
+| `core/xposed/HookChannelController.kt`（改） | ① 移除 P2 的「无条件全订阅」（那是当时的临时手段）—— 订阅权改由 Handler 按触发器实际配置下发，否则两者打架（Handler 想「没有触发器就卸下 hook」，兜底却坚持「全订阅」⇒ 永远在采）；② 新增 `setOnConnectedListener` + `attach(context)`：连接建立时通知业务层**重下发条件**（hook 层重启后内存里的条件是空的 —— 决策 14 条件不落盘），不做的话表现为「重启后触发器再也不触发」而通道看着是活的 | **我方**（fork 新增文件内完善） |
+| `test/.../triggers/ActivityChangedTriggerHandlerTest.kt`（新增，19 例） | fork 独有。重点：**同包不同 Activity 能区分**（本触发器存在的理由）、空参数=任意、旧本地化 match_mode 值**端到端**生效（防「归一化函数对了但没被调用」）、冷却窗口不被窗口内命中顺延、负数冷却钳到 0 | 我方 |
+| `test/.../triggers/ActivityChangedTriggerModuleTest.kt`（新增，12 例） | fork 独有：**声明体检**。⚠️ 其中两例专门锁「静默禁用整个工作流」的两个半：必须声明 `XPOSED_HOOK`、且 `strategies` 表里**必须有**它（第二例走反射读私有 `strategies`，已做反证：去掉登记即变红） | 我方 |
+
+### Xposed 通道 P4（状态展示与授权引导，2026-09-27）—— 含 **6 处实测暴露的缺陷修复**
+
+> 上游文档：`docs/fork/xposed-channel-design.md`（架构）、
+> `docs/fork/xposed-channel-p4-design.md`（P4 落地设计）、
+> `docs/fork/surveys/shortx-script-capability.md`（外部调研）。
+> **P4a 状态判据 / P4b 授权引导 / P4c 首页展示 / P4d 移探针**，均已真机验证。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `core/xposed/XposedState.kt`（新增） | fork 独有：**状态判定纯函数层**（两组状态位 + 引导判定 + **点击行为分类** + scope 描述），无 Android 依赖、可纯 JVM 单测。⚠️⚠️ **为什么是两组状态位而非一个枚举**（设计文档 §3.3 的硬要求）：「框架在不在」与「事件能不能流过来」是**两件独立的事**，压成一个会让 `ACTIVE + DISCONNECTED` 这一格**表示不出来** —— 而那是最容易被误判成「框架问题」的一格（用户会去改本来正确的配置）。⚠️ `Channel` 的判定**不依赖 `Framework`**（耦合了那一格就永远判不出）。⚠️ **`scope` 不参与 `Channel` 判定**，以 `runningTargets`（实际结果）为准而非 `scope`（配置）。⚠️ `tapAction()` 区分 `GUIDE` / `RECONNECT_HINT` —— 见缺陷 ④ | 我方 |
+| `core/xposed/XposedFrameworkMonitor.kt`（新增） | fork 独有：官方框架信息的**状态源**（**由临时探针改写而来**，不是新建第二个文件 —— `XposedServiceHelper.registerListener` **无注销方法**，并存会双回调）。持有 `XposedService`，暴露 `StateFlow` + `evaluate()`。⚠️ 提供 L1（`onServiceBind`/`onServiceDied`）/ L2（`getScope`）/ L3（`getRunningTargets`）**三层**，**不含 L0**（那是 App 自己与 `HookChannelService` 的连接）。⚠️ `requestSystemScope()` 封装官方 `XposedService.requestScope()` —— **这是「请求授权」的正确做法**，官方**没有**「打开 LSPosed 管理器」的 API | 我方 |
+| `core/xposed/XposedCapability.kt`（**重写**） | ⚠️⚠️ **判据由「曾经连上过（持久化）」改为「框架此刻连着（实时）」** —— 与 `shizukuStrategy`（判 `isShizukuActive`）同源。**推翻自己的设计**，理由记在类注释里：原判据是为绕开「启动时序导致误禁工作流」而设，但**解法用错了地方** —— 它让权限变成永久授权，导致 ① 用户在 LSPosed 里关掉模块后**权限页仍显示「已授权」**（实测确认）；② 而 vFlow **其他所有权限判据都是实时的** ⇒ XPOSED 成了体系里的**异类**；③ 更糟：「已授权」**掩盖真实失效**。⚠️ 删掉 SharedPreferences 写入（`Monitor` / `HookChannelController` 两处）与 `markConnected()`。**决定（C 方案）：不加「不禁用工作流」的豁免** —— 因为那会引入**又一个写死 id 的后门**（`TriggerService` 里已有一个给无障碍的），等于再造异类；已核实恢复闭环是**通用的**（`WorkflowPermissionRecovery`，6 处触发点含每 10 秒轮询） | **我方** |
+| `core/xposed/HookChannelController.kt`（改） | ① **加 `StateFlow<Boolean> connected`** —— UI 无法 `collect` 同步的 `isConnected()`；且它与框架状态**独立**（「框架正常但通道断」是单独一格）。② 去掉 `markConnected` 调用（判据改实时）。③ **修掉一个真实漏洞**：未连接时本侧 token 是空串，而伪造者送 `token:""` 也是空串 ⇒ **空串比空串恒等** ⇒ 无凭证信封被放行（已加前置闸 + 反证） | **我方** |
+| `core/xposed/BinderTransport.kt`、`VFlowHookEntry.kt`（修 **缺陷 ①**） | ⚠️⚠️ **实测暴露：`onServiceDisconnected` 只清 `host`、不重连** ⇒ 断开后**永久失联**，Activity 触发器再也不工作、**只能靠重启 App 恢复**。而触发断开最常见的场景恰恰是**我们自己的部署流程**（重装 APK ⇒ App 被杀）与**热更新换代** —— 用户看到「装了新版本之后触发器就不灵了」。修复：**退避重连**（1s→2s→…→封顶 30s，最多 20 次 ≈6 分钟）+ **存活性巡检**（每 15s 查 `binder.isBinderAlive`，兜底 `onServiceDisconnected` **不触发**的情况 —— `LogcatStreamWrapper` 踩过同一个坑）。⚠️ 重连后必须用 **`remountSources()`（先 unmount 再挂）** 而非 `mountSources()` —— 后者的幂等守卫 `if (handle != null) return` 在换代后是**错的**（旧句柄非 null 但已失效）⇒ **hook 点永远挂不上**，表现为「连上了、状态正常，但什么都不触发」。⚠️ 退避计算抽成纯函数以便单测（「退避算错」是**静默**的） | **我方** |
+| `core/xposed/HookRuntime.kt`（改） | 上述重连的重挂支持（`remountSources()`）。⚠️ **我一度加的 `requestConditionResend()` 已删** —— 它调 `emit()` 而 `emit()` 在 token 为空时 return，**重连那一刻 token 恰是空的**（鸡生蛋）；且 App 侧**早就**在连接建立时重下发了（P3 的 `onConnected` → `syncToChannel()`）。两个理由都记在原地注释，避免将来有人再加一遍 | **我方** |
+| `permissions/Permission.kt`、`PermissionManager.kt`（改，修 **缺陷 ②**） | 新增 `grantedExternally` 字段（带默认值，向后兼容）+ `XPOSED_HOOK` 置 `true`。⚠️⚠️ **修的是一个功能缺口**：`createRequestIntent()` 返回 `null` 有**两种完全不同的含义**（「运行时权限」vs「没法在 App 内授予」），而两个 UI 入口**都当成前者** ⇒ 对 `XPOSED_HOOK`：`PermissionActivity` 转 `autoGrantPermission`（要 Shizuku/Root，失败）、`OnboardingActivity` 当运行时权限去 `requestPermissions`（**弹不出对话框**）⇒ **用户点「授予」什么都不发生、也没有提示** | **手动合并**（新增字段 + 常量标记 + 2 处 UI 分支） |
+| `ui/settings/XposedGuideDialog.kt`（新增） | fork 独有：授权引导对话框。⚠️ **措辞必须能力导向** —— 本通道是**通用**的，后续会有很多触发器/模块接入，所以文案**不出现具体触发器名**（早期版本写过「用于获取当前 Activity 与启动 Intent」，那是把通道当成单一功能，已改；权限描述同步改）。⚠️ **两条路并存**：框架已在跑 → 「请求授权」按钮调 `requestScope(["system"])`；框架未启用 → 文字步骤（此时 `requestScope` 调不了）。⚠️ 带**实时状态行 + 当前作用域**，让用户能自我核对（LSPosed 里没有任何反馈）。⚠️ 状态文案**按状态分流**，尤其 `ACTIVE + DISCONNECTED` 必须说「正在重连」而非「去检查 LSPosed」 | 我方 |
+| `ui/home/HomeScreen.kt`（改，修 **缺陷 ③**） | ① `HomeUiState` 加 4 个 Xposed 字段；② **布局改版**（用户定）：Xposed 状态卡**占据 Core 卡右侧大卡位**，两个统计小卡**下移并排**（原为右列堆叠）；③ 新增 `XposedStatusCard`（与 `CoreStatusCard` 同构，**常驻显示不做条件显隐** —— 条件显隐会让 Core 卡突然变宽、布局跳动，且「存在本身即信息」）；④ **配色只用两种**（正常/异常），三种失败态靠**图标 + 文案**区分；⑤ 丢弃提示走 `HomeInfoCard` **条件显示**（`> 0` 才出现，出现/消失不影响网格）；⑥ 刷新**走推送**（订阅 `Monitor.state` + `Controller.connected` **两条**，因为两组状态位独立），**Core 那套轮询保持不动**（它无推送源）。⚠️ **缺陷 ③**：点击分类原本写 `if (needsGuidance) 引导 else 重连提示`，而 `needsGuidance` 对**正常**也返回 false ⇒ **一切正常时点卡片会弹「通道正在重连」**（莫名其妙的提示）。已抽成 `XposedState.tapAction()` + 4 例单测 + **反证**（改回 bug 版本即变红） | **手动合并** |
+| `res/drawable/rounded_{extension_off,rule}_24.xml`（新增） | fork 独有：Xposed 状态卡的两个失败态图标（`rounded_sync_problem_24` 已有）。⚠️ 照既有 `rounded_*` 形态做 | 我方 |
+| `VFlowApplication.kt`（改） | **一行**：启动时注册框架监听。⚠️ 必须**尽早**（`onServiceBind` 是推送的、不重放，晚了永远收不到）。⚠️ 放在 `DebugLogger.initialize` 之后（Monitor 要打日志）。⚠️ 只注册、不做耗时操作 | **手动合并**（新增 1 行） |
+| `test/.../core/xposed/XposedStateTest.kt`（新增，22 例） | fork 独有。重点：**`ACTIVE` + `DISCONNECTED` 必须可达且不健康**（本设计的全部意义）、**且不引导用户改框架配置**、`scope` 不参与判定、`everConnected` 只在断开时起作用（**我写错过这条断言**：把持久化历史标记误当成当前状态的一部分；测试改了、代码没改）、点击分类四例 | 我方 |
+| `test/.../xposed/ReconnectPolicyTest.kt`（新增，6 例） | fork 独有：退避策略（翻倍、封顶 30s、5 步到顶、尝试上限）+ **反向约束**「20 次总等待 > 3 分钟」（上限太小会被一次较长重启耗尽） | 我方 |
+| `test/.../permissions/ExternallyGrantedPermissionTest.kt`（新增，6 例） | fork 独有。**含反向断言**：不能为了修 XPOSED 就把所有 SPECIAL 权限都标成外部授予（那会把「能跳设置页」的权限也改成弹对话框，把好用的路径改坏）。已反证 | 我方 |
+| `ui/settings/SettingsScreen.kt`、`SettingsRoute.kt`（改） | **移除临时探针入口**（P4 前置期的调试按钮，职责已由状态卡取代）。`core/xposed/XposedFrameworkProbe.kt` 在 P4a 被**改写**为 `XposedFrameworkMonitor`（非新建，理由见上） | **手动合并**（移除） |
+| 三语 `strings*.xml` | 追加 Xposed 状态卡文案 11 条 ×3 + 引导文案 11 条 ×3；**并把权限描述从「用于获取当前 Activity」改为能力导向**（通道是通用的） | **手动合并**（追加/改写条目） |
+| `docs/fork/xposed-channel-p4-design.md`（新增） | fork 独有：**P4 落地设计**（状态位判据的四层信息 L0–L3、组合判定表、授权引导、首页布局与卡片设计、实施顺序与验收项） | 我方 |
+| `docs/fork/surveys/shortx-script-capability.md`（新增） | fork 独有：**ShortX 脚本机制深度调研**（引擎 = Rhino + MVEL、跑在 system_server、无超时无沙箱、五类落点；⭐ **关键位置发现**：`MethodHookExpressions` **只有 MVEL 没有 JS**、且其求值在**被 hook 的进程内** ⇒「能摸到宿主对象」是 **hook 能力而非脚本能力**；能力差距分 A/B 两类；§6 给出**不建议为 system_server 内执行脚本开口子**的五条依据）。该结论已写入 `xposed-channel-design.md` | 我方 |
+| `docs/fork/xposed-channel-design.md`（改） | ① 头部状态更新（v2.2「未实现」→ v3.0「第一层已实现」）；② **决策 11/16 改判**（`TriggerService` 的 `exported` **是必需的**、Core 的 `BIND_ADDRESS` **保留** —— 新增 §5.3.3 记录核实依据与风险定性）；③ 新增 §6 **实施进度对照表**；④ **#15 结案**（实测 `callerUid=1000` + `registerCallback` 成功；机制是 **uid < 10000 时签名权限检查豁免**，故 `android:permission` 防普通 App、token 防伪造上行，**两者不是二选一**）；⑤ 记录官方框架 API 实测结果、**「为什么不给 system_server 内执行脚本开口子」**、以及**事件消费者单槽位缺陷**（加第二个 hook 触发器前必修） | **我方** |
+| `docs/fork/surveys/README.md`（改） | 索引追加 `shortx-script-capability.md` 一行 | **手动合并**（追加） |
+
+### 另三处**早期修复**（P4 期间一并补记）
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `core/xposed/HookConditionWire.kt`（改，修 **缺陷 ④**） | ⚠️⚠️ **包下推的判据必须比 App 侧宽松** —— 原实现用**精确匹配**，而 App 侧是**包含 + 忽略大小写**。用户填 `com.android.set`（默认「包含」模式）⇒ App 侧本该匹配 `com.android.settings`，但 hook 层精确匹配失败 ⇒ **事件根本不发出来** ⇒ 静默漏采（用户看到「配了但不触发」，App 侧日志什么都没有，排查会一直往 hook 点或系统版本上找）。已改为包含 + 忽略大小写。✅ **2026-09-27 真机验证通过**（用户实测：填部分包名仍能正常触发）。⚠️ **类名不下推是有意的**：要么紧（把 App 侧「包含」当白名单精确值 ⇒ 漏采）、要么松（子串匹配几乎放行一切），两头不讨好 | **我方** |
+| `.../handlers/ActivityChangedTriggerHandler.kt`（改，修 **缺陷 ⑤**） | ⚠️⚠️ **下推白名单的选择性**：只要有**任一**触发器的包过滤推不了（**空 = 任意包**，或**含 `{{变量}}`**），就必须**整体放弃下推**（返回空列表 = 不限包）。原实现是「尽力而为地推一部分」⇒ 推不了的那个触发器**静默漏采**（用户配「任意包」却只在别的触发器列举的包里触发，可发现性极差：部分能用、换包就不灵）。⚠️ **变量的值理论上可静态解析**（`GlobalVariableStore` 是同步读、触发器只能引用全局变量），但**不做** —— 因为该 Store **无变更通知**，用户改了全局变量我们不知道 ⇒ 会下发**过期白名单** ⇒ 又是漏采（决策 17 的镜像）。理由记在 `computePushdownPackages()` 的注释里。✅ **2026-09-27 真机验证通过**（用户实测） | **我方** |
+| `.../handlers/ActivityChangedTriggerHandler.kt`（改，修 **缺陷 ⑥**） | 日志措辞：⚠️ `TriggerService` 加载触发器**比 hook 层连接早约 1.6 秒**（实测）⇒ 首次下推**必然失败**，而旧文案说「需在 LSPosed 中启用并重启设备」—— **用户的配置其实完全正确**，会被误导去白折腾。已改为区分「还没连上（会自动重下发，无需处理）」与「持续失败（才检查配置）」。⚠️ **成功路径也加了日志**（原只有失败才打）—— 否则「重连后自动重下发」在日志里**完全不可见**，而它恰是最需要确认的一步 | **我方** |
+
+### 另两处修复（事件消费者单槽位 + 状态卡文案，2026-09-27）
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `core/xposed/HookChannelController.kt`（改，修 **缺陷 ⑧**） | ⚠️⚠️ **事件消费者从「单槽位」改为「按 topic 分发的注册表」**。原实现是 `var eventSink: ((EventEnvelope) -> Unit)?` + `setEventSink()`，语义是**后注册的覆盖先注册的**。只有一个消费者时看不出问题，但**第二个 hook 触发器一加就出事**：<br/>`ActivityChangedTriggerHandler.start() → setEventSink(activity 的)`<br/>`KeyComboTriggerHandler.start() → setEventSink(组合键的)` ← **覆盖** ⇒ Activity 触发器**静默不再收到任何事件**。<br/>⚠️ 且是**双向的**：`TriggerHandlerRegistry` 按注册顺序建实例再统一 `start()` ⇒ **注册顺序靠后的那个会赢**，改一行顺序就换一个触发器失灵。表现是「新加的触发器能用、原来那个不触发了」，而 `HookSource` / `HookRuntime` 那两层**看起来毫无问题**（它们确实没问题，坏的是 App 侧分发）。<br/>现改为 `ConcurrentHashMap<String, (EventEnvelope) -> Unit>` + `registerSink(topic, sink)` / `unregisterSink(topic)`，`onReport` 按 `envelope.topic` 查表，**未知 topic 忽略**（§3.4.5）。⚠️ **按 topic 做 key 而非「广播给所有回调」**：每个 hook 触发器只关心自己的 topic（§3.4.2 的主题路由），无差别广播会让每个 Handler 都要自己过滤、且容易漏判。⚠️ `stop()` 从 `setEventSink(null)`（清空唯一槽位）改为 `unregisterSink(自己的 topic)` —— 注册表语义下前者会**误伤其他消费者** | **我方** |
+| `test/.../core/xposed/HookChannelControllerTest.kt`（改，+4 例） | fork 独有：注册表的**真正走分发路径**的测试（多 topic 并存互不挤掉、注销一个不影响另一个、未知 topic 忽略）。⚠️⚠️ **这里有一个方法论教训**：我第一版写的测试**「反证时不变红」**——因为正常路径的 token 由 `SecureRandom` 生成、**测试拿不到** ⇒ 所有 `onReport` 都在 **token 校验那步 return** ⇒ 测试**永远走不到分发逻辑**。写了「看起来在测分发」的用例、实际什么都没测。<br/>修法是加 `injectTokenForTest(knownToken)` 测试接缝（已注明理由，避免后人以为多余而删）。改后反证成立（把 `registerSink` 退化成 `eventSinks.clear()` 后**两条同时变红**）。<br/>这与本仓库既有的教训同源：**测试要经过调用点，否则反证不会变红** | 我方 |
+| `core/xposed/XposedFrameworkMonitor.kt`（改） | `Observation` 新增 `frameworkName` / `frameworkVersion` 两个字段（此前只在日志里用过、快照里没存）—— 首页状态卡要用它们显示「LSPosed 2.2.0」。⚠️ 每个字段单独 `try/catch`（`XposedService` 是对远端 AIDL 的包装，某个 getter 抛异常不该让整个观测失败）。⚠️ **断开时清空**（它是「当前连着」的信息，不是历史） | **我方** |
+| `ui/home/HomeScreen.kt`（改） | ① 状态卡标题去掉「通道」二字（三语统一为 **Xposed**）；② 卡内小字由「作用域：system」改为**框架版本**（如 `LSPosed 2.2.0`）—— 用户反馈那一行更有用的是「我装的是哪个版」；作用域信息仍保留在引导对话框里（那里是核对配置的合适位置）。⚠️ 格式化时**任一为空则整体为空**，不拼出 `LSPosed ` 或 ` 2.2.0` 这种半截串（半截串会显示一行无意义内容）。⚠️ 异常时小字仍是「点击查看如何启用」（版本只在框架连着时有意义） | **手动合并** |
+| 三语 `strings*.xml`（改） | `home_xposed_title` 去掉「通道」；**删除 `home_xposed_scope`**（改为版本显示后失去引用）。⚠️ **注意区分**：`FORK.md` 里「孤儿字符串故意保留」那条指的是**存量的、用户已确认保留的**那批；**本次改动新造**的孤儿（刚引入就废弃、从无引用场景）应当**删除**，不是套用那条约定 | **手动合并**（改写 + 删除条目） |
+
 > **新增分歧时**：必须写清「文件/范围」「分歧内容」「冲突归属」三列。冲突归属一般是：
 > - **我方**：fork 独有的新增文件/新增模块，保留我方。
 > - **上游**：上游改动的文件，取上游版本。
