@@ -2094,6 +2094,103 @@ ActivityChangedTriggerHandler.start() → setEventSink(activity 的)
 > 反证随即成立（退化成 `eventSinks.clear()` ⇒ 两条同时变红）。
 > **与本仓库既有教训同源：测试要经过调用点，否则反证不会变红。**
 
+### ❌ 已知未修：同形的两处「单份状态被多消费者替换」（2026-09-28）
+
+**发现于 2026-09-28 的架构评审**（用户要求评审「通道扩展性」时核对出来的）。
+
+**上面 `eventSink` 那个坑修了，但同形的还有两处没修。** 三者的共同模式是：
+**一份共享的单份状态，被多个消费者用「赋值/替换」的方式使用**（正确做法是**按 key 的注册表**）。
+
+#### 缺陷 1：`onConnected` 是单槽位（后注册覆盖先注册）
+
+```kotlin
+// core/xposed/HookChannelController.kt:185
+private var onConnected: (() -> Unit)? = null
+fun setOnConnectedListener(listener: (() -> Unit)?) { onConnected = listener }
+//                            ↑ 注释自己写着「后注册的覆盖先注册的」
+```
+
+用途：hook 层重启/热更新后它内存里的条件会清空（**条件不落盘，决策 14**），
+所以连接建立时必须重推一次。现由 `ActivityChangedTriggerHandler.kt:83` 注册。
+
+```
+1. ActivityChangedTriggerHandler.start() → 注册 { syncToChannel() }
+2. 第二个 hook 触发器 Handler.start()    → 注册它的        ← 覆盖
+3. 连接建立 → onConnected?.invoke()      → 只调第二个
+   ⇒ Activity 的条件**永远不重推** ⇒ 「hook 层重启后触发器再也不触发」
+```
+
+⚠️ **讽刺之处**：`ActivityChangedTriggerHandler.kt:77-79` 的注释**刚刚**记下了
+`eventSink` 的教训（「单槽位会让第二个触发器把本处理器挤掉」），
+**紧接着三行就用了 `setOnConnectedListener`** —— 同一个坑，当时没意识到。
+而 `setOnConnectedListener` 的注释**自己承认了「后注册的覆盖先注册的」**。
+
+**修法**：改成按 key 的多槽位注册表（照 `eventSinks` 的做法）。
+⚠️ `stop()` 里的 `setOnConnectedListener(null)`（`:102`）是「清空唯一槽位」，
+注册表语义下会**误伤其他消费者**，须改为只注销自己的 key。
+
+#### 缺陷 2：`conditions` 是单写者（各 Handler 只算自己那份，但语义是全量替换）
+
+```kotlin
+// ActivityChangedTriggerHandler.kt:150-157
+val topics = if (listeningTriggers.isEmpty()) emptyList()
+             else listOf(ActivityPayload.TOPIC)     // ← 只算自己这一个 topic
+pushConditionsToChannel(topics, computePushdownPackages())
+```
+
+```kotlin
+// xposed/HookRuntime.kt:288-313  接收端
+subscribedTopics = parseTopics(conditionsJson)      // ← 全量替换，不是合并
+for (s in sources) { s.applyConditions(conditionsJson) }   // ← 同一份发给所有 source
+```
+
+`pushConditions` 的**全量替换语义是对的**（`IHookCallback.aidl:18`：
+「空串表示没有触发器了，请卸下 hook」）—— 因为 hook 层不做判定，
+App 必须给出**完整的当前视图**。**错的是「每个 Handler 只算自己那一份」**：
+
+```
+1. Activity 触发器存在 → push(["hook.activity.changed"]) → hook 层订阅 {activity}
+2. 又配了第二个 hook 触发器 → 它 syncToChannel()
+     → push(["hook.key.combo"])        ← 只算自己的
+     → 全量替换 ⇒ 订阅变成 {key.combo}，activity **被抹掉** ❌
+3. Activity 触发器静默失效
+```
+
+**谁后跑谁赢**，取决于触发器增删顺序 —— 与缺陷 1 一样是**不确定的、双向的**。
+表现是「有时能用有时不能」，**App 侧日志看不出**（sink 还注册着却收不到事件）、
+**hook 层日志也正常**（条件确实收到、确实生效）。
+
+**修法**：不要各 Handler 自己算 slice 再全量替换。改为**框架层维护
+「topic → 关心的包」的注册表**，由框架汇总成全量 conditions 再下发
+（与 `eventSinks` 的做法对称）。⚠️ 现有的 `computePushdownPackages()`
+（`ActivityChangedTriggerHandler.kt:188-212`）里那条「**任一触发器推不了包 ⇒ 整体放弃下推**」
+**是对的、且有实测锁住**（见 FORK.md 缺陷⑤），须一并纳入新机制而非丢弃。
+
+#### 附带发现：协议层的包过滤**不按 topic 分**
+
+```kotlin
+// xposed/wire/HookConditionWire.kt:131
+fun caresAboutPackage(packageName: String): Boolean {   // ← 没有 topic 参数
+    if (packages.isEmpty()) return true
+    return packages.any { filter -> packageName.contains(filter, ignoreCase = true) }
+}
+```
+
+`HookConditions` 里 `topics` 与 `packages` 是**同级全局字段**，无 per-topic 关联。
+⇒ **第 2 个 topic 出现时，topic A 的包白名单会错误地约束 topic B。**
+这属于**协议层改动**（须 bump `PROTOCOL_VERSION`），**加 handler 解决不了**。
+应与缺陷 2 一并改（引入「topic → 包」注册表时此处在同一条路上）。
+
+#### 为什么必须记在这里
+
+**三者都会在「加第二个 hook 触发器」时静默塌**，而本文 §7 决策 24 写的是
+「加第 30 个时改动面积与加第 1 个相同」——**以现在的代码，这句在第 2 个上就不成立。**
+
+⚠️ **当前不影响功能**：`xposed/sources/` 下只有一个 `ActivityChangedSource`，
+也只有一个 Handler，现有功能已真机验证、工作正常。这是**加第二个时才会发作的预埋缺陷**。
+
+> **加第二个 hook 触发器之前必须先修这三处。**
+
 ### 第一步：可行性探针 —— ✅ **大部分已完成**（v2.0）
 ### 第一步：可行性探针 —— ✅ **大部分已完成**（v2.0）
 
