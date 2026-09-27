@@ -1,10 +1,14 @@
 # vFlow 脚本体系梳理（JS / Lua 能力边界）
 
-> 版本：v1.1
-> 状态：代码走查 + 本机 Rhino 实测 + **真机验证**（2026-09-21）
-> v1.1 修订：JS 侧三项注入（Context / `importClass` / ClassLoader）**已实施并真机验证通过**
+> 版本：v1.2
+> 状态：代码走查 + 本机 Rhino 实测 + **真机验证**（v1.2 于 2026-09-27 补实战排查结论）
+> v1.1 修订（2026-09-21）：JS 侧三项注入（Context / `importClass` / ClassLoader）**已实施并真机验证通过**
 > —— §0 结论、§1 对照表、§4.3（加历史标注）、§10.1（新增实现与验证记录）已同步；
 > 原文中「JS 未注入 Context」的描述为**改动前的状态**，保留于 §4.3 并显式标注。
+> v1.2 修订（2026-09-27）：新增 **§8.5「写脚本时的高频陷阱」**（异步回调 `latch` 模式、
+> 错误被两层静默机制吞掉、`console` 缺失、App 与 system_server 的路径权限差异 —— 全部来自
+> 实际调试）；**§5.3 对照表按实测重写**，新增 §5.3.1（shell 只能做基本类型单向调用，
+> 传不了对象参数/读不了返回值）与 §5.3.2（编排能力是两个维度，非「谁更强」）。
 > 目录：`docs/fork/surveys/`（fork 新增文件，上游无此文件，冲突归属我方；同目录另见 [`README.md`](README.md) 索引）
 > 用途：**梳理 vFlow 两套脚本引擎的现状与能力边界**——脚本能看到什么、能触达什么、边界在哪、与同类的差距在哪，供后续开放能力与写脚本时对照。
 >
@@ -308,17 +312,64 @@ ScriptableObject.putProperty(importerTopLevel, "context",
 
 ### 5.3 逐项能力对照
 
+> ⚠️ **2026-09-27 修订**：本表「特权调用可绕」一行此前过于乐观，已按实测重写。
+> 详见 §5.3.1。
+
 | 能力 | ShortX | vFlow 脚本 |
 |---|---|---|
 | Rhino 语言能力 | ✅ | ✅ **等价**（§4.1 实测） |
-| `importClass` 语法糖 | ✅ | ❌ 需换 `ImporterTopLevel` |
-| 真 Context | ✅ system_server 级 | ⚠️ **Lua 有 App 级；JS 需补** |
+| `importClass` 语法糖 | ✅ | ✅ **已补**（2026-09-21） |
+| 真 Context | ✅ system_server 级 | ✅ App 级（已补） |
 | `context` 是系统 Context | ✅ | ❌ **不可能**（需 Xposed） |
-| **Hook / 方法拦截 / 进程注入** | ✅ | ❌ **完全不可能** |
-| 系统级 UI（状态栏 / QS / SystemUI） | ✅ | ❌ **不可能** |
-| Hidden API 全局豁免 | ✅ | ⚠️ 部分（Core 进程天然豁免，App 进程受限） |
-| 特权调用（小窗 / 任务栈） | ✅（UID 1000） | ✅ **可绕**（见 §6，走 shell） |
-| 模块生态 | 16 个固定 API | **约 192 个模块**（`vflow.*`） |
+| **Hook / 方法拦截 / 进程注入** | ✅ | ❌ **完全不可能**（需 Xposed） |
+| **SystemUI 侧能力**（QS 磁贴 / 边缘手势） | ✅ | ❌ **不可能**（需注入 SystemUI） |
+| Hidden API 全局豁免 | ✅ | ⚠️ 部分（Core/Shell 进程天然豁免，App 进程受限） |
+| 特权调用（小窗 / 任务栈） | ✅（UID 1000） | ⚠️ **部分可绕**（见 §5.3.1） |
+| 无障碍服务实例 | ✅ 直接可用（14 方法） | ⚠️ **有服务但未暴露给脚本** |
+| `console` 对象 | ✅ 11 方法 | ❌ **没有** |
+| 变量写入 | ✅ `writeGlobalVar` | ❌ **不能**（`global` 只读快照） |
+| 编排（运行时构造动作） | ✅ `executeAction(Message)` | ⚠️ **维度不同**（见 §5.3.2） |
+| 模块生态 | 16 个固定 API | **约 195 个模块**（`vflow.*`） |
+
+### 5.3.1 ⚠️ 「shell 可绕特权调用」—— 只对**基本类型单向调用**成立
+
+此前本表记「特权调用 ✅ 可绕（走 shell）」。**这个说法过于宽泛**，
+按 2026-09-27 的复核应改为：
+
+| 能力 | `service call` 能做吗 |
+|---|---|
+| 调系统服务方法 | ✅ |
+| 传**基本类型**参数（int / long / float / String） | ✅ |
+| **构造对象参数**（`Rect` / `ComponentName` / `Intent`） | ❌ **只能传 null** |
+| **读返回值**（拿对象做判断） | ❌ 只回 Parcel 十六进制文本 |
+| **链式调用**（前一次结果喂给下一次） | ❌ |
+
+**实证**：小窗那行命令
+`service call activity_task 138 i32 $TID i32 $flag s16 '' i32 0`
+—— 第 4 个参数（`Rect`）传的是 `0`（null），**不是不想传，是构造不出来**。
+
+> **结论**：shell 与 JS 不是「弱/强」，是「**单向 RPC**」与「**完整编程语言**」的关系。
+> 小窗能成，是因为它恰好只需要发一个 int。
+> 需要构造对象或读返回值的场景，shell 就废了 —— 而那正是 JS 在 system_server 里的真实价值。
+>
+> **但仍不建议为此搬 JS 进 system_server**：那几类需求用 Kotlin 在 hook 层
+> 做**固定模块**更省（如 `CloseActivity` 那样），不必开通用脚本通道。
+> 详见 `shortx-script-capability.md` §6-①。
+
+### 5.3.2 「编排能力」是两个维度，不是谁更强
+
+此前把 ShortX 的 `executeAction` 记作「vFlow 更强（有模块树）」，**这个判断不成立**：
+
+| 维度 | ShortX `executeAction(Message)` | vFlow `vflow.*` |
+|---|---|---|
+| 动作从哪来 | **运行时构造**（拼 protobuf） | **编译期注册**（静态路径） |
+| 拼类名动态调用 | ✅ | ❌ |
+| 批量提交 | ✅ `executeActions(List)` | ❌ |
+| 动作**总数** | 208 | **195**（vFlow 更多） |
+
+**即**：vFlow 覆盖面更广，ShortX 表达方式更灵活。
+且 ShortX 那条构造的是**内存里的动作树**、执行完即消失，
+**不是「用脚本创建工作流」**（那是编辑器职责，ShortX 也没有）。
 
 ### 5.4 覆盖率结论
 
@@ -458,6 +509,101 @@ vFlow 的 `scripted/` 目录是**模块粒度**的（`ScriptedModule`），**没
 
 ---
 
+## 8.5 写脚本时的高频陷阱（来自 2026-09-27 的实战排查）
+
+> 本节记录从「移植 ShortX 脚本到 vFlow」过程中实际踩出的坑。
+> 每一条都**不是理论**，是调试出来的。
+
+### 8.5.1 ⚠️ 异步回调：脚本退出后回调可能不再工作
+
+**症状**：脚本「不报错、但什么也没发生」。
+
+**成因**：脚本采用「发起异步操作 → 立即 `return` → 逻辑写在回调里」的结构：
+
+```javascript
+cam.takePicture(null, null, callback);   // 发起
+return { requested: true };              // ← 立刻返回，保存逻辑全在回调里
+```
+
+**脚本到这里就结束了**，回调在**退出之后**才需要执行。
+
+**本机实测（Rhino 1.9.0）**：
+
+| 场景 | 结果 |
+|---|---|
+| 回调时**手动 `Context.enter()`** | ✅ 成功 |
+| 回调时**不 enter** | ❌ `NullPointerException: "cx" is null` |
+
+即 Rhino 的 `Context` 是线程绑定的，而 `JsExecutor` 在脚本结束时会 `Context.exit()`。
+
+**修法**：用 `CountDownLatch` 在脚本内等待回调完成，不依赖宿主的生命周期实现：
+
+```javascript
+var latch = new java.util.concurrent.CountDownLatch(1);
+cam.takePicture(null, null, new Camera.PictureCallback({
+  onPictureTaken: function (data, c) {
+    try { /* 保存逻辑 */ }
+    finally { latch.countDown(); }      // ★ 必须在 finally —— 异常时不加会永久阻塞
+  }
+}));
+latch.await(15, java.util.concurrent.TimeUnit.SECONDS);
+```
+
+**适用范围**：**所有「发起异步操作、结果在回调里处理」的脚本** ——
+不只是拍照，网络请求、传感器监听、广播接收、`OnClickListener` 同理。
+
+**判断方法**：看脚本有没有「发起后立刻 return」这个结构。有，就该改成 `latch` 模式。
+
+> ⚠️ **注意区分**：`View.setOnClickListener` 这类**交互回调**不受影响 ——
+> 2026-09-27 真机验证过（悬浮窗点击关闭正常）。
+> 差异在于 Android 的 View 分发路径会**自己 `Context.enter()`**，而
+> `Camera.PictureCallback` 走的是另一条路径。**不能一概而论，要逐个实测。**
+
+### 8.5.2 ⚠️ 错误被两层静默机制吞掉
+
+```javascript
+} catch (efile) {
+    console.log("保存失败: " + efile);        // ← vFlow 里 console 根本不存在！
+    result.message = "保存失败: " + efile;    // ← 回调不跑就传不出来
+}
+```
+
+**结果**：失败信息既进不了日志（`console` 不存在），也进不了返回值（在回调里赋值）。
+表现为**彻底静默**。
+
+**修法**：脚本结尾 **`JSON.stringify(result)`** 返回。若返回 `[object Object]`，
+说明宿主把对象 toString 了 —— 必须显式转字符串。
+
+### 8.5.3 ⚠️ `console` 不存在（vFlow 缺这个对象，ShortX 有）
+
+从 ShortX / Auto.js 移植的脚本普遍以 `console.log` 打日志，在 vFlow 里会
+**直接抛 `ReferenceError`**（若在 `try` 外）或静默失效（若在 `try` 内）。
+
+**垫片**（贴在脚本开头）：
+
+```javascript
+if (typeof console === "undefined") {
+  var console = { log: function (m) { android.util.Log.d("js", String(m)); } };
+}
+```
+
+### 8.5.4 路径与权限：App 与 system_server 完全不同
+
+| 路径 | vFlow（App, uid 10684） | ShortX（system_server, uid 1000） |
+|---|---|---|
+| `/sdcard/DCIM/` | ✅ 有 `MANAGE_EXTERNAL_STORAGE` 可写 | ❌ **EACCES** |
+| `/data/system/` | ❌ | ✅ |
+| `/data/local/tmp/` | ❌ | ❌（属 shell uid 2000） |
+
+**成因**：`/sdcard` 是 **FUSE**，权限判定看「**包** + AppOps」，
+而 `uid 1000` **不是任何应用包**（`system_server` 没有 manifest）⇒ 被拒。
+`/data/system/` 是普通 ext4，走传统 Unix 权限 ⇒ 可写。
+
+> **这一条直接解释了为什么 ShortX 的脚本写 `/data/system/shortx/`。**
+> 移植时若原样照搬路径，在 vFlow 里会失败；反之亦然。
+
+---
+
 ## 9. 威胁模型与分级策略（评估）
 
 ### 9.1 vFlow 与 ShortX 的根本差异
@@ -577,8 +723,9 @@ ScriptableObject.putProperty(scope, "context",
 | Lua 也这样吗 | ❌ **不**，Lua 一直就注入了真 Context（`LuaExecutor.kt:36`） |
 | 能 100% 达到 ShortX 吗 | ❌ **不能，约 80%**。Hook / 进程注入 / SystemUI 是 Xposed 独有 |
 | 流体云能实现吗 | ✅ **能**，七项功能六项纯脚本可做（§6） |
-| 需要新模块吗 | ❌ **多数不需要** —— `shell_command` + `service call` 是通用逃生舱（§6.3） |
+| 需要新模块吗 | ⚠️ **视需求** —— `shell_command` + `service call` 能覆盖**基本类型单向调用**，但传不了对象参数/读不了返回值（§5.3.1） |
 | 还有什么没做 | ⚠️ **沙箱与来源分级（§10 第 5、6 项）** —— Java 互操作已放开，需配套管控 |
+| 写脚本最容易踩什么 | ⚠️ **异步回调**（§8.5.1）—— 发起后立刻 return 的脚本，回调可能不执行 |
 
 ---
 
@@ -611,3 +758,12 @@ RHINO=/c/Users/WHY/.gradle/caches/modules-2/files-2.1/org.mozilla/rhino/1.9.0/*/
   新增 §10.1「已实施改动与验证记录」（含真机六项探针结果与 APK 签名校验）；
   §10 落点表加状态列；§11 总结表补「已修复」「还有什么没做」两行。
   同步登记到 `FORK.md`（冲突归属：手动合并）。
+- **v1.2**（2026-09-27）：基于一次「移植 ShortX 拍照脚本失败」的实战排查，修正两处判断并补一节陷阱：
+  ① 新增 **§8.5 高频陷阱** —— 异步回调须用 `latch` 模式（本机实测 Rhino 回调需调用方 `enter`）、
+  错误被 `console` 缺失 + 回调赋值两层静默吞掉、App 与 system_server 的路径权限差异
+  （`/sdcard` 是 FUSE 看「包」而 uid 1000 无包身份）；
+  ② **§5.3.1 推翻「shell 可绕大部分特权调用」** —— `service call` 只能传基本类型、
+  读不到返回值、无法链式，实为「单向 RPC」而非「弱化的 JS」；
+  ③ **§5.3.2 修正「编排能力 vFlow 更强」** —— 实为两维度（静态路径 vs 运行时构造），
+  且 ShortX 那条**不是**「用脚本创建工作流」。
+  配套修订 `shortx-script-capability.md` v1.1（同三处结论）。
