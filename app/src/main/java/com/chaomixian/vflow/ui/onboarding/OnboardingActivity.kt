@@ -884,6 +884,14 @@ fun PermissionItemView(permission: Permission, onCheckChanged: () -> Unit) {
             if (!isGranted) {
                 Button(
                     onClick = {
+                        // ⚠️ 与 PermissionActivity 同一条修复：外部平台权限必须先识别，
+                        // 否则会被当成运行时权限去 requestPermissions ——
+                        // 而它不是系统权限，**对话框根本弹不出来**（系统静默拒绝）
+                        if (permission.grantedExternally) {
+                            com.chaomixian.vflow.ui.settings.XposedGuideDialog.show(context)
+                            return@Button
+                        }
+
                         // 统一权限请求逻辑
                         val intent = PermissionManager.getSpecialPermissionIntent(context, permission)
                         if (intent != null) {

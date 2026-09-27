@@ -1231,6 +1231,8 @@
     <string name="permission_desc_location">一部の Android バージョンでは、保存された Wi-Fi リストを取得するためにこの権限が必要です。</string>
     <string name="permission_name_background_location">バックグラウンドでの位置情報アクセス</string>
     <string name="permission_desc_background_location">位置トリガーなど、バックグラウンドで位置の変更を継続的に監視する必要がある場合は、この権限を使用します。</string>
+    <string name="permission_name_xposed_hook">Xposed チャンネル</string>
+    <string name="permission_desc_xposed_hook">Xposed チャンネルを通じてシステムプロセス内の情報取得とシステムレベルの操作を許可します。LSPosed で vFlow を有効にし、スコープ「システムフレームワーク」を選択する必要があります。</string>
     <string name="permission_name_shizuku">Shizuku</string>
     <string name="permission_desc_shizuku">Shell コマンドなど、より高い権限を必要とする操作を Shizuku を通じてアプリが実行できるようにします。</string>
     <string name="permission_name_battery">バックグラウンド実行許可</string>
@@ -1499,4 +1501,39 @@
     <string name="logcat_tag_stats_failed">TAG 統計に失敗しました。収集済み（収集ファイルが存在）であることと、Shell 権限を確認してください。</string>
 
 
+    <!-- Xposed チャンネル認可ガイド（fork） -->
+    <string name="xposed_guide_intro">Xposed チャンネルは、システムプロセス内の情報取得やシステムレベルの操作に使用します。</string>
+    <string name="xposed_guide_scope_hint">フレームワークは既に動作しています。「システムフレームワーク」スコープを vFlow に許可するだけです — 下の「認可をリクエスト」をタップすると、フレームワークが認可画面を表示します。
+
+注意：反映には一度再起動が必要です（スコープの注入はプロセス起動時に行われます）。</string>
+    <string name="xposed_guide_steps_when_unavailable">フレームワークが有効になっていません。以下を順に実行してください：
+
+1. LSPosed がインストールされていることを確認（Magisk / KernelSU で有効化）
+
+2. LSPosed マネージャーで vFlow モジュールを有効にし、スコープで「システムフレームワーク」を選択
+
+注意：「システムフレームワーク」を選択してください（vFlow 自身ではありません）。このモジュールはシステムプロセス内で動作します。
+
+3. 一度再起動
+
+完了後にこのページに戻ると、現在の状態が表示されます。</string>
+    <string name="xposed_guide_request_scope">認可をリクエスト</string>
+    <string name="xposed_guide_current_state">現在の状態</string>
+    <string name="xposed_guide_current_scope">現在のスコープ</string>
+    <string name="xposed_guide_ok">了解</string>
+    <string name="xposed_guide_state_ready">✅ 有効・正常に動作中</string>
+    <string name="xposed_guide_state_unavailable">未設定 — 上記の手順に従ってください</string>
+    <string name="xposed_guide_state_degraded">フレームワークが切断されました — LSPosed が停止している可能性があります</string>
+    <string name="xposed_guide_state_not_mounted">設定済みですが未反映 — 再起動が必要と思われます</string>
+    <string name="xposed_guide_state_disconnected">フレームワークは正常、チャンネル再接続中 — しばらくお待ちください。設定変更は不要です</string>
+    <string name="home_xposed_title">Xposed</string>
+    <string name="home_xposed_status_working">稼働中</string>
+    <string name="home_xposed_status_unavailable">未設定</string>
+    <string name="home_xposed_status_degraded">フレームワーク停止</string>
+    <string name="home_xposed_status_not_mounted">未マウント</string>
+    <string name="home_xposed_status_reconnecting">再接続中</string>
+    <string name="home_xposed_tap_to_fix">タップして有効化方法を確認</string>
+    <string name="home_xposed_reconnecting_hint">チャンネルを再接続中です。まもなく復旧します（設定変更は不要）</string>
+    <string name="home_xposed_dropped_title">イベント過多、%1$d 件破棄</string>
+    <string name="home_xposed_dropped_desc">イベントの発生が速すぎます。トリガー条件を絞るかクールダウンを延ばしてください。</string>
 </resources>

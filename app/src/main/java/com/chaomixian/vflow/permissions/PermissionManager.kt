@@ -194,6 +194,31 @@ object PermissionManager {
         descriptionStringRes = R.string.permission_desc_shizuku
     )
 
+    /**
+     * Xposed 通道能力（fork 新增）。
+     *
+     * ⚠️ 它不是系统权限，而是「LSPosed 里勾选了本模块的作用域」这一**外部前提**。
+     * 与 [SHIZUKU] 同类（后者判的是「Shizuku 服务是否在跑」）。
+     *
+     * ⚠️⚠️ 判据是「**曾经**成功连上过」而不是「此刻连着」——
+     * 连接是异步的，而 `TriggerService` 在权限缺失时会**静默禁用整个工作流**。
+     * 用「此刻连续」判定会让「开机后 hook 还没连上」那个窗口期把用户的工作流关掉。
+     * 详见 [com.chaomixian.vflow.core.xposed.XposedCapability] 的类注释。
+     */
+    val XPOSED_HOOK = Permission(
+        id = "vflow.permission.XPOSED_HOOK",
+        name = "Xposed 通道",
+        // ⚠️ 措辞必须**能力导向**，不能写成某个触发器的用途 —— 这是通用通道，
+        // 后续会有很多触发器接入（早期版本写成「用于获取当前 Activity」，已改）
+        description = "允许 vFlow 通过 Xposed 通道获取系统进程内的信息、执行系统级操作。需要在 LSPosed 中启用 vFlow 并勾选「系统框架」作用域。",
+        type = PermissionType.SPECIAL,
+        nameStringRes = R.string.permission_name_xposed_hook,
+        descriptionStringRes = R.string.permission_desc_xposed_hook,
+        // ⚠️ 授予动作在 **LSPosed 管理器**里做，不在 vFlow 内 ——
+        // 这条为 true 让 UI 弹「引导」而不是静默走 requestPermissions / autoGrant
+        grantedExternally = true
+    )
+
     // 定义电池优化白名单权限
     val IGNORE_BATTERY_OPTIMIZATIONS = Permission(
         id = "vflow.permission.IGNORE_BATTERY_OPTIMIZATIONS",
@@ -489,6 +514,21 @@ object PermissionManager {
         override fun createRequestIntent(context: Context, permission: Permission): Intent? = null // Shizuku 有专门的 API 请求
     }
 
+    /**
+     * Xposed 通道策略（fork 新增）。
+     *
+     * ⚠️ 判据是「曾经连上过」，见 [XPOSED_HOOK] 的说明。
+     * 没有这个策略条目时 `isGranted` 会**回落到 runtimeStrategy** ⇒ 恒判「缺权限」
+     * ⇒ `TriggerService` 静默禁用整个工作流（这是本仓库踩过的经典坑）。
+     */
+    private val xposedHookStrategy = object : PermissionStrategy {
+        override fun isGranted(context: Context, permission: Permission): Boolean =
+            com.chaomixian.vflow.core.xposed.XposedCapability.isGranted(context)
+
+        // 没有可跳转的授权页 —— 授权动作在 LSPosed 里做，不在本 App 内
+        override fun createRequestIntent(context: Context, permission: Permission): Intent? = null
+    }
+
     /** Root 策略 */
     private val rootStrategy = object : PermissionStrategy {
         override fun isGranted(context: Context, permission: Permission): Boolean {
@@ -629,6 +669,7 @@ object PermissionManager {
         NOTIFICATION_POLICY.id to notificationPolicyStrategy,
         EXACT_ALARM.id to exactAlarmStrategy,
         SHIZUKU.id to shizukuStrategy,
+        XPOSED_HOOK.id to xposedHookStrategy,
         ROOT.id to rootStrategy,
         STORAGE.id to storageStrategy,
         USAGE_STATS.id to usageStatsStrategy

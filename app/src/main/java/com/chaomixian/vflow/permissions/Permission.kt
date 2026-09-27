@@ -35,7 +35,25 @@ data class Permission(
     val type: PermissionType,
     val runtimePermissions: List<String> = emptyList(),
     @param:StringRes val nameStringRes: Int? = null,
-    @param:StringRes val descriptionStringRes: Int? = null
+    @param:StringRes val descriptionStringRes: Int? = null,
+    /**
+     * 该权限的授予动作是否发生在 **vFlow 之外**（如 LSPosed / 第三方框架）。
+     *
+     * ## ⚠️⚠️ 为什么必须有这个字段
+     *
+     * `createRequestIntent()` 返回 `null` 有两种**完全不同**的含义：
+     * - 「这是运行时权限，该走 `requestPermissions`」
+     * - 「这个权限**没法在 App 内授予**，用户得去别的地方操作」
+     *
+     * 而两个 UI 入口（`PermissionActivity` / `OnboardingActivity`）
+     * **都把 null 当成前者** —— 于是对 `XPOSED_HOOK` 这类权限，
+     * 它们要么去 `requestPermissions`（弹不出对话框、系统静默拒绝），
+     * 要么转去 `autoGrantPermission`（要 Shizuku/Root，且根本没有 shell 授予方式）。
+     *
+     * **表现是「点授予什么都不发生、也没有提示」** —— 又一个静默失效。
+     * 本字段让 UI 能识别这种情况并给出**引导**。
+     */
+    val grantedExternally: Boolean = false
 ) : Parcelable {
     /**
      * 获取本地化的权限名称

@@ -47,6 +47,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import android.widget.Toast
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -74,6 +75,10 @@ import com.chaomixian.vflow.core.logging.LogManager
 import com.chaomixian.vflow.core.logging.LogStatus
 import com.chaomixian.vflow.core.module.ModuleRegistry
 import com.chaomixian.vflow.core.workflow.WorkflowManager
+import com.chaomixian.vflow.core.xposed.HookChannelController
+import com.chaomixian.vflow.core.xposed.XposedFrameworkMonitor
+import com.chaomixian.vflow.core.xposed.XposedState
+import com.chaomixian.vflow.ui.settings.XposedGuideDialog
 import com.chaomixian.vflow.core.workflow.model.Workflow
 import com.chaomixian.vflow.permissions.PermissionActivity
 import com.chaomixian.vflow.permissions.PermissionManager
@@ -99,6 +104,17 @@ private data class HomeUiState(
     val coreRunningVersionName: String? = null,
     val corePackagedVersionName: String? = null,
     val missingPermissionCount: Int = 0,
+    // ── Xposed 通道状态（fork 新增）──
+    // ⚠️ 用**两个状态位**而不是一个枚举：见 XposedState 的类注释 ——
+    // 「框架在不在」与「事件能不能流过来」是两件独立的事，
+    // 压成一个会让「框架正常但通道断了」这一格**表示不出来**，
+    // 而它恰恰是最容易被误判成「框架问题」的。
+    val xposedResult: XposedState.Result? = null,
+    val xposedScope: List<String> = emptyList(),
+    /** 框架版本串（如 `LSPosed 2.2.0`）。断开时为空。 */
+    val xposedFrameworkVersion: String = "",
+    /** hook 层报告的事件丢弃数（> 0 才显示提示）。 */
+    val xposedDroppedCount: Long = 0,
     val quickWorkflows: List<Workflow> = emptyList(),
     val recentLogs: List<LogEntry> = emptyList(),
     val allLogs: List<LogEntry> = emptyList(),
@@ -164,6 +180,28 @@ fun HomeScreen(
         }
     }
 
+    /**
+     * 刷新 Xposed 通道状态（fork 新增）。
+     *
+     * ⚠️ 与 `refreshCoreStatus`（轮询）不同，这里**不需要轮询** ——
+     * `XposedFrameworkMonitor.state` 是 `StateFlow`，框架状态变化会**推送**过来
+     * （`onServiceBind` / `onServiceDied`）。见下面那个 LaunchedEffect。
+     */
+    fun refreshXposedStatus() {
+        // ⚠️ 确保监听已启动 —— Application.onCreate 里已调过，这里是兜底
+        // （某些入口可能先于 Application 初始化，且 start() 本身幂等）
+        com.chaomixian.vflow.core.xposed.XposedFrameworkMonitor.start(context)
+        val monitor = com.chaomixian.vflow.core.xposed.XposedFrameworkMonitor
+        monitor.refresh()
+        uiState = uiState.copy(
+            xposedResult = monitor.evaluate(com.chaomixian.vflow.core.xposed.HookChannelController.isConnected()),
+            xposedScope = monitor.state.value.scope,
+            xposedFrameworkVersion = formatFrameworkVersion(monitor.state.value),
+            // 丢弃计数：hook 层上报过才 > 0。⚠️ 只在 > 0 时给用户看（见下面的 info card）
+            xposedDroppedCount = com.chaomixian.vflow.core.xposed.HookChannelController.lastReportedDroppedCount(),
+        )
+    }
+
     fun refreshPermissionHealth() {
         coroutineScope.launch {
             val missingPermissionCount = withContext(Dispatchers.IO) {
@@ -177,6 +215,7 @@ fun HomeScreen(
         refreshStatisticsAndLists()
         refreshCoreStatus()
         refreshPermissionHealth()
+        refreshXposedStatus()
     }
 
     fun startCoreStatusAutoRefresh() {
@@ -224,6 +263,31 @@ fun HomeScreen(
             uiState = uiState.copy(
                 recentLogs = LogManager.getRecentLogs(5),
                 allLogs = LogManager.getAllLogs(),
+            )
+        }
+    }
+
+    // ⚠️ Xposed 状态走**推送**（StateFlow），不轮询 ——
+    // 框架的连接/断开由 `onServiceBind` / `onServiceDied` 主动通知。
+    // 这与上面 Core 的轮询是两套机制，**刻意不统一**：Core 没有推送源，只能轮询。
+    LaunchedEffect(Unit) {
+        com.chaomixian.vflow.core.xposed.XposedFrameworkMonitor.state.collect {
+            uiState = uiState.copy(
+                xposedResult = com.chaomixian.vflow.core.xposed.XposedFrameworkMonitor.evaluate(
+                    com.chaomixian.vflow.core.xposed.HookChannelController.isConnected()
+                ),
+                xposedScope = it.scope,
+                xposedFrameworkVersion = formatFrameworkVersion(it),
+            )
+        }
+    }
+
+    // ⚠️ L0（通道连接）也要订阅 —— 它与框架状态**独立**：
+    // 「框架正常但通道断了」是单独的一格，只订阅 Monitor 会漏掉它
+    LaunchedEffect(Unit) {
+        com.chaomixian.vflow.core.xposed.HookChannelController.connected.collect {
+            uiState = uiState.copy(
+                xposedResult = com.chaomixian.vflow.core.xposed.XposedFrameworkMonitor.evaluate(it),
             )
         }
     }
@@ -286,7 +350,49 @@ fun HomeScreen(
                 HomeSummarySection(
                     uiState = uiState,
                     onOpenCoreManagement = openCoreManagement,
+                    // ⚠️ 点击行为**按状态不同**：
+                    //   · 需要引导（没启用/没挂上）→ 弹引导对话框
+                    //   · 框架好但通道断（ACTIVE+DISCONNECTED）→ **不引导**，
+                    //     因为问题在我们自己的连接，去改 LSPosed 没用（还可能改坏）
+                    // ⚠️ 用 XposedState.tapAction 分类，**不要**在这里自己写 if ——
+                    // 第一版写成 `if (needsGuidance) 弹引导 else 弹重连提示`，
+                    // 而 needsGuidance 对「正常」也返回 false ⇒
+                    // **一切正常时点卡片会弹「通道正在重连」**（核对时发现）。
+                    // 分类逻辑抽进 XposedState 并有单测锁住。
+                    onXposedAction = {
+                        when (XposedState.tapAction(uiState.xposedResult)) {
+                            XposedState.TapAction.GUIDE ->
+                                XposedGuideDialog.show(context)
+
+                            XposedState.TapAction.RECONNECT_HINT ->
+                                Toast.makeText(
+                                    context,
+                                    context.getString(R.string.home_xposed_reconnecting_hint),
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                        }
+                    },
                 )
+            }
+
+            // ⚠️ 丢弃提示：**条件显示**（> 0 才出现）——
+            // 与状态卡不同，它不是网格的一部分，而是横条（`HomeInfoCard`），
+            // 出现/消失不影响布局。这也与 `coreNeedsUpdate` 那条同一个模式。
+            if (uiState.xposedDroppedCount > 0) {
+                item {
+                    HomeInfoCard(
+                        onClick = {
+                            // 点它直接去引导（用户需要知道怎么收窄条件）
+                            XposedGuideDialog.show(context)
+                        },
+                        leadingIconRes = R.drawable.rounded_info_24,
+                        title = stringResource(
+                            R.string.home_xposed_dropped_title,
+                            uiState.xposedDroppedCount,
+                        ),
+                        description = stringResource(R.string.home_xposed_dropped_desc),
+                    )
+                }
             }
 
             if (uiState.coreConnected && uiState.coreNeedsUpdate) {
@@ -495,6 +601,7 @@ private fun executeWorkflow(
 private fun HomeSummarySection(
     uiState: HomeUiState,
     onOpenCoreManagement: () -> Unit,
+    onXposedAction: () -> Unit,
 ) {
     val totalCard: @Composable () -> Unit = {
         StatCard(
@@ -513,24 +620,39 @@ private fun HomeSummarySection(
         )
     }
 
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(IntrinsicSize.Min),
-        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        CoreStatusCard(
-            uiState = uiState,
-            onClick = onOpenCoreManagement,
+        // 两张状态大卡并排（Core / Xposed）
+        Row(
             modifier = Modifier
-                .weight(1f)
-                .fillMaxHeight()
-        )
-        Column(
+                .fillMaxWidth()
+                .height(IntrinsicSize.Min),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            CoreStatusCard(
+                uiState = uiState,
+                onClick = onOpenCoreManagement,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+            )
+            XposedStatusCard(
+                result = uiState.xposedResult,
+                frameworkVersion = uiState.xposedFrameworkVersion,
+                onAction = onXposedAction,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+            )
+        }
+        // 两个统计小卡下移并排
+        Row(
             modifier = Modifier
-                .weight(1f)
-                .fillMaxHeight(),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .fillMaxWidth()
+                .height(IntrinsicSize.Min),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Box(modifier = Modifier.weight(1f)) { totalCard() }
             Box(modifier = Modifier.weight(1f)) { autoCard() }
@@ -610,6 +732,132 @@ private fun CoreStatusCard(
                             }
                         )
                     ),
+                    modifier = Modifier.padding(top = 8.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = contentColor.copy(alpha = 0.8f)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Xposed 通道状态卡（fork 新增）。
+ *
+ * ## ⚠️ 与 [CoreStatusCard] 同构，但状态是**两组**而非二态
+ *
+ * Core 是「连上/停了」二态；Xposed 有 `Framework` × `Channel` 两组状态位
+ * （见 [XposedState]）。**配色只用两种**（正常/异常），三种失败状态靠
+ * **图标 + 文案**区分 —— 引入第三种容器色会打乱首页既有的视觉秩序。
+ *
+ * ## ⚠️ 常驻显示，不做条件显隐
+ *
+ * 它占据网格里的固定位置，四态都占位。理由：
+ * ① 条件显隐会让旁边的 Core 卡**突然变宽**、布局跳动；
+ * ② **「存在本身即信息」** —— 用户看到「未启用」才知道有这个能力。
+ *
+ * ## ⚠️ 文案按状态分流，尤其 `ACTIVE + DISCONNECTED`
+ *
+ * 那一格框架是好的、断的是我们自己的连接。若文案写成「去检查 LSPosed」，
+ * 用户会去改**本来正确的**配置。
+ */
+/**
+ * 把框架名与版本拼成一行（如 `LSPosed 2.2.0`）。
+ *
+ * ⚠️ 任一为空则**整体为空** —— 不要拼出 `LSPosed ` 或 ` 2.2.0` 这种半截串：
+ * 卡片会据此决定是否显示这一行（空 ⇒ 显示操作提示）。
+ */
+private fun formatFrameworkVersion(obs: XposedFrameworkMonitor.Observation): String {
+    if (obs.frameworkName.isBlank() || obs.frameworkVersion.isBlank()) return ""
+    return "${obs.frameworkName} ${obs.frameworkVersion}"
+}
+
+@Composable
+private fun XposedStatusCard(
+    result: XposedState.Result?,
+    frameworkVersion: String,
+    onAction: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val healthy = result != null && XposedState.isHealthy(result)
+    val containerColor = if (healthy) {
+        MaterialTheme.colorScheme.primaryContainer
+    } else {
+        MaterialTheme.colorScheme.errorContainer
+    }
+    val contentColor = if (healthy) {
+        MaterialTheme.colorScheme.onPrimaryContainer
+    } else {
+        MaterialTheme.colorScheme.onErrorContainer
+    }
+
+    // 图标按状态选（配色不变，靠图标区分三种失败态）
+    val iconRes = when {
+        healthy -> R.drawable.rounded_check_circle_24
+        result == null || result.framework == XposedState.Framework.UNAVAILABLE ->
+            R.drawable.rounded_extension_off_24
+        result.framework == XposedState.Framework.DEGRADED ->
+            R.drawable.rounded_sync_problem_24
+        result.channel == XposedState.Channel.NOT_MOUNTED ->
+            R.drawable.rounded_rule_24
+        // ACTIVE + DISCONNECTED
+        else -> R.drawable.rounded_sync_problem_24
+    }
+
+    val headline = when {
+        healthy -> stringResource(R.string.home_xposed_status_working)
+        result == null || result.framework == XposedState.Framework.UNAVAILABLE ->
+            stringResource(R.string.home_xposed_status_unavailable)
+        result.framework == XposedState.Framework.DEGRADED ->
+            stringResource(R.string.home_xposed_status_degraded)
+        result.channel == XposedState.Channel.NOT_MOUNTED ->
+            stringResource(R.string.home_xposed_status_not_mounted)
+        else -> stringResource(R.string.home_xposed_status_reconnecting)
+    }
+
+    Card(
+        onClick = onAction,
+        modifier = modifier.defaultMinSize(minHeight = 160.dp),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = containerColor),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            Icon(
+                painter = painterResource(iconRes),
+                contentDescription = null,
+                tint = contentColor,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .offset(x = 40.dp, y = 40.dp)
+                    .size(160.dp)
+                    .alpha(0.2f)
+            )
+            Column(modifier = Modifier.padding(20.dp)) {
+                Text(
+                    text = stringResource(R.string.home_xposed_title),
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = contentColor.copy(alpha = 0.9f)
+                )
+                Text(
+                    text = headline,
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = contentColor
+                )
+                // 副文案：正常时显示**框架版本**（如「LSPosed 2.2.0」），
+                // 异常时显示操作提示。
+                //
+                // ⚠️ 原先正常时显示「作用域：system」—— 用户反馈那一行更有用
+                // 的是框架版本（作用域对不对，出问题时用引导对话框里的实时显示核对
+                // 就够了；而「我装的是哪个版」是用户更常想确认的）
+                Text(
+                    text = if (healthy && frameworkVersion.isNotBlank()) {
+                        frameworkVersion
+                    } else {
+                        stringResource(R.string.home_xposed_tap_to_fix)
+                    },
                     modifier = Modifier.padding(top = 8.dp),
                     style = MaterialTheme.typography.bodyMedium,
                     color = contentColor.copy(alpha = 0.8f)

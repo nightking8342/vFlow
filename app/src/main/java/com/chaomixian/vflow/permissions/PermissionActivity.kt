@@ -176,6 +176,17 @@ class PermissionActivity : BaseActivity() {
                     }
                     return
                 }
+                // ⚠️⚠️ **先判「授予动作是否在 vFlow 之外」** ——
+                // 这类权限（如 XPOSED_HOOK）没有可跳转的系统页面，
+                // 而下面的 null 分支会把它当成「运行时权限」去 autoGrant，
+                // 结果是**点授予什么都不发生**（且没有任何提示）。详见 Permission 的字段注释。
+                if (permission.grantedExternally) {
+                    com.chaomixian.vflow.ui.settings.XposedGuideDialog.show(this) {
+                        refreshPermissionsStatus()
+                    }
+                    return
+                }
+
                 // 使用 PermissionManager 提供的统一接口获取 Intent
                 val intent = PermissionManager.getSpecialPermissionIntent(this, permission)
                 if (intent != null) {

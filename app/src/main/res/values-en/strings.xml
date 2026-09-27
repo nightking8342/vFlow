@@ -1291,6 +1291,8 @@
     <string name="permission_desc_location">Required on some Android versions to access saved Wi-Fi lists.</string>
     <string name="permission_name_background_location">Background Location Access</string>
     <string name="permission_desc_background_location">Required to continuously monitor location changes in the background, such as for location triggers.</string>
+    <string name="permission_name_xposed_hook">Xposed Channel</string>
+    <string name="permission_desc_xposed_hook">Allows vFlow to read information inside system processes and perform system-level operations through the Xposed channel. Requires enabling vFlow in LSPosed with the "System Framework" scope.</string>
     <string name="permission_name_shizuku">Shizuku</string>
     <string name="permission_desc_shizuku">Allows the app to perform elevated operations through Shizuku, such as Shell commands.</string>
     <string name="permission_name_battery">Background Run Permission</string>
@@ -1579,4 +1581,39 @@ Note: Ensure device and web editor are on the same network
     <string name="logcat_tag_stats_failed">TAG stats failed. Make sure a capture has been taken (the capture file exists) and Shell access works.</string>
 
 
+    <!-- Xposed channel authorization guide (fork) -->
+    <string name="xposed_guide_intro">The Xposed channel reads information inside system processes and performs system-level operations.</string>
+    <string name="xposed_guide_scope_hint">The framework is already running. You just need to allow vFlow to use the "System Framework" scope — tap "Request access" below and the framework will show its authorization UI.
+
+Note: a reboot is required for it to take effect (scope injection happens at process start).</string>
+    <string name="xposed_guide_steps_when_unavailable">The framework is not enabled yet. Please do the following:
+
+1. Make sure LSPosed is installed (enabled in Magisk / KernelSU)
+
+2. Open the LSPosed manager, enable the vFlow module, and check "System Framework" in its scope
+
+Note: check "System Framework", not vFlow itself — this module runs inside the system process.
+
+3. Reboot once
+
+Then come back; the current state will be shown above.</string>
+    <string name="xposed_guide_request_scope">Request access</string>
+    <string name="xposed_guide_current_state">Current state</string>
+    <string name="xposed_guide_current_scope">Current scope</string>
+    <string name="xposed_guide_ok">Got it</string>
+    <string name="xposed_guide_state_ready">✅ Enabled and working</string>
+    <string name="xposed_guide_state_unavailable">Not enabled — follow the steps above</string>
+    <string name="xposed_guide_state_degraded">Framework disconnected — LSPosed may have stopped; check that it is running</string>
+    <string name="xposed_guide_state_not_mounted">Configured but not active — you probably still need to reboot</string>
+    <string name="xposed_guide_state_disconnected">Framework is fine, channel is reconnecting — wait a moment, no config change needed</string>
+    <string name="home_xposed_title">Xposed</string>
+    <string name="home_xposed_status_working">Active</string>
+    <string name="home_xposed_status_unavailable">Not enabled</string>
+    <string name="home_xposed_status_degraded">Framework down</string>
+    <string name="home_xposed_status_not_mounted">Not mounted</string>
+    <string name="home_xposed_status_reconnecting">Reconnecting</string>
+    <string name="home_xposed_tap_to_fix">Tap to see how to enable</string>
+    <string name="home_xposed_reconnecting_hint">Channel is reconnecting, it will recover shortly (no config change needed)</string>
+    <string name="home_xposed_dropped_title">Overloaded, %1$d events dropped</string>
+    <string name="home_xposed_dropped_desc">Events arrive too fast. Consider narrowing the trigger condition or increasing the cooldown.</string>
 </resources>
