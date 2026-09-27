@@ -53,6 +53,10 @@ object TriggerHandlerRegistry {
         // 数据卡切换触发器（fork 新增）。注意它必须用 RECEIVER_EXPORTED 注册，
         // 是全仓库唯一的例外 —— 见 SimDataSwitchTriggerHandler 的类注释
         register(SimDataSwitchTriggerModule().id) { SimDataSwitchTriggerHandler() }
+        // Activity 切换触发器（fork 新增）。注意它继承 BaseTriggerHandler 而非
+        // ListeningTriggerHandler —— 后者四个方法全 final、只在「空↔非空」边界触发，
+        // 会导致「已有 1 个时再加第 2 个」条件永远下不去
+        register(ActivityChangedTriggerModule().id) { ActivityChangedTriggerHandler() }
 
     }
 

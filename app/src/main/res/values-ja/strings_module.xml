@@ -3084,4 +3084,22 @@
     <string name="option_vflow_trigger_do_not_disturb_any">変更時</string>
     <string name="output_vflow_trigger_do_not_disturb_enabled_name">サイレントモードがオン</string>
     <string name="output_vflow_trigger_do_not_disturb_previous_enabled_name">変更前の状態</string>
+    <!-- vflow.trigger.activity_changed -->
+    <string name="module_vflow_trigger_activity_changed_name">Activity 切り替え</string>
+    <string name="module_vflow_trigger_activity_changed_desc">指定した Activity が前面に来たときにワークフローを実行します（起動 Intent とパラメータを取得できます）</string>
+    <string name="param_vflow_trigger_activity_changed_package_name">パッケージ名</string>
+    <string name="param_vflow_trigger_activity_changed_class_name">Activity クラス名</string>
+    <string name="param_vflow_trigger_activity_changed_match_mode_name">一致方法</string>
+    <string name="param_vflow_trigger_activity_changed_cooldown_name">クールダウン（ミリ秒）</string>
+    <string name="option_vflow_trigger_activity_changed_contains">含む</string>
+    <string name="option_vflow_trigger_activity_changed_exact">完全一致</string>
+    <string name="summary_vflow_trigger_activity_changed_prefix">切り替え先</string>
+    <string name="summary_vflow_trigger_activity_changed_any">任意の Activity 切り替え</string>
+    <string name="output_vflow_trigger_activity_changed_package_name">パッケージ名</string>
+    <string name="output_vflow_trigger_activity_changed_class_name">Activity クラス名</string>
+    <string name="output_vflow_trigger_activity_changed_component_name">コンポーネント（パッケージ/クラス）</string>
+    <string name="output_vflow_trigger_activity_changed_intent_uri_name">起動 Intent</string>
+    <string name="output_vflow_trigger_activity_changed_extras_json_name">Intent パラメータ（JSON）</string>
+    <string name="output_vflow_trigger_activity_changed_truncated_name">パラメータ切り捨て</string>
+    <string name="msg_vflow_trigger_activity_changed_ready">Activity トリガーの準備ができました</string>
 </resources>

@@ -93,6 +93,8 @@ object ModuleRegistry {
         register(VoiceTriggerModule(), context)
         register(FoldTriggerModule(), context)
         register(SimDataSwitchTriggerModule(), context)
+        // Activity 切换触发器（fork 新增，走 Xposed 通道）
+        register(ActivityChangedTriggerModule(), context)
 
         // 界面交互
         register(FindTextModule(), context)

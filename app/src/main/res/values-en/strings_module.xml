@@ -3464,4 +3464,22 @@
     <string name="option_vflow_trigger_do_not_disturb_any">Any change</string>
     <string name="output_vflow_trigger_do_not_disturb_enabled_name">Do Not Disturb is on</string>
     <string name="output_vflow_trigger_do_not_disturb_previous_enabled_name">Was on before the change</string>
+    <!-- vflow.trigger.activity_changed -->
+    <string name="module_vflow_trigger_activity_changed_name">Activity Change</string>
+    <string name="module_vflow_trigger_activity_changed_desc">Triggers when the specified Activity comes to the foreground (can read the launch Intent and its extras)</string>
+    <string name="param_vflow_trigger_activity_changed_package_name">Package name</string>
+    <string name="param_vflow_trigger_activity_changed_class_name">Activity class name</string>
+    <string name="param_vflow_trigger_activity_changed_match_mode_name">Match mode</string>
+    <string name="param_vflow_trigger_activity_changed_cooldown_name">Cooldown (ms)</string>
+    <string name="option_vflow_trigger_activity_changed_contains">Contains</string>
+    <string name="option_vflow_trigger_activity_changed_exact">Exact match</string>
+    <string name="summary_vflow_trigger_activity_changed_prefix">Switch to</string>
+    <string name="summary_vflow_trigger_activity_changed_any">Any Activity change</string>
+    <string name="output_vflow_trigger_activity_changed_package_name">Package name</string>
+    <string name="output_vflow_trigger_activity_changed_class_name">Activity class name</string>
+    <string name="output_vflow_trigger_activity_changed_component_name">Component (pkg/class)</string>
+    <string name="output_vflow_trigger_activity_changed_intent_uri_name">Launch Intent</string>
+    <string name="output_vflow_trigger_activity_changed_extras_json_name">Intent extras (JSON)</string>
+    <string name="output_vflow_trigger_activity_changed_truncated_name">Extras truncated</string>
+    <string name="msg_vflow_trigger_activity_changed_ready">Activity trigger is ready</string>
 </resources>

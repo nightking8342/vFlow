@@ -3467,4 +3467,22 @@
     <string name="option_vflow_trigger_do_not_disturb_any">任意变化</string>
     <string name="output_vflow_trigger_do_not_disturb_enabled_name">免打扰已开启</string>
     <string name="output_vflow_trigger_do_not_disturb_previous_enabled_name">变化前是否开启</string>
+    <!-- vflow.trigger.activity_changed -->
+    <string name="module_vflow_trigger_activity_changed_name">Activity 切换触发</string>
+    <string name="module_vflow_trigger_activity_changed_desc">当指定的 Activity 被切换到前台时触发工作流（可获取启动 Intent 与参数）</string>
+    <string name="param_vflow_trigger_activity_changed_package_name">包名</string>
+    <string name="param_vflow_trigger_activity_changed_class_name">Activity 类名</string>
+    <string name="param_vflow_trigger_activity_changed_match_mode_name">匹配方式</string>
+    <string name="param_vflow_trigger_activity_changed_cooldown_name">冷却时间（毫秒）</string>
+    <string name="option_vflow_trigger_activity_changed_contains">包含</string>
+    <string name="option_vflow_trigger_activity_changed_exact">精确匹配</string>
+    <string name="summary_vflow_trigger_activity_changed_prefix">切换到</string>
+    <string name="summary_vflow_trigger_activity_changed_any">任意 Activity 切换</string>
+    <string name="output_vflow_trigger_activity_changed_package_name">包名</string>
+    <string name="output_vflow_trigger_activity_changed_class_name">Activity 类名</string>
+    <string name="output_vflow_trigger_activity_changed_component_name">组件（包/类）</string>
+    <string name="output_vflow_trigger_activity_changed_intent_uri_name">启动 Intent</string>
+    <string name="output_vflow_trigger_activity_changed_extras_json_name">Intent 参数（JSON）</string>
+    <string name="output_vflow_trigger_activity_changed_truncated_name">参数是否被截断</string>
+    <string name="msg_vflow_trigger_activity_changed_ready">Activity 切换触发器已就绪</string>
 </resources>
