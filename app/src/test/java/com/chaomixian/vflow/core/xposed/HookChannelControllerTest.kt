@@ -46,6 +46,9 @@ class HookChannelControllerTest {
     /** 每个用例前后都清干净 —— Controller 是单例，状态会串。 */
     private fun reset() {
         HookChannelController.onCallbackUnregistered()   // 清 token 与连接态
+        HookChannelController.removeOnConnectedListener("A")
+        HookChannelController.removeOnConnectedListener("B")
+        HookChannelController.removeOnConnectedListener("boom")
         HookChannelController.unregisterSink(ActivityPayload.TOPIC)
         HookChannelController.unregisterSink(OTHER_TOPIC)
     }
@@ -110,12 +113,24 @@ class HookChannelControllerTest {
     }
 
     @Test
-    fun `setEventSink null clears the consumer`() {
+    fun `unregisterSink removes only that topic's consumer`() {
+        // ⚠️ 原名 `setEventSink null clears the consumer` 且**无任何断言**
+        //（旧 API 已废弃，用例名却没跟着改）—— 属「看起来在测、实际没测」。
+        // 现在断言真行为：注销该 topic 后它收不到，**别的 topic 不受影响**。
         reset()
-        HookChannelController.registerSink(ActivityPayload.TOPIC) { }
+        var activityCalled = 0
+        var otherCalled = 0
+        HookChannelController.registerSink(ActivityPayload.TOPIC) { activityCalled++ }
+        HookChannelController.registerSink(OTHER_TOPIC) { otherCalled++ }
+
         HookChannelController.unregisterSink(ActivityPayload.TOPIC)
-        // 无消费者时收到事件不该抛
-        HookChannelController.onReport(envelope())
+
+        HookChannelController.injectTokenForTest(TOKEN)
+        HookChannelController.onReport(envelope(token = TOKEN))
+        HookChannelController.onReport(envelope(topic = OTHER_TOPIC, token = TOKEN))
+
+        assertEquals("已注销的 topic 不该再收到事件", 0, activityCalled)
+        assertEquals("另一个 topic 的消费者不该被误伤", 1, otherCalled)
     }
 
     // ── ⭐ 按 topic 分发（修「单槽位」缺陷）──────────────────────
@@ -203,17 +218,80 @@ class HookChannelControllerTest {
     @Test
     fun `registerSink is idempotent per topic`() {
         // 同 topic 重复注册 = 替换，不是叠加 ——
-        // 叠加会导致同一事件被处理两次（触发器触发两遍）
+        // 叠加会导致同一事件被处理两次（触发器触发两遍）。
+        //
+        // ⚠️ 本用例原本**一个断言都没有**（只调了三次 register、一次 unregister），
+        // 而缺陷 ⑧ 的修复恰恰依赖这条语义 ⇒ 改回 bug 版本不会变红。
+        // 现在断言：三次注册后只**剩最后一个**，且事件只被处理**一次**。
         reset()
-        HookChannelController.registerSink(ActivityPayload.TOPIC) { }
-        HookChannelController.registerSink(ActivityPayload.TOPIC) { }
-        HookChannelController.registerSink(ActivityPayload.TOPIC) { }
-        HookChannelController.unregisterSink(ActivityPayload.TOPIC)
+        var first = 0
+        var second = 0
+        var third = 0
+        HookChannelController.registerSink(ActivityPayload.TOPIC) { first++ }
+        HookChannelController.registerSink(ActivityPayload.TOPIC) { second++ }
+        HookChannelController.registerSink(ActivityPayload.TOPIC) { third++ }
+
+        HookChannelController.injectTokenForTest(TOKEN)
+        HookChannelController.onReport(envelope(token = TOKEN))
+
+        assertEquals("被替换掉的消费者不该再被调用", 0, first)
+        assertEquals("被替换掉的消费者不该再被调用", 0, second)
+        assertEquals("同 topic 只应保留最后一个消费者，且只处理一次", 1, third)
     }
 
     @Test
     fun `lastReportedDroppedCount starts at zero`() {
         reset()
-        assertTrue(HookChannelController.lastReportedDroppedCount() >= 0L)
+        // ⚠️ 原断言是 `>= 0L`，而字段初值就是 0 ⇒ **近乎恒真**，什么都锁不住。
+        assertEquals("初值必须精确为 0", 0L, HookChannelController.lastReportedDroppedCount())
+    }
+
+    // ── ⭐ 「连接建立」回调注册表（修缺陷 1）────────────────────
+
+    /**
+     * ⚠️⚠️ 这一组锁的是**真实缺陷**：原实现是单个 `onConnected` 槽位，
+     * 加第二个 hook 触发器时会**互相挤掉** ⇒ 「Activity 触发器再也不重下发条件」。
+     *
+     * ⚠️ 与 `eventSinks` 那次（缺陷 ⑧）**是同一个形态**，当时只修了一半。
+     */
+    @Test
+    fun `onConnectedListeners coexist and are not overwritten`() {
+        reset()
+        var aCalled = 0
+        var bCalled = 0
+        HookChannelController.setOnConnectedListener("A") { aCalled++ }
+        HookChannelController.setOnConnectedListener("B") { bCalled++ }
+
+        HookChannelController.notifyOnConnected()
+
+        assertEquals("A 不该被 B 挤掉", 1, aCalled)
+        assertEquals("B 应被调用", 1, bCalled)
+    }
+
+    @Test
+    fun `removeOnConnectedListener removes only its own key`() {
+        reset()
+        var aCalled = 0
+        var bCalled = 0
+        HookChannelController.setOnConnectedListener("A") { aCalled++ }
+        HookChannelController.setOnConnectedListener("B") { bCalled++ }
+        HookChannelController.removeOnConnectedListener("A")
+
+        HookChannelController.notifyOnConnected()
+
+        assertEquals("已注销的 key 不该被调用", 0, aCalled)
+        assertEquals("另一个 key 不该被误伤", 1, bCalled)
+    }
+
+    @Test
+    fun `one failing onConnectedListener does not block the others`() {
+        reset()
+        var bCalled = 0
+        HookChannelController.setOnConnectedListener("boom") { throw IllegalStateException("boom") }
+        HookChannelController.setOnConnectedListener("B") { bCalled++ }
+
+        HookChannelController.notifyOnConnected()
+
+        assertEquals("一个监听器抛异常不该让后面的收不到", 1, bCalled)
     }
 }

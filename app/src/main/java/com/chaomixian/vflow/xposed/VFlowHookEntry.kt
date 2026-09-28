@@ -218,7 +218,9 @@ class VFlowHookEntry : XposedModule() {
         //
         // ⚠️ ClassLoader 现取（`ActivityThread` 的 classLoader 是模块自己的、
         // 加载不到系统类 —— 必须用 system context 的，见 systemServerClassLoader 的注释）。
-        transport.onConnected {
+        // ⚠️ 带 key 注册（修缺陷 12）—— 这里原来是单槽位，第二个注册方会
+        // 静默覆盖本回调。key 用类名，将来加第二件事时不会互相挤掉。
+        transport.onConnected("VFlowHookEntry.remount") {
             try {
                 val cl = systemServerClassLoader()
                 if (cl != null) {

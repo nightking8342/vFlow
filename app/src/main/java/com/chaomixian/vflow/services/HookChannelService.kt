@@ -50,6 +50,16 @@ class HookChannelService : Service() {
     private val hostBinder = HookHostBinder()
 
     /**
+     * 本 Service 最近一次接到的 callback。
+     *
+     * ⚠️ 存在理由（修缺陷 13）：`onUnbind` / `onDestroy` 要能说清
+     * 「**是哪条连接**在断开」—— 不带身份地清空会把（可能更晚注册的）
+     * 新连接一起清掉。见 [HookChannelController.onCallbackUnregistered]。
+     */
+    @Volatile
+    private var lastCallback: IHookCallback? = null
+
+    /**
      * AIDL 实现。**所有回调都可能跑在 binder 线程上**（不是主线程）。
      *
      * ⚠️ 它们只做「读调用方 uid + 投递给 Controller」，不做耗时操作。
@@ -83,6 +93,7 @@ class HookChannelService : Service() {
                 DebugLogger.w(TAG, "⚠️ callerUid=$callerUid 非 1000，与预期的 system_server 不符")
             }
 
+            lastCallback = callback
             return HookChannelController.onCallbackRegistered(callback)
         }
 
@@ -111,13 +122,17 @@ class HookChannelService : Service() {
 
     override fun onUnbind(intent: Intent?): Boolean {
         DebugLogger.i(TAG, "onUnbind：hook 层断开")
-        HookChannelController.onCallbackUnregistered()
+        // ⚠️ 传**本次要断开的那个** callback 实例（修缺陷 13）——
+        // 断开是异步投递的，这次通知有可能落在「新连接已注册」之后。
+        // 不带身份地清空会把刚建立的新连接一起清掉（实测时序见
+        // HookChannelController.onCallbackUnregistered 的注释）。
+        HookChannelController.onCallbackUnregistered(lastCallback)
         return super.onUnbind(intent)
     }
 
     override fun onDestroy() {
         DebugLogger.i(TAG, "onDestroy")
-        HookChannelController.onCallbackUnregistered()
+        HookChannelController.onCallbackUnregistered(lastCallback)
         super.onDestroy()
     }
 }

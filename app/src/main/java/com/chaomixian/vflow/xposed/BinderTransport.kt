@@ -138,18 +138,33 @@ class BinderTransport(
     private var conditionSink: ((String, String) -> Unit)? = null
 
     /**
-     * **连接（重新）建立**后的回调（由 [HookRuntime] 注入）。
+     * **连接（重新）建立**后的回调注册表（由调用方注入）。
      *
      * ⚠️ 为什么必须有它：重连成功后，hook 层那边可能是**刚换代的新代码** ——
      * hook 点没挂上、条件被清空。不重挂、不重下发的话，
      * 表现为**「连上了但什么都不触发」**（通道看着是活的）。
+     *
+     * ## ⚠️⚠️ 为什么是注册表而不是单个槽位（修缺陷 12）
+     *
+     * 原实现是 `var onConnectedSink: (() -> Unit)?`，语义是**后注册的覆盖先注册的**
+     * —— 这是本通道**第三处**单槽位（另两处：`HookChannelController.eventSinks`
+     * 已修、`onConnected` 已随缺陷 1 修）。三处同一个形态，**同一个教训**。
+     *
+     * ⚠️ 现在只有一个注册方（`VFlowHookEntry`），但它是**框架层**的钩子 ——
+     * 将来加「连上后要做什么」的第二件事时，覆盖会**静默**生效。
+     * 按 key 做注册表，加第二件事的人不必先知道这里曾是单槽位。
      */
-    @Volatile
-    private var onConnectedSink: (() -> Unit)? = null
+    private val onConnectedSinks =
+        java.util.concurrent.ConcurrentHashMap<String, () -> Unit>()
 
-    /** 注册连接建立回调。 */
-    fun onConnected(sink: () -> Unit) {
-        onConnectedSink = sink
+    /** 注册连接建立回调。**幂等**（同 key 重复注册会替换）。 */
+    fun onConnected(key: String, sink: () -> Unit) {
+        onConnectedSinks[key] = sink
+    }
+
+    /** 注销连接建立回调（带 key，不会误伤其他注册方）。 */
+    fun removeOnConnected(key: String) {
+        onConnectedSinks.remove(key)
     }
 
     /**
@@ -171,10 +186,17 @@ class BinderTransport(
     private var livenessThread: Thread? = null
 
     /**
-     * binder 死亡回执。
+     * binder 死亡回执（**已接线**，修缺陷 3）。
      *
-     * ⚠️ 比 `onServiceDisconnected` 更可靠：它由 binder 驱动直接回调，
-     * 不依赖 AMS 是否记得通知我们。
+     * ⚠️ **比 `onServiceDisconnected` 更可靠**：它由 binder 驱动**直接**回调，
+     * 不依赖 AMS 是否记得通知我们 —— 而后者「无 FIN 时不一定触发」是本仓库
+     * 反复记录的坑（`LogcatStreamWrapper` 吃过同一个亏，那也正是
+     * [startLivenessWatchdog] 存在的理由）。
+     *
+     * ⚠️ 此前它**声明了却从未 `linkToDeath`**（死字段）。
+     * 而 ③（能力调用）需要「断开时**立即唤醒**全部 waiter 回 error」——
+     * 靠 15 秒一轮的存活性巡检太慢（用户要等巡检才发现失败）。
+     * 接上它之后，App 进程死掉会**立刻**得到回调。
      */
     @Volatile
     private var deathRecipient: android.os.IBinder.DeathRecipient? = null
@@ -485,6 +507,7 @@ class BinderTransport(
                 }
                 host = h
                 log("★★★★ bindService 成功，拿到 binder=$service")
+                linkDeathRecipient(service)
 
                 // 交出回调 binder —— 这一步**同步返回**，用来判定鉴权是否放行
                 val registered = try {
@@ -499,10 +522,13 @@ class BinderTransport(
                     // ⚠️ 连接（重新）建立后通知上层 —— 重连场景下 hook 层可能
                     // **刚换代、hook 点没挂上**，条件也可能被清空（决策 14：条件不落盘）。
                     // 不通知的话，「连上了但什么都不触发」。
-                    try {
-                        onConnectedSink?.invoke()
-                    } catch (t: Throwable) {
-                        log("连接回调失败：${t.javaClass.simpleName}")
+                    // ⚠️ 逐个通知，一个失败不影响其他（修缺陷 12）
+                    for ((key, sink) in onConnectedSinks) {
+                        try {
+                            sink()
+                        } catch (t: Throwable) {
+                            log("连接回调失败（$key）：${t.javaClass.simpleName}")
+                        }
                     }
                 } else {
                     // 不静默：注册失败意味着 App 不会下发条件，而用户只会看到「没反应」
@@ -528,6 +554,50 @@ class BinderTransport(
         }
     }
 
+    /**
+     * 给 App 侧的 binder 挂死亡回执（修缺陷 3）。
+     *
+     * ⚠️ 挂之前先 `unlink` 旧的 —— 否则每次重连都会往**已经死掉的**
+     * 那个 binder 上再挂一个，且旧的永远不解绑（与缺陷 20 的
+     * `ConnectionRecord` 泄漏是同一种「只增不减」形态）。
+     *
+     * ⚠️ 全程 `try/catch`：本方法跑在 system_server 里，且 `linkToDeath`
+     * 对**已经死掉的** binder 会抛 `DeadObjectException`。
+     */
+    private fun linkDeathRecipient(service: android.os.IBinder?) {
+        if (service == null) return
+        unlinkDeathRecipient()
+        val r = android.os.IBinder.DeathRecipient {
+            // ⚠️ 这个回调在 binder 驱动线程上，必须只做「清状态 + 安排重连」
+            try {
+                log("💀 App 侧 binder 死亡（deathRecipient）—— 走重连")
+                host = null
+                scheduleReconnect("binder 死亡")
+            } catch (t: Throwable) {
+                log("deathRecipient 处理异常：${t.javaClass.simpleName}")
+            }
+        }
+        try {
+            service.linkToDeath(r, 0)
+            deathRecipient = r
+        } catch (t: Throwable) {
+            // 不静默：挂不上意味着只剩 15 秒巡检这一条兜底路径
+            log("linkToDeath 失败：${t.javaClass.simpleName} ${t.message}（退回存活性巡检）")
+            deathRecipient = null
+        }
+    }
+
+    /** 解绑死亡回执。`unbindQuietly()` 与 [linkDeathRecipient] 都会调。 */
+    private fun unlinkDeathRecipient() {
+        val r = deathRecipient ?: return
+        try {
+            host?.asBinder()?.unlinkToDeath(r, 0)
+        } catch (_: Throwable) {
+            // binder 已死时 unlink 会抛 —— 忽略即可，回执本身已无意义
+        }
+        deathRecipient = null
+    }
+
     override fun send(envelopeJson: String): Boolean {
         val h = host ?: return false
         return try {
@@ -541,6 +611,9 @@ class BinderTransport(
     }
 
     private fun unbindQuietly() {
+        // ⚠️ 顺序：先解死亡回执，再 unbind（修缺陷 3）——
+        // 否则 unbind 之后 host 已是 null，`unlinkToDeath` 再也拿不到 binder。
+        unlinkDeathRecipient()
         val ctx = contextProvider() ?: return
         try {
             ctx.unbindService(connection)

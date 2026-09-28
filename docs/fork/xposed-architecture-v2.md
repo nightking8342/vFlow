@@ -16,10 +16,10 @@
 > **`ServiceConnection` 回调在 system_server 主线程**。见 §8.2。
 >
 > **② 订阅侧（P1–P4）已实现并真机验证** —— 但评审 + 实测发现**已实现部分本身有 20 条缺陷**（§8）。
-> ✅ **其中 2 条已修复并真机验证**（2026-09-29）：
-> **缺陷 19**（hook 每热更新 +1、永不回收 —— 实测已到 N=6，等于每次 Activity 切换跑 6 遍）
-> 与 **缺陷 20**（重连重复 `bindService` + `ConnectionRecord` 只增不减）。
-> **其余 18 条待排期**（§8.1 已给每条的最小改法）。
+> ✅ **其中 8 条已修复并验证**（2026-09-29）：**19**（hook 每热更新 +1、永不回收 —— 实测已到 N=6）／
+> **20**（重连重复 `bindService` + `ConnectionRecord` 只增不减）／
+> 以及 §8.3 判定的 **A 组四条 1 / 3 / 12 / 13**（③ 开发的前置）与 **18**（空断言）。
+> **其余 12 条待排期**（§8.1 已给每条的最小改法，§8.3 给了优先级）。
 >
 > 凡标 `【未验证】` / `【推断】` 的结论都是**推断**，不是实测 —— 见 §10 与各节注。
 
@@ -1346,9 +1346,9 @@ payload_too_large      → §3.6 契约 2（截断/分页，属实现缺陷或�
 
 | # | 缺陷 | 证据 | 影响 |
 |---|---|---|---|
-| 1 | **`onConnected` 仍是单槽位** | `HookChannelController.kt:185` 注释自述「后注册的覆盖先注册的」 | 第二个 hook 触发器会挤掉第一个的「重连后重下发」；`stop()` 时 `setOnConnectedListener(null)` 会**误伤其他消费者** |
+| 1 | ✅ **`onConnected` 曾是单槽位**（**2026-09-29 已修**） | `HookChannelController.kt:185` 注释自述「后注册的覆盖先注册的」 | 第二个 hook 触发器会挤掉第一个的「重连后重下发」；`stop()` 时 `setOnConnectedListener(null)` 会**误伤其他消费者** |
 | 2 | **token 换代有静默丢弃窗口** | 新 token 生成（`:129`）后、重下发完成前，hook 层用旧 token 发的事件被**静默丢弃**（`:247`，只 warn） | 窗口靠「`TriggerService` 比 hook 连接早 1.6 秒」这个**巧合**关闭，不是设计保证；日志无法区分「攻击」与「换代延迟」 |
-| 3 | **`deathRecipient` 是死字段** | `BinderTransport.kt:161-162` 声明后从未 `linkToDeath` | App 侧无死亡检测 |
+| 3 | ✅ **`deathRecipient` 曾是死字段**（**2026-09-29 已修**） | `BinderTransport.kt:161-162` 声明后从未 `linkToDeath` | App 侧无死亡检测 |
 | 4 | **`ping()` 的 AIDL 注释承诺了不存在的机制** | `IHookCallback.aidl:25-34` 写「App 侧周期性调用」，实际**零调用者** | 误导后续实现者以为活性问题已被覆盖 |
 | 5 | **App 侧无连接身份** | §4.2 | 多连接在 App 侧只表现为「覆盖」 |
 | 6 | **同进程可能多条连接** | §4.3 | 与缺陷 2、5 叠加 |
@@ -1357,13 +1357,13 @@ payload_too_large      → §3.6 契约 2（截断/分页，属实现缺陷或�
 | 9 | **「无触发器时卸下 hook」的意图未实现** | `HookRuntime.stop()` 无生产调用者 | 注释写着意图，实现不存在。⚠️ **S4 决定不实现**（见 §5.4）—— 改为规范早退。**S7 复核：比这更严重，见缺陷 10** |
 | **10** | ⚠️ **缺陷 9 是「两层死链」** | `HookRuntime.stop()` ← `VFlowHookEntry.stopChannel()`（`:305`）**本身也无人调用** | 所以「无触发器时 unmount」不是「意图未实现」，是**整条链从未接上**。⚠️ 与缺陷 13 叠加后更危险 |
 | **11** | ⚠️ **`currentProtocolVersion()` 是死函数** | `HookRuntime.kt:400`，全仓**零调用者** —— `BinderTransport.ping()`（`:181`）直接用了 `EventEnvelopeCodec.PROTOCOL_VERSION` | 又一个「统一出口没人走」——**正是 §7.4 反模式 3**。同类：`HookRuntime.kt:403` 的 `IBinder?.isAlive()` 也零调用者 |
-| **12** | ⚠️ **第三个单槽位** | `BinderTransport.kt:129-135` 的 `onConnectedSink` | 文档此前只数了 App 侧两处（`eventSinks` 已修 / `onConnected` 未修），**hook 侧这处同样是单槽位覆盖** |
-| **13** | ⚠️ **`onUnbind` 会清掉「新」连接** | `HookChannelService.kt:112-116` → `HookChannelController.kt:150-156`（`callback = null; token = ""`） | 解绑到 0 客户端时无条件清空。若旧连接的 unbind 事件在**新连接 `registerCallback` 之后**才到达 ⇒ hook 层 `host != null`（自认连着）而 App 侧 `callback == null` ⇒ **事件全丢**。这是 §4.2「无连接身份」的**一条具体可测后果** |
+| **12** | ✅ ⚠️ **第三个单槽位**（**2026-09-29 已修**） | `BinderTransport.kt:129-135` 的 `onConnectedSink` | 文档此前只数了 App 侧两处（`eventSinks` 已修 / `onConnected` 未修），**hook 侧这处同样是单槽位覆盖** |
+| **13** | ✅ ⚠️ **`onUnbind` 会清掉「新」连接**（**2026-09-29 已修**；**已实测确认为真实竞态**） | `HookChannelService.kt:112-116` → `HookChannelController.kt:150-156`（`callback = null; token = ""`） | 解绑到 0 客户端时无条件清空。若旧连接的 unbind 事件在**新连接 `registerCallback` 之后**才到达 ⇒ hook 层 `host != null`（自认连着）而 App 侧 `callback == null` ⇒ **事件全丢**。这是 §4.2「无连接身份」的**一条具体可测后果** |
 | **14** | ⚠️⚠️ **丢弃计数链路从未闭合** | `EventQueue.drainDropped()`（`wire/EventQueue.kt:75`）是**唯一**清零入口，**零生产调用者**（只有 `EventQueueTest`）；`HookRuntime.kt:252` 塞进信封的是 `peekDropped()`（**累计值**）；`HookChannelController.kt:264-271` 只在 `>0` 时赋值、**从不复位** | ⚠️ **一次丢弃 ⇒ 永久「已丢弃 N 条」**：首页横幅（`HomeScreen.kt:381` `if (xposedDroppedCount > 0)`）**驻留到 App 进程被杀**；且此后**每条事件**都刷一条 warning。与 §6.4「不要误导用户」的立意直接冲突。**对照：Core 的 logcat 路径有真实调用者**（`LogcatStreamWrapper.kt:503`）⇒ 同一模式只在 Xposed 侧漏了。⚠️ `HookRuntime.kt:250` 的注释逐字写着「清零由发送成功后的 `drainDropped` 负责」——**反模式 6 的又一实例，而纯函数单测全绿恰是它没被发现的原因** |
 | **15** | ⚠️ **`HookLog.kt:16` 引用一个不存在的测试** | 注释称约束由 `WireLayerPurityTest` **与 `HookPackagePurityTest`** 锁住；全仓**无**该文件 | 断言了一条不存在的保障 ⇒ 后续实现者以为「hook 层不引用 App 侧类」有双保险。实际只有 `WireLayerPurityTest` |
 | **16** | ⚠️ **`PermissionManager` 注释与实现相反** | `permissions/PermissionManager.kt:203-206` / `:520` 仍写「判据是**『曾经成功连上过』**」；而 `XposedCapability.isGranted`（`core/xposed/XposedCapability.kt:55-56`）读的是 `frameworkConnected` —— **实时** | **反模式 5 的同型**：后人读 `PermissionManager` 会得到与实现相反的结论，可能照注释把持久化判据恢复回来 |
 | **17** | **`appContext` / `attach()` 是残留死字段** | `HookChannelController.kt:117` 声明、`:121` 写入，**全类零读取**；唯一调用点 `HookChannelService.kt:101` | 是 P4「判据实时化」时删掉 `markConnected()` 后的遗留（其注释还写着「用于记录『曾经连上过』」） |
-| **18** | ⚠️ **三处测试「看起来在测、实际没测」** | `test/.../core/xposed/HookChannelControllerTest.kt`：`registerSink is idempotent per topic`（`:204-212`）**无任何 assert**；`lastReportedDroppedCount starts at zero`（`:215-218`）只断言 `>= 0L`（恒真）；`setEventSink null clears the consumer`（`:113-119`）无实质断言 | ⚠️ 缺陷 8 的修复**正依赖** `registerSink` 的幂等语义，而锁它的用例是空的 ⇒ **改回 bug 版本不会变红**。同文件的分发组测试（`:128-201`）用了 `injectTokenForTest`、是合格的对照 |
+| **18** | ✅ ⚠️ **三处测试曾是空断言**（**2026-09-29 已修**） | `test/.../core/xposed/HookChannelControllerTest.kt`：`registerSink is idempotent per topic`（`:204-212`）**无任何 assert**；`lastReportedDroppedCount starts at zero`（`:215-218`）只断言 `>= 0L`（恒真）；`setEventSink null clears the consumer`（`:113-119`）无实质断言 | ⚠️ 缺陷 8 的修复**正依赖** `registerSink` 的幂等语义，而锁它的用例是空的 ⇒ **改回 bug 版本不会变红**。同文件的分发组测试（`:128-201`）用了 `injectTokenForTest`、是合格的对照 |
 | **19** | ⚠️⚠️ **热更新后 hook 累积，每次 +1，永不回收**（真机已验） | `ActivityChangedSource.kt:296` `old.replaceHook { … }` 的**返回值被丢弃**，`:306-309` 随后置 `handle = null` —— 而注释写「接管成功的句柄**现在归本代际持有**」（**注释与代码相反**） | 本代际 `handle == null` ⇒ `mount()` 的幂等守卫（`:63-68`）失效；而 `remountSources()`（每次连接建立都调）是「先 unmount（此刻 no-op）再挂」⇒ **同一方法上多挂一个，且旧代际的句柄再也拿不到 ⇒ 永不回收**。<br/>⭐ **2026-09-29 真机实测**：`旧 hook 句柄数` 从重启后的 **1** 单调涨到 **2→3→4→5→6**（每次热更新 **+1**，`replaceHook` 打印次数与之一致）。<br/>⚠️ **而 libxposed 是【链式叠加】不是幂等**（§8.2-1 已验）⇒ **N 个 hook = 每次 Activity 切换触发 N 次完整回调**：同一操作 N=5 → **20** 次、N=6 → **24** 次（严格按 N 比例）。即 **N 次反射取值 + N 次 extras 序列化 + N 条事件**。<br/>表现：默认 1000ms 冷却把重复事件挡在 App 侧 ⇒ **症状被掩盖**；冷却设 0 时「进一次 App 跑 N 遍工作流」。<br/>连带：`HookRuntime.stop()` 的 unmount 分支在本代际**变成 no-op**。<br/>⇒ **开发期每装一次包就放大一档**，长期不重启会持续劣化。**重启设备可清零**（重新注入 = 1 个）。修法见 §8.1-2（**顺手 `unhook()` 掉历史累积可自我修复**）。<br/>✅ **2026-09-29 已修复并真机验证**：`replaceHook()` 的返回值存进 `handle`，**只接手 1 个、其余全部 `unhook()`**。实测：装包后 `旧 hook 句柄数` **7 → 保留 1 + 清掉 6**；其后连续 5 次热更新均稳定读到 **1**（单调增长终止）。 |
 | **20** | ⚠️ **重连时重复 `bindService` + ConnectionRecord 泄漏**（真机已验） | `BinderTransport.scheduleReconnect`：`doBind()` 后立刻查 `if (host != null) return`，而 `host` 由 `onServiceConnected` **异步**（post 到 system_server 主线程）设置 ⇒ 循环会**再 bind 一次** | 实测每轮重连 **2 次 `bindService()`**（日志：`⟳ 尝试重连（1000ms）→ 提交` → `★★★★ bindService 成功` → `⟳ 尝试重连（2000ms）→ 又提交`），而只收到 **1 次** `onServiceConnected`。<br/>⚠️ **`ConnectionRecord` 只增不减**：`dumpsys activity services` 里 3 → 5 → …，且**全部共用同一个 `ServiceConnection`**（同一个 `LoadedApk$ServiceDispatcher$InnerConnection@…`）—— 因为 `unbindQuietly()` **只在 `stop()` 里调**，而重连路径**从不调** `stop()`。<br/>⇒ 每次 App 被杀/重装都在 **system_server 的 AMS 里**留下永不释放的连接记录。<br/>⚠️ **同时要诚实说明**：**没有**连带产生重复 `registerCallback`（实测 2 次 bind → 1 次回调）、没有二次 remount、没有二次换 token —— 与缺陷 19 不是同一条路径。<br/>**最小改法**：`doBind()` 后等一个短超时再判 `host`，或把「重连成功」的判定改由 `onServiceConnected` 回调驱动（而不是轮询 `host`）。<br/>⚠️ **2026-09-29 修复时发现它有【两半】，只修一半不够**：<br/>**(a) 重复 bind** —— `doBind()` 后加 `awaitConnected(AWAIT_TIMEOUT_MS)`（有界轮询，步长 100ms、**上限 5 秒**）再判成败。⚠️ 等待窗口必须**与退避值解耦** —— 首次退避只有 1 秒，若拿它当窗口，「设备刚开机时落地慢于 1 秒」仍会被误判为失败并再 bind 一次（等于把 bug 以更低频率留着）；<br/>**(b) 只 bind 不 unbind** —— 修完 (a) 后 `ConnectionRecord` **仍在 +1/轮**（实测 distinct 7→8→9），因为 `unbindQuietly()` 只在 `stop()` 里调 ⇒ **重新 bind 前必须先 `unbindQuietly()`**。<br/>✅ **两半都修并真机验证**：每轮 `bindService()` 提交次数 **2 → 1**；`ConnectionRecord` 连续 3 轮断连 **6 → 6 → 6 → 6 完全持平**（且首次重连时从 7 掉到 6 —— 那条陈旧记录也被释放了）。且未引入额外延迟（提交 → `onServiceConnected` → 「重连成功」实测 **100 / 201 / 200ms**）。 |
 
@@ -1380,7 +1380,7 @@ payload_too_large      → §3.6 契约 2（截断/分页，属实现缺陷或�
 > 2026-09-28 两轮评审产出。**每条都给了最小改法**，可直接排期。
 > 「依赖」列非空者表示**必须等某个实验或某个前置改动**，不要提前动手。
 >
-> ✅ **2026-09-29 已完成 2 条**（真机验证通过）：**缺陷 19** 与 **缺陷 20**，
+> ✅ **2026-09-29 已完成 8 条**（真机 + 单测 + **逐条反证**）：**19 / 20**，以及 §8.3 推荐的 A 组 **1 / 3 / 12 / 13** 与 **18**，
 > 均按本表的最小改法实施（缺陷 20 实施时发现它有**两半**，见该行注）。
 
 | # | 缺陷 | 最小改法 | 依赖 |
@@ -1390,11 +1390,11 @@ payload_too_large      → §3.6 契约 2（截断/分页，属实现缺陷或�
 | 3 | 15 死引用 | 删掉 `HookLog.kt:16` 的 `HookPackagePurityTest`，或补建该测试 | — |
 | 4 | 16 陈旧注释 | 改写 `PermissionManager.kt:203-206` / `:520` 为「判据是**框架此刻连着**（实时），非持久化」 | — |
 | 5 | 17 死字段 | 删 `appContext` + `attach()` + `HookChannelService.kt:101` 调用点；或注明保留理由 | — |
-| 6 | 18 空断言 | 三处补真实断言：`registerSink` 幂等（同 topic 二次注册后 sink 仍是后者）、`lastReportedDroppedCount` 初值精确为 `0`、注销后该 topic 无消费者 | — |
+| 6 | ✅ 18 空断言（**已完成**） | 三处补真实断言：`registerSink` 幂等（同 topic 二次注册后 sink 仍是后者）、`lastReportedDroppedCount` 初值精确为 `0`、注销后该 topic 无消费者 | — |
 | 7 | 11 死函数 | 决策并落地：**推荐接线** —— 让 `BinderTransport.ping()` 走 `currentProtocolVersion()`，否则「统一出口」永远没人走。`IBinder?.isAlive()` 无用途则删 | — |
 | 8 | 4 `ping()` 契约 | 第一步只改文档（§3.1/§6.3 标「签名冲突，最终签名待定」）；实现随 ③ 一起做 | ⚠️ 见 §10-8 |
 | 9 | 7 / 8 早退与反射缓存 | 把 `conditions.isEmpty` 判断提到 `chain.getArg(0)` 之前；`Method`/`Field` 缓存到**实例字段**（不可静态） | — |
-| 10 | 3 `deathRecipient` | 要么 `linkToDeath`（得到 App 侧死亡检测），要么删字段 | — |
+| 10 | ✅ 3 `deathRecipient`（**已完成**） | 要么 `linkToDeath`（得到 App 侧死亡检测），要么删字段 | — |
 
 ### 8.2 ✅ 三处「先验再改」——**已于 2026-09-29 真机验证完毕**
 
@@ -1417,6 +1417,95 @@ payload_too_large      → §3.6 契约 2（截断/分页，属实现缺陷或�
 >
 > ⚠️ **第 3 条的残留未知**：上面测的是**热态**（类已加载）。**设备重启后 system_server 首次挂载**
 > 才是真正加载类的那一次，耗时未测 —— 那才是这条风险的尾部。
+
+### 8.3 修复优先级：**哪些必须先于 ③ 的开发**
+
+> ⚠️ **本节是判断，不是文档此前已有的内容**（§8.1 只给了每条的改法，没给排序）。
+> 判据只有一条：**不修它，③ 的设计就落不了地**，或者③ 上线后故障会**伪装成「能力实现有 bug」**。
+
+#### A 组 · **必须先修**（否则 ③ 的地基是空的）
+
+| 缺陷 | 为什么卡在架构前面 |
+|---|---|
+| **4** `ping()` 契约自相矛盾 | `CapabilityPresence` 的**唯一**数据源就是它，而它是 §6.5「旧 hook 层没有某 capability ⇒ oneway 静默丢弃」的**唯一防线**。签名不定 ⇒ ③ 的「调用前判断」是空的。（连带 §10-8） |
+| **13** `onUnbind` 无条件清 `callback`+`token` | ② 现在只影响事件；③ 上线后：§5.2 定了「**断连立即唤醒全部 waiter 回 `error`**」，一次误清的 unbind 会让在途 waiter **全部挂到超时**；且 §3.3 要求「响应信封带 token」，token 被清后**合法的 `resolve` 也会被拒**。**⚠️ 已实测确认这是真实竞态，不是理论风险** —— 见下方「13 的实测时序」。 |
+| **3** `deathRecipient` 死字段 | 与 13 同族：③ 需要一个**可靠**的断开信号来唤醒 waiter，而现在只有 `onServiceDisconnected`（已知**不一定触发**）+ 15 秒巡检。字段声明了却从没 `linkToDeath`。 |
+| **1 + 12** 两处单槽位（`onConnected` / `onConnectedSink`） | 只要再加**任何**一个 hook 消费者，两者就会互相挤掉；而 §7.2 把「加一个 hook 消费者」定义为**常规操作**。不先修 ⇒ **第二个 hook 触发器一加就静默失效**。 |
+
+#### 13 的实测时序（2026-09-29，MIX Fold 3）
+
+```
+01:35:38.855  ActivityManager: unbindService … conn=…InnerConnection@27a25d3
+              callers: … ManagedServices$1.onBindingDied …
+01:35:39.858  ActivityManager: Start proc 6571:com.chaomixian.vflow
+              for bound-service {HookChannelService} caller=android
+01:35:40.002  HookChannelService: onBind（新进程）
+01:35:40.007  HookChannelService: hook 层已连接：callerUid=1000 callerPid=3040
+```
+
+⇒ **旧连接的 unbind 比新连接建立早约 1.1 秒，但它是异步投递的** ——
+一旦投递顺序反向（`onUnbind` 落到 `registerCallback` 之后），
+新连接的 `callback` 与 `token` 会被无条件清空。**这在部署流程里是常态时序**
+（重装 APK ⇒ 旧进程被杀 ⇒ 新进程接管），不是边角场景。
+
+> 📌 **顺带记录一处「我自己的改动不要放大它」**：缺陷 20 的修复加了一次
+> `unbindQuietly()`（重连前释放旧绑定）。已核实该调用**不会**给 App 侧带来**新的**
+> `onUnbind`：只有当服务已有绑定→绑定数归零才投递，而重连场景下旧绑定早已断开。
+> **但改动 13 时必须回头确认这一点不成立**（修完后 unbind 会真的落到 `onUnbind`）。
+
+#### B 组 · **决策必须先定**（不动代码，是定口径）
+
+| 未决项 | 为什么现在定 |
+|---|---|
+| **§10-9** 丢弃计数语义（delta vs 累计） | 它决定**信封字段**语义。③ 要往信封里加 `error.code` 等字段，**一次改完比改两遍好**；顺带把缺陷 14 的接线一起做。 |
+| **§10-10** 权限判据取 L1 还是 `L0 ∪ L1` | 决定「框架在、通道断」这一格；§6.4 的失败分类必须与它对齐（否则又是「两个消费点口径不同」）。 |
+| **§10-12** ③ 的错误码枚举 | §6.4 的四类失败没有它就是**匹配中文文案**。 |
+
+#### C 组 · **同批顺手**（不阻断，但拖着会变贵）
+
+- **11** `currentProtocolVersion()` 死函数 —— 与缺陷 4 **是同一件事**（统一出口没人走），修 4 时顺手接线。
+- **7 / 8** 早退上移 + 反射缓存 —— 19 修完后不再是 N 倍，但 ③ 会在同一回调线程上**再加工作**。
+- **14** 丢弃计数接线 —— 用户可见 bug；与 B 组口径一起改最省事。
+- **18** 三处空断言 —— 其中 `registerSink` 幂等那例，**加第二个消费者之前**补上更稳。
+- **15 / 16 / 17** —— 纯清理（死引用 / 陈旧注释 / 死字段），零风险、随时可做。
+
+#### D 组 · **与本次架构无关，别在这轮做**
+
+| 缺陷 | 原因 |
+|---|---|
+| **9 / 10** `HookRuntime.stop()` 两层死链 | §5.4 已决定**不做空闲卸载**；③ 的单次调用不需要它。（但 unmount 语义要与 §5.4 对齐，那处契约冲突已记录） |
+| **2** token 换代静默窗口 | 是「偶发丢事件」；③ 有配对表超时兜底。定 §10-9 口径时可顺带决定要不要加 `epoch`。 |
+| **5 / 6** 无连接身份 / 热更新换代多连接 | §4.4 已定：**多进程 hook 落地前**才必须做。③ 是单连接，不用先做。 |
+
+#### ✅ 已落地（2026-09-29）
+
+**A 组四条 + 缺陷 18 已修**（都在 fork 新增文件内，改动面小）：
+
+| 缺陷 | 修法 | 验证 |
+|---|---|---|
+| **13** | `onCallbackUnregistered(which)` 带**身份**：与当前 `callback` 不是同一个 binder 时**忽略并留日志**；`HookChannelService` 记 `lastCallback` 并传入。⚠️ 比较不能直接 `===`（`asInterface` 对同一 binder 可能返回新代理）⇒ 比 `asBinder()` | 单测 1 例；**实测确认为真实竞态**（旧 unbind 比新连接早 1.1 秒、异步投递） |
+| **3** | `onServiceConnected` 里 `linkToDeath`，`unbindQuietly()` 里 `unlinkToDeath`（⚠️ **顺序**：先解回执再 unbind，否则 `host` 已是 null 拿不到 binder）；挂之前先解旧的，避免「只增不减」 | 真机：`💀 App 侧 binder 死亡（deathRecipient）—— 走重连` 在 `bindService` **之前**触发 |
+| **1** | `onConnected` 单槽位 → **按 key 的注册表**（`ConcurrentHashMap`）+ `removeOnConnectedListener(key)`；逐个通知、一个抛异常不影响其他 | 单测 3 例 + **反证**（退化成 `clear()` ⇒ 变红） |
+| **12** | `BinderTransport.onConnectedSink` 同样改注册表（`onConnected(key, sink)` / `removeOnConnected(key)`） | 随 1 同批；`VFlowHookEntry` 传 `"VFlowHookEntry.remount"` |
+| **18** | 三处空断言补真断言：`unregisterSink` 只摘自己的 topic、`registerSink` 同 topic **只留最后一个且只处理一次**、`lastReportedDroppedCount` 初值**精确为 0** | 单测 + **逐条反证**（5 条全变红；`registerSink` 那条要用「不替换而累积」的写法才逼得出来 —— 直接重复赋值无法表达） |
+
+⚠️ **一处为了让测试能跑到而新增的接缝**：`notifyOnConnected()` 提为 `internal` ——
+`IHookCallback.Stub` 继承 `android.os.Binder`，**纯 JVM 测试里构造不出来**
+（`attachInterface` 未 mock），所以测试无法经 `onCallbackRegistered` 走这条路径。
+与既有的 `injectTokenForTest` 是同一种接缝，已在源码注释里写明理由。
+
+#### 推荐顺序
+
+```
+① 定 B 组三个口径        —— 不动代码，成本最低，且它们决定后续怎么写
+② 修 A 组四条            —— 都在 fork 新增文件内；1+12 与 13 同族可一起改
+③ 顺带 C 组              —— 11 随 4、14 随 B 组口径、18 补断言
+④ 然后才是 ③ 的开发
+```
+
+> ⚠️ **为什么地基必须先夯**：A 组四条全是**「不修就会以静默失效的形式暴露」**。
+> ③ 上线后若出问题，表现是「有时能用有时不能用」——
+> 那是最难归因的一类，且会把排查**引向「能力实现有 bug」的错误方向**。
 
 ---
 
@@ -1556,3 +1645,4 @@ payload_too_large      → §3.6 契约 2（截断/分页，属实现缺陷或�
 | 2026-09-28 | **两轮独立源码评审（不采信任何文档）后的第一批落地**。评审方式：两个子代理分别做「代码事实核验」与「架构与契约」，全程只读源码、全仓 grep、代码注释只当线索。结论：**文档引用代码事实的准确度极高**（§8 十三条、§5.4 行号图、§7.2 的 28/25 全部成立，未发现事实错误）；**风险在文档没去核的地方**。本批**只落「纯事实」项**，不依赖任何实验：<br/>① **§8 新增缺陷 14–19**：⭐ **丢弃计数链路从未闭合**（`EventQueue.drainDropped()` 零生产调用者 ⇒ 计数永不清零 ⇒ 首页横幅永久驻留 + 每事件刷 warning；对照 Core logcat 路径**有**调用者）／`HookLog.kt:16` 引用**不存在的** `HookPackagePurityTest`／`PermissionManager` 注释与实时判据**相反**／`appContext`·`attach()` 残留死字段／`HookChannelControllerTest` **三处空断言**／⭐ **热更新后 hook 被挂第二遍**（`replaceHook` 返回值被丢弃 + `handle = null`，注释与代码相反）。<br/>② **新增 §8.1 修复清单**（每条给**最小改法**，按可执行性排序）+ **§8.2 三处「先验再改」**（重复-hook 语义 / `android:permission` 能否拦 uid 2000 / `ServiceConnection` 是否必在主线程）。<br/>③ **§5.1 补第四格**：连接建立路径落在 **system_server 主线程**（`bindService` 未传 Handler ⇒ 回调在 main ⇒ 同步 `registerCallback` + 反射挂 hook + 嵌套往返要本地 binder 池有空位）。<br/>④ **§5.2 补中断契约**（Rhino 异常**不得逃逸**，工作线程须顶层 try/catch）+ 「脚本里的阻塞 Java 调用同样不可中断」+ **三层超时两层零代码**的事实。<br/>⑤ **§5.3 补**：文档把「有界队列+丢弃计数」当现状能力写，而该链路**本身没闭合**。<br/>⑥ **§5.4 补**：本决策与 `IHookCallback.aidl:18`、`HookChannelController.kt:195` 的 AIDL/代码**契约文案冲突**（空条件应读作「早退」而非「卸下」）。<br/>⑦ **§3.6 补**：契约 1–4 必须**覆盖 `report` 上行**（事件是唯一无法重试的）+ ⚠️ **现有预算按 char 计、契约按 byte 立**（`MAX_EXTRAS_JSON_CHARS=128K` 字符，CJK 下达 ~576 KiB > oneway 半缓冲，**整条事件静默丢弃**）。<br/>⑧ **§3.1 补**：⭐ **`ping()` 契约自相矛盾**（§3.1 为 `int`、§6.3 要能力清单、§7.2b 未列改 AIDL）⇒ 它作为 §6.5 静默丢弃的**唯一防线**却无法承载。<br/>⑨ **§6.1 补**：⭐ **「两组合起来看」没有贯彻到权限判据** —— 首页用 `evaluate(isConnected())` 合成，而 `XposedCapability.isGranted` **只取 L1** ⇒ 「框架在、通道断」被判「已授权」、**没有任何缺权限提示**而触发器确实不工作。<br/>⑩ **§6.2 补** `Capability` 与既有 `core/xposed/XposedCapability.kt`（=权限判据）**重名**的消歧。<br/>⑪ **§6.4 补**「已授权但通道断」一类 + **错误码必须机器可判**（枚举，不用自由字符串）。<br/>⑫ **§7.2/§7.2b 补漏项**：测试 / 引用面白名单登记 / proguard（②→13 处；③→10 处），并标注「本表只数功能改动」。<br/>⑬ **§4.3 论证降级**：第二条多连接路径（150 秒窗口）**当前不可达**（`onHotReloading → stopChannelOnly()` 会置 `stopped`+interrupt），结论不变、**论据换成第 1 条与多进程 hook**。<br/>⑭ **§1.2 约束 2 降为【推断】**（分级背压无代码/实测支撑，只有 ShortX 外部对照）。<br/>⑮ **§10 新增未决项 8–20**（`ping` 最终签名 / 丢弃计数语义 / 权限判据取哪几位 / uid 豁免 / 错误码 / `Capability` 落点 / 池容量与默认超时 / ③ 幂等语义 / hook 层升级路径 / 配对表按连接分桶 / 可观测性契约 / ③ 测试策略 / 回滚方案）。 |
 | 2026-09-29 | **真机验证批次（小米 MIX Fold 3 / Android 17，纯 adb，无探针）。** §8.2 三项「先验再改」**全部有结论**，并各自回写正文：<br/>① ⭐ **libxposed 重复 `hook()` = 链式叠加**（不是幂等）—— 临时在 `onActivityResumed` 最前加计数日志做**同操作 A/B**：N=5 → **20** 条、N=6 → **24** 条（比值 1.2 = 6/5），且 `ActivityChangedSource` 实例数 = 1。**⇒ 缺陷 19 从「挂第二遍」升级为「N 倍放大 + 单调增长」**（实测 `旧 hook 句柄数` 1→2→3→4→5→6，每次热更新 +1）。§8.1-2 的修法随之加强：**只接手 1 个、其余 `unhook()` 掉**（顺手自我修复历史累积）。<br/>② ⭐ **`android:permission` 能拦住 uid 2000** —— `am startservice`（`startService` 与 `bindService` 在 AMS 走**同一个** `checkComponentPermission`，而 `adb shell` 就是 uid 2000）：受保护 Service → `Requires permission …HOOK_CONTROL`；无保护对照 → 成功；uid 1000 → `dumpsys` 里 `c:android` bind 成功。**⇒ 规则是 `uid == 1000`（及 0），「uid < 10000 豁免」是错的**（那是 `AppsFilterBase` 的**包可见性**规则，属另一子系统）。§3.3 与 §10-11 据此改写。<br/>③ **`ServiceConnection` 回调确在 system_server 主线程** —— logcat `threadtime` 的 `pid tid` 两列全等（含 `loadClass` + `hook()`）；热态 ≈7ms，**尾部（重启后首次挂载）未测**已标注。<br/>⭐ **新增 §8 缺陷 20（两个子代理都没发现）**：**重连时重复 `bindService` + ConnectionRecord 泄漏** —— `scheduleReconnect` 里 `doBind()` 后立刻查 `host != null`，而 `host` 是异步设的 ⇒ 每轮 **2 次 bind**；`dumpsys` 里 `ConnectionRecord` 只增不减且全部共用同一个 `ServiceConnection`（`unbindQuietly()` 只在 `stop()` 里调）。**重启后稳定复现。**⚠️ 同时诚实记录：**没有**连带产生重复 `registerCallback`／二次 remount／二次换 token。<br/>另：实测确认 **App 侧 `DebugLogger` 确实进 logcat**（`ActivityChangedTrigger` tag 可见），后续排查可用。**测试用的临时改动已全部还原**（`ActivityChangedSource.kt`、`HookProbeEntry.java`），并重新构建安装了干净版本。 |
 | 2026-09-29 | **修复缺陷 19 与 20（代码改动，真机验证通过）。** ① **缺陷 19**：`ActivityChangedSource.remountAfterHotReload` 改为**只接手 1 个**（`replaceHook()` 的返回值存进 `handle` —— 此前丢弃它并置 `handle = null`，那正是根因）、**其余全部 `unhook()`**。实测：装包后 `旧 hook 句柄数` **7 → 保留 1 + 清掉 6**；其后连续 5 次热更新稳定读到 **1**（单调增长终止）。⚠️ 顺带核实 `replaceHook` 的签名确实是 `(Hooker) → HookHandle`（`javap` 读 aar 确认），这才让「存返回值」可行。<br/>② **缺陷 20**：实施时发现它有**两半**，只修一半不够 —— **(a)** `BinderTransport.doBind()` 改为返回 `Boolean`，并新增 `awaitConnected(timeoutMs)`（有界轮询，步长 `AWAIT_STEP_MS = 100ms`），**提交后等 `host` 落地再判成败**；**(b)** ⚠️ 修完 (a) 后 `ConnectionRecord` **仍在 +1/轮**（实测 distinct 7→8→9），因为 `unbindQuietly()` 只在 `stop()` 里调 ⇒ **重新 bind 之前先 `unbindQuietly()`**。实测：每轮 `bindService()` 提交次数 **2 → 1**；`ConnectionRecord` 连续 3 轮断连 **6 → 6 → 6 → 6 完全持平**；且未引入额外延迟（提交 → 连接成功共约 200ms）。<br/>**门禁**：`./gradlew assembleRelease` 通过；`./gradlew test` 1237 例，仅 1 例失败 —— 即 `FORK.md` 已记录的既有失败 `VObjectPropertyTest`（`Uri.parse` 未 mock 的纯 JVM 环境限制），与本次改动无关。 |
+| 2026-09-29 | **修 A 组四条 + 缺陷 18，并补 §8.3 修复优先级。** §8.3 是**判断而非文档既有内容** —— 按「不修它，③ 的设计就落不了地」分四档：**A 组（必须先修）**= 4 `ping()` 契约／13 `onUnbind` 误清／3 `deathRecipient` 死字段／1+12 两处单槽位；**B 组（先定口径）**= §10-9/10/12；**C 组（同批顺手）**= 11/7/8/14/18/15/16/17；**D 组（与本轮无关）**= 9/10/2/5/6。<br/>⭐ **13 已实测确认为真实竞态**（不是理论风险）：日志显示旧连接的 `unbindService` 比新连接建立**早约 1.1 秒**、且由 `ManagedServices$1.onBindingDied` 触发 —— **异步投递一旦落到新 `registerCallback` 之后就会把新连接清掉**。这在部署流程里是常态（重装 ⇒ 旧进程死 ⇒ 新进程接管）。<br/>**已修五条**：**13** 改为带身份比较（比 `asBinder()`，不能直接 `===`）／**3** 接上 `linkToDeath`（**先解旧回执再 unbind**，否则拿不到 binder）／**1** 与 **12** 两处单槽位改按 key 的注册表（逐个通知、一个抛异常不影响其他）／**18** 三处空断言补真断言。<br/>**验证**：单测 4 例新增（`HookChannelControllerTest` 16 例全绿），并对 6 条断言**逐条反证、全部变红**（`registerSink` 那条要用「不替换而累积」的写法才逼得出来）；真机确认 `💀 deathRecipient` 在 `bindService` 前即时触发、重连仍是 **1 次 bind**。**门禁**：`assembleRelease` 通过；`test` 1240 例，仅既有失败 1 例。<br/>⚠️ 新增一个**测试接缝** `notifyOnConnected()`（`internal`）：`IHookCallback.Stub` 继承 `android.os.Binder`，纯 JVM 测试构造不出来，与既有 `injectTokenForTest` 同源。 |

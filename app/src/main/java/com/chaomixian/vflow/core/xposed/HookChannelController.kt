@@ -138,21 +138,86 @@ object HookChannelController {
         // ⚠️ 连上后立刻通知业务层重下发条件 —— hook 层可能刚重启、
         // 内存里的条件已被清空（决策 14：条件不落盘）。
         // 不做这件事的话，用户会看到「明明配了触发器，但重启后不触发」
-        try {
-            onConnected?.invoke()
-        } catch (t: Throwable) {
-            DebugLogger.w(TAG, "连接回调失败：${t.javaClass.simpleName} ${t.message}")
-        }
+        notifyOnConnected()
         return true
     }
 
-    /** hook 层断开。 */
-    fun onCallbackUnregistered() {
+    /**
+     * 逐个通知「连接建立」的监听者（修缺陷 1）。
+     *
+     * ⚠️ 抽成独立方法有两个理由：
+     * ① **一个失败不影响其他** —— 原实现只调单个槽位，且一个抛异常会让
+     *    后面的都收不到；
+     * ② **可测**：`IHookCallback.Stub` 继承 `android.os.Binder`，纯 JVM
+     *    测试里**构造不出来**（`attachInterface` 未 mock）⇒ 测试无法经
+     *    [onCallbackRegistered] 走这条路径，只能直接调本方法。
+     *    这与本类既有的 `injectTokenForTest` 是同一种接缝。
+     */
+    internal fun notifyOnConnected() {
+        for ((key, listener) in onConnectedListeners) {
+            try {
+                listener()
+            } catch (t: Throwable) {
+                DebugLogger.w(TAG, "连接回调失败（$key）：${t.javaClass.simpleName} ${t.message}")
+            }
+        }
+    }
+
+    /**
+     * hook 层断开。**由 binder 线程调用**。
+     *
+     * ## ⚠️⚠️ 必须带上「是哪条连接要断开」（修缺陷 13）
+     *
+     * 原先是无条件清空 `callback` + `token`。而**断开是异步投递的** ——
+     * 实测（2026-09-29，MIX Fold 3）这条时序是**常态**而非边角：
+     *
+     * ```
+     * 01:35:38.855  ActivityManager: unbindService …（旧 App 进程被杀后 AMS 才处理）
+     * 01:35:39.858  Start proc: …vflow（新进程）
+     * 01:35:40.002  onBind（新进程）
+     * 01:35:40.007  hook 层已连接：callerUid=1000
+     * ```
+     *
+     * ⇒ 只要那次 unbind 的投递**落到新连接的 `registerCallback` 之后**，
+     * 它就会把**刚建立的新连接**清掉：hook 层 `host != null`（自认连着），
+     * 而 App 侧 `callback == null` ⇒ **事件全丢**，且没有任何提示。
+     *
+     * 这在部署流程里是常态（重装 APK ⇒ 旧进程死 ⇒ 新进程接管）。
+     *
+     * @param which 要断开的那个 callback 实例（`IHookCallback` 的 binder 代理）。
+     *   与当前 `callback` **不是同一个对象**时**直接忽略** —— 说明它是
+     *   「已经被取代的旧连接」的迟到通知。
+     *   ⚠️ 用 `!=` 比对象身份：`asInterface` 对同一个 binder 返回的代理
+     *   可能是不同实例，故再补一层 `asBinder()` 比较（见下）。
+     */
+    fun onCallbackUnregistered(which: IHookCallback? = null) {
+        val current = callback
+        if (which != null && current != null && !sameCallback(which, current)) {
+            // 不静默：这条日志是判断「13 是否真的发生过」的唯一途径
+            DebugLogger.i(TAG, "收到【旧连接】的断开通知，已忽略（当前连接未受影响）")
+            return
+        }
         callback = null
         _connected.value = false
         token = ""
         // 不换 token：这里是「断开」，重新连上时会换（见 onCallbackRegistered）
         DebugLogger.i(TAG, "hook 层已断开")
+    }
+
+    /**
+     * 两个 `IHookCallback` 是否指向**同一个 binder**。
+     *
+     * ⚠️ 不能直接 `===`：`Stub.asInterface` 对同一个远程 binder 每次都可能
+     * 返回**新的代理实例**，身份比较会误判为「不同连接」。
+     * `asBinder()` 拿到的才是底层 binder（远程是 `BinderProxy`，其 `equals`
+     * 按句柄比较）。
+     */
+    private fun sameCallback(a: IHookCallback, b: IHookCallback): Boolean = try {
+        a.asBinder() == b.asBinder()
+    } catch (_: Throwable) {
+        // 取 binder 失败 ⇒ 保守判为「同一个」，走原有的清空路径。
+        // 宁可多清一次（可恢复），也不要因为取不到 binder 就**拒绝**真的断开
+        true
     }
 
     /**
@@ -172,21 +237,48 @@ object HookChannelController {
     fun isConnected(): Boolean = callback != null
 
     /**
-     * 连接**建立**时的回调。
+     * 连接**建立**时的回调注册表（**按 key 分发**）。
      *
      * ⚠️ 为什么必须有：hook 层重启（或热更新换代）后，它内存里的条件**是空的**
      * —— 条件只存在于它的内存中（决策 14：不落盘）。
      * 不在这里重下发的话，用户会遇到「重启后触发器再也不触发」，
      * 而通道看起来是活的（心跳正常）。
      *
-     * 由 `ActivityChangedTriggerHandler` 注册，用来重推当前条件。
+     * ## ⚠️⚠️ 为什么是注册表而不是单个槽位（修缺陷 1）
+     *
+     * 原实现是 `var onConnected: (() -> Unit)?` + `setOnConnectedListener()`，
+     * 语义是**后注册的覆盖先注册的** —— 与 `eventSinks` 修的那次（缺陷 ⑧）
+     * **是同一个缺陷**，只是当时只修了一半。
+     *
+     * ```
+     * ActivityChangedTriggerHandler.start() → setOnConnectedListener(自己的)
+     *     KeyComboTriggerHandler.start()    → setOnConnectedListener(自己的)   ← 覆盖
+     *     ⇒ Activity 触发器【再也不重下发条件】
+     * ```
+     *
+     * 而且它是**双向的**：`TriggerHandlerRegistry` 按注册顺序建实例再统一
+     * `start()` ⇒ **注册顺序靠后的那个会赢**，改一行顺序就换一个触发器失灵。
+     *
+     * ⚠️ 用 **key**（各 Handler 用自己的标识）而不是「追加到一个列表」：
+     * 与 `eventSinks` 按 topic 做 key 同源 —— 注销时要能**精确摘掉自己**，
+     * 否则 `stop()` 里的移除会误伤别人。
      */
-    @Volatile
-    private var onConnected: (() -> Unit)? = null
+    private val onConnectedListeners =
+        java.util.concurrent.ConcurrentHashMap<String, () -> Unit>()
 
-    /** 注册连接建立回调（后注册的覆盖先注册的）。 */
-    fun setOnConnectedListener(listener: (() -> Unit)?) {
-        onConnected = listener
+    /** 注册连接建立回调。**幂等**（同 key 重复注册会替换）。 */
+    fun setOnConnectedListener(key: String, listener: () -> Unit) {
+        onConnectedListeners[key] = listener
+    }
+
+    /**
+     * 注销连接建立回调。
+     *
+     * ⚠️ 必须带 key（修缺陷 1）—— 原签名 `setOnConnectedListener(null)`
+     * 是「清空唯一槽位」的语义，在注册表下**会误伤其他消费者**。
+     */
+    fun removeOnConnectedListener(key: String) {
+        onConnectedListeners.remove(key)
     }
 
     /**

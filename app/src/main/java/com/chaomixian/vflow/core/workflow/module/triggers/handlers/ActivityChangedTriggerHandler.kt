@@ -48,6 +48,14 @@ class ActivityChangedTriggerHandler : BaseTriggerHandler() {
 
         /** 未配置冷却时的默认值（与模块的 defaultValue 一致）。 */
         private const val FALLBACK_COOLDOWN_MS = 1000L
+
+        /**
+         * 在 `HookChannelController` 的「连接建立」注册表里的 key（修缺陷 1）。
+         *
+         * ⚠️ 必须**每个消费者唯一** —— 用类名，将来加第二个 hook 触发器时
+         * 照抄本行换掉即可，不会与别人互相覆盖。
+         */
+        private const val SINK_KEY = "ActivityChangedTriggerHandler"
     }
 
     /** 当前监听中的触发器。每次增删都重建，因此用写时复制容器。 */
@@ -80,7 +88,7 @@ class ActivityChangedTriggerHandler : BaseTriggerHandler() {
         HookChannelController.registerSink(ActivityPayload.TOPIC) { envelope -> onEnvelope(envelope) }
         // ⚠️ hook 层重启/换代后它内存里的条件会清空（条件不落盘），
         // 必须在这里重推 —— 否则「重启后触发器再也不触发」而通道看着是活的
-        HookChannelController.setOnConnectedListener { syncToChannel() }
+        HookChannelController.setOnConnectedListener(SINK_KEY) { syncToChannel() }
         DebugLogger.i(TAG, "已接管 hook 事件消费")
 
         // 若此刻已经连着，立刻把当前条件下发一次
@@ -99,7 +107,9 @@ class ActivityChangedTriggerHandler : BaseTriggerHandler() {
         // ⚠️ 只注销**自己的 topic** —— 原实现 setEventSink(null) 是「清空唯一槽位」，
         // 在注册表语义下会**误伤其他消费者**
         HookChannelController.unregisterSink(ActivityPayload.TOPIC)
-        HookChannelController.setOnConnectedListener(null)
+        // ⚠️ 必须带 key（修缺陷 1）—— 原 `setOnConnectedListener(null)` 是
+        // 「清空唯一槽位」的语义，在注册表下会**误伤其他消费者**
+        HookChannelController.removeOnConnectedListener(SINK_KEY)
         appContext = null
 
         super.stop(context)
