@@ -286,28 +286,60 @@ class ActivityChangedSource : HookSource {
             return false
         }
 
-        var ok = false
+        // ⚠️⚠️ 只接手【一个】，其余全部 unhook。两条缺一不可：
+        //
+        // ① `replaceHook()` 的**返回值就是本代际要持有的句柄** —— 此前把它丢掉了、
+        //    改成 `handle = null`，于是下一轮 `remountSources()` 里的 `unmount()`
+        //    成了 no-op（handle 为 null），而 `mount()` 的幂等守卫也随之失效
+        //    ⇒ 每热更新一代就**多挂一个**，且旧代际的句柄再也拿不到 ⇒ 永不回收。
+        //    实测（2026-09-29，MIX Fold 3）：`旧 hook 句柄数` 从重启后的 1 单调涨到 6。
+        //
+        // ② 而 libxposed 的 `hook()` 是**链式叠加**、不是幂等 —— 实测同一操作
+        //    N=5 个 hook → 20 次回调、N=6 → 24 次（严格按 N 倍）。
+        //    所以历史累积必须在这里**主动清掉**：这既是修复，也是一次自我修复
+        //    （被这个问题毒了一个多月的设备，装一次带本修复的包就能回到 1 个）。
+        var keeper: XposedInterface.HookHandle? = null
+        var removed = 0
         for (old in oldHandles) {
-            try {
-                // 只接手**我们关心的那个**方法；旧代际可能还有别的 hook
-                val exec = old.executable ?: continue
-                if (exec.name != HookTargets.ActivityResumed.METHOD_NAME) continue
-
-                old.replaceHook { chain -> onActivityResumed(chain, runtime) }
-                HookLog.e("✅ replaceHook 成功：$exec")
-                ok = true
+            // 只处理**我们关心的那个**方法；旧代际可能还有别的 hook
+            val exec = try {
+                old.executable
             } catch (t: Throwable) {
-                HookLog.e("❌ replaceHook 失败：${t.javaClass.simpleName} ${t.message}")
+                HookLog.e("读 executable 失败：${t.javaClass.simpleName}")
+                null
+            } ?: continue
+            if (exec.name != HookTargets.ActivityResumed.METHOD_NAME) continue
+
+            if (keeper == null) {
+                try {
+                    keeper = old.replaceHook { chain -> onActivityResumed(chain, runtime) }
+                    HookLog.e("✅ replaceHook 成功（本代际句柄已持有）：$exec")
+                    continue
+                } catch (t: Throwable) {
+                    // ⚠️ 替换失败**也要**往下走 unhook：它的回调属于**已死的旧代际**
+                    //    （runtime 已 stopDrainOnly），留着只会白担 N 倍回调的成本
+                    HookLog.e("❌ replaceHook 失败，改为移除：${t.javaClass.simpleName} ${t.message}")
+                }
+            }
+
+            // 其余（含替换失败的那个）：移除，清掉历史累积
+            try {
+                old.unhook()
+                removed++
+            } catch (t: Throwable) {
+                // 不静默：清不掉意味着 N 倍回调会继续存在
+                HookLog.e("⚠️ 移除重复 hook 失败：${t.javaClass.simpleName} ${t.message}")
             }
         }
 
-        if (!ok) {
-            HookLog.e("⚠️ 未接手任何 hook ⇒ 热更新后事件不会产生")
-        } else {
-            // 与 unmount() 的语义保持一致：接管成功的句柄现在归本代际持有
-            handle = null
+        handle = keeper
+        if (keeper == null) {
+            HookLog.e("⚠️ 未接手任何 hook ⇒ 热更新后事件不会产生（应由调用方的兜底路径重挂）")
+        } else if (removed > 0) {
+            // 不静默：这个数字直接反映「此前每装一次包就多挂一个」的累积程度
+            HookLog.e("🧹 已清理 $removed 个历史重复 hook（本代际仅保留 1 个）")
         }
-        return ok
+        return keeper != null
     }
 
     override fun unmount() {

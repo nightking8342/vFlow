@@ -315,6 +315,22 @@
 
 ---
 
+### Xposed 通道**缺陷修复**（2026-09-29，**真机验证通过**）
+
+> 两个文件都是 fork 新增文件（见上面 P1b 的条目），改动属**我方**，
+> 但**必须登记** —— 它们改变了 hook 层与传输层的既有行为，
+> 且 `BinderTransport` 此前已被本表记录过一次缺陷修复（P4 的缺陷①）。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `app/src/main/java/.../xposed/sources/ActivityChangedSource.kt`（改，修 **缺陷 19**） | ⚠️⚠️ **热更新后 hook 累积、每代 +1、永不回收**。`remountAfterHotReload` 原先对**每个**旧句柄都 `replaceHook()`、**丢弃返回值**并置 `handle = null` —— 而那个返回值**就是本代际该持有的句柄**（已 `javap` 读 aar 确认签名是 `(Hooker) → HookHandle`）。`handle = null` 使下一轮 `remountSources()` 的 `unmount()` 变 **no-op**、`mount()` 的幂等守卫同时失效 ⇒ 多挂一个，且旧代际句柄再也拿不到。**实测已累积到 7 个**（`旧 hook 句柄数` 1→2→3→4→5→6）；而 libxposed 的 `hook()` 是**链式叠加**（实测 N=5 → 20 次回调、N=6 → 24 次，严格按 N 倍）⇒ **每次 Activity 切换跑 N 遍**，默认 1000ms 冷却一直掩盖着症状。**修法**：只接手 1 个（返回值存进 `handle`）、**其余全部 `unhook()`** —— 既治根因，也**自我修复历史累积**。✅ 实测 7 → 保留 1 + 清 6；其后连续 5 次热更新稳定 = 1。 | **我方** |
+| `app/src/main/java/.../xposed/BinderTransport.kt`（改，修 **缺陷 20**） | ⚠️⚠️ **重连时重复 `bindService` + `ConnectionRecord` 只增不减**。**(a)** `scheduleReconnect` 在 `doBind()` 之后**立刻**查 `host != null`，而 `host` 由 `onServiceConnected` 在 system_server 主线程上**异步**设置 ⇒ 循环会再 bind 一次（实测每轮 **2 次**）。修法：`doBind()` 改为返回 `Boolean`，新增 `awaitConnected(timeoutMs)`（有界轮询，步长 `AWAIT_STEP_MS = 100ms`），**提交后等 `host` 落地再判成败**。**(b)** ⚠️ **只修 (a) 不够** —— 实测 `ConnectionRecord` 仍在 **+1/轮**（distinct 7→8→9），因为 `unbindQuietly()` 只在 `stop()` 里调 ⇒ **重新 bind 前先 `unbindQuietly()`**。✅ 两半都修：每轮提交 **2 → 1**；`ConnectionRecord` 连续 3 轮断连 **6 → 6 → 6 → 6 持平**；未引入额外延迟（约 200ms 完成重连）。 | **我方** |
+
+> ⚠️ **上表两个缺陷的详细论证与实测数据在 `docs/fork/xposed-architecture-v2.md` §8（缺陷 19/20）与 §8.1（修复清单）。**
+> 该文档另列 **18 条未修缺陷**，每条都有最小改法。
+
+---
+
 ## 暂未分歧、但日后改动时须登记的敏感点
 
 以下是上游的核心区。目前 fork **尚未改动**它们；一旦改动（尤其是结构性改动），必须在上表登记，并评估合并成本：

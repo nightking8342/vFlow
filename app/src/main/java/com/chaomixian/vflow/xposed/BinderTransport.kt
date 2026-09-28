@@ -83,6 +83,24 @@ class BinderTransport(
         private const val LIVENESS_CHECK_MS = 15_000L
 
         /**
+         * 等连接落地时的轮询步长。
+         *
+         * ⚠️ 存在的理由见 [awaitConnected]：`bindService()` 只是「已提交」，
+         * 不等它落地就会重复 bind（缺陷 20）。
+         */
+        private const val AWAIT_STEP_MS = 100L
+
+        /**
+         * 等连接落地的**总窗口**。
+         *
+         * ⚠️ 取 5 秒而与退避值无关：`bindService` 提交到 `onServiceConnected` 落地
+         * 实测约 200ms，但设备刚开机 / App 冷启动时会更慢。
+         * 窗口太小会把「慢落地」误判为失败 ⇒ 又 bind 一次（缺陷 20 复发）。
+         * 代价只是「真的连不上时多等 5 秒」，而重连循环本身就是低频的。
+         */
+        private const val AWAIT_TIMEOUT_MS = 5_000L
+
+        /**
          * 计算下一次重连的退避时长（**纯函数，可单测**）。
          *
          * 抽出来是因为「退避算错」的表现是**静默的**：算小了刷屏打日志、
@@ -240,15 +258,35 @@ class BinderTransport(
                 if (stopped) return@Thread
 
                 log("⟳ 尝试重连（累计退避 ${delay}ms）…")
-                try {
+
+                // ⚠️⚠️ 重新 bind **之前**必须先释放上一次的绑定。
+                //
+                // `unbindQuietly()` 此前**只**在 `stop()` 里调，而重连路径从不调 ⇒
+                // 每次重连都在 AMS 里多留一条永远不会被回收的 `ConnectionRecord`。
+                // 实测（2026-09-29）：`dumpsys activity services` 里的
+                // distinct ConnectionRecord 7 → 8 → 9 单调增长（每轮重连 +1）。
+                //
+                // 此刻 `host` 已被 `onServiceDisconnected` / 存活性巡检置为 null，
+                // 所以释放是安全的（且对已死的绑定调用 `unbindService` 也就是一次 no-op）。
+                unbindQuietly()
+
+                val submitted = try {
                     // 复用同一条「等服务就绪 + 等解锁 + bind」的路径 ——
                     // 它与首次连接面临的条件完全相同
                     doBind()
                 } catch (t: Throwable) {
                     log("⟳ 重连异常：${t.javaClass.simpleName} ${t.message}")
+                    false
                 }
 
-                if (host != null) {
+                // ⚠️⚠️ 必须等 `host` 落地再判成败 —— 见 [awaitConnected] 的注释。
+                // 直接查 `host != null` 会让本轮变成一次多余的 bind。
+                //
+                // ⚠️ 等待窗口用 [AWAIT_TIMEOUT_MS] 而**不是**退避值 `delay`：
+                // 首次退避只有 1000ms，而设备刚开机时连接落地可能更慢 ——
+                // 用退避值当窗口会让「慢落地」被误判为失败，于是又 bind 一次，
+                // 等于把这个 bug 以更低的频率留着。
+                if (submitted && awaitConnected(AWAIT_TIMEOUT_MS)) {
                     log("⟳ ✅ 重连成功")
                     return@Thread
                 }
@@ -368,10 +406,10 @@ class BinderTransport(
         return true
     }
 
-    private fun doBind() {
+    private fun doBind(): Boolean {
         val ctx = contextProvider() ?: run {
             log("#14 拿不到 system context，放弃连接")
-            return
+            return false
         }
 
         val intent = Intent().setComponent(component)
@@ -405,6 +443,36 @@ class BinderTransport(
             // 此时下行加固只能靠 token，见 HookChannelService 的注释。
             log("#14 ⚠️ bind 失败。若 Service 挂了 signature 权限，说明 system_server 未持有它")
         }
+        return ok
+    }
+
+    /**
+     * 等连接落地（`host` 被置上），上限 [timeoutMs]。
+     *
+     * ⚠️ **存在理由**：`bindService()` 返回 true 只代表「**已提交**」——
+     * `host` 是由 `onServiceConnected` 在 **system_server 主线程**上**异步**设置的
+     * （见 [connection] 的注释）。调用方若在 `doBind()` 之后**立刻**判 `host != null`，
+     * 那一刻必然是 null。
+     *
+     * 这正是缺陷 20 的成因：`scheduleReconnect` 的循环据此继续下一轮退避，
+     * 于是**又 bind 一次** —— 实测每轮重连 **2 次** `bindService()`，
+     * 而 `dumpsys` 里 AMS 的 `ConnectionRecord` **只增不减**
+     * （`unbindQuietly()` 只在 `stop()` 里调，重连路径从不调），
+     * 每次都往 system_server 里留下永不释放的记录。
+     */
+    private fun awaitConnected(timeoutMs: Long): Boolean {
+        var waited = 0L
+        while (waited < timeoutMs) {
+            if (host != null) return true
+            if (stopped) return false
+            try {
+                Thread.sleep(AWAIT_STEP_MS)
+            } catch (_: InterruptedException) {
+                return host != null
+            }
+            waited += AWAIT_STEP_MS
+        }
+        return host != null
     }
 
     private val connection = object : ServiceConnection {
