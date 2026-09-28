@@ -1,8 +1,29 @@
 # Xposed 通道 · App→hook 能力调用设计（第三种生命周期）
 
+> ## ⚠️ 本文的**框架部分已被 [`xposed-architecture-v2.md`](xposed-architecture-v2.md) 取代**（2026-09-28）
+>
+> V2.0 落 S1–S6 时吸收并**推进**了本文的结论。以 V2.0 为准的部分：
+>
+> | 本文的结论 | V2.0 的推进 |
+> |---|---|
+> | 三种生命周期（① 连接 / ② 订阅 / ③ 调用） | ✅ 保留，但**划分轴换成「状态归属」**，并给出第二判据（V2.0 §2.2） |
+> | 「`pushConditions` 与 ③ 同格」 | ✅ 保留，但**结论不同** —— 两者**契约不同，就该有两个入口**，不必让 `invoke` 容纳它（V2.0 §3.2） |
+> | 「框架必须担三件事」 | ✅ 保留（V2.0 §3 扩展为「hook 侧不占 binder 线程」+ §5 执行模型） |
+> | 「加新能力 = 2 处注册」 | ✅ 保留（V2.0 §7.2 扩展为 10 处，其中 3 处是 hook 特有） |
+> | 「③ 是数据源，不是目的」 | ⚠️ **措辞不准** —— ③ 是「数据源」这个 **App 侧抽象**的一种可选实现（V2.0 §2.1） |
+> | §5.2 把 `token` 写进请求信封 | ⚠️ **已订正** —— token 是连接级凭据，现状由 ① 层经下行下发 |
+> | §5.4 「`ping()` 升级成本极低」 | ⚠️ **已订正** —— 它**零调用者**，用途未定前不构成可排期项（V2.0 §6.3 定为「连接期能力交换」） |
+>
+> **✅ 仍然有效、V2.0 未覆盖的部分**：
+> - **§6.2** 快捷方式路径（`LocalServices.getService(ShortcutService)` 的取法与字段名，【推断】待探针）
+> - **§6.1** 快捷方式的量化（B 263 / A 44 / D 74 / E 23 / C 4）
+> - **§0.3** 那两处预埋缺陷的**原始记录**
+
+---
+
 > **版本**：v1.0（2026-09-28，**设计阶段，未实现**）
 > **目录归属**：fork 独有 → 冲突归**我方**（上游无此文件）
-> **上位文档**：[`xposed-channel-design.md`](xposed-channel-design.md)（通道架构）
+> **上位文档**：[`xposed-architecture-v2.md`](xposed-architecture-v2.md)（**架构以它为准**）
 > **相邻**：[`xposed-executor-design.md`](xposed-executor-design.md)（执行脚本，**本文的同类成员**）、
 > [`surveys/shortcut-system-overview.md`](surveys/shortcut-system-overview.md)（首个用例的背景）
 >
@@ -40,7 +61,7 @@
 | 「加第 N 个 = 1 文件 + 1 行注册」 | ❌ 是 **2 处注册**，且框架要担 3 件事 | **已修正**（§5.1） |
 | 「先建框架，再落用例」 | ❌ **顺序反了**。本仓库成功的部分全是「先探针、再抽象」 | **已修正**（§7） |
 | 「③ 是目的」 | ❌ **把手段当成了目的**。③ 是数据源，不是目的 | **已修正**（§6.3） |
-| 「反射读 `ShortcutService`」 | ⚠️ **证据等级仅【推断】**，survey 从未验证 | **已标注**（§6.2） |
+| 「反射读 `ShortcutService`」 | ⚠️ **证据等级仅【推断】**，survey 从未验证 —— 但**待验的是「取法」，不是「路径」**：它属 survey §5.5 第 4 条（Xposed hook），「必须走 hook」已确证 | **已标注**（§6.2） |
 | （未提及） | ✅ **新增**：hook 侧 `invoke` **绝不能占 binder 线程** | **已补**（§4.2） |
 
 ### 0.3 评审意外发现的两个既有缺陷
@@ -227,6 +248,23 @@ binder 线程：只做「接单 + 登记 waiter」，立刻返回（非阻塞）
 
 **协议版本的机制只解决「能不能解析」，不解决「这个 hook 层会不会 `query_shortcuts`」。**
 
+> ⚠️ **口径订正（2026-09-28 代码复核）**：本文多处引用「未知版本**必须拒绝**而非崩溃」（引自通道架构文档 §3.4.5），
+> 但**代码的实际行为是「不拒绝、只 warn」**（`HookChannelController.kt:273-281`）：
+>
+> ```kotlin
+> if (envelope.protocolVersion != EventEnvelopeCodec.PROTOCOL_VERSION) {
+>     // 不拒绝：payload「只加不改不删」，版本不同仍可能能处理。
+>     DebugLogger.w(TAG, "协议版本不一致：...")
+> }
+> ```
+>
+> 之后**照常继续**：丢包检测 → 丢弃计数 → 按 topic 分派。
+> ⇒ 通道架构文档那句的落实是「**不崩溃，也不拒绝**」，**不是「拒绝」**。
+>
+> **对 ③ 的影响**：③ 的请求/响应信封若沿用同一口径，则「未知 capability」与
+> 「版本不符」是**两件不同的事** —— 前者照本节必须报错，后者可以只 warn 继续。
+> 两者不要混为一谈（本节初版把它们并提，容易让人以为版本不符也会被拒）。
+
 ---
 
 ## 5. 协议与注册
@@ -269,6 +307,28 @@ String invoke(String requestJson, String token);
 - **信封形状与 executor 文档 §3.1/§3.2 保持兼容** —— 两者是同类成员，
   差别只在 `capability` 名（`query_*` vs `execute_script`）与是否有 `script` 字段
 
+#### ⚠️ 事实订正（2026-09-28 代码复核）
+
+本节初版曾把 `token` 写进请求信封。**但现状并非如此**，核实如下：
+
+| | 现状事实 |
+|---|---|
+| App 侧生成 | `HookChannelController.kt:129` `token = newToken()`（`SecureRandom`，`:369-373`） |
+| 下发方向 | **经下行** `pushConditions(conditionsJson, token)`（`:209`）交给 hook 层 |
+| hook 层角色 | **回抄者** —— 存进内存（`HookRuntime.kt:288-289`），放进每条上行信封 |
+| 上行校验 | App 侧（`HookChannelController.kt:240-250`）：①本侧无 token 则丢弃 ②恒定时间比较 |
+
+⇒ **token 是连接级凭据，现状由 ① 层（连接）负责，不是 ③ 的请求级字段。**
+本节初版的信封示例把「future design」写成了既成事实，已改为与现状一致的描述。
+
+> ⚠️ **若要把它改成「注册时由调用方提供」，需先注意一处风险**：
+> `registerCallback` 是 App 侧实现、hook 层调用的方法 —— token 若挪到这里就
+> **必须由 hook 层提供**，凭据变成调用方自选，而身份判据已被本仓库标为不可靠
+> （`HookChannelService.kt:41-42`）。**这是设计取舍，留待架构文档决定，本文不预设。**
+
+> **推论（供架构文档参考）**：鉴权属 ① 层职责，③ 只管业务 ——
+> 这与 §2.1「三种生命周期」的分层一致。
+
 ### 5.3 App 侧 capability 注册表（**新增，不能省**）
 
 风险分级**必须落在 App 侧的注册表上，hook 层不管分级** ——
@@ -286,28 +346,51 @@ String invoke(String requestJson, String token);
 capability 名 → 风险等级 / 所需权限 / 参数 schema / 结果 → vFlow 语义的映射
 ```
 
-### 5.4 ⭐ `ping()` 升级为 capability 自描述（**建议加，成本极低**）
+### 5.4 ⭐ `ping()` 升级为 capability 自描述（**建议加**）
 
-现状：`ping()` 返回 `protocol_version`（`BinderTransport.kt:181`）。
+> ⚠️ **本节初版的「成本极低、收益明确」判断已被推翻（2026-09-28 代码复核）**：
+> **`ping()` 当前零调用者** —— 全仓仅两处提及，都不是调用：
+>
+> | 位置 | 性质 |
+> |---|---|
+> | `BinderTransport.kt:181` | hook 层**实现** |
+> | `HookRuntime.kt:399` | 仅 doc 注释 |
+>
+> App 侧的存活性判定走的是 **`binder.isBinderAlive`**（`BinderTransport.kt:151-153`
+> 的 `startLivenessWatchdog`），**不依赖 `ping()`**。
+>
+> ⇒ 这不是「改造现用接口」，而是「**给一个从未被调用的方法定用途**」。
+> 且 `IHookCallback.aidl:25-34` 的注释写着「App 侧**周期性调用**」，**承诺了一个不存在的机制** ——
+> 会误导后续实现者以为活性问题已被覆盖。
 
-**建议改为返回 capability 清单**（或在其基础上加）。
+**因此升级前必须先回答一个更前置的问题：谁、在什么时候调它？**
 
-**收益**：App 侧能给出**正确的降级提示** ——
-而不是让用户**等超时**再猜（「为什么没反应」）。
+**在用途未定之前，「升级它」不构成一个可排期的改造项。**
 
-**成本**：一次 invoke。
-
-> 评审认为这是**最值得加的补充**。它直接决定第 30 个能力时 App 侧的可诊断性。
+> **收益的逻辑仍然成立**：App 侧能在**调用前**判「这个 hook 层会不会 `query_shortcuts`」，
+> 而不是**等超时**再猜。但它取决于用途选择，不再是「成本极低、随手可加」。
 
 ### 5.5 版本号收敛（**现在就做，别等 ③ 加进来**）
 
-`PROTOCOL_VERSION` 今天是常量 1，**放在两处**：
-`EventEnvelopeCodec.PROTOCOL_VERSION`（信封里）与 `ping()` 的返回值。
+> ⚠️ **事实订正（2026-09-28 代码复核）**：本节初版说「常量 1 **放在两处**」—— **不准确**。
+>
+> | | 实际情况 |
+> |---|---|
+> | **常量定义** | **只有一处**：`EventEnvelope.kt:98`（`const val PROTOCOL_VERSION = 1`） |
+> | 引用点 | 7 处（含测试）：编码默认值 `:56`、`ping()` 返回值 `BinderTransport.kt:181`、收端比较 `HookChannelController.kt:274/279`、`HookRuntime.kt:400`、2 处测试 |
+> | 其中一处是死代码 | `HookRuntime.currentProtocolVersion()`（`:400`）**无任何调用者** |
+>
+> ⇒ 真正的形态是「**一处常量 + 两个对外暴露点**」，**不是「两处定义」**。
+> 漂移风险比初版描述的**小**（不存在两个常量各写一个值的情况），
+> 但「暴露点会随 ③ 增加」这半句**成立** —— 加 ③ 后信封形态若不共用，暴露点会变多。
 
-加了 ③ 之后会变成**三处**（③ 的请求/响应信封也要版本）。
-**三处会漂移，而漂移的表现是「某条链路的行为莫名其妙」**（§3.4.5 已点过此坑）。
+加了 ③ 之后，版本会出现在**更多暴露点**（③ 的请求/响应信封也要版本）。
+**暴露点会漂移，而漂移的表现是「某条链路的行为莫名其妙」**（§3.4.5 已点过此坑）。
 
 ⇒ **收敛成一处常量 + 一次连接期交换。**
+
+> ⚠️ 注意 §5.4 与本节涉及**同一个暴露点**（`ping()` 的返回值），
+> 两者不应分别排期。
 
 ---
 
@@ -327,32 +410,77 @@ capability 名 → 风险等级 / 所需权限 / 参数 schema / 结果 → vFlo
 **已穷尽 7 条出口全堵**（含 `LauncherApps.getShortcuts()` 的 Intent 恒为 null、
 `dumpsys --proto` 的 `secure=true` 硬编码）。**只有拿到 `ShortcutInfo` 对象才能保真。**
 
-### 6.2 路径：反射读 `ShortcutService` 内部对象 ⚠️【推断】
+### 6.2 实现方式：反射读 `ShortcutService` 内部对象 ⚠️【推断】
+
+> **⚠️ 先纠正一处框定错误（2026-09-28）**：本节初版把这条写成
+> 「survey §5.5 的**四条之外**，本文**新增第 5 条**路径」——**这是错的**。
+>
+> 它**不是第 5 条路径**，而是 **survey §5.5 第 4 条（Xposed hook）的一种实现方式**。
+> survey §4.2 早已把结论说死：「**要修那 29%，只有加通道或换身份**」，
+> 而「路径本身还能不能多一条」并不开放。本节的待验项是**实现细节**，不是路径存在性。
+
+**「必须走 hook」本身已确证，且我这轮补上了源码依据：**
+
+`ShortcutService.getShortcuts` 的**唯一**检查是 `verifyCaller(packageName, userId)`：
+
+```java
+private void verifyCaller(String packageName, @UserIdInt int userId) {
+    Preconditions.checkStringNotEmpty(packageName, "packageName");
+    if (isCallerSystem()) {
+        return; // no check                    ← 唯一豁免：system uid
+    }
+    final int callingUid = injectBinderCallingUid();
+    if (UserHandle.getUserId(callingUid) != userId)             throw new SecurityException("Invalid userId");
+    if (injectGetPackageUid(packageName, userId) != callingUid) throw new SecurityException("Calling package name mismatch");
+    ...
+}
+```
+
+- `isCallerSystem()` = `UserHandle.isSameApp(callingUid, Process.SYSTEM_UID)`
+- ⇒ **shell(uid 2000) 调 `getShortcuts("com.xiaomi.mihome", …)` 必抛 `SecurityException`**
+  （`getPackageUid(米家) != 2000`）
+- ⇒ 穷举 `IShortcutService.aidl` **全部 24 个方法**：**无一能跨包读出 `ShortcutInfo` 对象**
+  （跨包的 `getShareTargets` / `hasShareTargets` / `isSharingShortcut` 另加
+  `MANAGE_APP_PREDICTIONS`，signature 级）
+
+**⇒ 「不经 Xposed、以 shell 身份直接 binder 取」这条路在源码层已否证**，
+不再需要真机验证。这与 survey §4.2「不存在『换一个更好的源』这种解法」**一致**。
+
+⚠️ 注意由此产生的**一个反直觉点**：`cmd shortcut get-shortcuts <pkg>` 能工作，
+**不是因为 shell 有权限** —— 它是 `ShortcutManagerShellCommand`，跑在 **system_server（uid 1000）**
+里，binder 调用是 system_server 做的，`verifyCaller` 走 `isCallerSystem()` 放行。
+**shell 只是发起方。** 这也解释了为什么它的输出与 `dumpsys` 逐字一致（都走 `toDumpString`）。
+
+#### 待验证的实现细节（本文档中证据等级最低的环节）
 
 ```
 LocalServices.getService(ShortcutService) → ShortcutUser → 各 ShortcutPackage
     → 各 ShortcutInfo.getIntents()      ← 完整 Intent，类型完好
 ```
 
-**⚠️ 证据等级：本文档中唯一**未经实测**的环节，必须按 §7 决策 21
-「结论必须标注证据类型」标为【推断】。**
-
-未验证项：
+按 §7 决策 21「结论必须标注证据类型」，以下均为【推断】：
 
 - `LocalServices.getService(ShortcutService)` 在 hook 层（system_server 内）可取性
-- 内部字段名（`mShortcutUserList` / `mUsers` 之类）随版本漂移
+- **hook 层调用时 `injectBinderCallingUid()` 返回什么**（★ 唯一必须真机验的项）
+- 内部字段名（`mShortcutUsers` / `mUsers` 之类）随版本漂移
 - `getIntents()` 在 system_server 内的稳定性
 - `ShortcutPackage` 是否已按当前用户过滤
 
-**对比另外两条路径**（survey §5.5 的四条之外，本文新增第 5 条）：
+#### 与同路径下另一种实现方式的对比
 
-| 路径 | 救 dat 残缺（74） | 救 extras 类型（44） | 前置条件 |
+**两条都是「Xposed hook」这一路径的实现方式，不是两条路径**：
+
+| 实现方式（均属 §5.5 第 4 条） | 救 dat 残缺（74） | 救 extras 类型（44） | 前置条件 |
 |---|---|---|---|
-| `ACTION_CREATE_SHORTCUT` | ✅ | ✅ | 目标 App 须响应（实测仅 28 个） |
-| hook `requestPinItem` | ✅ | ✅ | **仅 pin 之后新增** |
-| **反射读 `ShortcutService`** | ✅ | ✅ | **全量 + 含历史 pin**（唯一不需要用户重 pin 的） |
+| hook `requestPinItem`（ShortX「固定的快捷方式」） | ✅ | ✅ | **仅 pin 之后新增**，需用户重 pin |
+| **反射读 `ShortcutService` 内部对象** | ✅ | ✅ | **全量 + 含历史 pin**（唯一不需要用户重 pin 的） |
 
-**⇒ 它的价值被低估了，但证据等级最低。这正是 §7「先探针」的理由。**
+**⇒ 它优于 `requestPinItem`（覆盖更全、不要求用户重 pin），但证据等级最低。
+这正是 §7「先探针」的理由。**
+
+> **另一条已否决的路径**（供对照，见 survey §5.5）：
+> `ACTION_CREATE_SHORTCUT` ✅类型完整、零权限，但**目标 App 须响应**（实测仅 28 个，
+> 且与 dat 残缺那批几乎不相交，净收益 ≈ 0，已被 survey §7.2 否决）。
 
 ### 6.3 ⚠️ 落点：**不是新模块，是给选择器换数据源**
 
@@ -438,10 +566,15 @@ P0（只打日志） → P1a（打包加载） → P1b（心跳） → P3（首�
 
 | # | 项 | 证据等级 | 怎么验 |
 |---|---|---|---|
-| 1 | 反射读 `ShortcutService` 能否走通（§6.2 四项） | 【推断】 | P0（§7.3） |
+| 1 | 反射读 `ShortcutService` 的**取法**（§6.2 五项；★ 其中「hook 调用时的 `injectBinderCallingUid()`」是唯一必须真机验的） | 【推断】 | P0（§7.3） |
 | 2 | hook 侧工作线程模型（专用线程池 vs binder 线程 + 转派） | 【推断】 | P2 |
 | 3 | App 侧 binder 同步调用的超时手段 | 【推断】 | 见下 |
 | 4 | `ping()` 返回 capability 清单的协议形态 | 设计 | P4 |
+
+> ✅ **已结案（2026-09-28）：「不经 Xposed、以 shell 身份直连 `IShortcutService`」这条路。**
+> 源码层否证 —— `verifyCaller` 的唯一豁免是 `isCallerSystem()`（uid 1000），
+> 且 AIDL 全部 24 个方法无一能跨包读出 `ShortcutInfo` 对象。详见 §6.2。
+> **「必须走 hook」不在待验之列**，不要再把它当未决项重新引入。
 
 > ⚠️ **#3 是 executor 文档也存在的缺口**：binder 同步调用**没有超时参数**。
 > 只能靠「另起 watchdog 线程 + App 侧放弃等待」或「`oneway` + 回调配对」。
@@ -472,7 +605,8 @@ P0（只打日志） → P1a（打包加载） → P1b（心跳） → P3（首�
 >
 > **框架必须担三件事**：配对表有界、**hook 侧不占 binder 线程**、未知 capability 显式报错。
 >
-> **⚠️ 别先建框架** —— 先用一个专用方法验掉快捷方式那条路径的唯一未知，
+> **⚠️ 别先建框架** —— 先用一个专用方法验掉快捷方式那条路径的**实现细节**
+> （取法与字段名；**「必须走 hook」已确证，不在待验之列**，见 §6.2），
 > 再从两个真实成员反推 ③ 的形状（本仓库的历史证明了这个顺序）。
 >
 > **⚠️ ③ 是数据源，不是目的** —— 快捷方式的正确落点是**给选择器换数据源**，

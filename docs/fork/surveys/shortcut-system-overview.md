@@ -603,7 +603,30 @@ for (ShortcutInfo shortcutInfo : (List) obj2) {
 | `dumpsys` 文本（vFlow 现用） | ❌ **类型丢失**（§3.3.1） | Shell | ⚠️ 能列，**启动报错** | 本仓库当前实现 |
 | `ACTION_CREATE_SHORTCUT` | ✅ | **零权限** | ❌ App 不响应 | ShortX 的「应用快捷方式」 |
 | `LauncherApps.getShortcuts()` | ✅ | **须是当前默认桌面**，或活跃语音交互服务 | 理论上可用 | AOSP javadoc 明确限定（见下） |
-| Xposed hook | ✅ | Root + Xposed | ✅ | ShortX 的「固定的快捷方式」，四环证据链见 §5.4 |
+| Xposed hook | ✅ | Root + Xposed | ✅ | **实现方式有二，见下** |
+
+**Xposed hook 这条路径的两种实现方式**（⚠️ 二者是**同一条路**，不是两条路 ——
+这条区分是 2026-09-28 补的，此前下游文档曾把 ② 误读成「survey 漏掉的第 5 条路径」）：
+
+| 实现方式（均属上表第 4 条） | 覆盖 | 前置条件 |
+|---|---|---|
+| ① hook `requestPinItem` | 仅用户 pin 过的 | ShortX「固定的快捷方式」用法，四环证据链见 §5.4 |
+| ② 反射读 `ShortcutService` 内部对象 | **全量 + 含历史 pin** | 字段名随版本漂移；取法未实测 |
+
+**⚠️ 为什么只能是 hook（源码依据，2026-09-28 补）**：`ShortcutService.getShortcuts` 的
+唯一检查是 `verifyCaller(packageName, userId)`，其**唯一豁免**是
+`isCallerSystem()`（`UserHandle.isSameApp(callingUid, Process.SYSTEM_UID)`）；
+其余情况要求 `getPackageUid(packageName) == callingUid`。
+⇒ **shell(uid 2000) 调 `getShortcuts("com.xiaomi.mihome", …)` 必抛 `SecurityException`**；
+穷举 `IShortcutService.aidl` **全部 24 个方法**亦**无一能跨包读出 `ShortcutInfo` 对象**
+（跨包的 `getShareTargets` / `hasShareTargets` / `isSharingShortcut` 另需
+`MANAGE_APP_PREDICTIONS`，signature 级）。
+**⇒ 「换身份到 shell 后直接 binder 取对象」这条路已否证**，不再需要真机验证。
+
+> ⚠️ **一个反直觉点**：`cmd shortcut get-shortcuts <pkg>` 能工作**不是因为 shell 有权限** ——
+> 它是 `ShortcutManagerShellCommand`，跑在 **system_server（uid 1000）**里，
+> binder 调用由 system_server 发起，`verifyCaller` 走 `isCallerSystem()` 放行，**shell 只是发起方**。
+> 这同时解释了它为何与 `dumpsys` 输出逐字一致（都走 `toDumpString`，见 §4）。
 
 `LauncherApps` 的门槛来自 AOSP 源码的 javadoc（`LauncherApps.java:1391-1396`）：
 
@@ -813,3 +836,4 @@ adb shell 'find /data -name "shortcuts.xml" 2>/dev/null'
 | **v1.2** | 2026-09-26 | **由一处真实故障（米家场景「无账号权限」）深挖出的体系性更正**。① **新增 §3.3.1**——发现比 dat 省略**更根本**的信息损失：**extras 的「类型」在 dumpsys 文本里彻底丢失**，vFlow 只能按数字形态猜（`--ei`/`--el`/`--es`）。米家 `extra_scene_account=1462285899`（10 位数字）被猜成 Long，而米家 `getString()` 读它 → `null` → 报「无账号权限」。三种类型强制停止实测：`--el` 报错 1 次 / `--es` 0 次 / `--ei` 报错 1 次。② **§3.3 口径澄清**——原文「dat 结构性残缺」易被读成「系统里存的就残缺」，实测（传完整 URI 回显仍省略）证明**数据完整、仅打印省略**。③ **§5.4 新增**——发现 ShortX 有**两个**入口、走**两条不同**数据源：「应用快捷方式」=`ACTION_CREATE_SHORTCUT`，「**固定的快捷方式**」=**Xposed hook `requestPinItem` 采集对象**。**更正 §5.1-5.3「只有一条路径」的旧结论**。④ **§5.5 新增**「完整 Intent 的四条路径总表」（含 `LauncherApps` 须为**默认桌面**的 AOSP javadoc 依据）。⑤ **§3.5 新增 C 类失败**——指出旧量化**低估问题面**（只统计组件定位，未统计 extras 类型，米家那条被算进 ✅ 的 304 条里）。⑥ §4 更正「参数一律无效」的半错结论（服务层 `parseDumpArgs` 确实解析参数，穷举后结论不变）。⑦ §7.3 **已证伪**（该文件是元信息）；**§7.5 新增** Xposed 采集方案评估（结论：并入 `xposed-channel-design.md`，不单独立项）。 |
 | **v1.3** | 2026-09-26 | **补齐 §5.4 的完整证据链（v1.2 只查到前两环）**，并纠正一次**因搜索范围错误导致的反证**。完整链路四环均为源码实证：① Xposed hook `ShortcutService.requestPinItem`（`ShortcutServiceHook.java`）→ ② `VE2.OooOOOO.add(shortcutInfo)`（`:374`）→ ③ **AIDL 服务端** `ShortXService$serviceBinder$1.getRequestPinShortcuts()`（`:5840`）→ ④ 客户端 `C7551oa0.java:355-380` 读 `getIntent()` 构造 `PinedItem`。**v1.2 初稿搜「谁读该列表」时把范围限定在混淆包 `kaa/tjo/ufanjca/`、漏了 `tornaco/apps/shortx/`**，据此得出「只写不读、机制存疑」的**错误反证**——实为跨进程那层。教训已写入该节（**混淆项目搜引用不可按包限定**）。另核实该列表**纯内存、无持久化无回填**（全仓库仅上述两处访问），故此方案**必须自行补持久化**。 |
 | **v1.4** | 2026-09-26 | **新增 §4.1「dumpsys 的定位」**并**统一量化口径**。① 明确 `dumpsys` 是**调试接口而非数据接口**——`toSafeString()` 的省略是**设计意图**（源码注释：*"because those can often have sensitive info"*），**催改无意义**；它**适合做「目录」、不适合做「可执行的调用」**，而现实现两者兼用、第二项正是缺陷来源。② **§3.5 由二分法改为五分类**（B 263 / A 44 / D 74 / E 23 / C 4），与 §4.1 对齐——旧分型只统计「能否定位组件」，**漏了「参数是否传对」这个独立维度**。③ 新增**数据源能力矩阵**，点明「**全量 + 无损 + 免权限**」三者不可兼得（`LauncherApps` 恰好两者兼得、代价是须为默认桌面；AOSP 如此设计因为「能拿全部快捷方式的本就该是桌面」），**故不存在「换个更好的源」这种解法**。④ 更正 §3.5/§7.4/§8 中所有基于旧分型的数字。⑤ A 类（类型问题）**上限可量化**为 44 条——v1.2 曾称「无法量化」，**不准确**。 |
+| **v1.5** | 2026-09-28 | **§5.5 补「路径 vs 实现方式」的区分 + 一条路径的源码层否证**。起因：下游 `xposed-capability-invocation-design.md` §6.2 把「反射读 `ShortcutService`」误写成「§5.5 四条之外的**第 5 条路径**」——它是第 4 条（Xposed hook）的**一种实现方式**，不是新路径。① §5.5 表下新增「Xposed hook 的两种实现方式」（① hook `requestPinItem` ② 反射读内部对象），明确二者同属一条路；② 补 **AOSP 源码依据**否证「换身份到 shell 后直接 binder 取」：`ShortcutService.verifyCaller` 的唯一豁免是 `isCallerSystem()`（uid 1000），shell(2000) 跨包调 `getShortcuts` 必抛 `SecurityException`，穷举 `IShortcutService.aidl` **24 个方法无一能跨包读出 `ShortcutInfo` 对象**；③ 记录**一个反直觉点**：`cmd shortcut get-shortcuts` 能工作**不是 shell 有权限**，而是 `ShortcutManagerShellCommand` 跑在 system_server（uid 1000）里、binder 调用由 system_server 发起，这也解释了它为何与 `dumpsys` 输出逐字一致。**⇒ 「必须走 hook」不再是待验项。** |
