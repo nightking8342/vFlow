@@ -16,10 +16,11 @@
 > **`ServiceConnection` 回调在 system_server 主线程**。见 §8.2。
 >
 > **② 订阅侧（P1–P4）已实现并真机验证** —— 但评审 + 实测发现**已实现部分本身有 20 条缺陷**（§8）。
-> ✅ **其中 8 条已修复并验证**（2026-09-29）：**19**（hook 每热更新 +1、永不回收 —— 实测已到 N=6）／
+> ✅ **其中 9 条已修复并验证**（2026-09-29）：**19**（hook 每热更新 +1、永不回收 —— 实测已到 N=6）／
 > **20**（重连重复 `bindService` + `ConnectionRecord` 只增不减）／
+> **14**（丢弃计数永不清零 ⇒ 首页横幅永久驻留）／
 > 以及 §8.3 判定的 **A 组四条 1 / 3 / 12 / 13**（③ 开发的前置）与 **18**（空断言）。
-> **其余 12 条待排期**（§8.1 已给每条的最小改法，§8.3 给了优先级）。
+> **其余 11 条待排期**（§8.1 已给每条的最小改法，§8.3 给了优先级）。
 >
 > 凡标 `【未验证】` / `【推断】` 的结论都是**推断**，不是实测 —— 见 §10 与各节注。
 
@@ -840,12 +841,35 @@ ui/home/HomeScreen.kt:381  if (xposedDroppedCount > 0) ⇒ 横幅常驻
 | 3 | **UI 语义更对** —— 用户要回答的是「**现在还在丢吗**」。累计值回答的是「这台设备历史上丢过多少」，而那个数字**只会涨**，无法用来决定要不要收窄条件 |
 | 4 | **不需要「过期隐藏」** —— 累计值方案必须再加时间戳才能在停止丢弃后让横幅消失；读走即清天然就是「这段时间没有丢弃 ⇒ 计数归零」 |
 
-⇒ **实现**：`HookRuntime.drainLoop` 发送成功后调 `queue.drainDropped()`，把结果留到**下一个信封**上报
-（`HookRuntime.kt:250` 的注释描述的就是这个设计，**只是调用点没接上**）。
-⚠️ 注意顺序：**先取 `peekDropped()` 装信封、再在发送成功后 `drainDropped()`** ——
-否则「入了队但没发出去」的那次丢弃会丢账（这正是原注释要表达的意思）。
+⇒ **实现**（✅ 2026-09-29 已落地）：`HookRuntime.drainLoop` 发送成功后调
+**`queue.drainDroppedAtMost(reported)`** —— ⚠️ **不是 `drainDropped()`**。
 
-⇒ 顺带把 **§8 缺陷 14** 一起修（它就是这个口径没落地的后果）。
+#### ⚠️⚠️ 为什么不是 `drainDropped()`：两个线程之间的一个窗口
+
+`emit()` 跑在 **hook 回调线程**、`drainLoop` 跑在**发送线程**。发送路径是
+「装信封时 `peekDropped()` → 发送 → 成功后清零」：
+
+```
+emit:  peek 得 5，装进信封（这条要发出去）
+        ↓ ← ⚠️ 这个窗口里又丢了 2 条（值变成 7）
+drain: drainDropped() ⇒ 读走 7、清零 ⇒ 只报了 5，那 2 条【永久丢账】
+```
+
+而那 2 条**正是本条设计的全部意义** —— 「丢过多少」是用户唯一的知情途径。
+⇒ 改为按「**已上报的那个值**」精确扣除（`accumulateAndGet` 原子钳位）：
+清了 5 就只减 5，新出现的 2 留给下一条信封。
+
+**两条实现约束**（都写进了源码注释与测试）：
+
+| # | 约束 |
+|---|---|
+| 1 | **先取一次 `peekDropped()` 并记进信封** —— 原代码装信封读一次、下面日志又读一次，两次可能不同 ⇒ 无法说清「这条信封报的是哪个数」 |
+| 2 | **只在 `transport.send` 成功时扣** —— 失败时保留，下一条信封会再报一次，信息不丢 |
+
+⚠️ 扣减值**从信封反解**（`EventEnvelopeCodec.KEY_DROPPED`），而不是在 `emit` 里另存一份 ——
+信封是唯一真实来源，另存会引入「两份状态可能不一致」，而那正是本仓库反复踩的形态。
+
+⇒ 顺带修掉了 **§8 缺陷 14**（它就是这个口径没落地的后果）。
 
 ### 5.4 hook 点挂载 / 卸载
 
@@ -1448,7 +1472,7 @@ payload_too_large      → §3.6 契约 2（截断/分页，属实现缺陷或�
 | **11** | ⚠️ **`currentProtocolVersion()` 是死函数** | `HookRuntime.kt:400`，全仓**零调用者** —— `BinderTransport.ping()`（`:181`）直接用了 `EventEnvelopeCodec.PROTOCOL_VERSION` | 又一个「统一出口没人走」——**正是 §7.4 反模式 3**。同类：`HookRuntime.kt:403` 的 `IBinder?.isAlive()` 也零调用者 |
 | **12** | ✅ ⚠️ **第三个单槽位**（**2026-09-29 已修**） | `BinderTransport.kt:129-135` 的 `onConnectedSink` | 文档此前只数了 App 侧两处（`eventSinks` 已修 / `onConnected` 未修），**hook 侧这处同样是单槽位覆盖** |
 | **13** | ✅ ⚠️ **`onUnbind` 会清掉「新」连接**（**2026-09-29 已修**；**已实测确认为真实竞态**） | `HookChannelService.kt:112-116` → `HookChannelController.kt:150-156`（`callback = null; token = ""`） | 解绑到 0 客户端时无条件清空。若旧连接的 unbind 事件在**新连接 `registerCallback` 之后**才到达 ⇒ hook 层 `host != null`（自认连着）而 App 侧 `callback == null` ⇒ **事件全丢**。这是 §4.2「无连接身份」的**一条具体可测后果** |
-| **14** | ⚠️⚠️ **丢弃计数链路从未闭合** | `EventQueue.drainDropped()`（`wire/EventQueue.kt:75`）是**唯一**清零入口，**零生产调用者**（只有 `EventQueueTest`）；`HookRuntime.kt:252` 塞进信封的是 `peekDropped()`（**累计值**）；`HookChannelController.kt:264-271` 只在 `>0` 时赋值、**从不复位** | ⚠️ **一次丢弃 ⇒ 永久「已丢弃 N 条」**：首页横幅（`HomeScreen.kt:381` `if (xposedDroppedCount > 0)`）**驻留到 App 进程被杀**；且此后**每条事件**都刷一条 warning。与 §6.4「不要误导用户」的立意直接冲突。**对照：Core 的 logcat 路径有真实调用者**（`LogcatStreamWrapper.kt:503`）⇒ 同一模式只在 Xposed 侧漏了。⚠️ `HookRuntime.kt:250` 的注释逐字写着「清零由发送成功后的 `drainDropped` 负责」——**反模式 6 的又一实例，而纯函数单测全绿恰是它没被发现的原因** |
+| **14** | ✅ ⚠️⚠️ **丢弃计数链路曾未闭合**（**2026-09-29 已修**） | `EventQueue.drainDropped()`（`wire/EventQueue.kt:75`）是**唯一**清零入口，**零生产调用者**（只有 `EventQueueTest`）；`HookRuntime.kt:252` 塞进信封的是 `peekDropped()`（**累计值**）；`HookChannelController.kt:264-271` 只在 `>0` 时赋值、**从不复位** | ⚠️ **一次丢弃 ⇒ 永久「已丢弃 N 条」**：首页横幅（`HomeScreen.kt:381` `if (xposedDroppedCount > 0)`）**驻留到 App 进程被杀**；且此后**每条事件**都刷一条 warning。与 §6.4「不要误导用户」的立意直接冲突。**对照：Core 的 logcat 路径有真实调用者**（`LogcatStreamWrapper.kt:503`）⇒ 同一模式只在 Xposed 侧漏了。⚠️ `HookRuntime.kt:250` 的注释逐字写着「清零由发送成功后的 `drainDropped` 负责」——**反模式 6 的又一实例，而纯函数单测全绿恰是它没被发现的原因** |
 | **15** | ⚠️ **`HookLog.kt:16` 引用一个不存在的测试** | 注释称约束由 `WireLayerPurityTest` **与 `HookPackagePurityTest`** 锁住；全仓**无**该文件 | 断言了一条不存在的保障 ⇒ 后续实现者以为「hook 层不引用 App 侧类」有双保险。实际只有 `WireLayerPurityTest` |
 | **16** | ⚠️ **`PermissionManager` 注释与实现相反** | `permissions/PermissionManager.kt:203-206` / `:520` 仍写「判据是**『曾经成功连上过』**」；而 `XposedCapability.isGranted`（`core/xposed/XposedCapability.kt:55-56`）读的是 `frameworkConnected` —— **实时** | **反模式 5 的同型**：后人读 `PermissionManager` 会得到与实现相反的结论，可能照注释把持久化判据恢复回来 |
 | **17** | **`appContext` / `attach()` 是残留死字段** | `HookChannelController.kt:117` 声明、`:121` 写入，**全类零读取**；唯一调用点 `HookChannelService.kt:101` | 是 P4「判据实时化」时删掉 `markConnected()` 后的遗留（其注释还写着「用于记录『曾经连上过』」） |
@@ -1469,12 +1493,12 @@ payload_too_large      → §3.6 契约 2（截断/分页，属实现缺陷或�
 > 2026-09-28 两轮评审产出。**每条都给了最小改法**，可直接排期。
 > 「依赖」列非空者表示**必须等某个实验或某个前置改动**，不要提前动手。
 >
-> ✅ **2026-09-29 已完成 8 条**（真机 + 单测 + **逐条反证**）：**19 / 20**，以及 §8.3 推荐的 A 组 **1 / 3 / 12 / 13** 与 **18**，
+> ✅ **2026-09-29 已完成 9 条**（真机 + 单测 + **逐条反证**）：**19 / 20 / 14**，以及 §8.3 推荐的 A 组 **1 / 3 / 12 / 13** 与 **18**，
 > 均按本表的最小改法实施（缺陷 20 实施时发现它有**两半**，见该行注）。
 
 | # | 缺陷 | 最小改法 | 依赖 |
 |---|---|---|---|
-| 1 | 14 丢弃计数 | 二选一并写进 §5.3：**(a)** 语义 = 「自上次成功发送以来」⇒ `drainLoop` 发送成功后调 `queue.drainDropped()`，同步改 `HookRuntime.kt:250` 注释与 `EventQueueTest`；**(b)** 语义 = 「自连接以来累计」⇒ App 侧带 `epoch` 去重 + UI 加「最近一次丢弃时间」以过期隐藏。**推荐 (a)**（与 logcat 路径一致）。**另加一条源码扫描型测试**断言 `drainDropped()` 有生产调用者（照 `CoreDexFingerprint` 的集成点测试形态） | — |
+| 1 | ✅ 14 丢弃计数（**已完成**） | 二选一并写进 §5.3：**(a)** 语义 = 「自上次成功发送以来」⇒ `drainLoop` 发送成功后调 `queue.drainDropped()`，同步改 `HookRuntime.kt:250` 注释与 `EventQueueTest`；**(b)** 语义 = 「自连接以来累计」⇒ App 侧带 `epoch` 去重 + UI 加「最近一次丢弃时间」以过期隐藏。**推荐 (a)**（与 logcat 路径一致）。**另加一条源码扫描型测试**断言 `drainDropped()` 有生产调用者（照 `CoreDexFingerprint` 的集成点测试形态） | — |
 | 2 | ✅ **19 热更新累积 hook（已完成）** | ⚠️ **已验：框架叠加**（§8.2-1）⇒ 不只是「存返回值」，**还要顺手清掉历史累积**：<br/>```kotlin\nvar taken = false\nfor (old in oldHandles) {\n    val exec = old.executable ?: continue\n    if (exec.name != METHOD_NAME) continue\n    if (!taken) { handle = old.replaceHook { c -> onActivityResumed(c, runtime) }; taken = true }\n    else old.unhook()      // ★ 清掉历史累积（N → 1），自我修复\n}\n```<br/>即：**只接手 1 个、其余全部 `unhook()`**。这样每次热更新都回落到 1，而不是 +1。再补单测「连续两次 remount 只产生一个 hook」 | ✅ **2026-09-29 已实施并真机验证**（7 → 保留 1 + 清 6；其后 5 次热更新稳定 = 1） |
 | 3 | 15 死引用 | 删掉 `HookLog.kt:16` 的 `HookPackagePurityTest`，或补建该测试 | — |
 | 4 | 16 陈旧注释 | 改写 `PermissionManager.kt:203-206` / `:520` 为「判据是**框架此刻连着**（实时），非持久化」 | — |
@@ -1558,7 +1582,7 @@ payload_too_large      → §3.6 契约 2（截断/分页，属实现缺陷或�
 
 - **11** `currentProtocolVersion()` 死函数 —— 与缺陷 4 **是同一件事**（统一出口没人走），修 4 时顺手接线。
 - **7 / 8** 早退上移 + 反射缓存 —— 19 修完后不再是 N 倍，但 ③ 会在同一回调线程上**再加工作**。
-- **14** 丢弃计数接线 —— 用户可见 bug；与 B 组口径一起改最省事。
+- ✅ **14** 丢弃计数接线 —— 【**2026-09-29 已完成**】口径落定后即改；⚠️ 实施中发现**不能直接用 `drainDropped()`**（会丢账，见 §5.3）
 - **18** 三处空断言 —— 其中 `registerSink` 幂等那例，**加第二个消费者之前**补上更稳。
 - **15 / 16 / 17** —— 纯清理（死引用 / 陈旧注释 / 死字段），零风险、随时可做。
 
@@ -1744,3 +1768,4 @@ payload_too_large      → §3.6 契约 2（截断/分页，属实现缺陷或�
 | 2026-09-29 | **修复缺陷 19 与 20（代码改动，真机验证通过）。** ① **缺陷 19**：`ActivityChangedSource.remountAfterHotReload` 改为**只接手 1 个**（`replaceHook()` 的返回值存进 `handle` —— 此前丢弃它并置 `handle = null`，那正是根因）、**其余全部 `unhook()`**。实测：装包后 `旧 hook 句柄数` **7 → 保留 1 + 清掉 6**；其后连续 5 次热更新稳定读到 **1**（单调增长终止）。⚠️ 顺带核实 `replaceHook` 的签名确实是 `(Hooker) → HookHandle`（`javap` 读 aar 确认），这才让「存返回值」可行。<br/>② **缺陷 20**：实施时发现它有**两半**，只修一半不够 —— **(a)** `BinderTransport.doBind()` 改为返回 `Boolean`，并新增 `awaitConnected(timeoutMs)`（有界轮询，步长 `AWAIT_STEP_MS = 100ms`），**提交后等 `host` 落地再判成败**；**(b)** ⚠️ 修完 (a) 后 `ConnectionRecord` **仍在 +1/轮**（实测 distinct 7→8→9），因为 `unbindQuietly()` 只在 `stop()` 里调 ⇒ **重新 bind 之前先 `unbindQuietly()`**。实测：每轮 `bindService()` 提交次数 **2 → 1**；`ConnectionRecord` 连续 3 轮断连 **6 → 6 → 6 → 6 完全持平**；且未引入额外延迟（提交 → 连接成功共约 200ms）。<br/>**门禁**：`./gradlew assembleRelease` 通过；`./gradlew test` 1237 例，仅 1 例失败 —— 即 `FORK.md` 已记录的既有失败 `VObjectPropertyTest`（`Uri.parse` 未 mock 的纯 JVM 环境限制），与本次改动无关。 |
 | 2026-09-29 | **修 A 组四条 + 缺陷 18，并补 §8.3 修复优先级。** §8.3 是**判断而非文档既有内容** —— 按「不修它，③ 的设计就落不了地」分四档：**A 组（必须先修）**= 4 `ping()` 契约／13 `onUnbind` 误清／3 `deathRecipient` 死字段／1+12 两处单槽位；**B 组（先定口径）**= §10-9/10/12；**C 组（同批顺手）**= 11/7/8/14/18/15/16/17；**D 组（与本轮无关）**= 9/10/2/5/6。<br/>⭐ **13 已实测确认为真实竞态**（不是理论风险）：日志显示旧连接的 `unbindService` 比新连接建立**早约 1.1 秒**、且由 `ManagedServices$1.onBindingDied` 触发 —— **异步投递一旦落到新 `registerCallback` 之后就会把新连接清掉**。这在部署流程里是常态（重装 ⇒ 旧进程死 ⇒ 新进程接管）。<br/>**已修五条**：**13** 改为带身份比较（比 `asBinder()`，不能直接 `===`）／**3** 接上 `linkToDeath`（**先解旧回执再 unbind**，否则拿不到 binder）／**1** 与 **12** 两处单槽位改按 key 的注册表（逐个通知、一个抛异常不影响其他）／**18** 三处空断言补真断言。<br/>**验证**：单测 4 例新增（`HookChannelControllerTest` 16 例全绿），并对 6 条断言**逐条反证、全部变红**（`registerSink` 那条要用「不替换而累积」的写法才逼得出来）；真机确认 `💀 deathRecipient` 在 `bindService` 前即时触发、重连仍是 **1 次 bind**。**门禁**：`assembleRelease` 通过；`test` 1240 例，仅既有失败 1 例。<br/>⚠️ 新增一个**测试接缝** `notifyOnConnected()`（`internal`）：`IHookCallback.Stub` 继承 `android.os.Binder`，纯 JVM 测试构造不出来，与既有 `injectTokenForTest` 同源。 |
 | 2026-09-29 | **B 组三个口径定案**（全部写进正文，不再是「待定」）：<br/>**① §3.1 `ping()` 的最终形状** —— **不改 `ping()`，新增 `String capabilities()`**。三条理由：职责分离（版本号 + 能力清单不该耦合在一处）／`ping` 的语义是「活着吗」不该变成解析 JSON／代价不变（两者都是传统 AIDL 方法，旧 hook 层都收不到）。⚠️ **并定义了「存在性探测」的第一判据是 `ping()`**（最老、必然存在）而**不是 `capabilities()`**（它本身可能不存在）。§7.2b 因此 +1 处，合计 **11 处**。<br/>**② §5.3 丢弃计数语义** —— **读走即清**（`drainDropped()` 固有语义），不取累计值。四条理由：与 Core 的 logcat 路径一致（同一份语义不该在两个进程里分叉）／不需新协议字段（累计值要 `epoch` 去重）／UI 要回答的是「现在还在丢吗」而不是「历史上丢过多少」／不需过期隐藏。⚠️ 顺序：**先取 `peekDropped()` 装信封、发送成功后再 `drainDropped()`**。<br/>**③ §6.4 错误码枚举** —— **五个枚举值** + 两条硬约束（上表每一行**必须能映射到恰好一个**枚举值；**`detail` 只给人看、绝不参与判断**—— 它会被三语本地化，拿它分支等于埋一个「切语言就坏」的雷）；并点明 **`payload_too_large` 走「报告问题」**（它是实现缺陷/数据异常，不是用户能处理的）。<br/>**④ §6.1 权限判据定案（用户拍板）**：**保持 L1**（框架此刻连着），另补「**已授权但通道断**」这一**可见状态**。四条理由：与 P4 自己的结论一致（「把时序问题交给幂等重试，而不是把判据放宽」）／**禁用工作流是要落盘的副作用**（不该让几秒内会自己好的窗口去改用户数据）／「实时」针对的是**框架**不是通道／可见性由新状态位承担。⚠️ **附带义务**：通道断时**不会**禁用工作流 ⇒ 用户看到「权限全绿 + 触发器不工作」 ⇒ **「可见状态」不是可选项**（建议做进 `TriggerService` 的位置）。<br/>**同时**：§10 标记 9/10/12 为已定；§8.3 的 B 组表改为「口径已定」、推荐顺序同步；点明 **缺陷 4 是 A 组唯一未修的一条**（口径已定、代码随 ③ 一起做）。 |
+| 2026-09-29 | **修缺陷 14（丢弃计数永不清零）。** 口径（§5.3「读走即清」）落定后即改。⚠️ **实施中发现不能直接用 `drainDropped()`** —— `emit()` 在回调线程、`drainLoop` 在发送线程，「装信封 → 发送 → 清零」之间存在窗口，直接 `drainDropped()` 会把窗口内新发生的丢弃**读走并抹掉**，而那正是本条设计的全部意义。故新增 **`EventQueue.drainDroppedAtMost(reported)`**：按「已上报的那个值」精确扣除。<br/>另两处同批修正：**①** `emit` 里原先 `peekDropped()` **读了两次**（装信封一次、日志一次），两次可能不同 ⇒ 改为只读一次并记进信封；**②** 扣减值**从信封反解**而非另存一份，信封是唯一真实来源（另存会引入「两份状态可能不一致」）。<br/>⭐ **测试抓到了我自己的一个 bug**：`drainDroppedAtMost` 初版写成 `addAndGet(-reported).coerceAtLeast(0)` —— `coerce` 只作用在**返回值**上，计数器本身已被扣成负数（单测断言出 `-4`）。改用 `accumulateAndGet` 在**同一个原子操作里钳位**。<br/>**新增 5 例**：3 例锁 `drainDroppedAtMost` 的语义（窗口内的丢弃必须留着、报 0 不扣、永不为负）+ **2 例源码扫描型集成点测试**（照 `CoreDexFingerprintTest` 的形态）—— ⚠️ **纯函数测试全绿恰是缺陷 14 当初没被发现的原因**，必须有「谁去调它」的守卫。**反证**：真删掉调用点 ⇒ 两条守卫同时变红；把精确扣减退化成 `drainDropped()` ⇒ 两条语义测试变红。<br/>**门禁**：`assembleRelease` 通过；`test` **1245 例**，仅既有失败 1 例。真机复验：重连仍 1 次 bind、hook 稳定在 1、条件下发正常。 |

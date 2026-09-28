@@ -241,15 +241,20 @@ class HookRuntime(
     fun emit(topic: String, payloadJson: String) {
         if (token.isEmpty()) return
 
+        // ⚠️ **只读一次**，并把它记进信封 —— 发送成功后要按这个值精确扣除
+        //（见 [EventQueue.drainDroppedAtMost] 的注释）。原先这里读一次、
+        // 下面日志里又读一次，两次可能不同 ⇒ 无法说清「这条信封报了哪个数」。
+        val dropped = queue.peekDropped()
+
         val envelope = EventEnvelopeCodec.encode(
             topic = topic,
             seq = seq.incrementAndGet(),
             ts = System.currentTimeMillis(),
             payloadJson = payloadJson,
             // 丢弃数随下一个信封上报，而不是单独造一条通道（§3.4.4）。
-            // 只读不清 —— 清零由发送成功后的 drainDropped 负责，
+            // 只读不清 —— 清零由【发送成功之后】做，
             // 这样「入了队但没发出去」的丢弃不会丢账
-            droppedCount = queue.peekDropped(),
+            droppedCount = dropped,
             token = token,
         )
 
@@ -268,15 +273,40 @@ class HookRuntime(
     private fun drainLoop() {
         while (running) {
             val envelope = queue.poll(DRAIN_POLL_MS) ?: continue
+            var sent = false
             try {
-                if (!transport.send(envelope)) {
+                sent = transport.send(envelope)
+                if (!sent) {
                     log("信封发送失败（连接已断？），本条丢弃")
                 }
             } catch (t: Throwable) {
                 // 单独 catch：一条发不出去不能把整个发送线程打死
                 log("信封发送异常：${t.javaClass.simpleName} ${t.message}")
             }
+
+            // ⚠️ 只有**发送成功**才把「已上报的丢弃数」扣掉（修缺陷 14）。
+            // 失败时保留 —— 下一条信封会把它再报一次，那个信息不会丢。
+            if (sent) {
+                val stillPending = queue.drainDroppedAtMost(envelopeDroppedCount(envelope))
+                if (stillPending > 0) {
+                    // 不静默：说明「上报期间又丢了」，用户应该知道
+                    log("丢弃计数已上报，期间又新增 $stillPending 条待报")
+                }
+            }
         }
+    }
+
+    /**
+     * 从已编码的信封里取回 `dropped` 字段。
+     *
+     * ⚠️ 为什么要**反解**而不是在 `emit` 里另存一份：信封是唯一真实来源
+     * （它是实际发出去的东西）。另存一份会引入「两份状态可能不一致」，
+     * 而这正是本仓库反复踩的形态。解析失败一律返回 0（不扣、不静默出错）。
+     */
+    private fun envelopeDroppedCount(envelopeJson: String): Long = try {
+        org.json.JSONObject(envelopeJson).optLong(EventEnvelopeCodec.KEY_DROPPED)
+    } catch (_: Throwable) {
+        0L
     }
 
     /**
