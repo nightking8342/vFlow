@@ -130,6 +130,18 @@ class ActivityChangedSource : HookSource {
      * 发送由 [HookRuntime] 的独立线程负责。
      */
     private fun onActivityResumed(chain: XposedInterface.Chain, runtime: HookRuntime): Any? {
+        // ⚠️⚠️ **早退必须在最前**（修缺陷 7）——
+        // `conditions.isEmpty` 是**最便宜**（一次 volatile 读）且**最决定性**的判断：
+        // 空条件意味着没有任何触发器在听，本次回调什么都不用做。
+        //
+        // 原实现把它排在**三次反射之后**（`getArg` → `forToken` 查找+调用 → `getDeclaredField`），
+        // 于是「没有任何触发器」这个最常见的情形下，每次 Activity 切换仍要白付
+        // **3 次反射**。而 Activity 切换是每次 resume 都发生的（含返回、解锁、同 Activity 重入）。
+        //
+        // ⚠️ `conditions` 是 `@Volatile`（见字段声明）—— 早退读它、`applyConditions` 写它，
+        // 是两个线程；用普通字段会读到旧值 ⇒ hook 点已挂、条件已下发，却**永远早退**。
+        if (conditions.isEmpty) return chain.proceed()
+
         try {
             val token = chain.getArg(0)
             if (token is android.os.IBinder) {
@@ -158,11 +170,10 @@ class ActivityChangedSource : HookSource {
      */
     private fun resolveRecord(chain: XposedInterface.Chain, token: android.os.IBinder): Any? {
         val recordCls = chain.executable.declaringClass
-        val forToken = try {
-            recordCls.getDeclaredMethod("forToken", android.os.IBinder::class.java).apply {
-                isAccessible = true
-            }
-        } catch (_: Throwable) {
+        // ⚠️ 反射**句柄**缓存（修缺陷 8）—— 见 [cachedMethod] 的注释
+        val forToken = cachedMethod(
+            recordCls, "forToken", arrayOf(android.os.IBinder::class.java),
+        ) ?: run {
             HookLog.throttled("no-fortoken", "找不到 forToken(IBinder) —— 反查路径失效")
             return null
         }
@@ -180,8 +191,10 @@ class ActivityChangedSource : HookSource {
 
         // ── 过滤：只按「包是否被关心」判断 ──
         // ⚠️ 这是**唯一的过滤**，且它不是业务判定 —— 见 HookConditions 的说明
+        // ⚠️ 上面已做过 `isEmpty` 早退（缺陷 7），这里读到的条件必然非空；
+        //    但**不要**因此删掉下面的判断 —— 它是热路径上的双保险，
+        //    且 `care`/`topics` 的具体判据与「空」是两件事
         val cond = conditions
-        if (cond.isEmpty) return
         if (!cond.caresAboutPackage(packageName)) return
         if (topic !in cond.topics) return
 
@@ -198,9 +211,49 @@ class ActivityChangedSource : HookSource {
         runtime.emit(topic, payload)
     }
 
-    private fun readString(target: Any, fieldName: String): String? = try {
-        val f = target.javaClass.getDeclaredField(fieldName).apply { isAccessible = true }
-        f.get(target) as? String
+    // ── 反射句柄缓存（修缺陷 8）──────────────────────────────────
+    //
+    // ⚠️⚠️ **缓存键必须带上「类」**：同一个字段名可能出现在不同的类上。
+    // 现在只有 `ActivityRecord`（system_server），但 §2.1 的「执行环境」
+    // 是**开放维度** —— 将来「目标 App 进程的 hook」会有**另一个**类，
+    // 那时若只按字段名缓存，就会跨类复用同一个 `Field` ⇒ 读到错的对象/抛异常。
+    // `ClsKey` 用 `Class` 作 key（它本身的 `equals` 就是身份比较），
+    // 比拼字符串更省且不会碰撞。
+
+    private class ClsKey(val cls: Class<*>)
+
+    private val methodCache = java.util.concurrent.ConcurrentHashMap<String, Method>()
+    private val fieldCache = java.util.concurrent.ConcurrentHashMap<String, java.lang.reflect.Field>()
+    private val componentMethodCache = java.util.concurrent.ConcurrentHashMap<ClsKey, Method>()
+    private val uriMethodCache = java.util.concurrent.ConcurrentHashMap<ClsKey, Method>()
+    private val extrasMethodCache = java.util.concurrent.ConcurrentHashMap<ClsKey, Method>()
+
+    private fun cachedMethod(cls: Class<*>, name: String, paramTypes: Array<Class<*>>): Method? {
+        val key = "${cls.name}#$name"
+        methodCache[key]?.let { return it }
+        return try {
+            cls.getDeclaredMethod(name, *paramTypes).apply { isAccessible = true }
+                .also { methodCache[key] = it }
+        } catch (_: Throwable) {
+            // ⚠️ **不缓存失败** —— 用了一个不存在的名字是**改错了**，
+            // 而失败结果一旦缓存，将来名字改对了也会一直被旧结果挡住
+            null
+        }
+    }
+
+    internal fun cachedField(cls: Class<*>, name: String): java.lang.reflect.Field? {
+        val key = "${cls.name}#$name"
+        fieldCache[key]?.let { return it }
+        return try {
+            cls.getDeclaredField(name).apply { isAccessible = true }
+                .also { fieldCache[key] = it }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    internal fun readString(target: Any, fieldName: String): String? = try {
+        cachedField(target.javaClass, fieldName)?.get(target) as? String
     } catch (_: Throwable) {
         // 字段名可能随版本变化 —— 单个字段读不到不应影响其它字段
         HookLog.throttled("field-$fieldName", "读字段 $fieldName 失败（版本差异？）")
@@ -208,12 +261,17 @@ class ActivityChangedSource : HookSource {
     }
 
     /** `mActivityComponent` 是 `ComponentName`；取它的 className。 */
-    private fun readComponentClassName(record: Any): String = try {
-        val f = record.javaClass.getDeclaredField("mActivityComponent").apply { isAccessible = true }
-        val component = f.get(record)
+    internal fun readComponentClassName(record: Any): String = try {
+        val component = cachedField(record.javaClass, "mActivityComponent")?.get(record) ?: return ""
         // 用反射取 className，避免 import android.content.ComponentName
         // （保持本文件对 android.content 的依赖为零）
-        component?.javaClass?.getMethod("getClassName")?.invoke(component) as? String ?: ""
+        val cls = component.javaClass
+        // ⚠️ 必须 `isAccessible = true`：`getMethod` 只保证方法 public，
+        //    但**类本身可能非 public**（子类 / OEM 实现）⇒ 不设会抛 IllegalAccessException
+        val m = componentMethodCache[ClsKey(cls)] ?: cls.getMethod("getClassName")
+            .apply { isAccessible = true }
+            .also { componentMethodCache[ClsKey(cls)] = it }
+        m.invoke(component) as? String ?: ""
     } catch (_: Throwable) {
         ""
     }
@@ -226,10 +284,13 @@ class ActivityChangedSource : HookSource {
      * 见文件头）。这里用反射调用 `toUri(int)`，值 1 由本注释锁定。
      */
     private fun readIntentUri(record: Any): String? = try {
-        val f = record.javaClass.getDeclaredField("intent").apply { isAccessible = true }
-        val intent = f.get(record) ?: return null
+        val intent = cachedField(record.javaClass, "intent")?.get(record) ?: return null
+        val cls = intent.javaClass
+        val m = uriMethodCache[ClsKey(cls)] ?: cls.getMethod("toUri", Int::class.javaPrimitiveType)
+            .apply { isAccessible = true }
+            .also { uriMethodCache[ClsKey(cls)] = it }
         // URI_INTENT_SCHEME == 1（ShortX 用的也是这个，见 §4.3）
-        intent.javaClass.getMethod("toUri", Int::class.javaPrimitiveType).invoke(intent, 1) as? String
+        m.invoke(intent, 1) as? String
     } catch (_: Throwable) {
         HookLog.throttled("intent-uri", "取 intent URI 失败（extras 可能仍可用）")
         null
@@ -245,10 +306,14 @@ class ActivityChangedSource : HookSource {
      * 而 `dumpsys` 那条路正是这么把米家的 String 猜成了 Long。
      */
     private fun readIntentExtras(record: Any): Map<String, Any?> = try {
-        val f = record.javaClass.getDeclaredField("intent").apply { isAccessible = true }
-        val intent = f.get(record) ?: return emptyMap()
-        val extras = intent.javaClass.getMethod("getExtras").invoke(intent) as? Bundle
-            ?: return emptyMap()
+        val intent = cachedField(record.javaClass, "intent")?.get(record) ?: return emptyMap()
+        // ⚠️ `getExtras` 是 `Intent` 的 **public** 方法 ⇒ 用 `getMethod`（不是 `getDeclaredMethod`）。
+        //    但 `intent` 的运行时类可能是**子类**，故缓存键同样带类。
+        val cls = intent.javaClass
+        val m = extrasMethodCache[ClsKey(cls)] ?: cls.getMethod("getExtras")
+            .apply { isAccessible = true }
+            .also { extrasMethodCache[ClsKey(cls)] = it }
+        val extras = m.invoke(intent) as? Bundle ?: return emptyMap()
 
         val out = LinkedHashMap<String, Any?>()
         for (key in extras.keySet()) {
