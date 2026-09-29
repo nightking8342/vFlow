@@ -6,6 +6,7 @@ import com.chaomixian.vflow.xposed.wire.userAction
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -108,7 +109,7 @@ class CapabilityErrorCodeTest {
         //
         // capability_absent：调用前判定（CapabilityPresence.ABSENT）或 hook 侧立刻回
         // channel_down：断连时立刻唤醒
-        // handler_error：handler 抛异常时立刻回
+        // handler_error：handler 抛异常时立刻回（**含工作线程池已满** —— 见下一条）
         // 而 timeout / payload_too_large 都是「等待或事后」才知道的
         val immediate = setOf(
             CapabilityErrorCode.CAPABILITY_ABSENT,
@@ -119,5 +120,55 @@ class CapabilityErrorCodeTest {
         // 反向：timeout 与 payload_too_large 不在其中
         assertEquals(false, CapabilityErrorCode.TIMEOUT in immediate)
         assertEquals(false, CapabilityErrorCode.PAYLOAD_TOO_LARGE in immediate)
+    }
+
+    @Test
+    fun `pool full maps to handler_error not to timeout`() {
+        // ⚠️⚠️ 这是**已定案的口径**，且它是任务 3（hook_runtime，工作线程池）
+        // 实施时的直接依据 —— 所以必须是一条**会跑的断言**，而不是只写在注释里。
+        //
+        // §3.4 定了池满的行为「立即回 ok=false，绝不阻塞 binder 线程」，
+        // 但 §6.4 的五值枚举没有对应项。归 handler_error 而不是 timeout：
+        //
+        //   timeout  = 「等了 timeout_ms 仍无结果」  → 报告问题（可能真的慢）
+        //   池满     = 「立刻就知道做不了」          → 看具体能力（并发打满？）
+        //
+        // 两者**发生时序与含义都不同**，混用会违反 §6.4「指向正确方向」的立意：
+        // 用户看到 timeout 会去查「为什么这么慢」，而真实原因是「池子被占满」——
+        // 两个完全不同的排查方向。
+        //
+        // ⚠️ 本条断言的价值：六值枚举是**契约**，任务 3 若擅自新增 `pool_full`
+        // 第六值，`exactly five codes exist` 会先红；若把池满归给 timeout，
+        // 这条会红。两条一起构成这个口径的双向锁。
+        assertEquals(CapabilityErrorCode.HANDLER_ERROR.userAction(), CapabilityErrorAction.CHECK_CAPABILITY)
+        assertEquals(CapabilityErrorCode.TIMEOUT.userAction(), CapabilityErrorAction.REPORT_PROBLEM)
+        assertTrue(
+            "池满必须归 handler_error（CODES 里不该有 pool_full）",
+            CapabilityErrorCode.entries.none { it.wire.contains("pool") },
+        )
+    }
+
+    @Test
+    fun `the handler error doc records the pool-full decision`() {
+        // ⚠️ 口径必须**在代码里可查**，不能只存在于对话/评审记录中 ——
+        // 否则任务 3 的实现者读 `CapabilityErrorCode.kt` 时看不到这条依据，
+        // 很可能自己重新发明一个码。
+        //
+        // 这是本仓库的既有教训：约束只写在别处 = 等于没写（§7.4 反模式 5）
+        val src = java.io.File(
+            "src/main/java/com/chaomixian/vflow/xposed/wire/CapabilityErrorCode.kt",
+        )
+        assertTrue("CapabilityErrorCode.kt 应当存在", src.isFile)
+        val text = src.readText()
+
+        assertTrue(
+            "HANDLER_ERROR 的文档里必须写明「工作线程池已满也归这个码」的口径与理由 —— " +
+                "任务 3 实现工作线程池时要靠它，读不到就会自己发明一个码",
+            text.contains("工作线程池池已满") || text.contains("工作线程池已满"),
+        )
+        assertTrue(
+            "必须写明为什么不是 timeout（时序与含义不同）",
+            text.contains("TIMEOUT") && text.contains("立刻就知道做不了"),
+        )
     }
 }
