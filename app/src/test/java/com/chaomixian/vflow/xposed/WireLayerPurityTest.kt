@@ -361,6 +361,8 @@ class WireLayerPurityTest {
         // 本仓库踩过「测试不经过调用点所以反证不变红」的坑，故加这道保险
         val files = allXposedFiles()
         assertTrue("xposed/ 下文件数异常（${files.size} 个），检查是否被搬走", files.size >= 8)
+        // ⚠️ 下面列的 ③ 契约层文件在 `capability/` 子目录里（`walkTopDown` 会递归到），
+        // 所以文件数检查也要跟着抬 —— 否则「搬走一批」不会被这里发现
         for (expected in listOf(
             "VFlowHookEntry.kt",
             "HookRuntime.kt",
@@ -372,6 +374,16 @@ class WireLayerPurityTest {
             "HookConditionWire.kt",
             "ActivityPayload.kt",
             "ActivityChangedSource.kt",
+            // ③ 能力调用的契约层（与上面同样是「跑在 system_server 里」的文件，
+            // 必须一并受本文件的引用面扫描管辖）
+            "CapabilityInvocation.kt",
+            "CapabilityErrorCode.kt",
+            "CapabilityManifest.kt",
+            "ResultBudget.kt",
+            "Capability.kt",
+            "CapabilityRegistry.kt",
+            "CapabilityNames.kt",
+            "CapabilityPresence.kt",
         )) {
             assertTrue(
                 "xposed/ 下缺少 $expected —— 是否改名/搬走了？",

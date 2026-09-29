@@ -102,6 +102,23 @@ class HookChannelService : Service() {
             // 信封解析、topic 路由、token 校验全在 Controller 里做（有单测）
             HookChannelController.onReport(envelopeJson)
         }
+
+        /**
+         * ③ 的配对响应（§3.3 / §3.4）。
+         *
+         * ⚠️ 与 [report] 走**同一个 App 侧 binder**，所以**鉴权规格必须相同** ——
+         * 见 [IHookHost.resolve] 的注释：不校验的话，「能 bind 到本 Service 的进程」
+         * 就能伪造任意 capability 返回值（而那个值会被写进工作流）。
+         *
+         * ⚠️ 只做「转交」：解析、token 三段校验、配对分发全在 Controller 里
+         * （那里有单测，且失败只记日志不抛）。
+         *
+         * ⚠️ 本方法在 **binder 线程**上；空串直接丢（连解析都不必）。
+         */
+        override fun resolve(responseJson: String?) {
+            if (responseJson.isNullOrBlank()) return
+            HookChannelController.onResolve(responseJson)
+        }
     }
 
     override fun onCreate() {

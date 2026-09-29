@@ -43,19 +43,43 @@ object ActivityPayload {
     private const val KEY_TRUNCATED = "truncated"
 
     /**
-     * `intent_uri` 上限。
+     * `intent_uri` 上限（**字节**）。
      *
-     * 64 KB 是个保守值：一条带长 `dat` URI 的 VIEW intent 通常几 KB，
+     * 16 KiB 是个保守值：一条带长 `dat` URI 的 VIEW intent 通常几 KB，
      * 留够余量又不至于让它单独顶破事务上限。
+     *
+     * ⚠️⚠️ **单位是字节（UTF-8），不是字符** —— 这条差别曾是一个真实的静默缺陷，
+     * 详见 [MAX_EXTRAS_JSON_BYTES] 的注释。
      */
-    const val MAX_INTENT_URI_CHARS = 64 * 1024
+    const val MAX_INTENT_URI_BYTES = 16 * 1024
 
     /**
-     * `extras_json` 上限。
+     * `extras_json` 上限（**字节**）。
      *
      * ⚠️ 它**不是**「拼好之后砍到这里」——是累加时的预算上限（见 [encodeExtras]）。
+     *
+     * ## ⚠️⚠️ 为什么单位必须是字节（这是一处已修的既有缺陷）
+     *
+     * 原实现按**字符**计（`MAX_INTENT_URI_CHARS = 64K` / `MAX_EXTRAS_JSON_CHARS = 128K`，
+     * 判据是 `String.length`），而 §3.6 的契约按**字节**立。最坏情况：
+     *
+     * | 载荷构成 | 字节数 | 与 oneway 半缓冲（≈508 KiB）的关系 |
+     * |---|---|---|
+     * | 全 ASCII（1 字节/字符） | ≈ 188 KiB | 勉强够，但**与所有其他 oneway 事务共享** |
+     * | **全 CJK（3 字节/字符）** | ⚠️ **≈ 576 KiB** | ❌ **超限 ⇒ 整条事件静默丢弃** |
+     * | 叠加 emoji（4 字节/字符） | 更糟 | ❌ |
+     *
+     * 表现是「**打开某些 App 不触发、换一个就正常**」——
+     * 正是最难被当成 bug 上报的那类（§6.5）。
+     *
+     * ⇒ 两项合计降到 **64 KiB**（16 + 48），留足余量：
+     * 即便外层信封的 JSON 转义把它放大到 1.5 倍（≈96 KiB），
+     * 距半缓冲仍有 5 倍以上空间。
+     *
+     * ⚠️ 估算仍然用**精确**的 `toByteArray(Charsets.UTF_8).size` 而非 ×3 ——
+     * 见 [com.chaomixian.vflow.xposed.wire.ResultBudget.byteSizeOf] 的说明。
      */
-    const val MAX_EXTRAS_JSON_CHARS = 128 * 1024
+    const val MAX_EXTRAS_JSON_BYTES = 48 * 1024
 
     /**
      * 编码。
@@ -75,10 +99,13 @@ object ActivityPayload {
 
         // ① intent_uri：只有一个值，超限直接截断（它是纯字符串，截断了也只是不能
         //    原样喂给 `am start`，其余字段不受影响）
+        //
+        // ⚠️ 按**字节**判、按**字节**截（不是 `.length`）——
+        // 若只改判据不改截断，CJK 的 URI 仍会超出预算。
         val safeUri = intentUri ?: ""
-        val finalUri = if (safeUri.length > MAX_INTENT_URI_CHARS) {
+        val finalUri = if (ResultBudget.byteSizeOf(safeUri) > MAX_INTENT_URI_BYTES) {
             truncated = true
-            safeUri.take(MAX_INTENT_URI_CHARS)
+            truncateToBytes(safeUri, MAX_INTENT_URI_BYTES)
         } else {
             safeUri
         }
@@ -159,10 +186,14 @@ object ActivityPayload {
             }
 
             val probeStr = probe.toString()
-            // 每个键在整对象里占 "key":value 加上分隔逗号
-            val cost = probeStr.length - 2 + if (added > 0) 1 else 0
+            // 每个键在整对象里占 "key":value 加上分隔逗号。
+            //
+            // ⚠️ 必须是**字节**数（原实现是 `probeStr.length`，即字符数）——
+            // 全 CJK 时字符数只是真实体积的三分之一，会静默超限。
+            // 用 ResultBudget.byteSizeOf 保证与契约、与 intent_uri 的判据同源。
+            val cost = ResultBudget.byteSizeOf(probeStr) - 2 + if (added > 0) 1 else 0
 
-            if (used + cost > MAX_EXTRAS_JSON_CHARS) {
+            if (used + cost > MAX_EXTRAS_JSON_BYTES) {
                 truncated = true
                 break
             }
@@ -251,6 +282,29 @@ object ActivityPayload {
         }
     } catch (_: Throwable) {
         false
+    }
+
+    /**
+     * 按**字节**截断字符串，且**绝不切碎一个 UTF-8 字符**。
+     *
+     * ⚠️ 为什么要单独写：`String.take(n)` 是按**字符**取的，
+     * 而我们要的是「不超过 n 个字节」。若直接 `take(maxBytes)`，
+     * CJK 场景下会取到约 3 倍预算的字节数 —— 等于没截。
+     *
+     * ⚠️ 也**不能**简单按字节数组切：从中间切开一个多字节字符会产出
+     * 非法的 UTF-8 序列，下游解析时得到替换字符（`�`）甚至解析失败。
+     * 所以这里按字符逐个累加字节数。
+     */
+    private fun truncateToBytes(text: String, maxBytes: Int): String {
+        var used = 0
+        val sb = StringBuilder()
+        for (ch in text) {
+            val size = ResultBudget.byteSizeOf(ch.toString())
+            if (used + size > maxBytes) break
+            sb.append(ch)
+            used += size
+        }
+        return sb.toString()
     }
 
     private fun escape(s: String): String =

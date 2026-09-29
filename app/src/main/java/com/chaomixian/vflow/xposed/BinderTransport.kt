@@ -219,6 +219,118 @@ class BinderTransport(
         }
 
         override fun ping(): Int = com.chaomixian.vflow.xposed.wire.EventEnvelopeCodec.PROTOCOL_VERSION
+
+        /**
+         * 连接期能力交换（§3.1）。
+         *
+         * ⚠️ **本类只提供「怎么答」，不提供「答什么」** —— 清单由运行时
+         * （`HookRuntime`/hook 侧 capability 注册表）决定，本任务只把管道接通。
+         *
+         * ⚠️⚠️ **绝不能抛**：本方法跑在 system_server 的 binder 线程上，
+         * 未捕获异常的危险性是「整机」（§5.1）。任何失败都吞掉并回空清单 ——
+         * 空清单是**合法**的（判 `READY` 但一个能力都没有），
+         * 而抛异常会让 App 侧判 `ABSENT`（误报「hook 层太旧」）。
+         */
+        override fun capabilities(): String = try {
+            manifestProvider?.invoke() ?: emptyManifest()
+        } catch (t: Throwable) {
+            log("capabilities() 异常：${t.javaClass.simpleName}")
+            emptyManifest()
+        }
+
+        /**
+         * ③ 的统一入口（§3.4）。**oneway** —— 接单即返回，绝不在此执行 handler。
+         *
+         * ⚠️⚠️ **本任务只接通管道，不实现执行** —— 真正的分发（工作线程池 /
+         * 超时 / 截断）是任务 3（hook_runtime）的范围。
+         *
+         * ⚠️ 当前的占位行为是「**显式回一个 `capability_absent` 响应**」，
+         * **不是**静默吞掉。理由：
+         * ① §4.3 要求「未知 capability **必须报错**」—— 调用方在等结果，
+         *   静默会让它白等到超时，把排查引向「hook 点/系统版本」这些错误方向；
+         * ② 静默正是本仓库反复记录的失效形态。
+         *
+         * ⚠️ 任务 3 接入真实注册表后，**这一整段会被替换**；届时
+         * 「能力确实不存在」仍走同一个 `capability_absent` 码（语义一致）。
+         */
+        override fun invoke(requestJson: String) {
+            try {
+                val sink = invokeSink
+                if (sink != null) {
+                    sink(requestJson)
+                    return
+                }
+                respondUnimplemented(requestJson)
+            } catch (t: Throwable) {
+                // ⚠️ 本方法在 system_server 的 binder 线程上，异常绝不能逃逸
+                log("invoke 处理异常：${t.javaClass.simpleName} ${t.message}")
+            }
+        }
+    }
+
+    /** 空清单（见 [IHookCallback.capabilities] 的异常处理说明）。 */
+    private fun emptyManifest(): String =
+        com.chaomixian.vflow.xposed.wire.CapabilityManifest.encode(emptyList())
+
+    /**
+     * 能力清单的提供者。由 `VFlowHookEntry` 在接入运行时后注入。
+     *
+     * ⚠️ 抽成注入而非在本类里直接读 `HookRuntime`：本类只管**传输**，
+     * 不该知道「清单从哪来」（那会让它同时依赖 runtime，形成环）。
+     */
+    @Volatile
+    private var manifestProvider: (() -> String)? = null
+
+    /** 注册能力清单提供者。 */
+    fun onCapabilities(provider: () -> String) {
+        manifestProvider = provider
+    }
+
+    /**
+     * ③ 请求的处理者。由 `VFlowHookEntry` 在接入运行时后注入。
+     *
+     * ⚠️ 在注入之前，[callback] 的 `invoke` 回一个显式的 `capability_absent`
+     * （见那里的注释）—— 不是静默吞掉。
+     */
+    @Volatile
+    private var invokeSink: ((String) -> Unit)? = null
+
+    /** 注册 ③ 请求处理者。 */
+    fun onInvoke(sink: (requestJson: String) -> Unit) {
+        invokeSink = sink
+    }
+
+    /**
+     * 没有处理者时的显式应答（任务 3 接入前 / 接入失败的降级路径）。
+     *
+     * ⚠️ 回 `capability_absent` 而不是 `handler_error`：语义上「本 hook 层
+     * 现在做不了这件事」与「这个 capability 不存在」对调用方的**处置相同**
+     * （都指向「升级/重启」），且任务 3 接入后走的是同一个码。
+     *
+     * ⚠️ 只回、不重试、不排队 —— 绝不阻塞 binder 线程（§3.4 末）。
+     */
+    private fun respondUnimplemented(requestJson: String) {
+        val req = com.chaomixian.vflow.xposed.wire.CapabilityInvocationCodec
+            .decodeRequest(requestJson) ?: run {
+            // 连请求都解析不了 ⇒ 没有 request_id，无法配对，只能留日志
+            log("invoke 收到无法解析的请求，已忽略（长度 ${requestJson.length}）")
+            return
+        }
+        val hostRef = host ?: return
+        val response = com.chaomixian.vflow.xposed.wire.CapabilityInvocationCodec.encodeResponse(
+            requestId = req.requestId,
+            ok = false,
+            error = com.chaomixian.vflow.xposed.wire.CapabilityError(
+                code = com.chaomixian.vflow.xposed.wire.CapabilityErrorCode.CAPABILITY_ABSENT,
+                detail = "hook 侧尚未接入 ③ 执行运行时",
+            ),
+            token = req.token,
+        )
+        try {
+            hostRef.resolve(response)
+        } catch (t: Throwable) {
+            log("回 capability_absent 失败：${t.javaClass.simpleName}")
+        }
     }
 
     /**

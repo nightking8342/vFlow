@@ -1,6 +1,7 @@
 package com.chaomixian.vflow.xposed
 
 import com.chaomixian.vflow.xposed.wire.ActivityPayload
+import com.chaomixian.vflow.xposed.wire.ResultBudget
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -118,18 +119,134 @@ class ActivityPayloadTest {
         assertTrue("应丢掉一部分键", extras.length() < 200)
         assertTrue(
             "extras_json 不应超过预算",
-            decoded.extrasJson.length <= ActivityPayload.MAX_EXTRAS_JSON_CHARS + 64,
+            ResultBudget.byteSizeOf(decoded.extrasJson) <= ActivityPayload.MAX_EXTRAS_JSON_BYTES + 64,
         )
     }
 
     @Test
     fun `oversized intent uri is truncated and flagged`() {
-        val huge = "intent:#Intent;" + "x".repeat(ActivityPayload.MAX_INTENT_URI_CHARS + 1000)
+        val huge = "intent:#Intent;" + "x".repeat(ActivityPayload.MAX_INTENT_URI_BYTES + 1000)
         val decoded = ActivityPayload.decode(
             ActivityPayload.encode("p", "c", huge, emptyMap())
         )
         assertTrue(decoded!!.truncated)
-        assertTrue(decoded.intentUri.length <= ActivityPayload.MAX_INTENT_URI_CHARS)
+        assertTrue(decoded.intentUri.length <= ActivityPayload.MAX_INTENT_URI_BYTES)
+    }
+
+    // ═══ 字节口径的反向断言（§3.6 末的既有缺陷修正）═══════
+    //
+    // ⚠️⚠️ 这几条锁的是一个**真实缺陷**：原实现按【字符】计预算
+    // （`MAX_*_CHARS` + `String.length`），而 §3.6 的契约按【字节】立。
+    // 全 CJK 时字符数只是真实体积的 1/3 ⇒ 192K 字符 ≈ 576 KiB
+    // ⇒ 超 oneway 半缓冲（≈508 KiB）⇒ **整条事件被静默丢弃**。
+    // 表现是「打开某些 App 不触发、换一个就正常」。
+    //
+    // 反证：把 `encodeExtras` 的 cost 改回 `probeStr.length - 2`、
+    // intent_uri 的判据改回 `.length` 比较 ⇒ 下面至少一条变红。
+
+    @Test
+    fun `cjk extras stay within the byte budget`() {
+        // 纯中文载荷：每个字 3 字节。用「字符数远小于预算、字节数远超预算」
+        // 的构造，确保字符口径**必然**判错。
+        val big = buildMap {
+            repeat(200) { i -> put("k_$i", "中".repeat(400)) }
+        }
+        val decoded = ActivityPayload.decode(
+            ActivityPayload.encode("p", "c", null, big)
+        )
+        assertNotNull(decoded)
+        val bytes = ResultBudget.byteSizeOf(decoded!!.extrasJson)
+
+        assertTrue("CJK 载荷必须被截断", decoded.truncated)
+        assertTrue(
+            "CJK extras 字节数 ${bytes} 超预算 ${ActivityPayload.MAX_EXTRAS_JSON_BYTES}",
+            bytes <= ActivityPayload.MAX_EXTRAS_JSON_BYTES + 64,
+        )
+        // ⚠️ 反向：字符数**确实**在预算内 —— 证明这条用例能区分两种口径
+        assertTrue(
+            "字符数确实小于预算（所以字符口径会误判为没超）",
+            decoded.extrasJson.length < ActivityPayload.MAX_EXTRAS_JSON_BYTES,
+        )
+    }
+
+    @Test
+    fun `emoji extras stay within the byte budget`() {
+        // emoji 通常 4 字节/字符 —— 比 CJK 更极端
+        val big = buildMap {
+            repeat(200) { i -> put("k_$i", "😀".repeat(300)) }
+        }
+        val decoded = ActivityPayload.decode(
+            ActivityPayload.encode("p", "c", null, big)
+        )
+        assertNotNull(decoded)
+        val bytes = ResultBudget.byteSizeOf(decoded!!.extrasJson)
+
+        assertTrue(decoded.truncated)
+        assertTrue(
+            "emoji extras 字节数 $bytes 超预算",
+            bytes <= ActivityPayload.MAX_EXTRAS_JSON_BYTES + 64,
+        )
+    }
+
+    @Test
+    fun `cjk intent uri is truncated by bytes not by chars`() {
+        // ⚠️ 原实现取 `safeUri.take(MAX_INTENT_URI_CHARS)` —— 也是按字符截的。
+        // 只改判据不改截断的话，CJK 的 URI 仍会超出预算 3 倍。
+        val huge = "intent:#Intent;" + "中".repeat(ActivityPayload.MAX_INTENT_URI_BYTES)
+        val decoded = ActivityPayload.decode(
+            ActivityPayload.encode("p", "c", huge, emptyMap())
+        )
+        assertTrue(decoded!!.truncated)
+        val bytes = ResultBudget.byteSizeOf(decoded.intentUri)
+        assertTrue(
+            "CJK intent_uri 字节数 $bytes 超预算 ${ActivityPayload.MAX_INTENT_URI_BYTES}",
+            bytes <= ActivityPayload.MAX_INTENT_URI_BYTES,
+        )
+    }
+
+    @Test
+    fun `truncation never splits a multibyte character`() {
+        // ⚠️ 不能简单按字节数组切：从中间切开多字节字符会产出非法 UTF-8，
+        // 下游得到替换字符（�）甚至解析失败
+        val huge = "intent:#Intent;" + "中".repeat(ActivityPayload.MAX_INTENT_URI_BYTES)
+        val decoded = ActivityPayload.decode(
+            ActivityPayload.encode("p", "c", huge, emptyMap())
+        )
+        assertFalse("不得出现替换字符（说明切碎了多字节字符）", decoded!!.intentUri.contains('�'))
+        // 截断后仍是合法 UTF-8：重新编码再解码应当逐字节相同
+        val bytes = decoded.intentUri.toByteArray(Charsets.UTF_8)
+        assertEquals(decoded.intentUri, String(bytes, Charsets.UTF_8))
+    }
+
+    @Test
+    fun `worst case payload stays well under oneway half buffer`() {
+        // ⚠️ 总预算断言：最坏组合下 payload 的字节数必须远低于 oneway 半缓冲。
+        // 半缓冲 ≈ 508 KiB（1 MiB − 2 页 的一半），且**与所有其他 oneway 事务共享**。
+        // 这里用 96 KiB 作上限：即便外层信封的 JSON 转义把它放大到 1.5 倍也仍然安全。
+        val big = buildMap {
+            repeat(500) { i -> put("key_$i", "值".repeat(300)) }
+        }
+        val decoded = ActivityPayload.decode(
+            ActivityPayload.encode(
+                packageName = "com.example.app",
+                className = "com.example.app.Main",
+                intentUri = "intent:#Intent;" + "中".repeat(ActivityPayload.MAX_INTENT_URI_BYTES * 2),
+                extras = big,
+            )
+        )
+        assertNotNull(decoded)
+        val payloadBytes = ResultBudget.byteSizeOf(
+            ActivityPayload.encode(
+                packageName = "com.example.app",
+                className = "com.example.app.Main",
+                intentUri = "intent:#Intent;" + "中".repeat(ActivityPayload.MAX_INTENT_URI_BYTES * 2),
+                extras = big,
+            )
+        )
+        assertTrue(
+            "最坏 payload 字节数 $payloadBytes 应远低于 oneway 半缓冲（≈508 KiB）",
+            payloadBytes <= 96 * 1024,
+        )
     }
 
     @Test

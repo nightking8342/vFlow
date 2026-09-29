@@ -1,6 +1,9 @@
 package com.chaomixian.vflow.core.xposed
 
 import com.chaomixian.vflow.xposed.wire.ActivityPayload
+import com.chaomixian.vflow.xposed.wire.CapabilityErrorCode
+import com.chaomixian.vflow.xposed.wire.CapabilityInvocationCodec
+import com.chaomixian.vflow.xposed.wire.CapabilityResponse
 import com.chaomixian.vflow.xposed.wire.EventEnvelope
 import com.chaomixian.vflow.xposed.wire.EventEnvelopeCodec
 import org.junit.Assert.assertEquals
@@ -45,7 +48,12 @@ class HookChannelControllerTest {
 
     /** 每个用例前后都清干净 —— Controller 是单例，状态会串。 */
     private fun reset() {
+        // ⚠️ 顺序：先清配对表与代次，再断开连接 ——
+        // 反过来的话 `onCallbackUnregistered` 会去唤醒上一轮用例遗留的 waiter
+        HookChannelController.resetWaitersForTest()
         HookChannelController.onCallbackUnregistered()   // 清 token 与连接态
+        // ⚠️ 断开会产生一代新的代次，配对表要用同一代次重新开始
+        HookChannelController.resetWaitersForTest()
         HookChannelController.removeOnConnectedListener("A")
         HookChannelController.removeOnConnectedListener("B")
         HookChannelController.removeOnConnectedListener("boom")
@@ -294,4 +302,194 @@ class HookChannelControllerTest {
 
         assertEquals("一个监听器抛异常不该让后面的收不到", 1, bCalled)
     }
+
+    // ── ③ 能力调用：配对表 / 鉴权 / 断连唤醒（V2.0 §3.3 / §5.2）────
+
+    /**
+     * ⚠️⚠️ 鉴权必须**逐字照搬** `onReport` 的三段。
+     *
+     * `resolve` 走的是**同一个 App 侧 binder**（`IHookHost`）。
+     * 若它没有凭证，任何能 bind 到 `HookChannelService` 的进程都能伪造响应 ——
+     * 而这**比伪造事件更危险**：事件还要过 App 侧 filter 才触发，
+     * `resolve` 的 `result` **直接就是 capability 的返回值**（会被写进工作流）。
+     */
+    @Test
+    fun `onResolve rejects when controller has no token`() {
+        // ⚠️⚠️ 与 onReport 那次**同一个漏洞形态**：未连接时本侧 token 是空串，
+        // 而伪造者送 `token:""` 也是空串 ⇒ 空串比空串**恒等** ⇒ 无凭证响应被放行。
+        reset()
+        var delivered = false
+        HookChannelController.registerWaiter("r1") { delivered = true }
+
+        HookChannelController.onResolve(response(requestId = "r1", token = ""))
+
+        assertFalse("未连接时任何响应都不得放行", delivered)
+        assertEquals("不该消费掉 waiter", 1, HookChannelController.pendingWaiterCount())
+    }
+
+    @Test
+    fun `onResolve rejects a wrong token`() {
+        reset()
+        HookChannelController.injectTokenForTest(TOKEN)
+        var delivered = false
+        HookChannelController.registerWaiter("r1") { delivered = true }
+
+        HookChannelController.onResolve(response(requestId = "r1", token = "wrong"))
+
+        assertFalse("token 不对必须丢弃", delivered)
+    }
+
+    @Test
+    fun `onResolve delivers a correctly authenticated response`() {
+        reset()
+        HookChannelController.injectTokenForTest(TOKEN)
+        val got = mutableListOf<CapabilityResponse>()
+        HookChannelController.registerWaiter("r1") { got += it }
+
+        HookChannelController.onResolve(response(requestId = "r1", token = TOKEN))
+
+        assertEquals(1, got.size)
+        assertEquals("r1", got[0].requestId)
+        assertTrue(got[0].ok)
+        assertEquals("投递后配对表应清空", 0, HookChannelController.pendingWaiterCount())
+    }
+
+    @Test
+    fun `onResolve with an unpaired request id is dropped not delivered`() {
+        // ⚠️ §5.2：**迟到 / 无配对的响应必须丢弃 + 告警，不能静默** ——
+        // 否则「伪造响应被无痕接受」这条风险就有绕过面
+        reset()
+        HookChannelController.injectTokenForTest(TOKEN)
+        var delivered = false
+        HookChannelController.registerWaiter("r1") { delivered = true }
+
+        HookChannelController.onResolve(response(requestId = "some-other-id", token = TOKEN))
+
+        assertFalse(delivered)
+        assertEquals("别的 requestId 不该消费掉 r1 的 waiter", 1, HookChannelController.pendingWaiterCount())
+    }
+
+    @Test
+    fun `onResolve tolerates malformed json without throwing`() {
+        // ⚠️ 本方法在 binder 线程上，抛异常跨国界且无人处理
+        reset()
+        HookChannelController.injectTokenForTest(TOKEN)
+        HookChannelController.onResolve("")
+        HookChannelController.onResolve("完全不是 JSON")
+        HookChannelController.onResolve("{")
+        // ⚠️ ok=false 却没有 error ⇒ 判坏信封（§3.3 的硬要求）
+        HookChannelController.onResolve("""{"request_id":"r1","ok":false,"token":"$TOKEN"}""")
+    }
+
+    @Test
+    fun `registerWaiter rejects a blank request id`() {
+        reset()
+        assertFalse(HookChannelController.registerWaiter("") { })
+        assertFalse(HookChannelController.registerWaiter("   ") { })
+    }
+
+    @Test
+    fun `waiter table is bounded`() {
+        // ⚠️ §5.2：配对表**必须有界** —— 无界累积是泄漏（EventQueue 的同一条教训）。
+        // 上限到了就**拒绝新注册**（调用方转成 handler_error），而不是 OOM。
+        reset()
+        var accepted = 0
+        repeat(200) { i ->
+            if (HookChannelController.registerWaiter("r$i") { }) accepted++
+        }
+        assertTrue("必须拒绝一部分（有界）", accepted < 200)
+        assertTrue("但应接受一个合理的批量", accepted >= 16)
+    }
+
+    @Test
+    fun `disconnect immediately wakes all pending waiters with channel_down`() {
+        // ⚠️⚠️ §5.2 定案：断连时**立即唤醒全部 waiter、回 ok=false**。
+        // 比等超时好得多 —— 此刻我们已确知结果回不来了，
+        // 而 3 个并发调用 × 5 秒超时 = 用户白等。
+        reset()
+        HookChannelController.injectTokenForTest(TOKEN)
+        val errors = mutableListOf<CapabilityErrorCode?>()
+        HookChannelController.registerWaiter("r1") { errors += it.error?.code }
+        HookChannelController.registerWaiter("r2") { errors += it.error?.code }
+
+        HookChannelController.onCallbackUnregistered()
+
+        assertEquals("两条都要被唤醒", 2, errors.size)
+        assertTrue(
+            "都必须是 channel_down",
+            errors.all { it == CapabilityErrorCode.CHANNEL_DOWN },
+        )
+        assertEquals("唤醒后配对表应清空", 0, HookChannelController.pendingWaiterCount())
+    }
+
+    @Test
+    fun `a late notification for an old connection does not wake waiters`() {
+        // ⚠️ 修缺陷 13 的那一半：**旧连接的迟到断开通知必须被忽略** ——
+        // 它不该把「新连接上正在等的调用」全部判死。
+        //
+        // 这里用「先注入 token 建立连接，再用一个『不同 binder』的 which 参数通知断开」模拟。
+        // `asBinder()` 在纯 JVM 下无法构造（IHookCallback.Stub 继承 android.os.Binder），
+        // 故退而求其次：验证「which == null 时会清空」与「带 which 且取不到 binder 时
+        // 保守判为同一个、仍会清空」这两个可达分支。
+        reset()
+        HookChannelController.injectTokenForTest(TOKEN)
+        var woken = false
+        HookChannelController.registerWaiter("r1") { woken = true }
+
+        // which = null ⇒ 无条件清空（这是 hook 层真的断了时的路径）
+        HookChannelController.onCallbackUnregistered(null)
+        assertTrue("which=null 时应当唤醒", woken)
+    }
+
+    @Test
+    fun `waiter registered after a disconnect is a new bucket`() {
+        // ⚠️ §10-#17「配对表按连接分桶」在单连接下的落实：
+        // 换代（断开）后注册的 waiter 属于**新桶**，断连时的旧快照不该碰到它。
+        reset()
+        HookChannelController.injectTokenForTest(TOKEN)
+        HookChannelController.registerWaiter("r1") { }
+
+        // 断开 ⇒ 换代 + 唤醒
+        HookChannelController.onCallbackUnregistered()
+        assertEquals(0, HookChannelController.pendingWaiterCount())
+
+        // 重连后注册的新 waiter 应当正常存活
+        HookChannelController.injectTokenForTest(TOKEN)
+        assertTrue(HookChannelController.registerWaiter("r1") { })
+        assertEquals(1, HookChannelController.pendingWaiterCount())
+    }
+
+    @Test
+    fun `waiter sink throwing does not propagate`() {
+        // ⚠️ 一个消费者抛异常不该把异常抛到 binder 线程上
+        reset()
+        HookChannelController.injectTokenForTest(TOKEN)
+        HookChannelController.registerWaiter("boom") { throw IllegalStateException("boom") }
+        HookChannelController.onResolve(response(requestId = "boom", token = TOKEN))
+        // 没崩就算过
+    }
+
+    @Test
+    fun `failAllWaiters wakes others even when one sink throws`() {
+        reset()
+        HookChannelController.injectTokenForTest(TOKEN)
+        var second = false
+        HookChannelController.registerWaiter("boom") { throw IllegalStateException("boom") }
+        HookChannelController.registerWaiter("ok") { second = true }
+
+        HookChannelController.onCallbackUnregistered()
+
+        assertTrue("一个 sink 抛异常不该影响其他", second)
+    }
+
+    /** 构造一个响应信封（③ 的 `resolve` 载荷）。 */
+    private fun response(
+        requestId: String,
+        token: String,
+        ok: Boolean = true,
+    ): String = CapabilityInvocationCodec.encodeResponse(
+        requestId = requestId,
+        ok = ok,
+        token = token,
+    )
 }

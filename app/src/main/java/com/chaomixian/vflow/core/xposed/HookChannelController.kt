@@ -3,6 +3,10 @@ package com.chaomixian.vflow.core.xposed
 import com.chaomixian.vflow.core.logging.DebugLogger
 import com.chaomixian.vflow.xposed.IHookCallback
 import com.chaomixian.vflow.xposed.wire.ActivityPayload
+import com.chaomixian.vflow.xposed.wire.CapabilityError
+import com.chaomixian.vflow.xposed.wire.CapabilityErrorCode
+import com.chaomixian.vflow.xposed.wire.CapabilityInvocationCodec
+import com.chaomixian.vflow.xposed.wire.CapabilityResponse
 import com.chaomixian.vflow.xposed.wire.EventEnvelope
 import com.chaomixian.vflow.xposed.wire.EventEnvelopeCodec
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -10,6 +14,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import com.chaomixian.vflow.xposed.wire.HookConditionWire
 import java.security.SecureRandom
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -202,6 +207,15 @@ object HookChannelController {
         token = ""
         // 不换 token：这里是「断开」，重新连上时会换（见 onCallbackRegistered）
         DebugLogger.i(TAG, "hook 层已断开")
+
+        // ⚠️⚠️ **断连时必须立即唤醒全部 waiter**（§5.2 的定案）。
+        //
+        // 比等超时好得多：3 个并发调用 × 5 秒超时 = 用户白等，
+        // 而此刻我们已经**确知**结果回不来了。
+        //
+        // ⚠️ 只在**真的清空了连接**时做 —— 上面那条「旧连接迟到通知」的
+        // 分支已经 return 了，不会误伤（修缺陷 13 的那半）。
+        failAllWaiters("hook 层已断开")
     }
 
     /**
@@ -307,6 +321,189 @@ object HookChannelController {
             // 连接可能已死但 onServiceDisconnected 还没到（无 FIN 时不触发）
             DebugLogger.w(TAG, "条件下发异常：${t2.javaClass.simpleName} ${t2.message}")
             false
+        }
+    }
+
+    // ════════════════════ ③ 能力调用（配对表） ════════════════════
+    //
+    // 设计文档：docs/fork/xposed-architecture-v2.md §5.2 / §3.4。
+    //
+    // ## ⚠️ 本任务只落地「配对表 + 断连唤醒 + 迟到响应丢弃」
+    //
+    // 超时丢弃与 await 语义属于**任务 2（app_runtime）**。这里提供的是
+    // 它能接上的**缝** —— 不提供的话，任务 2 要么重复造一套，
+    // 要么会重演「写了调用点注释但没有调用点」（本仓库反模式 6）。
+
+    /**
+     * 配对表：`request_id → waiter`。
+     *
+     * ## ⚠️ 为什么必须有界
+     *
+     * 若 hook 侧卡死而 App 侧超时放弃，waiter 不清理就是**泄漏 + 错配** ——
+     * 这是 `EventQueue` 的同一条教训（`FORK.md` 记着 `LogcatStreamWrapper`
+     * 因无断流检测留下的同类残留）。
+     *
+     * ⚠️ **容量上限由任务 2 的超时机制共同保证**（逐调用 `timeout_ms` + 兜底默认值），
+     * 本类只负责「可注册 / 可注销 / 可批量失败」。这里额外加一道
+     * [MAX_WAITERS] 的硬闸，避免任务 2 漏了清理时**无界累积** ——
+     * 上限到了就拒绝新注册（调用方拿到 `handler_error`），而不是 OOM。
+     *
+     * ## ⚠️ §10-#17：配对表**按连接分桶**
+     *
+     * 设计口径是 `connectionId + request_id`。当前只有单连接，
+     * 所以用「连接代次」做桶键即可 —— 断开时代次 +1，
+     * **迟到的旧连接响应就配不上新连接的 waiter**（否则伪造/串号会被静默接受）。
+     */
+    private val waiters = ConcurrentHashMap<String, (CapabilityResponse) -> Unit>()
+
+    /** 配对表容量硬闸（见 [waiters] 的说明）。 */
+    private const val MAX_WAITERS = 64
+
+    /**
+     * 连接代次。**每次断开 +1**。
+     *
+     * ⚠️ 它让「配对表按连接分桶」这件事在单连接下也能成立：
+     * 注册 waiter 时把代次编进 key，换代后旧 key 永远配不上
+     * ⇒ 迟到的响应被天然丢弃（而不是落到新连接的 waiter 上）。
+     */
+    private val connectionGeneration = AtomicLong(0)
+
+    /**
+     * 注册一个等待中的调用。
+     *
+     * @return 是否注册成功。**false 绝不静默** —— 调用方必须把它转成
+     *   `handler_error` 的响应返回给用户，而不是继续等一个永远不会来的结果。
+     */
+    fun registerWaiter(requestId: String, sink: (CapabilityResponse) -> Unit): Boolean {
+        if (requestId.isBlank()) return false
+        if (waiters.size >= MAX_WAITERS) {
+            DebugLogger.w(TAG, "配对表已满（$MAX_WAITERS），拒绝新调用（requestId=$requestId）")
+            return false
+        }
+        waiters[bucketKey(requestId)] = sink
+        return true
+    }
+
+    /**
+     * 注销一个 waiter（调用方拿到结果 / 超时后调）。
+     *
+     * ⚠️ **必须调** —— 不调会泄漏（见 [waiters] 的说明）。
+     */
+    fun unregisterWaiter(requestId: String) {
+        waiters.remove(bucketKey(requestId))
+    }
+
+    /** 当前在途调用数。供诊断与测试。 */
+    fun pendingWaiterCount(): Int = waiters.size
+
+    /**
+     * ⚠️ **仅供测试**：重置连接代次与配对表。
+     *
+     * 单例状态会在用例之间串（与 `injectTokenForTest` 同源的接缝）。
+     */
+    internal fun resetWaitersForTest() {
+        waiters.clear()
+        connectionGeneration.set(0L)
+    }
+
+    private fun bucketKey(requestId: String): String =
+        "${connectionGeneration.get()}:$requestId"
+
+    /**
+     * 收到 hook 层的**配对响应**。**由 binder 线程调用**（`IHookHost.resolve`）。
+     *
+     * ## 鉴权：**逐字照搬 [onReport] 的三段**（§3.3 定案，不是可选）
+     *
+     * `resolve` 走的是**同一个 App 侧 binder**。若它没有凭证，
+     * 「能 bind 到 `HookChannelService` 的进程」就能伪造响应 ——
+     * 而这**比伪造事件更危险**：事件还要过 App 侧 filter 才触发，
+     * `resolve` 的 `result` **直接就是 capability 的返回值**。
+     *
+     * ⚠️ 不能靠 `android:permission="HOOK_CONTROL"` 兜底 ——
+     * 它是 `signature` 级，只挡**绑定**、不挡**绑定之后的方法调用**。
+     *
+     * ## 顺序：解析 → 校验 token → 查配对表 → 投递
+     *
+     * **任何一步失败都只记日志、绝不抛** —— 抛异常会跨国界且无人处理。
+     */
+    fun onResolve(responseJson: String) {
+        val response = CapabilityInvocationCodec.decodeResponse(responseJson) ?: run {
+            DebugLogger.w(TAG, "收到无法解析的响应信封，已忽略（长度 ${responseJson.length}）")
+            return
+        }
+
+        // ── 第① 段：本侧无 token 直接拒绝 ──
+        //
+        // ⚠️⚠️ **必须先判「本侧有没有 token」**，不能直接比较：
+        // 未连接时本侧 token 是空串，而伪造者送 `token:""` 也是空串 ——
+        // 空串比空串**恒等**，于是无凭证的响应会被放行。
+        // 这是本类在 onReport 上已经踩过的真实漏洞，不是理论问题。
+        if (token.isEmpty()) {
+            DebugLogger.w(TAG, "收到响应但本侧无 token（未连接），已丢弃（requestId=${response.requestId}）")
+            return
+        }
+
+        // ── 第② 段：恒定时间比较 ──
+        if (!constantTimeEquals(response.token, token)) {
+            DebugLogger.w(TAG, "响应信封 token 校验失败，已丢弃（requestId=${response.requestId}）")
+            return
+        }
+
+        // ── 第③ 段：查配对表（失败只记日志，见函数末尾的 try/catch）──
+        val key = bucketKey(response.requestId)
+        val sink = waiters.remove(key)
+        if (sink == null) {
+            // ⚠️ §5.2：**迟到 / 无配对的响应必须丢弃 + 告警，不能静默** ——
+            // 否则「伪造响应被无痕接受」这条风险就有绕过面。
+            // 这条日志也是判断「是否真的发生过迟到」的唯一途径。
+            DebugLogger.w(
+                TAG,
+                "收到无配对的响应，已丢弃（requestId=${response.requestId}，" +
+                    "可能是超时后的迟到响应或连接换代前的旧响应）"
+            )
+            return
+        }
+
+        try {
+            sink(response)
+        } catch (t: Throwable) {
+            // 一个消费者抛异常不该把异常抛到 binder 线程上
+            DebugLogger.w(TAG, "响应消费者抛异常（requestId=${response.requestId}）：${t.javaClass.simpleName}")
+        }
+    }
+
+    /**
+     * 让**全部**在途调用立即失败（断连时调，§5.2 定案）。
+     *
+     * ⚠️ 比等超时好得多 —— 此刻我们已经确知结果回不来了，
+     * 而用户不必为每条调用白等满 `timeout_ms`。
+     *
+     * ⚠️ 换代：**先 +1 再唤醒** —— 这样唤醒过程中若有迟到的 `resolve` 到达，
+     * 它用的是新代次的 key，**配不上**（已 remove 的旧 key 更配不上）。
+     */
+    private fun failAllWaiters(reason: String) {
+        connectionGeneration.incrementAndGet()
+        if (waiters.isEmpty()) return
+
+        val snapshot = ArrayList(waiters.values)
+        waiters.clear()
+        DebugLogger.i(TAG, "连接断开：立即唤醒 ${snapshot.size} 个在途调用（$reason）")
+
+        val failure = CapabilityResponse(
+            requestId = "",
+            ok = false,
+            resultJson = "{}",
+            error = CapabilityError(code = CapabilityErrorCode.CHANNEL_DOWN, detail = reason),
+            elapsedMs = 0L,
+            token = "",
+            protocolVersion = EventEnvelopeCodec.PROTOCOL_VERSION,
+        )
+        for (sink in snapshot) {
+            try {
+                sink(failure)
+            } catch (t: Throwable) {
+                DebugLogger.w(TAG, "唤醒在途调用时抛异常：${t.javaClass.simpleName}")
+            }
         }
     }
 
