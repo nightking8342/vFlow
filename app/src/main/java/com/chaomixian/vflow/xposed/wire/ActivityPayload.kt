@@ -293,16 +293,41 @@ object ActivityPayload {
      *
      * ⚠️ 也**不能**简单按字节数组切：从中间切开一个多字节字符会产出
      * 非法的 UTF-8 序列，下游解析时得到替换字符（`�`）甚至解析失败。
-     * 所以这里按字符逐个累加字节数。
+     *
+     * ⚠️⚠️ **必须按「码点」推进，不能按 `Char` 推进**（2026-09-29 独立验收发现）。
+     *
+     * 初版写的是 `for (ch in text)` + `byteSizeOf(ch.toString())`，看似正确，
+     * 但对**补充平面**字符（emoji、部分 CJK 扩展）是错的：它们在 Kotlin 里是
+     * 一对代理 `Char`，而**单个代理 Char 编码成 UTF-8 只有 1 字节**
+     * （孤立代理退化成替换符，`String.toByteArray` 照样编得出来、不抛异常）。
+     *
+     * ⇒ 一个 4 字节的 emoji 被算成 `1 + 1 = 2` 字节，**预算低估一半**。
+     * 实测（`limit = MAX_INTENT_URI_BYTES = 16384`，载荷为重复 emoji）：
+     * **截断后实际 32768 字节，正好 2 倍上限** —— 即**截断完全没生效**，
+     * 而它是静默的（不抛异常、`contains('�')` 也是 false，因为两个代理
+     * 连着一起被 `break` 掉了，反而是**侥幸**没切碎的）。
+     *
+     * ⚠️ 这也说明**「按 Char 切会切碎」这个担心本身是次生问题**：
+     * 真正的后果是**上限形同虚设**，正是 §3.6 要防的「静默超限」。
+     *
+     * ⚠️ 与之配套：`ActivityPayloadTest` 的「不得切碎多字节字符」用例
+     * **此前用「中」做载荷，而它在 BMP 内只占一个 Char，恰好绕过本 bug**。
+     * 已改为 emoji，否则修完也无法反证。
      */
     private fun truncateToBytes(text: String, maxBytes: Int): String {
         var used = 0
         val sb = StringBuilder()
-        for (ch in text) {
-            val size = ResultBudget.byteSizeOf(ch.toString())
+        var i = 0
+        while (i < text.length) {
+            val cp = text.codePointAt(i)
+            val charCount = Character.charCount(cp)
+            // 用整码点一次性算字节数 —— 与 ResultBudget 的口径同源，
+            // 且对代理对得到的是真实 UTF-8 长度（emoji = 4），不是 1 + 1。
+            val size = ResultBudget.byteSizeOf(String(text.toCharArray(i, i + charCount)))
             if (used + size > maxBytes) break
-            sb.append(ch)
+            sb.appendCodePoint(cp)
             used += size
+            i += charCount
         }
         return sb.toString()
     }

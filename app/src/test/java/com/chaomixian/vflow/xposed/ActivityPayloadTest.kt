@@ -208,7 +208,14 @@ class ActivityPayloadTest {
     fun `truncation never splits a multibyte character`() {
         // ⚠️ 不能简单按字节数组切：从中间切开多字节字符会产出非法 UTF-8，
         // 下游得到替换字符（�）甚至解析失败
-        val huge = "intent:#Intent;" + "中".repeat(ActivityPayload.MAX_INTENT_URI_BYTES)
+        //
+        // ⚠️⚠️ **载荷必须用 emoji，不能用「中」**（2026-09-29 独立验收发现）：
+        // 「中」在 BMP 内只占**一个 Char**，走的是 `for (ch in text)` 也正确的路径，
+        // 于是**恰好绕过**「按 Char 推进导致预算低估」那个缺陷 —— 用它做载荷时，
+        // 把实现改回按 Char 推进**测试依然全绿**，等于没有守卫。
+        // emoji 是代理对（两个 Char），才能压到那条路径上。
+        val emoji = String(Character.toChars(0x1F600)) // 😀，UTF-8 占 4 字节
+        val huge = "intent:#Intent;" + emoji.repeat(ActivityPayload.MAX_INTENT_URI_BYTES)
         val decoded = ActivityPayload.decode(
             ActivityPayload.encode("p", "c", huge, emptyMap())
         )
@@ -216,6 +223,13 @@ class ActivityPayloadTest {
         // 截断后仍是合法 UTF-8：重新编码再解码应当逐字节相同
         val bytes = decoded.intentUri.toByteArray(Charsets.UTF_8)
         assertEquals(decoded.intentUri, String(bytes, Charsets.UTF_8))
+        // ⚠️ **真正会红的断言**：字节数必须落在上限内。
+        // 只断言「没替换字符 / 往返相等」是**不够的** —— 按 Char 推进时两个代理
+        // 会被一起 break 掉，那两条断言照样通过，而实际字节数是上限的 **2 倍**。
+        assertTrue(
+            "emoji 载荷的字节数 ${bytes.size} 必须不超上限 ${ActivityPayload.MAX_INTENT_URI_BYTES}",
+            bytes.size <= ActivityPayload.MAX_INTENT_URI_BYTES,
+        )
     }
 
     @Test
