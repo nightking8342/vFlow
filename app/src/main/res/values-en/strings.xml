@@ -1616,4 +1616,21 @@ Then come back; the current state will be shown above.</string>
     <string name="home_xposed_reconnecting_hint">Channel is reconnecting, it will recover shortly (no config change needed)</string>
     <string name="home_xposed_dropped_title">Overloaded, %1$d events dropped</string>
     <string name="home_xposed_dropped_desc">Events arrive too fast. Consider narrowing the trigger condition or increasing the cooldown.</string>
+
+    <!-- Xposed trigger · channel-not-ready notice (TriggerService foreground notification body) -->
+    <string name="trigger_xposed_notice_reconnect">Xposed channel disconnected — related triggers will not fire (reconnecting automatically)</string>
+    <string name="trigger_xposed_notice_config">Xposed triggers are not active — check the LSPosed configuration or reboot</string>
+
+    <!-- Capability call failure · titles (grouped by CapabilityErrorAction) -->
+    <string name="capability_error_title_upgrade_app">App update required</string>
+    <string name="capability_error_title_report_problem">This looks like a problem</string>
+    <string name="capability_error_title_check_capability">The operation failed</string>
+    <string name="capability_error_title_check_lsposed">Xposed channel not ready</string>
+
+    <!-- Capability call failure · bodies (one per CapabilityErrorCode) -->
+    <string name="capability_error_body_absent">The installed LSPosed module does not support this capability. Update vFlow and restart the app (no LSPosed configuration change needed).</string>
+    <string name="capability_error_body_timeout">The system process did not return a result in time. This usually indicates an implementation problem — please report it.</string>
+    <string name="capability_error_body_handler_error">The system process reported an error while running this operation. See the app logs for details; please report it if it keeps happening.</string>
+    <string name="capability_error_body_channel_down">The connection between vFlow and the Xposed channel is down. Wait for the automatic reconnect; if it persists, check that this module is enabled in LSPosed.</string>
+    <string name="capability_error_body_payload_too_large">The returned data exceeded the agreed size limit. This is an implementation defect — please report it (no LSPosed configuration change needed).</string>
 </resources>

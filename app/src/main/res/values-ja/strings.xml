@@ -1536,4 +1536,21 @@
     <string name="home_xposed_reconnecting_hint">チャンネルを再接続中です。まもなく復旧します（設定変更は不要）</string>
     <string name="home_xposed_dropped_title">イベント過多、%1$d 件破棄</string>
     <string name="home_xposed_dropped_desc">イベントの発生が速すぎます。トリガー条件を絞るかクールダウンを延ばしてください。</string>
+
+    <!-- Xposed トリガー · チャンネル未準備の通知（TriggerService の常駐通知本文） -->
+    <string name="trigger_xposed_notice_reconnect">Xposed チャンネルが未接続のため、関連するトリガーは発火しません（自動的に再接続します）</string>
+    <string name="trigger_xposed_notice_config">Xposed トリガーが有効になっていません — LSPosed の設定確認か端末の再起動を行ってください</string>
+
+    <!-- ③ 機能呼び出しの失敗 · タイトル（CapabilityErrorAction ごと） -->
+    <string name="capability_error_title_upgrade_app">アプリの更新が必要です</string>
+    <string name="capability_error_title_report_problem">不具合の可能性があります</string>
+    <string name="capability_error_title_check_capability">この機能の実行に失敗しました</string>
+    <string name="capability_error_title_check_lsposed">Xposed チャンネルが未準備です</string>
+
+    <!-- ③ 機能呼び出しの失敗 · 本文（CapabilityErrorCode ごと） -->
+    <string name="capability_error_body_absent">インストールされている LSPosed モジュールはこの機能に対応していません。vFlow を更新してアプリを再起動してください（LSPosed の設定変更は不要です）。</string>
+    <string name="capability_error_body_timeout">システムプロセスが時間内に結果を返しませんでした。実装上の問題の可能性があります。報告してください。</string>
+    <string name="capability_error_body_handler_error">システムプロセスがこの処理の実行中にエラーを報告しました。詳細はアプリログを確認し、繰り返す場合は報告してください。</string>
+    <string name="capability_error_body_channel_down">vFlow と Xposed チャンネルの接続が切断されています。自動再接続をお待ちください。続く場合は LSPosed で本モジュールが有効か確認してください。</string>
+    <string name="capability_error_body_payload_too_large">返されたデータが規定の上限を超えました。これは実装上の不具合です。報告してください（LSPosed の設定変更は不要です）。</string>
 </resources>

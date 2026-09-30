@@ -1618,4 +1618,24 @@
     <string name="home_xposed_reconnecting_hint">通道正在重连，稍等片刻即可（无需改配置）</string>
     <string name="home_xposed_dropped_title">事件过载，已丢弃 %1$d 条</string>
     <string name="home_xposed_dropped_desc">事件产生过快，考虑收窄触发条件或加长冷却时间</string>
+
+    <!-- Xposed 触发器 · 通道未就绪提示（TriggerService 前台通知正文）
+         ⚠️ RECONNECT_HINT 那一格是「框架正常、断的是我们自己的连接」——
+         绝不能写成「去检查 LSPosed」，那是 P4 踩过的坑（用户配置完全正确却被引去改配置）。 -->
+    <string name="trigger_xposed_notice_reconnect">Xposed 通道未连接，相关触发器暂不会触发（会自动重连）</string>
+    <string name="trigger_xposed_notice_config">Xposed 触发器未生效，请检查 LSPosed 配置或重启设备</string>
+
+    <!-- ③ 能力调用失败 · 标题（按 CapabilityErrorAction 分；由 userAction() 派生，不手写表） -->
+    <string name="capability_error_title_upgrade_app">需要更新应用</string>
+    <string name="capability_error_title_report_problem">这看起来是个问题</string>
+    <string name="capability_error_title_check_capability">该功能执行失败</string>
+    <string name="capability_error_title_check_lsposed">Xposed 通道未就绪</string>
+
+    <!-- ③ 能力调用失败 · 正文（按 CapabilityErrorCode 逐值给）
+         ⚠️ payload_too_large 与 timeout 同类（都是「报告问题」），不是让用户改配置。 -->
+    <string name="capability_error_body_absent">当前安装的 LSPosed 模块不支持这个能力。请更新 vFlow 并重启应用（无需修改 LSPosed 配置）。</string>
+    <string name="capability_error_body_timeout">系统进程没有在预期时间内返回结果。这通常意味着实现有问题，请报告该问题。</string>
+    <string name="capability_error_body_handler_error">系统进程执行该功能时报错。详情见应用日志；若反复出现请报告该问题。</string>
+    <string name="capability_error_body_channel_down">vFlow 与 Xposed 通道的连接已断开。请稍等自动重连；若持续如此，再检查 LSPosed 中本模块是否已启用。</string>
+    <string name="capability_error_body_payload_too_large">返回的数据超出了约定上限。这属于实现缺陷，请报告该问题（不需要修改 LSPosed 配置）。</string>
 </resources>

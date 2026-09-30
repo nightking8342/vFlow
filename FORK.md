@@ -423,6 +423,24 @@
 > ✅ **分页三键的字段闭环已由 T1 落地**（见上一段）。
 
 
+### Xposed 通道 ③ · 失败分类与「已授权但通道断」的用户可见性（2026-09-30）
+
+> 上位文档：`docs/fork/xposed-architecture-v2.md` §6.1 / §6.2 / §6.4。
+> ⭐ **这一批兑现的是一条「因定案而产生的义务」**，不是可选增强 ——
+> §6.1 定案「权限判据**保持 L1（实时）**、不改 `L0 ∪ L1`」，代价是
+> **通道断时不会禁用工作流** ⇒ 用户看到的是「**权限全绿 + 触发器不工作**」。
+> 该节原文逐字写着「可见性由新状态位承担 …… **不是可选项**」。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `core/xposed/XposedReadiness.kt`（新增） | fork 独有：**触发器就绪度判定纯函数层**。`needsChannelNotice(result)` = `Channel != READY`；`selectAffectedWorkflows(workflows, permissionsOfModule)` = 挑出「启用 + 有触发器 + 那个触发器声明了 `XPOSED_HOOK`」的工作流。⚠️ **只看 `workflow.triggers` 不看 `steps`** —— 本提示回答的是「**触发器为什么不触发**」；`steps` 里的 Xposed 动作走**执行期显式失败**（用户看得到步骤报错，§6.2），算进来会让提示出现在**根本没坏**的场景。⚠️ **比 `permission.id` 不比 `Permission` 实例**（`@Parcelize data class`，注册表里的实例与常量不保证同一）。⚠️ **纯函数、无 `Context`、无 `WorkflowManager`** ⇒ 结构上**写不进盘**（需求硬约束 2 的落实） | 我方 |
+| `core/xposed/XposedDiagnostics.kt`（新增） | fork 独有：**文案映射层**。`messageFor(code)` 的**标题按 `userAction()` 派生**、正文按 `code` 逐值给 —— 这让「多个码指向同一处置」在**代码结构上**成立，而不是靠两条 `when` 恰好写得一致。`channelNoticeRes(result)` 的分支来源是 **`XposedState.tapAction`**（复用 `GUIDE` / `RECONNECT_HINT`，不另造一套）。⚠️ **`messageFor` 的签名里根本没有 `detail`** —— §6.4 约束 2「`detail` 只给人看、绝不参与判断」的落实；要显示它只能走 `formatBodyWithDetail(context, msg, detail)`（**唯一**允许碰 `detail` 的地方，且只拼接不判断）。⚠️⚠️ **生产消费者现状如实记录在类注释里，且这里记着一处我写错过、又被产物实测纠正的事实**：`channelNoticeRes` 由 `TriggerService` 消费；而 **`messageFor` 在生产代码里**没有任何**调用点** —— ③ 的 App 侧调用运行时（`CapabilityInvoker` / `CapabilityInvokeOutcome`）**在本分支上并不存在**（属 T1，未合入）。初稿写的是「`CHANNEL_DOWN` 那格有生产消费者」，**是错的**（`HookChannelController.failAllWaiters` 只是把该码放进 `CapabilityResponse`，并不调用本类）。**后果已在 `assembleRelease` 产物上实测确认**：`aapt2 dump resources` 里**只有 `trigger_xposed_notice_*` 两条**，九条 `capability_error_*` **全被 R8 + `shrinkResources` 剥掉**（类/方法连同其引用的资源一起消失）。⚠️ **这不是缺陷**（死代码消除是正确行为，接入首个 capability 后自动回来），但**必须知道**，否则会 ① 在真机上找这几条文案找不到、以为映射写错了；② 以为「写进 `strings.xml` 就等于会进 release 包」。⚠️ **不要**为此加「`messageFor` 必须有生产调用点」的测试 —— 那在接入首个 capability 前**恒红**，而恒红的断言会被下个实现者删掉 | 我方 |
+| `services/TriggerService.kt`（改） | 新增 `observeXposedChannelState()`（订阅 `XposedFrameworkMonitor.state` + `HookChannelController.connected` **两条流**）+ `refreshXposedChannelNotice()`（判定 + 打日志 + 刷通知）+ `describeXposedNoticeAction()`；`@Volatile xposedNoticeRes` 缓存上一次的文案（**只在变化时**才 `updateForegroundState()`，否则每次状态流发射都会 `startForeground`，**通知会闪**）；`createNotification()` 的正文改为按 `xposedNoticeRes` 分流。⚠️⚠️ **三条纪律写进代码注释**：① 判据不改（不碰 `XposedCapability`）；② **不用「禁用工作流」把用户引过来** —— 本块**只读** `getAllWorkflows()`、**从不** `saveWorkflow`（通道断多半是几秒内自己好的**时序**问题，让短暂窗口去改落盘数据代价与收益不成比例）；③ `XposedState` 语义不动（只读不重判）。⚠️ `onCreate` 里**不在同步栈上调** `refresh…`（它会读工作流）—— `StateFlow` 的 `collect` 会立刻收到当前值，订阅本身就已经触发了一次初始刷新 | **手动合并** |
+| 三份 `strings*.xml`（改） | 追加 **11 条 ×3 语言**：`trigger_xposed_notice_{reconnect,config}` + `capability_error_title_{upgrade_app,report_problem,check_capability,check_lsposed}` + `capability_error_body_{absent,timeout,handler_error,channel_down,payload_too_large}`。⚠️ 文案的**指向**必须与 §6.4 一致，尤其三条：`CAPABILITY_ABSENT` 指向 **App 侧**（更新/重启 App，**不是**去改 LSPosed 配置 —— 这正是 P4 踩过的坑：加载比 hook 连接早 1.6 秒，旧文案却让用户去检查本来正确的配置）；`PAYLOAD_TOO_LARGE` 与 `TIMEOUT` **同类**（都指向「报告问题」，它是实现缺陷不是配置问题）；只有 `CHANNEL_DOWN` 才提 LSPosed | **手动合并**（追加条目） |
+| `test/.../core/xposed/XposedReadinessTest.kt`（新增，11 例） | fork 独有。重点：`ACTIVE + DISCONNECTED` **端到端仍可达**且 `needsChannelNotice == true`、且**仍不健康、仍不引导用户改配置**；`Channel` 恒不依赖 `Framework`（4 组组合逐一验）；**Xposed 模块只在 `steps` 里不算命中**；**权限按 id 匹配**（用改造过无关字段的副本实例做反证）；未知模块 id 不抛 | 我方 |
+| `test/.../core/xposed/XposedDiagnosticsTest.kt`（新增，13 例） | fork 独有。重点是**反向断言**（锁「**不要**混到某一类里去」）：`payload_too_large` 的标题/正文都不等于 `channel_down`；`capability_absent` 同理（防用户被引去改本来正确的配置）；**只有 `channel_down` 用 LSPosed 标题**；`PAYLOAD_TOO_LARGE` 与 `TIMEOUT` 标题**必须相同**（同 `userAction()`）；**标题分组粒度必须等于 `userAction()` 分组粒度**（防手写一张「看起来差不多」的表）+ 逐对验证同处置同标题；**码仍是五个**（测试期的第二道锁，`bodyResOf` 的穷尽 `when` 是编译期锁）；**`messageFor` 的签名里不许有 `detail`**（反射断言参数表）；**源码扫描：生产代码不得对 `detail` 做判断**（扫所有提到 `CapabilityErrorCode` 的文件，⚠️ **必须先剥注释** —— 两个文件的注释正文里就写着 `if (detail.contains("…"))`，不剥会恒红）+ **防空转**（≥5 文件、剥注释后仍有代码行）；**三语 11 键齐全**（读三份 xml） | 我方 |
+| `test/.../services/TriggerServiceXposedNoticeWiringTest.kt`（新增，6 例） | fork 独有：**源码扫描型接线锚定**（形态照 `CoreDexFingerprintTest`）。锁住 `TriggerService` **真的**订阅了两条流、真的用了 `XposedReadiness` 的两个方法、真的走 `XposedDiagnostics.channelNoticeRes`、**`refreshXposedChannelNotice` 函数体内不出现 `saveWorkflow` / `isEnabled = false`**（需求硬约束 2 的机器化锁）、通知正文是条件式，外加一条**防空转**（函数体按大括号配对截取且跳过字符串字面量 —— 函数体里有 `joinToString { … }` 的插值）。⚠️ **存在理由**：本仓库在 `CoreLauncher` 上踩过「13 个纯函数单测全绿但调用点缺失」的坑 —— `TriggerService` 是 Android `Service`，纯 JVM 单测起不来它，接线只能在源码层锁 | 我方 |
+
 ---
 
 ## 暂未分歧、但日后改动时须登记的敏感点

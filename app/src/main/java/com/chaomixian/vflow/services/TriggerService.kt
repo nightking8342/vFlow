@@ -28,6 +28,11 @@ import com.chaomixian.vflow.core.workflow.module.triggers.KeyEventTriggerModule
 import com.chaomixian.vflow.core.workflow.module.triggers.handlers.ITriggerHandler
 import com.chaomixian.vflow.core.workflow.module.triggers.handlers.KeyEventTriggerHandler
 import com.chaomixian.vflow.core.workflow.module.triggers.handlers.TriggerHandlerRegistry
+import com.chaomixian.vflow.core.xposed.HookChannelController
+import com.chaomixian.vflow.core.xposed.XposedDiagnostics
+import com.chaomixian.vflow.core.xposed.XposedFrameworkMonitor
+import com.chaomixian.vflow.core.xposed.XposedReadiness
+import com.chaomixian.vflow.core.xposed.XposedState
 import com.chaomixian.vflow.extension.ExternalModuleManager
 import com.chaomixian.vflow.permissions.PermissionManager
 import com.chaomixian.vflow.ui.common.AppearanceManager
@@ -51,6 +56,22 @@ class TriggerService : Service() {
     // Core 守护任务
     private var coreWatcherJob: Job? = null
     private val workflowChangeMutex = Mutex()
+
+    /**
+     * 「通道未就绪」时要用的通知正文资源；`null` = 通道正常（用默认文案）。
+     *
+     * ## ⚠️ 为什么必须缓存上一次的值
+     *
+     * 状态流会频繁发射（`MutableStateFlow` 每次赋值都发）。若不比较就直接
+     * `updateForegroundState()`，每次发射都会 `startForeground` 一次，**通知会闪**。
+     *
+     * ## ⚠️ 它是**只读派生**，不是新的状态源
+     *
+     * 真实状态在 [XposedFrameworkMonitor] 与 [HookChannelController] 里；
+     * 本字段只是「上一次算出来的通知文案」的缓存，**不参与任何判定**。
+     */
+    @Volatile
+    private var xposedNoticeRes: Int? = null
 
 
     companion object {
@@ -94,6 +115,8 @@ class TriggerService : Service() {
 
         // 首次启动时，加载所有活动的触发器
         loadAllActiveTriggers()
+        // 订阅 Xposed 通道状态，供「已授权但通道断」的提示用
+        observeXposedChannelState()
         WorkflowPermissionRecovery.recoverEligibleWorkflows(applicationContext)
 
         // 启动 Core 状态监控与保活处理
@@ -360,6 +383,95 @@ class TriggerService : Service() {
         }
     }
 
+    // ── Xposed 通道未就绪提示 ──────────────────────────────────────────────
+    //
+    // 设计文档：`docs/fork/xposed-architecture-v2.md` §6.1。
+    //
+    // ## ⚠️ 为什么这块必须存在（不是可选的锦上添花）
+    //
+    // §6.1 定案：权限判据**保持 L1 实时**、不改成 `L0 ∪ L1`。代价是
+    // **通道断时不会禁用工作流** ⇒ 用户看到「权限全绿 + 触发器不工作」。
+    // 那条定案原文写着「可见性由新状态位承担 …… **不是可选项**」，
+    // 并建议至少做进 `TriggerService` —— 本方法就是兑现它。
+    //
+    // ## ⚠️⚠️ 三条不许违反的纪律
+    //
+    // | # | 纪律 | 落实 |
+    // |---|---|---|
+    // | 1 | 改判据不改 | 本块**不碰** [XposedCapability]；它仍判 L1 |
+    // | 2 | **不要用「禁用工作流」把用户引过来** | 本块**只读** `getAllWorkflows()`，**从不** `saveWorkflow` |
+    // | 3 | [XposedState] 的语义不动 | 只**读** `result`，不重新判定 |
+
+    /**
+     * 订阅框架状态与通道状态。
+     *
+     * ⚠️ **订阅两条流** —— 状态位是两件独立的事
+     * （照 `HomeScreen` 的既有模式）：框架状态变了（`bind` / `died`）与通道连上了，
+     * 都可能改变最终判定，只订阅一条会漏掉另一半。
+     *
+     * ⚠️ `StateFlow` 的 `collect` **立刻收到当前值** ⇒ 订阅本身就已经触发了一次初始刷新，
+     * 不需要在 `onCreate` 里再同步调一次 [refreshXposedChannelNotice]（那会读
+     * SharedPreferences + 解析工作流 JSON，**压在 `onCreate` 栈上**）。
+     */
+    private fun observeXposedChannelState() {
+        serviceScope.launch {
+            XposedFrameworkMonitor.state.collect { refreshXposedChannelNotice() }
+        }
+        serviceScope.launch {
+            HookChannelController.connected.collect { refreshXposedChannelNotice() }
+        }
+    }
+
+    /**
+     * 重算「通道未就绪」提示，必要时刷新前台通知并打日志。
+     *
+     * 在 [serviceScope]（`Dispatchers.IO`）里跑 —— 它会读工作流与模块注册表。
+     */
+    private fun refreshXposedChannelNotice() {
+        val result = XposedFrameworkMonitor.evaluate(HookChannelController.isConnected())
+
+        // ⚠️ 只在「用户真的配了 Xposed 触发器」时提示 —— 否则会把
+        //「没装 LSPosed 的普通用户」也拖进来（他们的通道本来就是断的，且无所谓）
+        val affected = if (XposedReadiness.needsChannelNotice(result)) {
+            XposedReadiness.selectAffectedWorkflows(workflowManager.getAllWorkflows()) { moduleId ->
+                ModuleRegistry.getModule(moduleId)?.getRequiredPermissions(null).orEmpty()
+            }
+        } else {
+            emptyList()
+        }
+
+        val newNotice = if (affected.isEmpty()) null else XposedDiagnostics.channelNoticeRes(result)
+        if (newNotice == xposedNoticeRes) return   // 值没变 ⇒ 不动通知（否则会闪）
+
+        val previous = xposedNoticeRes
+        xposedNoticeRes = newNotice
+        if (newNotice != null) {
+            // ⚠️ 用 DebugLogger.w 而不是 i：它同时走 android.util.Log 与内存缓冲，
+            // 且**不受** debugLoggingEnabled 开关影响 ⇒ adb logcat 一定看得到
+            DebugLogger.w(
+                TAG,
+                "Xposed 通道未就绪（影响 ${affected.size} 个工作流：" +
+                    "${affected.joinToString { it.name }}）—— 相关触发器此刻不会触发。" +
+                    "处置：${describeXposedNoticeAction(result)}"
+            )
+        } else if (previous != null) {
+            DebugLogger.i(TAG, "Xposed 通道已就绪，触发器恢复工作。")
+        }
+        updateForegroundState()
+    }
+
+    /**
+     * 日志里那句「处置」的措辞。
+     *
+     * ⚠️ 分支**复用** [XposedState.tapAction]，不在这里写 `if` ——
+     * 否则「哪种状态给哪种提示」会有两处口径，迟早漂移。
+     */
+    private fun describeXposedNoticeAction(result: XposedState.Result): String =
+        when (XposedState.tapAction(result)) {
+            XposedState.TapAction.RECONNECT_HINT -> "等待自动重连（无需改配置）"
+            XposedState.TapAction.GUIDE -> "检查 LSPosed 配置或重启设备"
+        }
+
     override fun onDestroy() {
         super.onDestroy()
         // 停止 Core 守护任务
@@ -459,7 +571,10 @@ class TriggerService : Service() {
         }
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.trigger_service_notification_title))
-            .setContentText(getString(R.string.trigger_service_notification_text))
+            // ⚠️ 「通道未就绪」时改用提示文案（§6.1 的可见性义务）。
+            // 用户关掉后台服务通知时 updateForegroundState() 会 stopForeground(REMOVE)，
+            // 此时提示只剩日志 —— 这是**已知且可接受**的范围收窄，不要为此改成常驻前台通知。
+            .setContentText(getString(xposedNoticeRes ?: R.string.trigger_service_notification_text))
             .setSmallIcon(R.drawable.ic_workflows)
             .build()
     }
