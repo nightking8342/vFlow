@@ -7,8 +7,29 @@
 > **性质**：fork 独有文档 → 冲突归**我方**（上游无此文件）
 >
 > ⚠️ **本文仍是草稿，两个理由**：
-> 1. ③（能力调用）**只落地了契约层**（2026-09-29，见下），执行侧（App 侧运行时 / hook 侧工作线程池 / 首个 capability）**仍未实现**；
+> 1. ③（能力调用）**已落地契约层 + App 侧调用运行时**（2026-09-29 / 2026-09-30，见下），
+>    但 hook 侧执行运行时（工作线程池 / `invoke` 分发 / 三层超时）与首个 capability **仍未实现**；
 > 2. ⚠️ **§10 还有 12 项未决**（8–20），其中 3 项标 ⭐ 的**不回答就不能动手**。
+>
+
+> ## ✅ 2026-09-30 进展：③ 的 **App 侧调用运行时已落地**
+>
+> **已实现**：`CapabilityInvoker`（单一入口 `suspend invoke` + `invokeOrFallback` + 代次复查堵 waiter 泄漏）、
+> `CapabilityPresenceHolder`（连接期能力交换的 `StateFlow` 持有者）、`CapabilityExchange`（ping → capabilities 三段判据）、
+> `CapabilityFallbacks`（降级注册处，T1 空实现）、`CapabilityRuntime`（启动接线 + 回退开关）、
+> `CapabilityInvokeOutcome`（密封三态结果）、`HookChannelController` 的四个只读/可注销访问器与断连注册表。
+>
+> ✅ **两条旧缺口已闭合**：
+> - **分页半闭环** —— `CapabilityRequest.cursor` / `CapabilityResponse.nextCursor` / `truncated` 三键**已补字段与编解码路径**（§3.6 契约 3/4）；
+> - **`timeout` 错误码零生产者** —— 调用侧已落地，该码有了真实生产者。
+>
+> ⚠️ **仍遗留**：`CapabilityFallbacks.registerAll()` 是**空实现**（首个 capability 由 T3 注册）；
+> `BinderTransport.onInvoke` 的占位（回 `capability_absent`）**刻意保留**（T2 替换）。
+> ⚠️ **真机验证未做**（2026-09-30）—— 只有编译 + 单测 + release 打包支撑。
+>
+> ⚠️ **本文档与实现的一处偏差（实现为准）**：`CapabilityRuntime.isEnabled()` **默认 `true`**。
+> §6.3 早期措辞把「打开开关」写成「新增一条启动期跨进程路径」，实际是**同一条路径上的第三个监听器**
+> （前两个更重），故取 `true`；`false` 会导致「永久错过连接建立 ⇒ 每次调用白等 5 秒」的静默劣化。
 >
 > ---
 >

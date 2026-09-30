@@ -385,11 +385,14 @@ class CapabilityContractPurityTest {
 
     // ── 要求 5：capability 包的「调用点」缺口（防反模式 6）──────
     //
-    // ⚠️⚠️ 实测发现（2026-09-29，检查 release dex）：
-    // **`capability/` 包下的四个类在 release APK 的 dex 里一个都不存在** ——
-    // R8 把它们当死代码剥掉了，因为**当前没有任何生产代码引用它们**。
+    // ## ⚠️⚠️ 本条已于 2026-09-30 **翻面**（T1「App 侧调用运行时」接入）
     //
-    // 同一个 APK 里的对照（证明这不是 R8 配置问题）：
+    // 它原来是一条**反向**断言：「capability 包**尚无**生产调用点」—— 用来标记
+    // 契约层未被接入这个缺口。当时实测发现（检查 release dex）：
+    // **`capability/` 包下的四个类在 release APK 的 dex 里一个都不存在** ——
+    // R8 把它们当死代码剥掉了，因为**没有任何生产代码引用它们**。
+    //
+    // 同一个 APK 里的对照（证明那不是 R8 配置问题）：
     //
     // | 类 | 有没有被引用 | 在 dex 里吗 |
     // |---|---|---|
@@ -397,32 +400,40 @@ class CapabilityContractPurityTest {
     // | `CapabilityInvocationCodec` | ✅ 被 `BinderTransport` / `HookChannelController` 引用 | ✅ 在 |
     // | `Capability` / `CapabilityRegistry` / `Names` / `Presence` | ❌ **零引用** | ❌ **被剥** |
     //
-    // ## 这是本任务的**预期状态**，不是缺陷
+    // 那条断言自己的注释就写着：「接入后本条会变红 —— 请把它改成**正面断言**
+    //（断言引用确实存在），而不是直接删掉」。
     //
-    // 本任务是**契约层**，它的消费者是后续任务：
-    // - `CapabilityRegistry.register(...)` —— 任务 4 在 App 侧注册 `query_shortcut_intents`
-    // - `CapabilityNames.QUERY_SHORTCUT_INTENTS` —— 任务 3 的 hook 侧注册表
-    // - `CapabilityPresence` —— 任务 2 的连接期能力交换
+    // ⇒ 现在按那个要求翻面。**为什么不能删**：本仓库反复记录的反模式 6 是
+    // 「**写了调用点注释、但没有调用点**」（`CoreDexFingerprint` 那次：13 个纯函数
+    // 单测全绿、集成点缺失，表现是「永远不提示重启，用户静默跑旧 Core 代码」）——
+    // 删掉这条断言等于把那道防线也删了。
     //
-    // 一旦它们被引用，R8 自然保留。
-    //
-    // ## 为什么仍要加这条断言
-    //
-    // 本仓库反复记录的反模式 6 是「**写了调用点注释、但没有调用点**」
-    //（`CoreDexFingerprint` 那次：13 个纯函数单测全绿、集成点缺失，
-    //  表现是「永远不提示重启，用户静默跑旧 Core 代码」）。
-    //
-    // 契约层天然的失败形态**正是**这个：纯函数测试全绿，但没人接。
-    // 这条断言把「缺口在哪、由谁接」显式写进**会跑的东西**里，
-    // 而不是只写在注释里。
-    //
-    // ⚠️ **任务 2/3/4 接入后，本条会变红** —— 那正是它该有的行为：
-    // 红色提醒「缺口已闭合，请把本条改成正面断言（断言引用确实存在）」，
-    // 而不是默默删掉它。
+    // ⚠️ 翻面后的强度**不比原来弱**：原来断言「零引用」（一个否命题，容易被
+    // 无关引用满足），现在断言**具体哪几个符号有引用**（正命题，缺失就红）。
 
     @Test
-    fun `capability package still has no production call sites (contract layer only)`() {
-        val registerCalls = mutableListOf<String>()
+    fun `capability package has production call sites`() {
+        /**
+         * 符号 → 它在生产代码里的**应有消费者**（缺一个就红）。
+         *
+         * ⚠️ **只列 T1 已经接上的**。`CapabilityNames` **刻意不在表里**：
+         * 它唯一的成员 `QUERY_SHORTCUT_INTENTS` 是 **T3** 首个能力的名字 ——
+         * T1 不注册任何真能力（需求明确划了这条边界），所以它现在**确实**
+         * 没有生产消费者，这是**预期状态**而非缺口。
+         *
+         * 把那类「由后续任务接」的符号列进来，会让这条断言在 T1 恒红 ——
+         * 而一条恒红的断言会被下一个实现者直接删掉，那才是真的失去防线。
+         */
+        val requiredSymbols = mapOf(
+            // T1：App 侧调用运行时（core/xposed/CapabilityInvoker.kt）查表用
+            "CapabilityRegistry" to "CapabilityInvoker 的查表（§4.2 步骤 0）",
+            // T1：连接期能力交换的判据与缓存（CapabilityPresenceHolder）
+            "CapabilityPresence" to "presence 的三段判定与持有者（§6.3）",
+            // T1：presenceAfterExchange / presenceAfterDisconnect 两个纯函数
+            "presenceAfter" to "连接建立/断开时的判定（§6.3）",
+        )
+
+        val hits = mutableMapOf<String, MutableList<String>>()
         val productionRoots = listOf(
             "src/main/java/com/chaomixian/vflow/xposed",
             "src/main/java/com/chaomixian/vflow/core",
@@ -439,33 +450,48 @@ class CapabilityContractPurityTest {
                 //
                 // ⚠️ 路径分隔符必须归一化：Windows 上 `File.path` 用的是 `\`，
                 // 只判 `/xposed/capability/` 会让本包自己的文件**不被排除**
-                //（我第一版就这么写错了，失败信息里全是 capability 包自己的文件）。
+                //（初版就这么写错过，失败信息里全是 capability 包自己的文件）。
                 .filterNot { it.path.replace('\\', '/').contains("/xposed/capability/") }
                 .forEach { file ->
-                    // ⚠️ **必须走 codeLines 剥注释**：我第一版直接扫原始行，
-                    // 结果被 `CapabilityManifest.kt` KDoc 里那句
-                    // 「见 `CapabilityPresence` 的说明」误报成调用点。
+                    // ⚠️ **必须走 codeLines 剥注释**：直接扫原始行会被 KDoc 里
+                    // 那些「见 `CapabilityPresence` 的说明」之类的**举例**误报成调用点。
                     // 这与 `WireLayerPurityTest` 踩过的是同一个坑（假阳性）。
                     for ((lineNo, raw) in codeLines(file)) {
                         val code = stripStringLiterals(raw).trim()
-                        // 关键字组合：有人真的引用了 capability 包的符号
-                        if (Regex("""\b(CapabilityRegistry|CapabilityNames|CapabilityPresence|presenceAfter\w*)\b""")
-                                .containsMatchIn(code) &&
-                            !code.startsWith("import ")
-                        ) {
-                            registerCalls += "${file.path}:$lineNo  $code"
+                        if (code.startsWith("import ")) continue
+                        requiredSymbols.keys.forEach { symbol ->
+                            if (Regex("""\b$symbol\w*\b""").containsMatchIn(code)) {
+                                hits.getOrPut(symbol) { mutableListOf() }
+                                    .add("${file.path}:$lineNo  $code")
+                            }
                         }
                     }
                 }
         }
 
+        val missing = requiredSymbols.filterKeys { hits[it].isNullOrEmpty() }
         assertTrue(
-            "❌ capability 包已经出现生产调用点了（说明任务 2/3/4 已接入）。\n" +
-                "本条断言的使命是标记「契约层尚未被接入」这个缺口 —— 缺口闭合后，\n" +
-                "请把它改成正面断言（**断言引用确实存在**），而不是直接删掉：\n" +
-                "反模式 6（写了调用点注释但没有调用点）的防线就是这一类断言。\n" +
-                "发现的调用点：\n" + registerCalls.joinToString("\n"),
-            registerCalls.isEmpty(),
+            "❌ capability 包有符号**没有任何生产调用点** —— 这正是反模式 6 的形态\n" +
+                "（`CoreDexFingerprint` 教训：纯函数单测全绿，但集成点缺失，无人发现）。\n" +
+                "⚠️ 且这不是理论风险：契约层刚落地时实测发现这四个类在 release dex 里\n" +
+                "**被 R8 当死代码剥掉了**（见上方注释的对照表）。\n" +
+                "缺失的符号与它们的应有消费者：\n" +
+                missing.entries.joinToString("\n") { (s, why) -> "  · $s —— $why" },
+            missing.isEmpty(),
+        )
+    }
+
+    @Test
+    fun `the call site scan is not vacuous`() {
+        // ⚠️ 防「路径写错 / 正则写错 ⇒ 上面那条恒真」。
+        // 断言扫描**确实找到了**几个已知存在的调用点
+        val controller = File("src/main/java/com/chaomixian/vflow/core/xposed/HookChannelController.kt")
+        assertTrue("HookChannelController.kt 应当存在", controller.isFile)
+        val code = codeLines(controller).map { it.second }
+        assertTrue(
+            "扫描应当能在 HookChannelController 里找到 capability 包的符号引用 —— " +
+                "找不到说明路径或剥注释逻辑坏了（上面那条会因此空转通过）",
+            code.any { it.contains("CapabilityResponse") || it.contains("CapabilityInvocationCodec") },
         )
     }
 

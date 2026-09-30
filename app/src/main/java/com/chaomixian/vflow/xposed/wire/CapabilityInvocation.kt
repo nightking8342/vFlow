@@ -75,16 +75,31 @@ object CapabilityInvocationCodec {
         capability: String,
         paramsJson: String = "{}",
         timeoutMs: Long = DEFAULT_TIMEOUT_MS,
+        cursor: String? = null,
         token: String = "",
         protocolVersion: Int = EventEnvelopeCodec.PROTOCOL_VERSION,
-    ): String = JSONObject()
-        .put(KEY_REQUEST_ID, requestId)
-        .put(KEY_PROTOCOL, protocolVersion)
-        .put(KEY_CAPABILITY, capability)
-        .put(KEY_PARAMS, paramsJson)
-        .put(KEY_TIMEOUT_MS, timeoutMs)
-        .put(KEY_TOKEN, token)
-        .toString()
+    ): String {
+        val obj = JSONObject()
+            .put(KEY_REQUEST_ID, requestId)
+            .put(KEY_PROTOCOL, protocolVersion)
+            .put(KEY_CAPABILITY, capability)
+            .put(KEY_PARAMS, paramsJson)
+            .put(KEY_TIMEOUT_MS, timeoutMs)
+            .put(KEY_TOKEN, token)
+
+        // ⚠️ `cursor` 为空时**不写这个键**（而不是写 null）——
+        // 与下面 `ok=true` 时不写 `error` 是同一条约定：
+        // 「不存在的键」比「值为 null 的键」更明确，且旧端不需要认识它。
+        //
+        // ⚠️ 判空白而非只判 null：空串作游标是**无意义**的（分页语义里
+        // 「从头开始」由「不传 cursor」表达），把它写出去会让 hook 侧要去区分
+        // 「空串游标」与「没有游标」两种实为同义的情形。
+        if (!cursor.isNullOrBlank()) {
+            obj.put(KEY_CURSOR, cursor)
+        }
+
+        return obj.toString()
+    }
 
     /**
      * 编码响应。
@@ -99,6 +114,8 @@ object CapabilityInvocationCodec {
         resultJson: String = "{}",
         error: CapabilityError? = null,
         elapsedMs: Long = 0L,
+        nextCursor: String? = null,
+        truncated: Boolean = false,
         token: String = "",
         protocolVersion: Int = EventEnvelopeCodec.PROTOCOL_VERSION,
     ): String {
@@ -108,6 +125,20 @@ object CapabilityInvocationCodec {
             .put(KEY_OK, ok)
             .put(KEY_ELAPSED_MS, elapsedMs)
             .put(KEY_TOKEN, token)
+
+        // ⚠️ 分页两键同为「有值才写」：
+        // - `next_cursor` 为空 ⇒ 没有下一页（`ResultBudget.collectWithin` 未截断时返回 null）
+        // - `truncated=false` ⇒ 没截断（§3.6 契约 3：截断**必须**带标志位，但「没截断」不必显式声明）
+        //
+        // 不写它们**不是**「省字节」—— 而是让「旧 hook 层回的信封」与
+        // 「新 hook 层回了但没截断」在解码后落到**同一个默认值**，
+        // 否则两者会在日志与断言里长得不一样，掩盖真实差异。
+        if (!nextCursor.isNullOrBlank()) {
+            obj.put(KEY_NEXT_CURSOR, nextCursor)
+        }
+        if (truncated) {
+            obj.put(KEY_TRUNCATED, true)
+        }
 
         if (ok) {
             obj.put(KEY_RESULT, resultJson)
@@ -172,6 +203,10 @@ object CapabilityInvocationCodec {
             paramsJson = obj.optString(KEY_PARAMS).ifBlank { "{}" },
             // ⚠️ 钳到非负：负超时会让工作线程的计时逻辑得到荒谬的结果
             timeoutMs = timeout.coerceAtLeast(0L),
+            // ⚠️ 缺省 null（不是空串）：`optString` 对缺失键返回 `""`，
+            // 而空串与 null 在分页语义里是**两回事**（前者是「一个空的游标」，
+            // 后者是「没有游标」）。归一成 null 让调用方只需判一种情形。
+            cursor = obj.optString(KEY_CURSOR).takeIf { it.isNotBlank() },
             token = obj.optString(KEY_TOKEN),
         )
     }
@@ -227,6 +262,11 @@ object CapabilityInvocationCodec {
             resultJson = obj.optString(KEY_RESULT).ifBlank { "{}" },
             error = error,
             elapsedMs = obj.optLong(KEY_ELAPSED_MS),
+            // ⚠️ 同 CapabilityRequest.cursor：缺失/空白都归一成 null，
+            // 让调用方只需判一种情形（「没有下一页」）
+            nextCursor = obj.optString(KEY_NEXT_CURSOR).takeIf { it.isNotBlank() },
+            // ⚠️ 缺失 ⇒ false（向后兼容：旧 hook 层根本不写这个键）
+            truncated = obj.optBoolean(KEY_TRUNCATED, false),
             token = obj.optString(KEY_TOKEN),
             protocolVersion = if (obj.has(KEY_PROTOCOL)) obj.optInt(KEY_PROTOCOL) else -1,
         )
@@ -238,6 +278,11 @@ object CapabilityInvocationCodec {
  *
  * @param paramsJson **原始 JSON 串** —— 每个 capability 的参数 schema 自己解析，
  *   信封层不认识任何业务字段
+ * @param cursor §3.6 契约 4：分页游标。`null` ⇒ 从头开始（**不是**空串 ——
+ *   两者在分页语义里是两回事，见 [CapabilityInvocationCodec.decodeRequest] 的说明）。
+ *   ⚠️ **原样字符串，不在信封层解析成 Int** —— 契约里它只是「一个不透明游标」，
+ *   `ResultBudget.collectWithin` 用 `Int` 下标只是那个原语的实现细节。
+ *   用 `Int` 会把「将来换非整数游标」变成一次协议变更。
  */
 data class CapabilityRequest(
     val requestId: String,
@@ -245,6 +290,7 @@ data class CapabilityRequest(
     val capability: String,
     val paramsJson: String,
     val timeoutMs: Long,
+    val cursor: String? = null,
     val token: String,
 )
 
@@ -256,6 +302,12 @@ data class CapabilityRequest(
  *
  * ⚠️ **判断分支一律用 [ok] 与 `error.code`（枚举），绝不用 `error.detail`** ——
  * 后者是自由文本、会被三语本地化（§6.4 约束 2）。
+ *
+ * @param nextCursor §3.6 契约 4：下一页的游标。`null` ⇒ **全量已取完**。
+ *   调用方把它原样回填到下一次请求的 `cursor`（不解析）。
+ * @param truncated §3.6 契约 3：是否发生过截断。⚠️ **必须传给下游** ——
+ *   少了几项时用户不能误以为「本来就没有」（照 `ActivityPayload.truncated` 的先例）。
+ *   缺省 `false` 是为了向后兼容（旧 hook 层不写这个键）。
  */
 data class CapabilityResponse(
     val requestId: String,
@@ -263,6 +315,8 @@ data class CapabilityResponse(
     val resultJson: String,
     val error: CapabilityError?,
     val elapsedMs: Long,
+    val nextCursor: String? = null,
+    val truncated: Boolean = false,
     val token: String,
     val protocolVersion: Int,
 )
