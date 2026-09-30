@@ -383,9 +383,10 @@ class CapabilityContractPurityTest {
         return ""
     }
 
-    // ── 要求 5：capability 包的「调用点」缺口（防反模式 6）──────
+    // ── 要求 5：capability 包的「调用点」（防反模式 6）────────
     //
-    // ## ⚠️⚠️ 本条已于 2026-09-30 **翻面**（T1「App 侧调用运行时」接入）
+    // ## ⚠️⚠️ 本条已于 2026-09-30 **翻面**
+    //（先由 T1「App 侧调用运行时」接入，再由 T2「hook 侧执行运行时」补上 hook 侧消费者）
     //
     // 它原来是一条**反向**断言：「capability 包**尚无**生产调用点」—— 用来标记
     // 契约层未被接入这个缺口。当时实测发现（检查 release dex）：
@@ -416,21 +417,25 @@ class CapabilityContractPurityTest {
         /**
          * 符号 → 它在生产代码里的**应有消费者**（缺一个就红）。
          *
-         * ⚠️ **只列 T1 已经接上的**。`CapabilityNames` **刻意不在表里**：
-         * 它唯一的成员 `QUERY_SHORTCUT_INTENTS` 是 **T3** 首个能力的名字 ——
-         * T1 不注册任何真能力（需求明确划了这条边界），所以它现在**确实**
-         * 没有生产消费者，这是**预期状态**而非缺口。
+         * ⚠️ **只列已经接上的**。表里现在是 App 侧（T1）与 hook 侧（T2）的**并集** ——
+         * 两侧都真的接了消费者，所以五个符号一个都不能少。
          *
-         * 把那类「由后续任务接」的符号列进来，会让这条断言在 T1 恒红 ——
-         * 而一条恒红的断言会被下一个实现者直接删掉，那才是真的失去防线。
+         * `CapabilityNames` 在 T1 阶段**刻意不在表里**（那时它唯一的成员
+         * `QUERY_SHORTCUT_INTENTS` 还没有消费者），现在由 hook 侧注册表与
+         * 诊断 handler 接上 ⇒ 入表。
+         *
+         * ⚠️ **别把「由后续任务接」的符号提前列进来**：那会让本条恒红，
+         * 而**一条恒红的断言会被下一个实现者直接删掉**，那才是真的失去防线。
          */
         val requiredSymbols = mapOf(
-            // T1：App 侧调用运行时（core/xposed/CapabilityInvoker.kt）查表用
-            "CapabilityRegistry" to "CapabilityInvoker 的查表（§4.2 步骤 0）",
+            // App 侧调用入口查表用（CapabilityInvoker）
+            "CapabilityRegistry" to "调用入口的查表与注册（CapabilityFallbacks）",
             // T1：连接期能力交换的判据与缓存（CapabilityPresenceHolder）
             "CapabilityPresence" to "presence 的三段判定与持有者（§6.3）",
             // T1：presenceAfterExchange / presenceAfterDisconnect 两个纯函数
             "presenceAfter" to "连接建立/断开时的判定（§6.3）",
+            // hook 侧注册表与诊断 handler 引用名字常量（同一个 dex，复用无两份拷贝代价）
+            "CapabilityNames" to "hook 侧注册表与诊断 handler 的名字来源",
         )
 
         val hits = mutableMapOf<String, MutableList<String>>()
@@ -473,7 +478,7 @@ class CapabilityContractPurityTest {
         assertTrue(
             "❌ capability 包有符号**没有任何生产调用点** —— 这正是反模式 6 的形态\n" +
                 "（`CoreDexFingerprint` 教训：纯函数单测全绿，但集成点缺失，无人发现）。\n" +
-                "⚠️ 且这不是理论风险：契约层刚落地时实测发现这四个类在 release dex 里\n" +
+                "⚠️ 这不是理论风险：契约层刚落地时实测发现这些类在 release dex 里\n" +
                 "**被 R8 当死代码剥掉了**（见上方注释的对照表）。\n" +
                 "缺失的符号与它们的应有消费者：\n" +
                 missing.entries.joinToString("\n") { (s, why) -> "  · $s —— $why" },

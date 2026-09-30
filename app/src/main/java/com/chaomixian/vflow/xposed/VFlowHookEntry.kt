@@ -2,7 +2,9 @@ package com.chaomixian.vflow.xposed
 
 import android.content.ComponentName
 import android.util.Log
+import com.chaomixian.vflow.xposed.capabilities.HookCapabilityRuntime
 import com.chaomixian.vflow.xposed.sources.ActivityChangedSource
+import com.chaomixian.vflow.xposed.wire.CapabilityInvocationCodec
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface
@@ -75,6 +77,18 @@ class VFlowHookEntry : XposedModule() {
 
     /** 传输层。持有它只为在热更新/停止时能断开连接。 */
     private var transport: BinderTransport? = null
+
+    /**
+     * ③ 的**执行运行时**（工作线程池 + 超时 + 截断）。
+     *
+     * ⚠️⚠️ **必须与 `transport` 同生命周期**：池是**自建的**（容量 2），
+     * 热更新换代时旧代际的池若继续活着，会与新代际的池**并存**并抢
+     * system_server 的资源 —— 需求明写的硬要求。
+     *
+     * ⚠️ 实例字段而非静态字段：热更新是新 classloader 加载新代码，
+     * 静态字段在新代际里是全新的（实测为 null）。
+     */
+    private var capabilityRuntime: HookCapabilityRuntime? = null
 
     /**
      * 取 system_server 的 Context。
@@ -245,8 +259,38 @@ class VFlowHookEntry : XposedModule() {
         // ── 注册适配器（加新触发器时**只在这里追加一行**，§3.4.3）──
         rt.register(ActivityChangedSource())
 
+        // ── ③ 执行运行时（能力调用）──
+        //
+        // ⚠️⚠️ **这里是全部 ③ 响应的唯一出口**。
+        //
+        // 分页两键（`next_cursor` / `truncated`）的**编码规则**
+        //（非空白才写 / true 才写）由 `CapabilityInvocationCodec` 负责 ——
+        // 若在别处再编一次信封，就会出现「有的带标志有的不带」（§3.6 明令要避免）。
+        //
+        // ⚠️ `ok = error == null`：与 codec 的契约一致
+        //（`decodeResponse` 会反向校验「ok=false 必须带 error」）。
+        val executor = HookCapabilityRuntime(
+            respond = { requestId, resultJson, nextCursor, truncated, elapsedMs, token, error ->
+                transport.resolve(
+                    CapabilityInvocationCodec.encodeResponse(
+                        requestId = requestId,
+                        ok = error == null,
+                        resultJson = resultJson,
+                        error = error,
+                        nextCursor = nextCursor,
+                        truncated = truncated,
+                        elapsedMs = elapsedMs,
+                        token = token,
+                    ),
+                )
+            },
+        )
+        transport.onInvoke { executor.onInvoke(it) }
+        transport.onCapabilities { executor.capabilitiesJson() }
+
         runtime = rt
         this.transport = transport
+        this.capabilityRuntime = executor
         rt.start()
         transport.start()   // 立即返回，连接在后台线程里做
         say("  通道已启动（后台等待「服务就绪 + 用户解锁」后 bind）")
@@ -298,6 +342,10 @@ class VFlowHookEntry : XposedModule() {
     private fun stopChannelOnly() {
         transport?.stop()
         transport = null
+        // ⚠️ 池必须先停：旧代际的池与新代际的池并存会抢 system_server 资源。
+        // 顺序上放在 transport 之后无所谓（池不依赖连接），但**必须**都在本方法内。
+        capabilityRuntime?.stop()
+        capabilityRuntime = null
         // 只停发送线程，不 unmount
         runtime?.stopDrainOnly()
         runtime = null
@@ -307,6 +355,8 @@ class VFlowHookEntry : XposedModule() {
     private fun stopChannel() {
         transport?.stop()
         transport = null
+        capabilityRuntime?.stop()
+        capabilityRuntime = null
         runtime?.stop()
         runtime = null
     }

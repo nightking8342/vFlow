@@ -1,12 +1,15 @@
 package com.chaomixian.vflow.core.xposed
 
 import com.chaomixian.vflow.core.logging.DebugLogger
+import com.chaomixian.vflow.xposed.capability.Capability
 import com.chaomixian.vflow.xposed.capability.CapabilityFallbackPlan
+import com.chaomixian.vflow.xposed.capability.CapabilityNames
 import com.chaomixian.vflow.xposed.capability.CapabilityRegistry
+import com.chaomixian.vflow.xposed.capability.CapabilityRisk
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * ③ **降级实现**的注册处（App 侧，位于 `xposed/` **之外**）。
+ * ③ **降级实现 / 能力注册**的落点（App 侧，位于 `xposed/` **之外**）。
  *
  * ## ⚠️⚠️ 为什么它必须在这个文件里，而不是在 `CapabilityRegistry.kt` 里
  *
@@ -26,27 +29,24 @@ import java.util.concurrent.atomic.AtomicReference
  *
  * ⚠️ **不要图省事在 `CapabilityRegistry.kt` 里 `import` 那些实现** ——
  * `CapabilityContractPurityTest` 会红，且真在 system_server 里加载了它们会
- * **把崩溃半径从「那个 App」扩大到整机**。
+ * **把崩溃半径从「那个 App」扩大到整个系统**。
  *
- * ## ⚠️ T1 阶段本对象是**空实现**（这是刻意的，不是没写完）
+ * ## ⚠️ 本文件是**唯一的 App 侧注册落点**
  *
- * 首个真实的 capability（`CapabilityNames.QUERY_SHORTCUT_INTENTS`）是 **T3** 的交付物 ——
- * 它需要先有 hook 侧的 handler（T2）才有意义。
+ * 加新 capability（含 T3 的首个真实能力 `query_shortcut_intents`）= 在
+ * [registerAll] 里追加一次 `register`，**不必新建文件、不必动 `xposed/` 下的任何东西**
+ *（那才是 `FORK.md` 里「控制 diff 面积」原则的直接兑现）。
  *
- * ⇒ 本文件当前 `registerAll()` 里**一条注册都没有**，`CapabilityRegistry` 在生产路径上
- * **保持为空**。单测需要用假能力时**直接调 `CapabilityRegistry.register(...)`**
- * （并在 `@After` 里 `resetForTest()`），**不**通过本对象。
+ * ⚠️ 但**别往这里塞「测试用的假能力」** —— 那会让它出现在 **release 的生产启动路径**上。
+ * 单测需要假能力时直接调 `CapabilityRegistry.register(...)`，并在 `@After` 里
+ * `resetForTest()`。本仓库的纪律是「不留未实现的调用点」。
  *
- * ⚠️ 这一点很重要：往这里塞「测试用的假能力」会让它出现在 **release 的生产启动路径**上，
- * 而这正是本仓库「不留未实现的调用点」纪律要避免的。
+ * ## 当前注册的内容：`diagnostic`（**开发期自证用**）
  *
- * ## 那本文件现在存在的意义是什么
- *
- * **把注册落点固定下来**：T3 加能力时只需在此追加一行 `CapabilityRegistry.register(...)`，
- * 不必新建文件、**不必动 `xposed/` 下的任何东西**（那才是 `FORK.md` 里
- * 「控制 diff 面积」原则的直接兑现）。同时它也把上面那条分层要求
- * 变成一个**可被引用的具体位置**，而不是只写在别人的注释里
- *（§7.4 反模式 5：约束只写在注释里 = 等于没写）。
+ * 见 [registerAll] 里的注释。⚠️ 它**必须在这里注册**，否则 `CapabilityInvoker` 的
+ * 调用入口**第一步** `CapabilityRegistry.find(name)` 就把它拦下
+ * （`Failed(HANDLER_ERROR, "未注册的 capability：…")`）—— 而**那一步在 App 侧、
+ * 在提交给 hook 层之前** ⇒ hook 侧永远收不到请求，四条失败路径一条都验不了。
  */
 object CapabilityFallbacks {
 
@@ -59,7 +59,7 @@ object CapabilityFallbacks {
      *
      * 由 [CapabilityRuntime.attach] 调用一次。
      *
-     * ## ⚠️ T3 在此追加，格式如下（不是现在写的，是给 T3 的接口说明）
+     * ## T3 加首个真实能力的格式（给 T3 的接口说明）
      *
      * ```kotlin
      * CapabilityRegistry.register(
@@ -80,15 +80,29 @@ object CapabilityFallbacks {
     fun registerAll() {
         if (!registered.compareAndSet(false, true)) return
 
-        // ⚠️ T1：**刻意为空**（见类注释）。这里不放任何注册。
+        // ── 诊断能力（hook 侧执行体：`capabilities/DiagnosticCapabilityHandler.kt`）──
         //
-        // 若将来有人想在此加「测试用假能力」——请不要：那会让它进生产启动路径。
-        // 单测直接用 CapabilityRegistry.register(...) + resetForTest()。
+        // ⚠️ `fallback = null` ⇒ 【独占型】（§6.2）：诊断能力只可能由 Xposed 通道提供，
+        //    没有替代实现 ⇒ 不可用时「无从降级」，而不是「静默换个数据源」。
+        //
+        // ⚠️ `risk = READ_ONLY`：无副作用（`slow` 只 sleep、`huge` 只造数据、
+        //    `throw` 只抛异常）⇒ 留在生产包里是安全的。
+        //
+        // ⚠️ `maxResultBytes` / `timeoutMs` 留 `null` ⇒ 两端都用默认值
+        //    （256 KiB / 请求里的 `timeout_ms`）⇒ 不会出现
+        //    「App 以为 5s、hook 按 3s 算」的错配。
+        CapabilityRegistry.register(
+            Capability(
+                name = CapabilityNames.DIAGNOSTIC,
+                risk = CapabilityRisk.READ_ONLY,
+                fallback = null,
+            ),
+        )
 
-        // ⚠️ 打一行日志而不是默默 return：T3 加能力时，「注册表里到底有没有东西」
-        // 是排查「调用回 capability_absent」的第一个问题，而空表与「注册代码没跑到」
-        // 在**没有这行日志**时长得一模一样。
-        DebugLogger.d(TAG, "能力表装配完成（T1 的预期状态：注册表为空，首个 capability 由 T3 注册）")
+        // ⚠️ 打一行日志而不是默默注册：排查「调用回 capability_absent」时，
+        // 「注册表里到底有没有东西」是第一个要问的问题，而这行日志是它的答案。
+        // （空表与「注册代码没跑到」在没有这行日志时长得一模一样。）
+        DebugLogger.d(TAG, "能力表装配完成（已注册：${CapabilityRegistry.names().sorted()}）")
     }
 
     /**

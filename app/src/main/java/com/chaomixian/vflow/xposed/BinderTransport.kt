@@ -241,17 +241,14 @@ class BinderTransport(
         /**
          * ③ 的统一入口（§3.4）。**oneway** —— 接单即返回，绝不在此执行 handler。
          *
-         * ⚠️⚠️ **本任务只接通管道，不实现执行** —— 真正的分发（工作线程池 /
-         * 超时 / 截断）是任务 3（hook_runtime）的范围。
+         * ⚠️ **执行已接入**：`invokeSink` 由 `VFlowHookEntry` 注入为
+         * `HookCapabilityRuntime.onInvoke`，那里只做「解码 + 校验 + 查注册表 + 投递」，
+         * handler 在工作线程上跑（有界池，容量 2）。
          *
-         * ⚠️ 当前的占位行为是「**显式回一个 `capability_absent` 响应**」，
-         * **不是**静默吞掉。理由：
-         * ① §4.3 要求「未知 capability **必须报错**」—— 调用方在等结果，
-         *   静默会让它白等到超时，把排查引向「hook 点/系统版本」这些错误方向；
-         * ② 静默正是本仓库反复记录的失效形态。
-         *
-         * ⚠️ 任务 3 接入真实注册表后，**这一整段会被替换**；届时
-         * 「能力确实不存在」仍走同一个 `capability_absent` 码（语义一致）。
+         * ⚠️ [respondUnimplemented] **保留**为「executor 未注入」时的降级路径
+         * （例如 `startChannel` 中途失败、或将来有人只装配了部分运行时）。
+         * 它**不是**死代码：删掉它会让那种情形变成**静默无响应**，
+         * 而调用方要白等到超时才失败。
          */
         override fun invoke(requestJson: String) {
             try {
@@ -287,7 +284,7 @@ class BinderTransport(
     }
 
     /**
-     * ③ 请求的处理者。由 `VFlowHookEntry` 在接入运行时后注入。
+     * ③ 请求的处理者。由 `VFlowHookEntry` 注入为 `HookCapabilityRuntime.onInvoke`。
      *
      * ⚠️ 在注入之前，[callback] 的 `invoke` 回一个显式的 `capability_absent`
      * （见那里的注释）—— 不是静默吞掉。
@@ -298,6 +295,38 @@ class BinderTransport(
     /** 注册 ③ 请求处理者。 */
     fun onInvoke(sink: (requestJson: String) -> Unit) {
         invokeSink = sink
+    }
+
+    /**
+     * 回 ③ 的**配对响应**（`IHookHost.resolve`，oneway）。
+     *
+     * ## ⚠️ 为什么这个方法是必需的
+     *
+     * 本类此前只有 [send]（`report`，事件上行）—— **没有**回 `resolve` 的出口。
+     * 而 ③ 的响应必须走 `resolve`（`report` 是事件通道，语义与配对完全不同，
+     * 复用会让 App 侧的事件解析器收到一条「响应」）。
+     *
+     * ## 语义
+     *
+     * - `host == null`（未连接）⇒ 回 `false`。**不排队、不重试** ——
+     *   调用方（工作线程）会因此知道响应没发出去。
+     * - 异常全部吞掉并回 `false`：本方法可能被**工作线程**调用，
+     *   异常逃逸会打崩那个线程（而它跑在 system_server 里）。
+     *
+     * ⚠️ 返回 `true` 只代表「**已交给 binder 驱动**」—— `resolve` 是 oneway，
+     * 对端是否处理、是否因超限被丢弃**都无从得知**（§3.6）。
+     * 这正是「截断必须在产出阶段做」的原因：不能等 binder 报错，
+     * 因为它根本不会报错。
+     */
+    fun resolve(responseJson: String): Boolean {
+        val h = host ?: return false
+        return try {
+            h.resolve(responseJson)
+            true
+        } catch (t: Throwable) {
+            log("resolve 异常：${t.javaClass.simpleName} ${t.message}")
+            false
+        }
     }
 
     /**
