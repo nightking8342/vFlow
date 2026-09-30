@@ -51,19 +51,31 @@ vFlow 是一款 Android 端可视化自动化工具。核心价值：把手机�
 > 原因：debug 构建复用 release 签名（见 `app/build.gradle.kts:41-49`），产物行为与 release 一致，但没有 R8 混淆/资源压缩，
 > 体积与运行时表现都不代表真实交付形态。**用 release 构建验证，才能暴露混淆（ProGuard）相关问题。**
 
-> **⚠️ worktree 场景：release 签名文件不在 git 里。**
-> `vFlow.jks` 与 `signing.properties` 都在 `.gitignore`（第 11-12 行）中，**未纳入版本控制**，
-> 因此新建的 worktree（`git worktree add`）里**不会有这两个文件**，构建会静默降级并打印 `⚠️ Release 签名文件未找到`。
-> **遇到这种情况，主动从 `dev` 分支的工作区取**（`dev` 是 fork 主干，长期保留这两个文件）：
+> **⚠️ worktree 场景：三个文件不在 git 里（不是两个）。**
+> `vFlow.jks`、`signing.properties`、**`local.properties`** 都在 `.gitignore` 中、**未纳入版本控制**
+> （`git ls-files --error-unmatch <文件>` 对三者均返回非零）。因此新建的 worktree（`git worktree add`）
+> 里**三个都不会有**，后果各不相同：
+>
+> | 文件 | 缺了会怎样 | 表现 |
+> |---|---|---|
+> | `vFlow.jks` + `signing.properties` | 构建**静默降级**、改用 AGP 默认 debug 签名 | 日志出现 `⚠️ Release 签名文件未找到`；产物装不上已装正式版的设备 |
+> | **`local.properties`** | ⚠️ **`./gradlew test` 直接跑不起来** | `BUILD FAILED` / `SDK location not found` —— **不是测试失败，是根本没开始跑** |
+>
+> **开工第一件事：三个都从 `dev` 分支的工作区取。**
 >
 > ```bash
 > # 在 worktree 里执行；把 <主仓库路径> 换成本地 dev 分支工作区的路径
 > cp <主仓库路径>/vFlow.jks .
 > cp <主仓库路径>/signing.properties .
+> cp <主仓库路径>/local.properties .
 > ```
 >
 > 注意：`git checkout dev -- vFlow.jks` 之类的做法**不行** —— 文件未被跟踪，git 里没有这个对象。
 > 必须从文件系统复制。取到后用下面的命令确认签名者是否为 `CN=vFlow Fork, O=nightking8342`。
+>
+> ⚠️ **基线数字要按 worktree 重取**：worktree 基于的 commit 不同，`./gradlew test` 的用例总数也不同
+> （实测同一批任务：`dev` 基线 **1356** 例，含未合入改动的工作区可到 **1427** 例）。
+> 拿别的分支的数字当基线，会把「变多了」误判成「我改坏了」。
 
 ```bash
 # 打包（⭐ 默认就该用这个；产物在 app/build/outputs/apk/release/）
