@@ -336,7 +336,6 @@
 
 > 这是 `docs/fork/xposed-architecture-v2.md` 里 ③ 的**第一段落地**（原计划 6 个任务里的 task1）。
 > 背景：曾用 mindfs「蓝图」模板把 ③ 拆成 6 个串行任务编排执行，
-> ⚠️ **但编排链最终无法跑通**（mindfs 缺陷，见 `docs/fork/mindfs-issues.md`），
 > **只有 task1 真正交付**（靠父会话手动验收 + 合并），task2–6 未完成。
 > ⇒ **本段登记的是 task1 的成果；③ 的其余部分（App 侧运行时 / hook 侧运行时 / 首个 capability / 可见状态）尚未实现。**
 
@@ -354,7 +353,6 @@
 | `app/src/main/java/.../services/HookChannelService.kt`（改） | 接线 `resolve` 入口 | **我方** |
 | `app/src/main/java/.../xposed/BinderTransport.kt`（改） | ③ 所需的非实现能力应答（`respondUnimplemented` 回 `capability_absent` 且带回 `req.token`） | **我方** |
 | 测试（新增 6 个 + 改 3 个） | `CapabilityInvocationCodecTest` / `CapabilityErrorCodeTest` / `CapabilityManifestTest` / `ResultBudgetTest` / `CapabilityRegistryTest` / `CapabilityContractPurityTest`（源码扫描：capability 包不引用 App 侧、`CapabilityPresence` 不在 `XposedState`、AIDL 形状锁定）+ `ActivityPayloadTest`（byte 口径与 emoji 反向断言）/ `HookChannelControllerTest` / `WireLayerPurityTest`（白名单登记） | **我方** |
-| `docs/fork/mindfs-issues.md`（新增） | fork 独有：**mindfs 编排工具的问题清单**（vFlow 用其「蓝图」模板编排 ③ 的 6 个任务时实测发现）。12 条，含根因链（交付事件 `stage_run_id` 为空 ⇒ 系统看不见交付 ⇒ 阶段永不完成；旧 run 不终止 ⇒ 僵尸阶段阻塞依赖链）、Windows 下 `curl -d '中文'` 静态损坏、前端错误被 `file.write_failed` 掩盖、审核意见入口前端缺失等。**上游无此文件** | **我方** |
 
 > ⚠️ **③ 尚未实现的部分**（后续如需继续）：App 侧调用运行时（`suspend invoke` + 超时 + 降级）、
 > hook 侧执行运行时（**自建有界工作线程池** + `invoke` 分发 + 三层超时 + 引用面约束）、

@@ -35,9 +35,8 @@
 > - 契约层当前**零生产消费者**（`CapabilityPresence`/`CapabilityRegistry` 在 release dex 中被 R8 剥掉，
 >   有 `CapabilityContractPurityTest` 断言显式记录该缺口）。
 >
-> ⚠️ **本次编排尝试的教训**：③ 曾用 mindfs「蓝图」模板拆成 6 个串行任务执行，
-> **但编排链无法跑通**（mindfs 缺陷，见 `docs/fork/mindfs-issues.md`），
-> **只有 task1（契约层）真正交付**，task2–6 未完成。后续继续做 ③ 时不要依赖那条链。
+> ⚠️ **本次编排尝试**：③ 曾用 mindfs「蓝图」模板拆成 6 个串行任务执行，
+> **只有 task1（契约层）真正交付**，task2–6 未完成。
 >
 > ✅ **§8.2 的三项「先验再改」已于 2026-09-29 全部真机验证完毕** ——
 > 结论：**libxposed 重复 `hook()` 是链式叠加**（N 个 hook ⇒ N 倍回调）／
