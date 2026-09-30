@@ -7,3 +7,12 @@
 app/src/main/resources/META-INF/xposed/module.prop    text eol=lf
 app/src/main/resources/META-INF/xposed/scope.list     text eol=lf
 app/src/main/resources/META-INF/xposed/java_init.list text eol=lf
+
+# 验证脚本同样必须保持 LF 行尾。
+#
+# 依据：CRLF 会让 shebang 行的 `\r` 被当成解释器名字的一部分，
+# 在 Linux/macOS/CI 上直接报 `bad interpreter: /usr/bin/env bash^M` ——
+# 而 Windows 本地（Git Bash 通常能容忍）**测不出来**，属「本地绿、别处红」。
+# ⚠️ 仓库此前已有 `scripts/fold-trigger-verify.sh` 等同类脚本无此保护，
+#    这里只锁新增的这一个（不回溯改动既有文件，控制 diff 面积）。
+scripts/xposed-capability-hook-runtime-verify.sh text eol=lf
