@@ -332,6 +332,37 @@
 > ⚠️ **上表两个缺陷的详细论证与实测数据在 `docs/fork/xposed-architecture-v2.md` §8（缺陷 19/20）与 §8.1（修复清单）。**
 > 该文档另列 **18 条未修缺陷**，每条都有最小改法。
 
+### Xposed 通道 ③（能力调用）**契约层**（2026-09-29，已合入 `dev`）
+
+> 这是 `docs/fork/xposed-architecture-v2.md` 里 ③ 的**第一段落地**（原计划 6 个任务里的 task1）。
+> 背景：曾用 mindfs「蓝图」模板把 ③ 拆成 6 个串行任务编排执行，
+> ⚠️ **但编排链最终无法跑通**（mindfs 缺陷，见 `docs/fork/mindfs-issues.md`），
+> **只有 task1 真正交付**（靠父会话手动验收 + 合并），task2–6 未完成。
+> ⇒ **本段登记的是 task1 的成果；③ 的其余部分（App 侧运行时 / hook 侧运行时 / 首个 capability / 可见状态）尚未实现。**
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `app/src/main/aidl/.../xposed/IHookCallback.aidl`（改） | 新增 `String capabilities()` 与 `oneway void invoke(String requestJson)`；**`int ping()` 保持不动**。⚠️ `invoke` 必须是 **`oneway void`** —— 文档 §3.1 写的是 `String invoke(...)`（非 oneway），与 §3.4 的「不占 binder 线程」硬约束**互斥**（AIDL 的 oneway 不允许返回值）；**以 §3.4 为准**，推导已写进 AIDL 的 KDoc | **我方** |
+| `app/src/main/aidl/.../xposed/IHookHost.aidl`（改） | 新增 `oneway void resolve(String responseJson)` —— ③ 的应答通道。⚠️ 与 `report` 同理是 oneway（hook 层可能在 system_server 任何线程上调，不能阻塞等待） | **我方** |
+| `app/src/main/java/.../xposed/wire/CapabilityInvocation.kt`（新增） | 调用信封 codec + `CapabilityRequest` / `CapabilityResponse` / `CapabilityError`。⚠️ **绝不复用 `EventEnvelope`**（含 `seq`/`dropped`，与请求-响应语义相反） | **我方** |
+| `app/src/main/java/.../xposed/wire/CapabilityErrorCode.kt`（新增） | §6.4 的**五值枚举**（`capability_absent`/`timeout`/`handler_error`/`channel_down`/`payload_too_large`）+ 「该码对应什么用户动作」的纯函数。⚠️ 两条硬约束写进注释：每行映射到**恰好一个**码；`detail` **绝不参与判断**（会被三语本地化） | **我方** |
+| `app/src/main/java/.../xposed/wire/CapabilityManifest.kt`（新增） | `capabilities()` 返回清单的 codec | **我方** |
+| `app/src/main/java/.../xposed/wire/ResultBudget.kt`（新增） | §3.6 大小契约原语（**按字节**收 + 截断标志 + cursor）。⚠️ 单元素超限仍收下（否则分页死循环） | **我方** |
+| `app/src/main/java/.../xposed/capability/{Capability,CapabilityRegistry,CapabilityNames,CapabilityPresence}.kt`（新增） | 能力注册表与 `CapabilityPresence`（`UNKNOWN`/`ABSENT`/`READY`）。⚠️ **与既有 `core/xposed/XposedCapability.kt`（那是权限判据）语义无关**，不得混用；⚠️ **物理位置不进 `XposedState`**（§6.1 明说不新造第三组状态位）；`CapabilityRisk` 自建枚举而非复用 `AiModuleRiskLevel`（后者会命中 `WireLayerPurityTest` 的引用面扫描） | **我方** |
+| `app/src/main/java/.../xposed/wire/ActivityPayload.kt`（改，**byte 预算修正**） | ⚠️⚠️ **原预算按【字符】计而契约按【字节】立**：`MAX_INTENT_URI_CHARS = 64K` + `MAX_EXTRAS_JSON_CHARS = 128K`（`.length` 是字符数）⇒ 全 CJK 时 192K 字符 ≈ **576 KiB > oneway 半缓冲（≈508 KiB）⇒ 整条事件静默丢弃**（表现是「打开某些 App 不触发、换一个就正常」）。改为 `MAX_INTENT_URI_BYTES = 16 KiB` / `MAX_EXTRAS_JSON_BYTES = 48 KiB` 并按字节截断。<br/>⚠️⚠️ **且 `truncateToBytes` 必须按「码点」推进**（`codePointAt` + `Character.charCount`）—— 初版按 `Char` 遍历 + `byteSizeOf(ch.toString())`，而**单个代理 Char 编码成 UTF-8 只有 1 字节**（孤立代理退化成替换符、不抛异常）⇒ 一个 4 字节 emoji 被算成 `1+1=2`，**预算低估一半**。实测 `limit=16384` 时**实际 32768 字节 = 2 倍上限**，即**截断完全没生效**（静默）。<br/>⚠️ **测试载荷也必须用 emoji 而非「中」** —— 「中」在 BMP 内只占一个 `Char`，**恰好绕过该 bug**（改回旧实现时测试仍全绿）。已改为 emoji + 补「字节数必须落在上限内」的断言 | **我方** |
+| `app/src/main/java/.../core/xposed/HookChannelController.kt`（改） | **配对表**（`registerWaiter` / `unregisterWaiter` / `bucketKey` 按连接代次分桶 / `MAX_WAITERS = 64` 硬闸）**+ 断连唤醒**（`failAllWaiters`）+ 迟到响应丢弃 + `resolve` 的 token 鉴权（照 `onReport` 三段：本侧无 token 直拒 / **恒定时间比较** / 失败只记日志不抛）。⚠️ 注释明确写了「**超时丢弃与 await 语义属于下一段**」（当前尚无调用入口） | **我方**（该文件此前已认手动合并） |
+| `app/src/main/java/.../services/HookChannelService.kt`（改） | 接线 `resolve` 入口 | **我方** |
+| `app/src/main/java/.../xposed/BinderTransport.kt`（改） | ③ 所需的非实现能力应答（`respondUnimplemented` 回 `capability_absent` 且带回 `req.token`） | **我方** |
+| 测试（新增 6 个 + 改 3 个） | `CapabilityInvocationCodecTest` / `CapabilityErrorCodeTest` / `CapabilityManifestTest` / `ResultBudgetTest` / `CapabilityRegistryTest` / `CapabilityContractPurityTest`（源码扫描：capability 包不引用 App 侧、`CapabilityPresence` 不在 `XposedState`、AIDL 形状锁定）+ `ActivityPayloadTest`（byte 口径与 emoji 反向断言）/ `HookChannelControllerTest` / `WireLayerPurityTest`（白名单登记） | **我方** |
+| `docs/fork/mindfs-issues.md`（新增） | fork 独有：**mindfs 编排工具的问题清单**（vFlow 用其「蓝图」模板编排 ③ 的 6 个任务时实测发现）。12 条，含根因链（交付事件 `stage_run_id` 为空 ⇒ 系统看不见交付 ⇒ 阶段永不完成；旧 run 不终止 ⇒ 僵尸阶段阻塞依赖链）、Windows 下 `curl -d '中文'` 静态损坏、前端错误被 `file.write_failed` 掩盖、审核意见入口前端缺失等。**上游无此文件** | **我方** |
+
+> ⚠️ **③ 尚未实现的部分**（后续如需继续）：App 侧调用运行时（`suspend invoke` + 超时 + 降级）、
+> hook 侧执行运行时（**自建有界工作线程池** + `invoke` 分发 + 三层超时 + 引用面约束）、
+> 首个 capability（`query_shortcut_intents` + 快捷方式选择器换数据源）、
+> `capabilityPresence` 的 UI 与 §6.1「已授权但通道断」可见状态。
+> ⚠️ 另有一处**已知缺口**：`ResultBudget` 的 `KEY_CURSOR`/`KEY_NEXT_CURSOR`/`KEY_TRUNCATED` 三键
+> **已定义但 `CapabilityRequest`/`CapabilityResponse` 无对应字段与编解码路径**（分页半闭环）。
+
 ---
 
 ## 暂未分歧、但日后改动时须登记的敏感点

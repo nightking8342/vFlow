@@ -7,8 +7,37 @@
 > **性质**：fork 独有文档 → 冲突归**我方**（上游无此文件）
 >
 > ⚠️ **本文仍是草稿，两个理由**：
-> 1. ③（能力调用）**尚无一行实现**，其契约（配对表 / 结果大小 / 池满行为 / 中断）**未经真实代码验证**；
+> 1. ③（能力调用）**只落地了契约层**（2026-09-29，见下），执行侧（App 侧运行时 / hook 侧工作线程池 / 首个 capability）**仍未实现**；
 > 2. ⚠️ **§10 还有 12 项未决**（8–20），其中 3 项标 ⭐ 的**不回答就不能动手**。
+>
+> ---
+>
+> ## ✅ 2026-09-29 进展：③ 的**契约层已落地并合入 `dev`**
+>
+> 提交 `bc269e80`（契约层主体）+ `b07d05f6`（池满归 `handler_error` 的口径）+ `f6aac691`（验收返工：`truncateToBytes` 代理对 bug）。
+>
+> **已实现**：AIDL 三方法（`capabilities()` / `oneway void invoke()` / `oneway void resolve()`）、
+> 调用信封 codec、错误码五值枚举、`ResultBudget`（§3.6 大小契约原语）、
+> `capability/` 包（`Capability` / `CapabilityRegistry` / `CapabilityNames` / `CapabilityPresence`）、
+> `HookChannelController` 的配对表与断连唤醒、`ActivityPayload` 的 **byte 预算修正**。
+>
+> ⚠️ **一处与本文不符的实现决定（已定案，实现为准）**：
+> §3.1 写 `String invoke(String requestJson)`（非 oneway），但 §3.4 的形态图与硬约束写「oneway、接单即返回、不占 binder 线程」——
+> **两者互斥**（AIDL 的 oneway 不允许返回值）。实现取 **`oneway void invoke(String)`**，以 §3.4 为准。
+>
+> ⚠️ **验收发现并已修的实现缺陷**：`truncateToBytes` 按 `Char` 遍历 ⇒ 代理对（emoji）**预算低估一半**
+> （单个代理 Char 的 UTF-8 只有 1 字节）⇒ `limit=16384` 时实际 **32768 字节**，**截断完全失效**（静默）。
+> 已改按码点推进，并把测试载荷从「中」改为 emoji（「中」只占一个 `Char`，**恰好绕过**该 bug）。
+>
+> ⚠️ **已知遗留**（详见 `FORK.md` 的登记）：
+> - 分页三键（`KEY_CURSOR`/`KEY_NEXT_CURSOR`/`KEY_TRUNCATED`）已定义但**无字段与编解码路径**（分页半闭环）；
+> - ③ 执行侧全部未实现；`timeout` 错误码**零生产者**（属未实现的调用侧）；
+> - 契约层当前**零生产消费者**（`CapabilityPresence`/`CapabilityRegistry` 在 release dex 中被 R8 剥掉，
+>   有 `CapabilityContractPurityTest` 断言显式记录该缺口）。
+>
+> ⚠️ **本次编排尝试的教训**：③ 曾用 mindfs「蓝图」模板拆成 6 个串行任务执行，
+> **但编排链无法跑通**（mindfs 缺陷，见 `docs/fork/mindfs-issues.md`），
+> **只有 task1（契约层）真正交付**，task2–6 未完成。后续继续做 ③ 时不要依赖那条链。
 >
 > ✅ **§8.2 的三项「先验再改」已于 2026-09-29 全部真机验证完毕** ——
 > 结论：**libxposed 重复 `hook()` 是链式叠加**（N 个 hook ⇒ N 倍回调）／
