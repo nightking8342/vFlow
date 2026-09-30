@@ -384,6 +384,15 @@ class WireLayerPurityTest {
             "CapabilityRegistry.kt",
             "CapabilityNames.kt",
             "CapabilityPresence.kt",
+            // ③ 的 hook 侧**执行运行时**（`capabilities/` 复数，与上面 `capability/`
+            // 单数只差一个 s）。同样是「跑在 system_server 里」的文件，
+            // 必须一并受本文件的引用面扫描管辖 —— 它起线程池、跑 handler，
+            // 引用面污染在这里的后果比别处更重。
+            "CapabilityHandler.kt",
+            "InvokePolicy.kt",
+            "HookCapabilityRegistry.kt",
+            "DiagnosticCapabilityHandler.kt",
+            "HookCapabilityRuntime.kt",
         )) {
             assertTrue(
                 "xposed/ 下缺少 $expected —— 是否改名/搬走了？",

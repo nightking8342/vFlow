@@ -355,11 +355,39 @@
 | 测试（新增 6 个 + 改 3 个） | `CapabilityInvocationCodecTest` / `CapabilityErrorCodeTest` / `CapabilityManifestTest` / `ResultBudgetTest` / `CapabilityRegistryTest` / `CapabilityContractPurityTest`（源码扫描：capability 包不引用 App 侧、`CapabilityPresence` 不在 `XposedState`、AIDL 形状锁定）+ `ActivityPayloadTest`（byte 口径与 emoji 反向断言）/ `HookChannelControllerTest` / `WireLayerPurityTest`（白名单登记） | **我方** |
 
 > ⚠️ **③ 尚未实现的部分**（后续如需继续）：App 侧调用运行时（`suspend invoke` + 超时 + 降级）、
-> hook 侧执行运行时（**自建有界工作线程池** + `invoke` 分发 + 三层超时 + 引用面约束）、
 > 首个 capability（`query_shortcut_intents` + 快捷方式选择器换数据源）、
 > `capabilityPresence` 的 UI 与 §6.1「已授权但通道断」可见状态。
-> ⚠️ 另有一处**已知缺口**：`ResultBudget` 的 `KEY_CURSOR`/`KEY_NEXT_CURSOR`/`KEY_TRUNCATED` 三键
-> **已定义但 `CapabilityRequest`/`CapabilityResponse` 无对应字段与编解码路径**（分页半闭环）。
+
+---
+
+### Xposed 通道 ③（能力调用）· **hook 侧执行运行时**（2026-09-30，已合入本分支）
+
+> 这是 ③ 的**第二段落地**（原 6 任务编排里的 task2）。契约层见上一段。
+> ⚠️ **与 T1（App 侧运行时）的 `CapabilityInvocation.kt` 补齐是同一批的跨 worktree 改动** ——
+> 分页三键的编解码路径由 T1 实现，本段**只使用**（见下表的说明）。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `app/.../xposed/capabilities/`（`CapabilityHandler.kt` + `InvokePolicy.kt` + `HookCapabilityRegistry.kt` + `DiagnosticCapabilityHandler.kt` + `HookCapabilityRuntime.kt`，均新增） | fork 独有：③ 的 **hook 侧执行运行时**。binder 线程只做「解码+校验+查表+投递」；**自建有界线程池**（`ThreadPoolExecutor` + `SynchronousQueue`，容量 2，**不排队**）——池满立刻回 `handler_error`（口径见 `CapabilityErrorCode.kt:68-87`，**不新增第六个码**），`detail` 写明「工作线程池已满」；⚠️ **拒绝的两种成因必须分开**（池满 vs 运行时已停，否则 `detail` 指向错误排查方向）。超时为**事后判定**（非脚本 handler 不可中断，故不做看门狗、不做强制抢答；**一个永久卡住的 handler 永远不产生响应**，而那个工作线程**永久被占用** —— 这是「池有界 + 总时长上限」的兜底方式，也是容量必须小的原因）。截断走 `ResultBudget.collectWithin`（**产出阶段**，不是序列化后）；**`truncated` / `next_cursor` 走信封顶层**（`encodeResponse` 的两个新参数，T1 已落地）—— ⚠️ **不是塞进 `result` 内部**：T1 的 `Success.nextCursor`/`.truncated` 从 `CapabilityResponse` 读，塞进 `result` 会让两字段**永远填不上、恒为缺省值**。`result` 只装 `{"items":[…元素对象…]}`。⚠️ **本任务不做自动翻页**（`next_cursor` 一旦非空就交给调用方）。工作线程顶层 `try/catch(Throwable)` —— 在 system_server 里异常逃逸 = 整机。⚠️ 与 App 侧 `xposed/capability/`（单数）**只差一个 s**，两者是**跨进程的两份**，不是拷贝 | 我方 |
+| `app/.../xposed/capabilities/HookCapabilityRuntime.kt`（同上一行，**单独登记两处已实测的口径修正**） | ① ⚠️⚠️ **余量必须是「随预算缩放」的**：`RESULT_ENVELOPE_MARGIN_BYTES = 4 KiB` 是**绝对字节数**，而 `Capability.maxResultBytes` 可以是任意正值 ⇒ 一个把上限声明成 512 字节的 capability，`上限 − 余量` 变负、**永远收不下任何元素**。已改为 `min(4 KiB, 预算 / 8)`（大预算时仍是那条实测标定的 4 KiB）。<br/>② ⚠️⚠️ **发送前的最终校验必须拿 [maxBytes] 比，不能拿 `elementBudget` 比**：`collectWithin` 会一直收到「再加一项就超 `elementBudget`」为止 ⇒ 收下的部分**已把 `elementBudget` 用满**，而序列化还要额外付 `(项数−1)` 个逗号 + 信封固定键 ⇒ 与 `elementBudget` 比会**必然判超限**，`huge` 会回 `payload_too_large` 而**不是**「截断成功」。余量的真实作用是「预留出逗号与转义占的那几百字节，使结果仍落在 `maxBytes` 内」。⚠️ 这两处**都是实测（单测）抓出来的**，纯代码审查看不出 | 我方 |
+| `app/.../xposed/capability/CapabilityNames.kt`（改） | 追加 `DIAGNOSTIC = "diagnostic"` 常量（只加不改） | 我方（fork 新增文件内完善） |
+| `app/.../xposed/capabilities/DiagnosticCapabilityHandler.kt`（新增） | **诊断能力**（`params.mode` 取 `ok`/`slow`/`throw`/`huge`），用于端到端自证四条失败路径。⚠️ **风险等级 `READ_ONLY`**（无副作用：`slow` 只 sleep、`huge` 只造数据、`throw` 只抛异常），故**留在生产包**里 —— 刻意不做「debug 构建才有」的条件编译（那会让真机验证必须在 debug 包上做，而本项目交付一律 release）。⚠️ `huge` 的 `pad` 用**纯 ASCII 的 `x` 是有意的**：它是不会被 JSON 转义的字符 ⇒ 转义开销为 0、只有约 1210 个数组逗号需要余量覆盖 ⇒「截断成功」是**稳定可断言**的结果，而不是对余量取值敏感的结果 | 我方 |
+| `core/xposed/CapabilityFallbacks.kt`（**本任务新建**，与 T1 **同名**） | ⚠️⚠️ **add/add 冲突，集成时必须产出第三版**（两个 worktree 各自新建同名文件）。本任务版：`registerAll()` 幂等骨架 + `CapabilityRegistry.register(diagnostic)`（`risk = READ_ONLY`、`fallback = null` ⇒ **独占型**，§6.2）。**本任务版刻意不含 `planOf`** —— 它依赖 T1 的 `CapabilityInvoker` / `CapabilityFallbackPlan`，本 worktree 没有那两个符号 ⇒ 带上会**编译不过**。<br/>⇒ **合并目标 = 幂等骨架 + T1 的 `planOf` + 本任务的 `diagnostic` 注册行**（并把 T1 那句「T1 的预期状态：注册表为空」的日志改掉）。⚠️ 误取本任务版 ⇒ `CapabilityInvokerTest` 里对 `CapabilityFallbacks.planOf` 的两条断言编译不过。<br/>⚠️ **不注册的后果**：T1 的调用入口**第一步** `CapabilityRegistry.find(name)` 未注册 ⇒ `Failed(HANDLER_ERROR, "未注册的 capability：…")`，而**这一步在 App 侧、在提交给 hook 层之前** ⇒ hook 侧永远收不到请求，「池满/超时/截断/未知名」四条路径**一条都验不了** | **手动合并**（两 worktree 各自新建同名文件） |
+| `app/.../xposed/BinderTransport.kt`（改） | 新增 `resolve(responseJson): Boolean`（③ 的应答出口；此前该类只有 `send`/`report`，**没有**回 `resolve` 的方法）。`respondUnimplemented` 保留为「executor 未注入」时的降级路径（**不是死代码**：删掉会让那种情形变成静默无响应、调用方白等超时），KDoc 更新 | **手动合并**（新增 1 个方法 + 注释） |
+| `app/.../xposed/VFlowHookEntry.kt`（改） | 创建/注入/停止 `HookCapabilityRuntime`（`onInvoke` / `onCapabilities` 两处注入，`stopChannelOnly`/`stopChannel` 两处停止）。⚠️ **这里是全部 ③ 响应的唯一出口**（分页两键的编码规则由 codec 负责；在别处再编一次会出现「有的带标志有的不带」）。⚠️ 热更新换代必须停旧池 —— 旧代际的池与新代际的池并存会抢 system_server 资源 | **我方**（fork 新增文件内完善） |
+| `app/.../xposed/wire/CapabilityInvocation.kt`（改） | ⚠️ **本任务使用、非本任务实现**：补 `encodeRequest(cursor)` / `encodeResponse(nextCursor, truncated)` 两个参数 + `CapabilityRequest.cursor` / `CapabilityResponse.nextCursor` / `.truncated` 三个字段。编码侧**有值才写键**；解码侧**缺失归一成 null / false**。它是 T1 worktree 的改动、尚未提交到 `dev` ⇒ 本 worktree 需要它才能实现需求里的「截断标志位与 `next_cursor` 必须一起回」。**纯增量、新字段均带默认值** ⇒ 唯一的生产构造点（`HookChannelController.kt:492`）不受影响、无需改动。⚠️ **合并时若 T1 也带了同一份改动，取任一版本即可**（内容同源） | **手动合并**（与 T1 同源） |
+| `app/.../test/.../xposed/capabilities/`（4 个新测试，共 71 例） | fork 独有：执行运行时单测（正常 / 超时 / 异常 / 截断 / 池满 / 未知名 / **停止后迟到调用** / 协议版本不符 / 坏请求）。⚠️ **执行器把「回响应」抽成函数类型**，故**整个运行时纯 JVM 可测** —— §7.2b-9 说 handler 跑在 LSPosed ClassLoader 里 App 侧测不到，但**框架层可以**。⚠️ 测试收的是**经真 codec 编解码的 `CapabilityResponse`**（非自拼 JSON）—— 否则测不到「分页两键究竟有没有写进信封顶层」 | 我方 |
+| `test/.../xposed/CapabilityContractPurityTest.kt`（改） | 原缺口断言 `capability package still has no production call sites` **翻面成正面断言**（`capability package has production call sites` + `the call site scan is not vacuous`）。该测试自己的 KDoc 明确要求「接入后改成正面断言，**不是删掉**」。⚠️ 翻面后强度**不比原来弱**：原断言是个否命题（容易被无关引用满足），现在是「具体哪几个符号有引用」的正命题 | 我方 |
+| `test/.../xposed/WireLayerPurityTest.kt`（改） | 文件存在性列表追加 5 个新文件（`capabilities/` 复数包） | 我方 |
+| `docs/fork/xposed-architecture-v2.md`（改） | §5.2 三层超时的实现现状表：hook 侧总时长由「零代码」改为「已实现（`HookCapabilityRuntime`）」、并补「为什么是事后判定而不是看门狗」（三条理由 + 必须承认的代价）；§10 未决项 #14（工作线程池容量 + 默认超时）标记定案（容量 2 / 默认 5000ms / 队列容量 0）；头部状态与「进展」段更新 | 我方 |
+| `scripts/xposed-capability-hook-runtime-verify.sh`（新增） | fork 独有：**真机端到端验证脚手架**（纯 adb + 一张判据表）。第 0 步做三项前置检查 —— 其中 ⚠️ **`CapabilityFallbacks.kt` 必须同时含 T2 的 `DIAGNOSTIC` 注册行与 T1 的 `planOf`**（缺前者每步都失败在 App 侧、缺后者编译不过），并显式判「T1 的 `CapabilityInvoker` 在不在」——**不在就没有发起方，四路径验证不可能做**，脚本据此输出「未验证」而不是假装跑过。⚠️ 脚本里写明了「`adb logcat` 读不到启动期日志、必须用 LSPosed 的 verbose 导出」与「两端用同一个 `request_id` 串联」 | 我方 |
+| `test/.../xposed/CapabilityInvocationCodecTest.kt`（改，**随 T1 的 codec 补齐**） | 追加分页三键的 round-trip 用例。⚠️ 与 `CapabilityInvocation.kt` 同源、同样属于 T1 的改动 | **手动合并**（与 T1 同源） |
+
+> ⚠️ **③ 尚未实现的部分**（后续如需继续）：
+> 首个真实 capability（`query_shortcut_intents` + 快捷方式选择器换数据源）、
+> `capabilityPresence` 的 UI 与 §6.1「已授权但通道断」可见状态、
+> `ResultBudget` 的 `KEY_CURSOR`/`KEY_NEXT_CURSOR`/`KEY_TRUNCATED` 在 `CapabilityRequest`/`CapabilityResponse`
+> 上的字段闭环（**由 T1 落地，本段只使用**）。
 
 ---
 

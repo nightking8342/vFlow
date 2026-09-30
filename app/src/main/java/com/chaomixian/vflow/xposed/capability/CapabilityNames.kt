@@ -36,4 +36,27 @@ object CapabilityNames {
      * 类型：**替换型**（dumpsys 是替代实现，但有损）。
      */
     const val QUERY_SHORTCUT_INTENTS = "query_shortcut_intents"
+
+    /**
+     * **诊断能力**（开发期自证用）。
+     *
+     * 存在的理由：池满 / 超时 / 截断 / 异常这**四条失败路径**用真实 capability
+     * 很难稳定触发（要凑并发、要造超大数据）。而它们恰恰是**最需要被端到端验证**的
+     * —— 失败路径出错时往往**静默**（回一个错误的码、或干脆不回）。
+     *
+     * 本能力用 `params.mode` 显式选择要走的路径：
+     *
+     * | `mode` | 行为 |
+     * |---|---|
+     * | `ok` | 正常返回 |
+     * | `slow` | 睡超过 `timeout_ms` ⇒ 触发超时判定 |
+     * | `throw` | 抛异常 ⇒ 触发顶层兜底 |
+     * | `huge` | 产出超过上限的结果 ⇒ 触发截断 + 分页 |
+     *
+     * ⚠️ 风险等级是 `READ_ONLY`（**无副作用**）：`slow` 只 sleep、
+     * `huge` 只造数据、`throw` 只抛异常。故它留在生产包里是安全的
+     * （**不做**「debug 构建才有」的条件编译 —— 那会让真机验证必须在 debug 包上做，
+     * 而本项目交付一律用 release，两者冲突）。
+     */
+    const val DIAGNOSTIC = "diagnostic"
 }
