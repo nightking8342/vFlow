@@ -57,6 +57,12 @@ class HookChannelControllerTest {
         HookChannelController.removeOnConnectedListener("A")
         HookChannelController.removeOnConnectedListener("B")
         HookChannelController.removeOnConnectedListener("boom")
+        // ⚠️ 断开监听器也要清 —— 它们与连接监听器同款（单例状态会串用例），
+        // 且 `CapabilityPresenceHolder` 自己注册的 key 也在表里
+        HookChannelController.removeOnDisconnectedListener("A")
+        HookChannelController.removeOnDisconnectedListener("B")
+        HookChannelController.removeOnDisconnectedListener("boom")
+        HookChannelController.removeOnDisconnectedListener("k")
         HookChannelController.unregisterSink(ActivityPayload.TOPIC)
         HookChannelController.unregisterSink(OTHER_TOPIC)
     }
@@ -492,4 +498,122 @@ class HookChannelControllerTest {
         ok = ok,
         token = token,
     )
+
+    // ── ⭐ ③ 调用方所需的访问器（T1）────────────────────────
+    //
+    // ⚠️ 这三个是**只读**的快照/句柄。它们的存在理由见各类的注释：
+    // ③ 的调用方要提交请求、要写鉴权信封、要堵「注册前断连」的竞态，
+    // 而这些字段原本是 private。
+
+    @Test
+    fun `currentToken is empty when disconnected and set when connected`() {
+        // ⚠️ 空串 = 未连接 —— ③ 的调用方据此在**提交前**就判出 channel_down，
+        // 不必白等超时（与 onResolve 第①段的判据同源）
+        reset()
+        assertEquals("未连接时必须是空串", "", HookChannelController.currentToken())
+
+        HookChannelController.injectTokenForTest(TOKEN)
+        assertEquals(TOKEN, HookChannelController.currentToken())
+
+        HookChannelController.onCallbackUnregistered()
+        assertEquals("断开后必须清空", "", HookChannelController.currentToken())
+    }
+
+    @Test
+    fun `callbackOrNull is null when disconnected`() {
+        // ⚠️ 纯 JVM 下无法构造真的 IHookCallback（Stub 继承 android.os.Binder），
+        // 所以只断言「未连接时是 null」这一半 —— 另一半（连上后非 null）
+        // 由 CapabilityInvokerTest 用假 callback 覆盖
+        reset()
+        assertEquals(null, HookChannelController.callbackOrNull())
+    }
+
+    @Test
+    fun `disconnectGeneration increases on every disconnect`() {
+        // ⚠️⚠️ ③ 的调用方靠它堵「注册 waiter 之前发生的断连」——
+        // `failAllWaiters` 只唤醒**注册当时已在表里**的 waiter，
+        // 所以那一条无人唤醒、会永久残留（64 个槽位满掉 ⇒ 之后所有调用都 handler_error）。
+        //
+        // ⇒ 断言「每次断开 +1」是那个堵法的**全部前提**
+        reset()
+        val g0 = HookChannelController.disconnectGeneration()
+
+        HookChannelController.onCallbackUnregistered()
+        val g1 = HookChannelController.disconnectGeneration()
+        assertTrue("断开必须让代次前进（$g0 → $g1）", g1 > g0)
+
+        HookChannelController.onCallbackUnregistered()
+        val g2 = HookChannelController.disconnectGeneration()
+        assertTrue("再断开必须再前进（$g1 → $g2）", g2 > g1)
+    }
+
+    @Test
+    fun `disconnect generation is stable while connected`() {
+        // ⚠️ 反向：没断开时不该动 —— 否则「提交前后代次相同」这个判据会误报断连
+        reset()
+        val g = HookChannelController.disconnectGeneration()
+        HookChannelController.injectTokenForTest(TOKEN)
+        assertEquals("连接不换代次", g, HookChannelController.disconnectGeneration())
+    }
+
+    // ── ⭐ 断开回调注册表（与「连接建立」是两个方向）────────────
+
+    @Test
+    fun `disconnect listeners coexist and are not overwritten`() {
+        // ⚠️ 与 onConnectedListeners 是**同一个形态的注册表** ——
+        // 本类已有三处单槽位缺陷的教训（eventSinks / onConnected / BinderTransport.onConnected），
+        // 不再新增第四处
+        reset()
+        var a = 0
+        var b = 0
+        HookChannelController.setOnDisconnectedListener("A") { a++ }
+        HookChannelController.setOnDisconnectedListener("B") { b++ }
+
+        HookChannelController.notifyOnDisconnected()
+
+        assertEquals("A 不该被 B 挤掉", 1, a)
+        assertEquals("B 应被调用", 1, b)
+    }
+
+    @Test
+    fun `removeOnDisconnectedListener removes only its own key`() {
+        reset()
+        var a = 0
+        var b = 0
+        HookChannelController.setOnDisconnectedListener("A") { a++ }
+        HookChannelController.setOnDisconnectedListener("B") { b++ }
+        HookChannelController.removeOnDisconnectedListener("A")
+
+        HookChannelController.notifyOnDisconnected()
+
+        assertEquals("已注销的不该被调用", 0, a)
+        assertEquals("另一个不该被误伤", 1, b)
+    }
+
+    @Test
+    fun `one failing disconnect listener does not block the others`() {
+        reset()
+        var b = 0
+        HookChannelController.setOnDisconnectedListener("boom") { throw IllegalStateException("boom") }
+        HookChannelController.setOnDisconnectedListener("B") { b++ }
+
+        HookChannelController.notifyOnDisconnected()
+
+        assertEquals("一个抛异常不该让后面的收不到", 1, b)
+    }
+
+    @Test
+    fun `a real disconnect notifies disconnect listeners`() {
+        // ⚠️ 走**真实**的 onCallbackUnregistered 路径，证明接线点真的调了它们
+        //（CapabilityRuntimeWiringTest 另有一条源码扫描锁这个调用点 ——
+        // 两条互补：这条证明「调了会生效」，那条证明「生产代码真的调了」）
+        reset()
+        HookChannelController.injectTokenForTest(TOKEN)
+        var called = 0
+        HookChannelController.setOnDisconnectedListener("k") { called++ }
+
+        HookChannelController.onCallbackUnregistered()
+
+        assertEquals("真断连必须通知断开监听器", 1, called)
+    }
 }

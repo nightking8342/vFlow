@@ -196,6 +196,24 @@ object HookChannelController {
      *   可能是不同实例，故再补一层 `asBinder()` 比较（见下）。
      */
     fun onCallbackUnregistered(which: IHookCallback? = null) {
+        // ── ⚠️⚠️ 越界自愈（**必须在所有早退分支之前**）──
+        //
+        // 它回答的是「此刻还有没有别的东西认为自己是连着的」。
+        // 两条都要管：
+        //  ① 下面那条「旧连接迟到通知」的早退分支 —— 它清不了任何东西，
+        //     但**那条迟到的通知本身就是「至少有一条连接已经不在了」的信号**，
+        //     若此刻确实没连接，任何残留的「连接期缓存」都该失效；
+        //  ② 正常断开路径（下面）。
+        //
+        // ⚠️ 判据是**纯读**，且 `UNKNOWN` 时是 no-op ⇒ 放在最前面是安全的。
+        // 这样即使将来自愈逻辑漏了一条路径，它也会在下一次断开时被补上。
+        //
+        // ⚠️ 为什么用「自愈」而不是「在这里直写 `CapabilityPresenceHolder.reset()`」：
+        // 直写会让本类**单向依赖**一个上层模块（`core.xposed` → ③ 的运行时），
+        // 而上层模块反过来已经依赖本类 ⇒ 形成环。自愈通过在 **HookChannelController
+        // 自己的接口上**（`isConnected()`）做判定，把方向掰回来。
+        CapabilityPresenceHolder.resetIfDisconnected()
+
         val current = callback
         if (which != null && current != null && !sameCallback(which, current)) {
             // 不静默：这条日志是判断「13 是否真的发生过」的唯一途径
@@ -216,7 +234,28 @@ object HookChannelController {
         // ⚠️ 只在**真的清空了连接**时做 —— 上面那条「旧连接迟到通知」的
         // 分支已经 return 了，不会误伤（修缺陷 13 的那半）。
         failAllWaiters("hook 层已断开")
+
+        // ⚠️ 断连回调注册表（与 failAllWaiters 同位置、同理）。
+        // 覆盖「已注册之后发生的断连」这一半 —— 另一半（注册**之前**的断连）
+        // 由 `disconnectGeneration()` 的代次复查兜（见 ③ 的调用方）。
+        //
+        // ⚠️ 顺序：放在 failAllWaiters **之后** —— 唤醒在途调用是更紧急的事
+        //（它是同步的、调用方正在等），而断开回调多半只是失效一个缓存值。
+        notifyOnDisconnected()
     }
+
+    /**
+     * 连接代次。**每次断开 +1**。
+     *
+     * ⚠️ 它让「配对表按连接分桶」这件事在单连接下也能成立：
+     * 注册 waiter 时把代次编进 key，换代后旧 key 永远配不上
+     * ⇒ 迟到的响应被天然丢弃（而不是落到新连接的 waiter 上）。
+     *
+     * ⚠️ 对外暴露只读快照 [disconnectGeneration] —— ③ 的调用方靠
+     * 「提交前后代次是否相同」判出「注册期间发生过断连」，
+     * 从而注销那条**不会被 `failAllWaiters` 唤醒**的 waiter。
+     */
+    private val connectionGeneration = AtomicLong(0)
 
     /**
      * 两个 `IHookCallback` 是否指向**同一个 binder**。
@@ -249,6 +288,65 @@ object HookChannelController {
 
     /** 连接状态（同步查询版）。这是「hook 挂载态」判据的来源（§3.3 状态位 B）。 */
     fun isConnected(): Boolean = callback != null
+
+    /**
+     * 当前 hook 层的回调 binder。未连接时为 null。
+     *
+     * ## ⚠️ 为什么需要这个访问器（而不是让调用方自己造连接管理）
+     *
+     * ③ 的调用方（`CapabilityInvoker`）要**提交请求**（`IHookCallback.invoke`），
+     * 而 `callback` 是 private。三条出路里选了这一个：
+     *
+     * | 出路 | 代价 | 选择 |
+     * |---|---|---|
+     * | 加只读访问器（**本选择**） | 多一个方法 | ✅ 零放权、不复制状态 |
+     * | 让调用方自己 `bindService` 再拿一遍 callback | 双份连接管理、双 token | ❌ `FORK.md` 记过这类双份的代价 |
+     * | 把 `callback` 改成 public | 谁都能清空它 | ❌ 放权过大 |
+     *
+     * ⚠️ 与 [isConnected] 的关系：后者是「连接态」这个**布尔结论**，本方法是**句柄本身**。
+     * 两者读的是同一个字段，不会不一致；但调用方要提交请求时**必须**用它
+     * （`isConnected()` 为 true 之后再过一次 `?.` 是正常的 —— 断开可能发生在两者之间）。
+     */
+    fun callbackOrNull(): IHookCallback? = callback
+
+    /**
+     * 当前下行鉴权 token。未连接时为空串。
+     *
+     * ⚠️ ③ 的请求信封**必须带它**（§3.3：请求与响应两个信封都带 token）。
+     * 空串即「未连接」—— 调用方据此在**提交前**就判出 `channel_down`，
+     * 不必等超时（与 `onResolve` 第①段的判据同源）。
+     */
+    fun currentToken(): String = token
+
+    /**
+     * 连接**代次**：每次断开 +1。
+     *
+     * ## ⚠️ 为什么需要它：给「注册 waiter 前后的断连竞态」一个无等待的判据
+     *
+     * `failAllWaiters`（[onCallbackUnregistered] 里调）会**换代 + 唤醒全部已注册的 waiter**。
+     * 于是：
+     *
+     * ```
+     * 断连发生在 waiter 注册【之后】 ⇒ 被唤醒 ⇒ 立刻拿到 channel_down   ✅
+     * 断连发生在 waiter 注册【之前】 ⇒ 没唤醒任何东西 ⇒ 那条 waiter 永久残留  ❌
+     * ```
+     *
+     * 后者是**泄漏**：`MAX_WAITERS = 64` 满了之后所有调用都回 `handler_error`。
+     * 调用方（`CapabilityInvoker`）的堵法是：
+     *
+     * ```
+     * val gen0 = disconnectGeneration()   // 提交前快照
+     * … registerWaiter(…) …
+     * if (disconnectGeneration() != gen0) { unregisterWaiter(…); return channel_down }
+     * ```
+     *
+     * ⚠️ **不复用 `connected: StateFlow` 做这件事**：那是**异步推送**（`collect` 要起协程、
+     * 且注册本身是写入），而这里需要的是一个**同步的、可比较的**值。
+     * 也不在 `onCallbackUnregistered` 里给外部挂钩子 —— 那个函数**没有对外注册接口**
+     * （它是被 `HookChannelService` 调的），现造一个只有一个消费者的注册表正是
+     * §7.4 反模式 1 的形态。
+     */
+    fun disconnectGeneration(): Long = connectionGeneration.get()
 
     /**
      * 连接**建立**时的回调注册表（**按 key 分发**）。
@@ -293,6 +391,69 @@ object HookChannelController {
      */
     fun removeOnConnectedListener(key: String) {
         onConnectedListeners.remove(key)
+    }
+
+    /**
+     * 连接**断开**时的回调注册表（**与 [onConnectedListeners] 是两个方向**）。
+     *
+     * ## ⚠️⚠️ 为什么不能复用 [setOnConnectedListener]
+     *
+     * 那个的语义是「**连接建立**」（由 [onCallbackRegistered] 触发），
+     * 本表是「**连接断开**」（由 [onCallbackUnregistered] 触发）。
+     * 合并成一个槽会让「连上时要做的事」与「断开时要清理的事」挤在一起，
+     * 而它们的**触发时机与幂等要求完全不同**（建立必须重下发条件；
+     * 断开必须失效缓存），合并后每个消费者都要自己判「这次是建立还是断开」。
+     *
+     * ## ⚠️ 与 [disconnectGeneration] 的分工（两条路都要，不是二选一）
+     *
+     * | 机制 | 覆盖 | 用途 |
+     * |---|---|---|
+     * | **代次复查**（只读） | **注册前**发生的断连 | `CapabilityInvoker` 堵 waiter 泄漏 |
+     * | **本注册表** | 已注册之后发生的断连 | `CapabilityPresenceHolder` 失效 presence |
+     *
+     * 前者是纯读的、**无需注册** ⇒ 不会有「注册早了晚了」的问题；
+     * 后者需要在**断开那一刻**被通知（又要被单测驱动，不能只靠 `onCallbackUnregistered` 里的直写）。
+     *
+     * ⚠️ 形态与 `eventSinks` / `onConnectedListeners` **完全一致**
+     * （`ConcurrentHashMap` + key、逐个 `try/catch`）—— 本类已有三处单槽位缺陷的教训，
+     * 不再新增第四处。
+     */
+    private val onDisconnectedListeners =
+        java.util.concurrent.ConcurrentHashMap<String, () -> Unit>()
+
+    /** 注册连接断开回调。**幂等**（同 key 重复注册会替换）。 */
+    fun setOnDisconnectedListener(key: String, listener: () -> Unit) {
+        onDisconnectedListeners[key] = listener
+    }
+
+    /**
+     * 注销连接断开回调。⚠️ 必须带 key —— 理由同 [removeOnConnectedListener]。
+     */
+    fun removeOnDisconnectedListener(key: String) {
+        onDisconnectedListeners.remove(key)
+    }
+
+    /**
+     * 逐个通知「连接断开」的监听者。
+     *
+     * ⚠️ 与 [notifyOnConnected] 同款：**一个抛异常不影响其他**（逐个 `try/catch`）。
+     *
+     * ⚠️ 只在**真的清空了连接**时被调（[onCallbackUnregistered] 里那条
+     * 「旧连接迟到通知」的早退分支不会走到这里）—— 否则会把新连接上刚建立的
+     * presence 误判成失效（修缺陷 13 的那条纪律）。
+     *
+     * ⚠️ `internal` 而非 private：与 [notifyOnConnected] 同理 ——
+     * `IHookCallback.Stub` 继承 `android.os.Binder`，纯 JVM 测试里构造不出来
+     * ⇒ 测试无法经 `onCallbackUnregistered` 走完这条路径，只能直接调本方法。
+     */
+    internal fun notifyOnDisconnected() {
+        for ((key, listener) in onDisconnectedListeners) {
+            try {
+                listener()
+            } catch (t: Throwable) {
+                DebugLogger.w(TAG, "断开回调失败（$key）：${t.javaClass.simpleName} ${t.message}")
+            }
+        }
     }
 
     /**
@@ -358,15 +519,6 @@ object HookChannelController {
 
     /** 配对表容量硬闸（见 [waiters] 的说明）。 */
     private const val MAX_WAITERS = 64
-
-    /**
-     * 连接代次。**每次断开 +1**。
-     *
-     * ⚠️ 它让「配对表按连接分桶」这件事在单连接下也能成立：
-     * 注册 waiter 时把代次编进 key，换代后旧 key 永远配不上
-     * ⇒ 迟到的响应被天然丢弃（而不是落到新连接的 waiter 上）。
-     */
-    private val connectionGeneration = AtomicLong(0)
 
     /**
      * 注册一个等待中的调用。

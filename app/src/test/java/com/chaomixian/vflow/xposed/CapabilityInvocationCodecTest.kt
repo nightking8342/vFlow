@@ -279,6 +279,107 @@ class CapabilityInvocationCodecTest {
         assertEquals("elapsed_ms", CapabilityInvocationCodec.KEY_ELAPSED_MS)
     }
 
+    // ── §3.6 契约 4：分页三键（T1 补齐）────────────────────────
+
+    @Test
+    fun `request round-trips the cursor`() {
+        val json = CapabilityInvocationCodec.encodeRequest(
+            requestId = "r",
+            capability = "c",
+            cursor = "42",
+            token = "t",
+        )
+        assertEquals("42", CapabilityInvocationCodec.decodeRequest(json)!!.cursor)
+    }
+
+    @Test
+    fun `response round-trips next cursor and truncated`() {
+        val json = CapabilityInvocationCodec.encodeResponse(
+            requestId = "r",
+            ok = true,
+            nextCursor = "7",
+            truncated = true,
+            token = "t",
+        )
+        val resp = CapabilityInvocationCodec.decodeResponse(json)!!
+        assertEquals("7", resp.nextCursor)
+        assertTrue("截断标志必须传下去（§3.6 契约 3）", resp.truncated)
+    }
+
+    @Test
+    fun `paginated and unpaginated responses are distinguishable`() {
+        // ⚠️ 这是分页的**核心语义**：nextCursor=null 且 truncated=false ⇒ 全量已取完。
+        // 若把「取完」与「截断但下一页是空」混为一谈，调用方会**无限翻页**
+        val done = CapabilityInvocationCodec.decodeResponse(
+            CapabilityInvocationCodec.encodeResponse("r", ok = true, token = "t"),
+        )!!
+        assertNull("全量取完 ⇒ 没有下一页", done.nextCursor)
+        assertFalse("全量取完 ⇒ 没截断", done.truncated)
+
+        val more = CapabilityInvocationCodec.decodeResponse(
+            CapabilityInvocationCodec.encodeResponse(
+                "r", ok = true, nextCursor = "3", truncated = true, token = "t",
+            ),
+        )!!
+        assertNotNull("还有下一页", more.nextCursor)
+        assertTrue(more.truncated)
+    }
+
+    @Test
+    fun `missing pagination keys decode to the backward compatible defaults`() {
+        // ⚠️⚠️ 向后兼容的**唯一**判据。
+        // 旧 hook 层（或任何不关心分页的实现）回的报文里没有这三个键 ——
+        // 解出来必须是 null/null/false，**不能**是空串（空串会被当成「一个空游标」，
+        // 而它与「没有游标」在分页语义里是两回事）
+        val req = CapabilityInvocationCodec.decodeRequest(
+            """{"request_id":"r","capability":"c"}""",
+        )!!
+        assertNull("缺 cursor ⇒ null（不是空串）", req.cursor)
+
+        val resp = CapabilityInvocationCodec.decodeResponse(
+            """{"request_id":"r","ok":true,"token":"t"}""",
+        )!!
+        assertNull("缺 next_cursor ⇒ null（不是空串）", resp.nextCursor)
+        assertFalse("缺 truncated ⇒ false", resp.truncated)
+    }
+
+    @Test
+    fun `blank pagination values are normalized to null`() {
+        // ⚠️ optString 对缺失键返回 ""，对显式空值也返回 ""。
+        // 两者都必须归一成 null —— 否则调用方要判「null / 空串 / 空白」三种情形
+        val req = CapabilityInvocationCodec.decodeRequest(
+            """{"request_id":"r","capability":"c","cursor":""}""",
+        )!!
+        assertNull(req.cursor)
+
+        val resp = CapabilityInvocationCodec.decodeResponse(
+            """{"request_id":"r","ok":true,"next_cursor":"  ","token":"t"}""",
+        )!!
+        assertNull(resp.nextCursor)
+    }
+
+    @Test
+    fun `absent pagination keys are not written at all`() {
+        // ⚠️ 与「ok=true 时不写 error 键」同款约定：
+        // 「不存在的键」比「值为 null 的键」更明确，且旧端不必认识它
+        val req = JSONObject(CapabilityInvocationCodec.encodeRequest("r", "c"))
+        assertFalse("cursor 为空时不该写这个键", req.has(CapabilityInvocationCodec.KEY_CURSOR))
+
+        val resp = JSONObject(CapabilityInvocationCodec.encodeResponse("r", ok = true))
+        assertFalse("next_cursor 为空时不该写", resp.has(CapabilityInvocationCodec.KEY_NEXT_CURSOR))
+        assertFalse("truncated=false 时不该写", resp.has(CapabilityInvocationCodec.KEY_TRUNCATED))
+    }
+
+    @Test
+    fun `pagination key names are stable`() {
+        // ⚠️ 与上面那条 key 断言同源：这三个也是**跨进程协议的一部分**。
+        // 单独一条是因为它们是在 T1 才被接线的 —— 而「已定义但没接线」正是
+        // 它们曾经的状态，容易被后来者当成「还没对外，可以随便改」
+        assertEquals("cursor", CapabilityInvocationCodec.KEY_CURSOR)
+        assertEquals("next_cursor", CapabilityInvocationCodec.KEY_NEXT_CURSOR)
+        assertEquals("truncated", CapabilityInvocationCodec.KEY_TRUNCATED)
+    }
+
     @Test
     fun `envelope is not event envelope`() {
         // ⚠️ §3.3：「绝不复用 EventEnvelope（它含 seq/dropped，与请求-响应语义相反）」

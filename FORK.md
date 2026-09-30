@@ -354,12 +354,43 @@
 | `app/src/main/java/.../xposed/BinderTransport.kt`（改） | ③ 所需的非实现能力应答（`respondUnimplemented` 回 `capability_absent` 且带回 `req.token`） | **我方** |
 | 测试（新增 6 个 + 改 3 个） | `CapabilityInvocationCodecTest` / `CapabilityErrorCodeTest` / `CapabilityManifestTest` / `ResultBudgetTest` / `CapabilityRegistryTest` / `CapabilityContractPurityTest`（源码扫描：capability 包不引用 App 侧、`CapabilityPresence` 不在 `XposedState`、AIDL 形状锁定）+ `ActivityPayloadTest`（byte 口径与 emoji 反向断言）/ `HookChannelControllerTest` / `WireLayerPurityTest`（白名单登记） | **我方** |
 
-> ⚠️ **③ 尚未实现的部分**（后续如需继续）：App 侧调用运行时（`suspend invoke` + 超时 + 降级）、
+> ⚠️ **③ 尚未实现的部分**（后续如需继续）：
 > hook 侧执行运行时（**自建有界工作线程池** + `invoke` 分发 + 三层超时 + 引用面约束）、
 > 首个 capability（`query_shortcut_intents` + 快捷方式选择器换数据源）、
 > `capabilityPresence` 的 UI 与 §6.1「已授权但通道断」可见状态。
-> ⚠️ 另有一处**已知缺口**：`ResultBudget` 的 `KEY_CURSOR`/`KEY_NEXT_CURSOR`/`KEY_TRUNCATED` 三键
-> **已定义但 `CapabilityRequest`/`CapabilityResponse` 无对应字段与编解码路径**（分页半闭环）。
+> ✅ **App 侧调用运行时已于 2026-09-30 落地**（见下一段）；
+> ✅ 分页三键的半闭环**已补齐**（同见下一段）。
+
+### Xposed 通道 ③（能力调用）**App 侧调用运行时**（2026-09-30）
+
+> ③ 的第二段落地。让 App 能「**发起一次能力调用、拿到结果、失败时按能力类型降级**」。
+> 设计依据：`docs/fork/xposed-architecture-v2.md` §3.4（传输形态）/ §5.2（超时与断连）/
+> §6.2（降级判据）/ §6.3（presence 只避免白试）/ §3.6（结果大小契约）。
+> ⚠️ **hook 侧执行运行时（T2）与首个 capability（T3）仍**未实现**** ——
+> `BinderTransport.onInvoke` 的占位（回 `capability_absent`）**刻意保留**，
+> `CapabilityFallbacks.registerAll()` 是**空实现**（首个能力由 T3 注册）。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `xposed/capability/CapabilityInvokeOutcome.kt`（新增） | fork 独有：③ 一次调用的**结果类型**（App 侧调用方的返回面）。**密封三态** `Success` / `Failed` / `Degraded` + `CapabilityFailure`（`code` + `detail` + **派生**的 `userAction`）+ `CapabilityFallbackPlan`（`NativeCode` / `Unavailable`）。⚠️⚠️ **为什么必须密封而非抛异常**：替换型能力静默降级这个**中间态**在 `try/catch` 模型里**无处安放**，而它必须留痕（否则「昨天能用今天不能用」会被当成回归去查，真实原因是 Xposed 掉线）。⚠️ **纯数据层**（不引 coroutines、不引 App 侧包）—— 放在 `xposed/capability/` 与 `Capability` 同处，仍受 `CapabilityContractPurityTest` 白名单管辖；真正需要协程的实现落在 `core/xposed/` | 我方 |
+| `core/xposed/CapabilityInvoker.kt`（新增） | fork 独有：③ 的**单一调用入口**。`suspend invoke(capability, params, timeoutMs)`（查表 → 判 presence → 连接闸 → registerWaiter → **代次复查** → oneway 提交 → `withTimeout` await → 分类）+ `invokeOrFallback`（按**运行时结果**分派降级）+ `buildRequestJson` / `classifyResponse` 两个纯函数 + `Hooks` 接口（与 Controller 的**唯一**耦合点，抽出来是为了让「注册前/后断连」两个方向可单测）。⚠️ **落点在 `core/xposed/` 而非 `xposed/capability/`** —— 后者在 `xposed/` 下、import 白名单不含 `kotlinx.coroutines.`，而本文件要 `suspend`/`withTimeout`。⚠️⚠️ **步骤 3.5 的「代次复查」堵的是 waiter 泄漏**：`failAllWaiters` 只唤醒**已注册**的 waiter，而「断连恰好落在注册前后之间」会让那条 waiter **永久残留** ⇒ `MAX_WAITERS = 64` 满后**所有**调用都回 `handler_error`（表现是「功能突然全坏了」）。选了纯读的代次快照对比，而不是在 `onCallbackUnregistered` 里挂钩子（那个函数**没有对外注册接口**，它由 `HookChannelService` 调用；现造一个只有单一消费者的注册表是 §7.4 反模式 1）。⚠️ **`params` 必须走 `JSONObject(params).toString()`** —— Kotlin `Map.toString()` 产出 `{obj={k=v}}` 是**非法 JSON**（已实测），hook 侧解析必抛。⚠️ KDoc 写死「**不得在主线程调用**」（它最终是一次同步 binder 事务到 system_server），且**刻意不做线程切换** —— 加了 `withContext` 会让主线程调用「看起来能用」 | 我方 |
+| `core/xposed/CapabilityPresenceHolder.kt`（新增） | fork 独有：**连接期能力交换**结果的持有者（`StateFlow<CapabilityPresence>` + `start()`/`stop()`）。⚠️ **探测触发点是「连接建立」的推送**（`setOnConnectedListener`），**不是 Application 生命周期钩子** —— `HookChannelService` 与 hook 层**谁先启动是不确定的**，挂在生命周期上就要求本类先于连接启动，而那个顺序没有东西保证。⚠️⚠️ **回退开关必须是「运行时判定」**：`onConnectNotified()` 里**每次自检** `CapabilityRuntime.isEnabled()`。写这个自检的理由是一个具体的静默劣化模式 —— 若只在 `start()` 时判一次，开关关着时**不注册监听** ⇒ 那一次连接建立被永久错过（`notifyOnConnected` 是推送的、**不重放**）⇒ presence 停在 `UNKNOWN` ⇒ 调用侧每次白等满 5 秒，而唯一的恢复办法是重启 App。⚠️ 探测**不在 binder 线程原地做**（`onCallbackRegistered` 由 binder 线程调用，而 `ping()`/`capabilities()` 是同步 binder 往返）⇒ 起裸线程（仓库既有做法，`BinderTransport` 同款）。⚠️ `resetIfDisconnected()` 由 `HookChannelController.onCallbackUnregistered` 在**所有早退分支之前**调 —— 方向是 `PresenceHolder → Controller`，与既有的 `ActivityChangedTriggerHandler → Controller` 同向；反过来的直写会让 Controller 单向依赖上层模块 ⇒ 成环 | 我方 |
+| `core/xposed/CapabilityExchange.kt`（新增） | fork 独有：能力交换的**判据层**（`ManifestProbe` fun interface + `exchangeOnConnect` / `presenceOnDisconnect` 两个函数）。抽接口是为了让「清单为空」「方法不存在（抛）」「连接断了（抛）」三种情形可纯 JVM 分开测 —— 它们的**用户处置完全不同**（② 指向「升级/重启 App」，③ 指向「等重连」）。⚠️ **判据顺序是定案的**：`ping()` 是**第一判据**（最老、必然存在），`capabilities()` **本身不存在**时不能当第一判据（那时收不到任何东西，无法区分「方法不存在」与「连不上」）。⚠️ **「方法不存在」在 AIDL 层面就是抛异常，不是返回空串** —— 必须 `try/catch`；把「空清单」误判成 `ABSENT` 会把用户引去「升级 App」，而 App 其实是最新的 | 我方 |
+| `core/xposed/CapabilityFallbacks.kt`（新增） | fork 独有：**降级实现的注册处**（在 `xposed/` **之外**）。⚠️ 存在的理由是 `CapabilityRegistry.kt` 类注释写死的那条分层：`fallback` 是函数类型（纯 Kotlin），但**它的实现必然引用 App 侧代码**（如快捷方式的降级路径是 dumpsys，实现体在 `ui/shortcut_picker/`），而 `capability/` 包在 `xposed/` 下 ⇒ **装 lambda 的注册动作必须发生在 `xposed/` 之外**。⚠️ **T1 阶段是空实现**（首个 capability 是 T3 的交付物）—— 往这里塞「测试用假能力」会让它进 **release 的生产启动路径**。单测直接调 `CapabilityRegistry.register(...)` + `@After` reset | 我方 |
+| `core/xposed/CapabilityRuntime.kt`（新增） | fork 独有：③ 的**启动接线点**（`attach(context)`）+ `isEnabled()` 回退开关。⚠️⚠️ **默认 `true`**（父会话 2026-09-30 定案）：T1 加的是**同一条连接建立路径上的第三个监听器**（前两个已存在且更重：`VFlowHookEntry` 的 `remountSources` 做 `loadClass`+`hook()`、`ActivityChangedTriggerHandler` 做**同步** `pushConditions`），新增成本只是「一次 `ping()` + 一次 `capabilities()` 两次 binder 往返」，**不是**「新增一条启动期跨进程路径」。取 `false` 的那个失败模式见 `CapabilityPresenceHolder` 条目。⚠️ **接线无条件做，开关只控制「探测」** —— 初版在 `attach` 里 `if (!enabled.get()) return`，那会让「关掉再打开」永远不生效（除非重启 App），由 `re-enabling the runtime takes effect on the next connection` 一例抓出；开关管的是「要不要真的去 ping/capabilities」 | 我方 |
+| `core/xposed/HookChannelController.kt`（改） | 追加四个**只读 / 可注销**访问器：`callbackOrNull()` / `currentToken()` / `disconnectGeneration()` / `setOnDisconnectedListener` + `removeOnDisconnectedListener` + `notifyOnDisconnected()`；`onCallbackUnregistered` 开头加一行 `CapabilityPresenceHolder.resetIfDisconnected()`、`failAllWaiters` 后加 `notifyOnDisconnected()`。⚠️ 加访问器而不让调用方自建连接管理：`callback`/`token` 是 private，③ 要提交请求与写鉴权信封；另造一套连接管理是「双份连接管理 + 双 token」（`FORK.md` 记过这类双份的代价）。⚠️ **`setOnDisconnectedListener` 与 `setOnConnectedListener` 是两个方向**，**刻意不合并** —— 前者由 `onCallbackRegistered` 触发、后者由 `onCallbackUnregistered` 触发，合并会让「连上时要做的事」与「断开时要清理的事」挤在一个槽里。形态与既有的 `eventSinks` / `onConnectedListeners` 完全一致（`ConcurrentHashMap` + key、逐个 `try/catch`）—— 本类已有三处单槽位缺陷的教训，不新增第四处 | **手动合并**（该文件此前已认手动合并） |
+| `xposed/wire/CapabilityInvocation.kt`（改，**只加不改**） | 补齐分页三键的字段与编解码：`CapabilityRequest.cursor` + `CapabilityResponse.nextCursor` / `truncated`，四个函数（`encodeRequest`/`encodeResponse`/`decodeRequest`/`decodeResponse`）对称补齐。⚠️ **三个 key 字符串一个字都没改**（跨进程协议），⚠️ **既有参数的相对顺序与名字一个都不动**，只插入带默认值的新参数。⚠️ 缺省值向后兼容：读不到键 ⇒ `null`/`null`/`false`；⚠️ **不写键的编码路径保留**（`cursor` 空白 / `truncated=false` 时都不写键）—— 「不存在的键」比「值为 null 的键」更明确，且旧端不需要认识它。⚠️ `nextCursor` **原样回传字符串、不在信封层解析成 Int**（契约里它只是「一个不透明游标」，用 `Int` 会把「将来换非整数游标」变成协议变更） | **我方** |
+| `VFlowApplication.kt`（改） | 加 **1 行** `CapabilityRuntime.attach(applicationContext)`（放在既有的 `XposedFrameworkMonitor.start(...)` 之后）。⚠️ 它是本仓库「启动期改动」的敏感文件（三次「模块不加载」的历史，真因未查明、已被后续探针反证并非平台限制）⇒ **只加一行、不改既有顺序**，并由 `CapabilityRuntimeWiringTest` 的源码扫描锁住调用点真的存在（防反模式 6「写了调用点注释但没有调用点」） | **手动合并**（新增 1 行） |
+| 测试（新增 5 个 + 改 3 个） | `CapabilityInvokerTest`（24 例）/ `CapabilityPresenceHolderTest`（16 例）/ `CapabilityRuntimeWiringTest`（6 例，源码扫描锁调用点）/ `CapabilityInvokeOutcomeTest`（9 例）/ `FakeHookCallback`（手写假 `IHookCallback`，**不走 `Stub`** —— 它继承 `android.os.Binder`，纯 JVM 里构造不出来）；`HookChannelControllerTest` +7 例、`CapabilityInvocationCodecTest` +6 例、`CapabilityContractPurityTest` **翻面**（见下） | 我方 | 
+| `test/.../xposed/CapabilityContractPurityTest.kt`（改） | 那条 `capability package still has no production call sites` **翻成正面断言** `capability package has production call sites`。⚠️⚠️ **不是删掉，而是翻面** —— 那条断言的注释自己就要求「接入后改成正面断言」。`CoreDexFingerprint` 那次（13 个纯函数单测全绿、集成点缺失 ⇒ 用户静默跑旧 Core 代码）证明这道防线必须留着。翻面后强度**不比原来弱**：原来断言「零引用」（否命题，容易被无关引用满足），现在断言**具体哪几个符号有引用**（正命题，缺一个就红）。⚠️ 表里**只列 T1 已接上的三个符号**（`CapabilityRegistry` / `CapabilityPresence` / `presenceAfter`）；`CapabilityNames` **刻意不在表里** —— 它唯一的成员是 T3 首个能力的名字，现在**确实**没有生产消费者（预期状态），列进来会让断言在 T1 恒红，而恒红的断言会被下一个实现者直接删掉 | 我方 |
+
+> ✅ **本批两条已闭合的旧缺口**：
+> ① 上面「契约层」段末尾记的「`KEY_CURSOR`/`KEY_NEXT_CURSOR`/`KEY_TRUNCATED` 三键已定义但无字段与编解码路径」（分页半闭环）—— **已补齐**；
+> ② 同段记的「`HookChannelController` 注释写着『超时丢弃与 await 语义属于下一段』（尚无调用入口）」—— **调用入口已落地**。
+>
+> ⚠️ **真机验证状态**（2026-09-30）：**未做**。方案 §9.4 父会话定案只做第 ① 项（能力交换真的发生），
+> 且取证需要设备在手（本机与设备不在同一局域网，无法 adb）；本批**只到「编译 + 单测 + release 打包」这一层**。
+> 故「T1 已实现」目前**只有编译与单测支撑**，尚无真机证据。
 
 ---
 
