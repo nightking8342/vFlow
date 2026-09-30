@@ -52,8 +52,160 @@ object InvokePolicy {
      * ⚠️ 存在的理由：`detail` 是自由文本，若让它无限长，一条错误响应自己就能
      * 撑爆 binder 的 oneway 缓冲 —— 而那会**静默丢弃**整条响应（§3.6）。
      * 也就是「为了让用户看到错误信息，反而把错误信息丢了」。
+     *
+     * ⚠️ 它在**代码单元**里等于 [PARCEL_PER_CODE_UNIT] 倍字节，见 [estimatedParcelBytes]。
      */
     const val MAX_DETAIL_CHARS = 512
+
+    /**
+     * 每个 UTF-16 **代码单元**在 binder parcel 里占的字节数。
+     *
+     * ## ⚠️⚠️ 这是本文件最重要的一条常量（2026-10-01 真机实测得出）
+     *
+     * 信封是经 `IHookHost.resolve(String)` 发出去的，而 binder 的 AIDL 字符串
+     * 在 parcel 里走 `writeString16` ⇒ **每个 UTF-16 代码单元 2 字节**
+     *（而非 UTF-8 的「ASCII 1 字节 / CJK 3 字节」）。
+     *
+     * 对一个全 ASCII 的载荷，这让**信封的 parcel 字节数 = 其 UTF-8 字节数的 2 倍**。
+     *
+     * ### 实测证据（小米 MIX Fold 3 / Android 17，`diagnostic` 的 `huge` 路径）
+     *
+     * ```
+     * 00:58:53.878  VFlowHook  结果超预算，已截断：收下 1228/2000 项，nextCursor=1228
+     * 00:58:53.882  VFlowHook  resolve 异常：TransactionTooLargeException
+     *                          data parcel size 533700 bytes
+     * ```
+     *
+     * 逐字复核（1228 个 `huge` 元素）：
+     *
+     * | 量 | 值 |
+     * |---|---|
+     * | `resultJson`（单层，UTF-8） | 259,237 字节 |
+     * | 信封串（二次转义后） | 266,757 **字符** |
+     * | 信封 × 本常量 | **533,514 字节** |
+     * | 实测 parcel | **533,700 字节**（差 186 = 信封外的固定开销） |
+     *
+     * ## ⚠️ 为什么旧实现漏掉了它
+     *
+     * 旧的「发送前最终校验」量的是 `resultJson` 的 **UTF-8** 字节（[ResultBudget.byteSizeOf]）
+     * ⇒ 259,237 < 262,144（256 KiB）**判为通过**，而真实 parcel 是 533,700
+     * ⇒ 撞上 oneway 的异步半缓冲（≈508 KiB）⇒ `TransactionTooLargeException`。
+     *
+     * ⚠️ **这不是边缘情况**：§3.6 的原始警告就是「返回路径必然撞上限」，
+     * 旧实现让**任何触发截断的调用都必然失败**。
+     */
+    const val PARCEL_PER_CODE_UNIT = 2
+
+    /**
+     * 信封里与内容**无关**的固定键（`request_id` / `ok` / `elapsed_ms` / `token` /
+     * 键名 / 二次转义的少量引号）占用的 parcel 字节**上界**。
+     *
+     * ## ⚠️⚠️ 它必须是一个**恒定的上界**，不能按预算比例缩小
+     *
+     * 起初写成了 `min(2 KiB, 预算 / 8)`，被 `a capability can lower its own byte limit`
+     * 抓了出来：一个声明 512 字节上限的 capability，预算按比例缩到 128 字节
+     * **小于真实的固定开销（约 150 字节）** ⇒ 它**永远装不下任何元素**，
+     * 结果是 `payload_too_large`。
+     *
+     * 那正是本仓库 `RESULT_ENVELOPE_MARGIN` 那个 bug 的形态（固定开销吃光小预算）——
+     * 我在重构时重犯了一次，所幸单测抓住了。
+     *
+     * ## 为什么可以在预算之外**另加**它（而不是从预算里扣）
+     *
+     * [envelopeParcelBudget] 的语义是「这个 capability **允许返回的内容**有多大」→
+     * 换算成 parcel 之后**再加上**信封自身的开销。固定开销是**传输的成本**，
+     * 不是内容的一部分 ⇒ 不该从内容预算里扣。
+     *
+     * 取 512 的依据：`request_id`（UUID 36 字符）+ `token` + `ok`/`elapsed_ms` +
+     * 各键名 + 一对引号与括号，实测约 150–200 字节；512 是留了余量的上界。
+     */
+    const val ENVELOPE_FIXED_OVERHEAD_BYTES = 512
+
+    /**
+     * 每个元素在信封里**除内容之外**的开销（parcel 字节）：
+     * 元素对象自身的引号（二次转义各 +1 字符）+ 数组分隔的逗号。
+     *
+     * ⚠️ 取 24 而不是按 `{"k":"v"}` 精确算出的 14（6 个引号 + 1 个逗号，各 2 字节）——
+     * 留一倍余量，因为真实 capability 的元素键数与引号数**不可预知**
+     *（`{"i":123,"pad":"…"}` 是 6 个引号，`ShortcutInfo` 序列化后会多得多）。
+     *
+     * ⚠️ 余量只负责「正常数据」；**真正的防线是 [estimatedParcelBytes] 那道终检**。
+     */
+    const val ITEM_ESCAPE_OVERHEAD_BYTES = 24
+
+    /**
+     * 估算**发出去的信封**占用的 binder parcel 字节数。
+     *
+     * ## ⚠️⚠️ 本函数的全部意义：让「校验对象」=「实际发送对象」
+     *
+     * 真机实测（见 [PARCEL_PER_CODE_UNIT]）暴露了一个真实缺陷：
+     * 旧的终检量的是 `resultJson` 的 UTF-8 字节，而实际发出去的是
+     * **外层信封** —— 两者**结构上不是同一个东西**，于是校验通过、发送失败。
+     *
+     * ⇒ 终检必须量 [com.chaomixian.vflow.xposed.wire.CapabilityInvocationCodec.encodeResponse]
+     * 的**返回值**，而不是它内部的某个字段。
+     *
+     * ## 为什么按「代码单元 × 2」而不是 `String.length × 2`
+     *
+     * 代理对（emoji）在 Java 里占**两个** `Char`，用 `length` 恰好算对；
+     * 但用 `codePointAt` + `charCount` 能对**孤立代理**（不成对的 `Char`）
+     * 也算成 2 字节 —— 而 binder 写的是 UTF-16 代码单元，正该如此。
+     * 这与 `ActivityPayload.truncateToBytes` 的教训同源：
+     * 代理对处的账**必须按代码单元算**，按字符算会低估。
+     */
+    fun estimatedParcelBytes(json: String): Int {
+        var units = 0
+        var i = 0
+        while (i < json.length) {
+            val cp = json.codePointAt(i)
+            units += if (cp > 0xFFFF) 2 else 1
+            i += Character.charCount(cp)
+        }
+        return PARCEL_PER_CODE_UNIT * units
+    }
+
+    /**
+     * 单个元素在信封里的**包裹开销**（parcel 字节）—— 喂给
+     * [ResultBudget.collectWithin] 的 `sizeOf`，与 [ENVELOPE_CARRIER_BYTES] 在同一量纲里。
+     *
+     * ## ⚠️ 与 [itemByteCost] 的关系（别混用）
+     *
+     * | 函数 | 量纲 | 用途 |
+     * |---|---|---|
+     * | [itemByteCost] | **单层** UTF-8 字节 | 旧的近似，仍被子用例锁住；不再用于预算 |
+     * | **本函数** | **信封内** parcel 字节 | 元素预算的唯一口径 |
+     *
+     * 换算：元素 JSON 的字符数 c（≈ 单层 UTF-8 字节数，全 ASCII 时相等）在信封里
+     * 占 `2 × (c + 引号数)` ≈ [PARCEL_PER_CODE_UNIT] × [itemByteCost]，
+     * 再加 [ITEM_ESCAPE_OVERHEAD_BYTES] 的引号/逗号余量。
+     *
+     * ⚠️ 它仍是**估算**（真实引号数取决于元素的键值形态）⇒
+     * [HookCapabilityRuntime] 的终检**不可省**。
+     */
+    fun itemEnvelopeCost(item: Map<String, Any?>): Int =
+        PARCEL_PER_CODE_UNIT * itemByteCost(item) + ITEM_ESCAPE_OVERHEAD_BYTES
+
+    /**
+     * 按声明的内容上限换算出的**信封 parcel 预算**，并与传输上限取 min。
+     *
+     * ## 两个上限是**两件事**，必须都满足
+     *
+     * | 上限 | 来源 | 含义 |
+     * |---|---|---|
+     * | `maxResultBytes` | `Capability.maxResultBytes`（per-capability 声明） | §3.6 契约 1：这个能力**愿意**返回多大 |
+     * | [ResultBudget.MAX_ENVELOPE_PARCEL_BYTES] | 传输层（binder 异步半缓冲） | 这条链路**传得动**多大 |
+     *
+     * ## ⚠️ 语义是「**内容**预算」，不含信封自身的固定开销
+     *
+     * 换算系数是 [PARCEL_PER_CODE_UNIT]：结果 B 字节 ⇒ 信封里占 2B 字节。
+     * 信封的固定键（[ENVELOPE_FIXED_OVERHEAD_BYTES]）由调用方**另加**，
+     * 不从这里扣 —— 见那个常量的说明（扣了会让小预算能力的预算变成负数）。
+     */
+    fun envelopeParcelBudget(maxResultBytes: Int): Int =
+        minOf(
+            ResultBudget.MAX_ENVELOPE_PARCEL_BYTES,
+            PARCEL_PER_CODE_UNIT.toLong().times(maxResultBytes).coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+        )
 
     /**
      * hook 侧判定用的超时预算。**取 min**，不钳位。
@@ -118,16 +270,20 @@ object InvokePolicy {
     fun isTimedOut(elapsedMs: Long, budgetMs: Long): Boolean = elapsedMs > budgetMs
 
     /**
-     * 单个元素的字节成本估算（喂给 [ResultBudget.collectWithin] 的 `sizeOf`）。
+     * 单个元素的**单层** UTF-8 字节成本（元素的 JSON 串本身，不含信封）。
      *
-     * ⚠️ **它是近似值**：元素经 [JSONObject] 序列化后真实写出的字节会因
-     * 转义（`"` → `\"`、控制字符 → `\uXXXX`）与数组逗号而与它不同。
-     * 故 [HookCapabilityRuntime.RESULT_ENVELOPE_MARGIN_BYTES] 是**必需开销**而非宽松余量，
-     * 且发出去之前必须**再验一次真实字节数**。
+     * ## ⚠️⚠️ 它**不再是预算口径**（2026-10-01 真机实测后改判）
+     *
+     * 它量的是元素**单独**序列化后的 UTF-8 字节，而真正决定能否发出去的是
+     * **信封的 parcel 字节数**（≈ 单层字节 × [PARCEL_PER_CODE_UNIT] + 引号开销）。
+     * 预算一律走 [itemEnvelopeCost]。
+     *
+     * 保留本函数的理由：它是**可精确断言**的基本量（「ASCII 1 字节 / CJK 3 字节」），
+     * 由 `InvokePolicyTest` 逐值锁住 —— 那是 [itemEnvelopeCost] 的地基，
+     * 删掉会让换算关系失去锚点。
      *
      * ⚠️ 用 [ResultBudget.byteSizeOf]（字节）而不是 `String.length`（字符）——
-     * 全 CJK 时后者会把预算**低估 3 倍**，而那会直接撞上 binder 的 oneway 上限，
-     * 表现是**整条响应被静默丢弃**。
+     * 全 CJK 时后者会把预算**低估 3 倍**。
      */
     fun itemByteCost(item: Map<String, Any?>): Int =
         ResultBudget.byteSizeOf(JSONObject(item).toString())
@@ -246,14 +402,18 @@ object InvokePolicy {
      * （§3.6 要求 hook 侧主动截断并带标志位）。出现即**实现缺陷或数据异常**
      * ⇒ 用户的处置是「报告问题」，**不要**把他引去改配置。
      *
-     * 它兜的是 [ResultBudget.collectWithin] 的**单元素超限特例**：
-     * 那种情况下函数会**收下那个超限元素**（否则分页会死循环），
-     * 于是整串真的可能超过上限 —— 必须在发出去之前拦下（oneway 超限是**静默丢弃**）。
+     * ⚠️⚠️ **两个参数都是 parcel 字节**（不是 UTF-8 字节）——
+     * 判据与用户看到的数字必须与实际传输同量纲，否则「报 26 万字节超了 26 万上限」
+     * 这类自相矛盾的文案会让排查整个跑偏（2026-10-01 实测缺陷的直接产物）。
+     *
+     * 它兜的是 [ResultBudget.collectWithin] 的**单元素超限特例**
+     *（那种情况下函数会**收下那个超限元素**，否则分页会死循环），
+     * 以及「估算余量不足以覆盖真实转义开销」的情形。
      */
-    fun payloadTooLargeError(actualBytes: Int, maxBytes: Int): CapabilityError = sanitize(
+    fun payloadTooLargeError(actualParcelBytes: Int, maxParcelBytes: Int): CapabilityError = sanitize(
         CapabilityError(
             code = CapabilityErrorCode.PAYLOAD_TOO_LARGE,
-            detail = "结果超出上限：实际 ${actualBytes} 字节 > 上限 ${maxBytes} 字节。" +
+            detail = "结果超出上限：实际 $actualParcelBytes 字节 > 上限 $maxParcelBytes 字节。" +
                 "这通常是实现缺陷，请报告问题。",
         ),
     )

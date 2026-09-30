@@ -87,11 +87,14 @@ class HookCapabilityRuntime(
      * 这是「handler 跑在 LSPosed 的 ClassLoader 里、App 侧单测跑不到」（§7.2b-9）
      * 的唯一破解方式：把**执行逻辑**与**回响应**解耦，前者就能在普通 JVM 里跑。
      *
-     * ## ⚠️ 签名刻意收成「分页三值 + 结果」而不是「一个编好的信封串」
+     * ## ⚠️ 签名是「一个编好的信封串」（2026-10-01 改）
      *
-     * 若让调用方（`VFlowHookEntry`）去编信封，分页两键的**编码规则**
-     * （`nextCursor` 非空白才写、`truncated` 为 true 才写）就会散到 `xposed/` 外面 ——
-     * 而 §3.6 的立意恰恰是「**由框架统一**，不是各写各的」。
+     * 旧签名是七个字段，由调用方（`VFlowHookEntry`）去编码 —— 那让本类的
+     * **预算校验**手里只有 `resultJson`、量不到真正发出去的信封，
+     * 真机实测撞了 `TransactionTooLargeException`（见 [InvokePolicy.PARCEL_PER_CODE_UNIT]）。
+     *
+     * ⇒ 编码移进本类（[encodeResponse]），出口只收串：
+     * 「量的对象」与「发的对象」**在类型上就是同一个**。
      */
     private val respond: CapabilityResponder,
     private val registry: HookCapabilityRegistry = HookCapabilityRegistry,
@@ -110,42 +113,22 @@ class HookCapabilityRuntime(
         const val DEFAULT_POOL_SIZE = 2
 
         /**
-         * 结果信封的**固定键 + JSON 转义余量**。
+         * ⚠️⚠️ **已废弃（2026-10-01）**：真机实测证明这条余量的**机制描述是错的**。
          *
-         * ## ⚠️ 它是**必需开销**，不是宽松余量
+         * 它原先的语义是「固定键 + JSON 转义与逗号的余量」（4 KiB）。
+         * 而实测（`resolve` 报 `data parcel size 533700 bytes`）查明：真正的开销
+         * **不是**二次转义（对全 ASCII 载荷只有 1.03×），而是
+         * **信封在 parcel 里按 UTF-16 代码单元 × 2 字节计费** ⇒ 是 UTF-8 的 **2 倍**。
          *
-         * 元素是**对象**，框架用 `JSONArray` 统一序列化 ⇒
-         * `byteSizeOf(元素.toString())` 与实际写出的字节**存在差异**：
+         * ⇒ 4 KiB 的余量在一个 256 KiB 的预算上**差了 260 KiB**，完全兜不住。
+         * 真正的开销模型现在是 [InvokePolicy.estimatedParcelBytes] +
+         * [InvokePolicy.ITEM_ESCAPE_OVERHEAD_BYTES]，固定键开销走
+         * [InvokePolicy.ENVELOPE_CARRIER_BYTES]。
          *
-         * | 项 | 量级 |
-         * |---|---|
-         * | 固定键 `{"items":[]}` | ≈ 13 字节 |
-         * | 数组逗号 | +1 字节/项 |
-         * | 转义膨胀（`"` → `\"`、控制字符 → `\uXXXX`） | ⚠️ **与数据相关** |
-         *
-         * ⚠️⚠️ **最坏情况余量兜不住**：一份内容全是引号的载荷，转义会让字节**翻倍**。
-         * ⇒ **真正的防线是发出去之前再验一次整串字节数**（见 [successFromItems]），
-         * 余量只负责把「正常数据」的误差兜住。
-         *
-         * 取 4 KiB 的依据：[DiagnosticCapabilityHandler] 的 `huge` 夹具
-         * （约 1210 项、每项 213 字节）只有约 1210 个逗号 ≈ 1.2 KiB 的开销，
-         * 且其元素是**纯 ASCII 的 x**、转义开销为 0 ⇒ 余量足够。
+         * ⚠️ 保留它只为让 `FORK.md` 里的旧登记与新代码对得上；**不要再用**。
          */
+        @Deprecated("被 InvokePolicy 的 parcel 口径取代，见其 KDoc 的实测记录")
         const val RESULT_ENVELOPE_MARGIN_BYTES = 4 * 1024
-
-        /**
-         * 余量占预算的**上限比例**。
-         *
-         * ⚠️ 为什么需要它：余量是**绝对字节数**，而 [CapabilityHandler.maxResultBytes]
-         * 可以是任意正值。一个把上限声明成 512 字节的 capability，
-         * 若余量仍取 4 KiB，`上限 - 余量` 会变成负数 ⇒ 它**永远收不下任何元素**
-         * （只能靠 `collectWithin` 的单元素特例拿回 1 项）。
-         *
-         * ⇒ 余量取 `min(固定值, 上限 / 8)`：大预算时是那条实测标定的 4 KiB，
-         * 小预算时按比例缩小。取 1/8 而不是 1/2 是因为余量要覆盖的是
-         * **逗号 + 转义**，那与项数相关、与总字节数大致同阶但远小于它。
-         */
-        private const val RESULT_ENVELOPE_MARGIN_DIVISOR = 8
 
         private const val TAG = "VFlowHook"
     }
@@ -229,12 +212,10 @@ class HookCapabilityRuntime(
                 HookLog.e(
                     "$TAG  未知名，回 capability_absent（已注册：${registry.names().sorted()}）",
                 )
-                emit(
-                    failure(
-                        request,
-                        InvokePolicy.unknownCapabilityError(request.capability, registry.names()),
-                        elapsedMs = 0L,
-                    ),
+                emitFailure(
+                    request,
+                    InvokePolicy.unknownCapabilityError(request.capability, registry.names()),
+                    elapsedMs = 0L,
                 )
                 return
             }
@@ -242,7 +223,7 @@ class HookCapabilityRuntime(
             // ⚠️ 先判「已停止」再投递 —— `shutdownNow()` 之后的拒绝同样是
             // RejectedExecutionException，若不先判就会报成「池满」（见 RejectionCause）。
             if (stopped) {
-                emit(failure(request, InvokePolicy.runtimeStoppedError(), elapsedMs = 0L))
+                emitFailure(request, InvokePolicy.runtimeStoppedError(), elapsedMs = 0L)
                 return
             }
 
@@ -260,7 +241,7 @@ class HookCapabilityRuntime(
                     "$TAG  ${if (stopped) "运行时已停止" else "工作线程池已满"}" +
                         "（容量 ${pool.maximumPoolSize} 个并发），回 handler_error",
                 )
-                emit(failure(request, error, elapsedMs = 0L))
+                emitFailure(request, error, elapsedMs = 0L)
             }
         } catch (t: Throwable) {
             // ★★ 最后一道兜底：连「解码 + 查表 + 投递」本身抛了也不许逃逸
@@ -300,16 +281,14 @@ class HookCapabilityRuntime(
 
             when {
                 // handler 自报失败优先于超时：它更具体（超时只是「慢了」）
-                thrown != null -> emit(failure(request, thrown, elapsedMs))
+                thrown != null -> emitFailure(request, thrown, elapsedMs)
 
-                outcome is CapabilityOutcome.Failure -> emit(
-                    failure(
-                        request,
-                        InvokePolicy.sanitize(
-                            CapabilityError(code = outcome.code, detail = outcome.detail),
-                        ),
-                        elapsedMs,
+                outcome is CapabilityOutcome.Failure -> emitFailure(
+                    request,
+                    InvokePolicy.sanitize(
+                        CapabilityError(code = outcome.code, detail = outcome.detail),
                     ),
+                    elapsedMs,
                 )
 
                 InvokePolicy.isTimedOut(elapsedMs, budget) -> {
@@ -317,27 +296,25 @@ class HookCapabilityRuntime(
                         "$TAG  执行超时：${request.capability}" +
                             "（elapsedMs=$elapsedMs > budget=$budget）→ 回 timeout",
                     )
-                    emit(failure(request, InvokePolicy.timeoutError(elapsedMs, budget), elapsedMs))
+                    emitFailure(request, InvokePolicy.timeoutError(elapsedMs, budget), elapsedMs)
                 }
 
                 outcome is CapabilityOutcome.Items ->
                     successFromItems(request, handler, outcome, elapsedMs)
 
-                else -> emit(
-                    failure(
-                        request,
-                        InvokePolicy.throwableToError(
-                            IllegalStateException("未知的产出类型：${outcome?.javaClass?.name}"),
-                        ),
-                        elapsedMs,
+                else -> emitFailure(
+                    request,
+                    InvokePolicy.throwableToError(
+                        IllegalStateException("未知的产出类型：${outcome?.javaClass?.name}"),
                     ),
+                    elapsedMs,
                 )
             }
         } catch (t: Throwable) {
             // ★★ 第二道兜底：连「构造响应」本身抛了（如 org.json 在极端输入下）
             // 也不许逃逸。⚠️ 这一层**不能**省 —— 它护的正是上面 when 表达式里的代码。
             try {
-                emit(failure(request, InvokePolicy.throwableToError(t), elapsedMs = 0L))
+                emitFailure(request, InvokePolicy.throwableToError(t), elapsedMs = 0L)
             } catch (t2: Throwable) {
                 // 连回响应都失败了 ⇒ 只剩日志。**绝不 rethrow**。
                 HookLog.e("$TAG  回响应彻底失败：${t2.javaClass.simpleName} ${t2.message}")
@@ -346,12 +323,30 @@ class HookCapabilityRuntime(
     }
 
     /**
-     * 成功路径：按字节截断 → 组装 `resultJson` → 最终校验 → 回响应。
+     * 成功路径：按**信封 parcel 预算**截断 → 组装 → 编码 → **量信封** → 回响应。
      *
-     * ## ⚠️ 截断发生在「产出」而不是「序列化后」（§3.6 的硬要求）
+     * ## ⚠️⚠️ 校验对象 = 实际发送对象（2026-10-01 真机实测缺陷的修复）
      *
-     * 用 [ResultBudget.collectWithin] 在**收集阶段**就按上限收，
-     * 不是「拼完大对象再砍」—— 后者内存已经占过，而它在 **system_server** 里。
+     * **旧实现**量的是 `resultJson` 的 **UTF-8** 字节，而实际发出去的是**外层信封** ——
+     * 两者结构上不是同一个东西。实测（小米 MIX Fold 3 / Android 17）：
+     *
+     * ```
+     * 结果超预算，已截断：收下 1228/2000 项，nextCursor=1228
+     * resolve 异常：TransactionTooLargeException  data parcel size 533700 bytes
+     * ```
+     *
+     * `resultJson` 259,237 字节 < 262,144（256 KiB）判为通过，而信封 parcel 是 **533,700**
+     * ⇒ 撞上 oneway 的异步半缓冲（≈508 KiB）。
+     *
+     * **新实现**：预算按信封 parcel 算（[InvokePolicy.itemEnvelopeCost]），
+     * 终检量 [CapabilityInvocationCodec.encodeResponse] 的**返回值**
+     *（[InvokePolicy.estimatedParcelBytes]），而那**正是**交给 [respondEnvelope] 的那个串。
+     *
+     * ## ⚠️ 为什么「翻倍」的机制与直觉不同
+     *
+     * 真实开销**不是**二次转义（全 ASCII 时只有 1.03×），而是 binder 把信封串
+     * 按 **UTF-16 代码单元 × 2 字节**写进 parcel（`writeString16`）。
+     * 详见 [InvokePolicy.PARCEL_PER_CODE_UNIT] 的实测对照表。
      */
     private fun successFromItems(
         request: CapabilityRequest,
@@ -359,82 +354,73 @@ class HookCapabilityRuntime(
         outcome: CapabilityOutcome.Items,
         elapsedMs: Long,
     ) {
+        // ── 预算：三个数各司其职（⚠️ 别把它们混成一个）──
+        //
+        // ① maxBytes      capability 声明的【内容】上限（§3.6 契约 1）
+        // ② contentBudget 内容换算成 parcel（= 2 × maxBytes），并受传输层封顶
+        // ③ checkLimit    终检的判据 = contentBudget + 信封固定开销
+        //
+        // ⚠️⚠️ **收集用 ②，终检用 ③** —— 不能都用 ②。
+        // `collectWithin` 会把给它的上限**用满**，而序列化后还要额外付信封的固定键
+        // ⇒ 拿 ② 去终检会**必然判超限**（这正是我第一版改完的状况，
+        //    3 条用例同时变红才暴露出来）。
         val maxBytes = InvokePolicy.effectiveMaxBytes(handler.maxResultBytes)
-        val marginBytes = minOf(RESULT_ENVELOPE_MARGIN_BYTES, maxBytes / RESULT_ENVELOPE_MARGIN_DIVISOR)
-        val elementBudget = (maxBytes - marginBytes).coerceAtLeast(1)
+        val contentBudget = InvokePolicy.envelopeParcelBudget(maxBytes)
+        val checkLimit = contentBudget + InvokePolicy.ENVELOPE_FIXED_OVERHEAD_BYTES
 
         val budgeted = ResultBudget.collectWithin(
             items = outcome.items,
-            maxBytes = elementBudget,
-            // ⚠️ 按【字节】而非 `String.length`：全 CJK 时后者低估 3 倍，
-            // 会直接撞上 binder 的 oneway 上限 ⇒ **整条响应被静默丢弃**
-            sizeOf = InvokePolicy::itemByteCost,
+            maxBytes = contentBudget,
+            // ⚠️⚠️ 按【信封内的 parcel 字节】而非单层 UTF-8 字节 ——
+            // 后者只有前者的一半，会把预算开大一倍（这正是那个缺陷）
+            sizeOf = InvokePolicy::itemEnvelopeCost,
             startIndex = outcome.startIndex,
         )
 
         val resultJson = InvokePolicy.buildResultJson(budgeted.items)
 
-        if (budgeted.truncated) {
-            HookLog.e(
-                "$TAG  结果超预算，已截断：收下 ${budgeted.items.size}/${outcome.items.size} 项，" +
-                    "nextCursor=${budgeted.nextCursor}（request_id=${request.requestId}）",
-            )
-        }
+        // ⚠️ `Budgeted.nextCursor` 是 `Int?`，而契约里它是**不透明串** ⇒ 转字符串。
+        // ✅ 分页两键**走信封顶层**（由 codec 决定「非空白才写」）——
+        // 塞进 `resultJson` 内部会让 App 侧的两个字段**永远填不上**。
+        val envelope = encodeResponse(
+            request = request,
+            ok = true,
+            resultJson = resultJson,
+            error = null,
+            nextCursor = budgeted.nextCursor?.toString(),
+            truncated = budgeted.truncated,
+            elapsedMs = elapsedMs,
+        )
 
-        // ⚠️⚠️ **发出去之前必须验一次真实字节数**。
-        //
-        // `itemByteCost` 是**近似值**（JSON 的转义与逗号会让实际写出更短或更长），
-        // 而 oneway 超限是**静默丢弃**（binder 不通知发送方，§3.6）——
-        // 不能让一条超限的响应离开本进程。
-        //
-        // 这道校验兜的是两件事：
-        // ① [ResultBudget.collectWithin] 的**单元素超限特例**（它会收下那个超限元素，
-        //    否则分页会死循环）；
-        // ② 转义膨胀（最坏是「内容全是引号」时字节翻倍，余量兜不住）。
-        //
-        // ⚠️⚠️ **判据是 [maxBytes]（真实上限），不是 [elementBudget]** ——
-        // 这里改过一版，记下为什么。`collectWithin` 会一直收到「再加一项就超过
-        // `elementBudget`」为止 ⇒ 收下的部分**已经把 `elementBudget` 用满**，
-        // 而序列化还要额外付 `(项数 - 1)` 个逗号 + 信封固定键。
-        //
-        // 拿 `huge` 的实测值算：收下约 1211 项、合计约 257,943 字节
-        // （`elementBudget` = 258048）⇒ 拼成 JSON 后约 259,000 字节。
-        // 若与 `elementBudget` 比，**必然判超限** ⇒ `huge` 会回
-        // `payload_too_large` 而**不是**「截断成功」，与验收 #6 的期望**相反**。
-        //
-        // ⇒ 余量的真实作用是「**预留出逗号与转义占的那几百字节**，
-        // 使最终结果仍落在 [maxBytes] 内」，因此核对的对象必须是 [maxBytes]。
-        val actualBytes = ResultBudget.byteSizeOf(resultJson)
-        if (actualBytes > maxBytes) {
-            // ⚠️ 归 `payload_too_large` 而**不是** `timeout` / `handler_error`：
-            // 它是**实现缺陷或数据异常**，不是用户能处理的失败（§6.4）——
-            // 用户该做的是「报告问题」，不是去改配置。
+        // ⚠️⚠️ **量的是 `envelope` —— 与下面真正发出去的是同一个串。**
+        // 这是本次修复的全部：校验对象与发送对象**结构上不可能不一致**。
+        val actualParcel = InvokePolicy.estimatedParcelBytes(envelope)
+        if (actualParcel > checkLimit) {
+            // 归 `payload_too_large` 而**不是** `timeout` / `handler_error`：
+            // 它是**实现缺陷或数据异常**，不是用户能处理的失败（§6.4）。
+            //
+            // 触发它的两种情形：
+            // ① `collectWithin` 的**单元素超限特例**（收下那个超限元素，否则分页死循环）
+            // ② `itemEnvelopeCost` 的估算余量不足以覆盖真实引号密度
             HookLog.e(
-                "$TAG  结果仍超上限，回 payload_too_large：实际 $actualBytes 字节 > " +
-                    "上限 $maxBytes 字节（request_id=${request.requestId}）",
+                "$TAG  信封仍超传输上限，回 payload_too_large：实际 parcel $actualParcel 字节 > " +
+                    "上限 $checkLimit 字节（收下 ${budgeted.items.size} 项，" +
+                    "request_id=${request.requestId}）",
             )
-            emit(failure(request, InvokePolicy.payloadTooLargeError(actualBytes, maxBytes), elapsedMs))
+            emitFailure(request, InvokePolicy.payloadTooLargeError(actualParcel, checkLimit), elapsedMs)
             return
         }
 
-        emit(
-            PendingResponse(
-                requestId = request.requestId,
-                token = request.token,
-                ok = true,
-                resultJson = resultJson,
-                // ⚠️ `Budgeted.nextCursor` 是 `Int?`，而契约里它是**不透明串** ⇒ 转字符串。
-                // ✅ 分页两键**走信封顶层**（由 codec 决定「非空白才写」）——
-                // 塞进 `resultJson` 内部会让 App 侧的两个字段**永远填不上**。
-                nextCursor = budgeted.nextCursor?.toString(),
-                truncated = budgeted.truncated,
-                elapsedMs = elapsedMs,
-                error = null,
-            ),
-        )
-    }
+        if (budgeted.truncated) {
+            HookLog.e(
+                "$TAG  结果超预算，已截断：收下 ${budgeted.items.size}/${outcome.items.size} 项，" +
+                    "nextCursor=${budgeted.nextCursor}，信封 parcel $actualParcel/$checkLimit 字节" +
+                    "（request_id=${request.requestId}）",
+            )
+        }
 
-    // ── 对外 ──────────────────────────────────────────────
+        respondEnvelope(envelope, request)
+    }
 
     /**
      * `IHookCallback.capabilities()` 的应答体 —— 清单**从 [registry] 出**。
@@ -479,57 +465,77 @@ class HookCapabilityRuntime(
 
     // ── 内部 ──────────────────────────────────────────────
 
-    /** 待回的响应（组装好、还没交给对端）。 */
-    private data class PendingResponse(
-        val requestId: String,
-        val token: String,
-        val ok: Boolean,
-        val resultJson: String,
-        val nextCursor: String?,
-        val truncated: Boolean,
-        val elapsedMs: Long,
-        val error: CapabilityError?,
+    /**
+     * 编码一条响应信封（**唯一编码出口**）。
+     *
+     * ⚠️ 抽出来是为了让「编码」与「量字节」用**同一个串**：
+     * 若在别处再编一次，就会出现「量的是 A、发的是 B」——正是本次缺陷的形态。
+     *
+     * ⚠️ `ok = error == null`：与 codec 的契约一致
+     *（`decodeResponse` 会反向校验「ok=false 必须带 error」）。
+     */
+    private fun encodeResponse(
+        request: CapabilityRequest,
+        ok: Boolean,
+        resultJson: String,
+        error: CapabilityError?,
+        nextCursor: String?,
+        truncated: Boolean,
+        elapsedMs: Long,
+    ): String = CapabilityInvocationCodec.encodeResponse(
+        requestId = request.requestId,
+        ok = ok,
+        resultJson = resultJson,
+        error = error,
+        nextCursor = nextCursor,
+        truncated = truncated,
+        elapsedMs = elapsedMs,
+        token = request.token,
     )
 
-    /** 组装一条失败响应。 */
-    private fun failure(
+    /** 组装一条**失败**响应并发出。 */
+    private fun emitFailure(
         request: CapabilityRequest,
         error: CapabilityError,
         elapsedMs: Long,
-    ): PendingResponse = PendingResponse(
-        requestId = request.requestId,
-        token = request.token,
-        ok = false,
-        resultJson = "{}",
-        nextCursor = null,
-        truncated = false,
-        elapsedMs = elapsedMs,
-        error = error,
-    )
+    ) {
+        respondEnvelope(
+            encodeResponse(
+                request = request,
+                ok = false,
+                resultJson = "{}",
+                error = error,
+                nextCursor = null,
+                truncated = false,
+                elapsedMs = elapsedMs,
+            ),
+            request,
+        )
+    }
 
     /**
-     * 把响应交给对端。
+     * 把**已编好的信封**交给对端。
      *
-     * ⚠️ 唯一的出口 —— 分页两键若在别处被编进信封，就会出现
+     * ⚠️ 唯一的发送出口 —— 分页两键若在别处被编进信封，就会出现
      * 「有的带标志有的不带」（§3.6 明令要避免）。
      *
      * ⚠️ `respond` 内部会走 binder（`IHookHost.resolve`，oneway）。
-     * 它本身可能抛（`RemoteException` / `DeadObjectException`）⇒ 在这里吞掉。
-     * 调用点可能在**工作线程**上，异常逃逸同样会打崩那个线程。
+     * 它本身可能抛（`RemoteException` / **`TransactionTooLargeException`**）⇒
+     * 在这里吞掉。调用点可能在**工作线程**上，异常逃逸同样会打崩那个线程。
+     *
+     * ## ⚠️ 若这里打了「回响应失败」的 `TransactionTooLargeException`
+     *
+     * 说明 [InvokePolicy.estimatedParcelBytes] 的估算仍不足（或上限常量定得太松）——
+     * 那是**实现缺陷**，不是用户问题。日志里带上信封长度便于定位。
      */
-    private fun emit(r: PendingResponse) {
+    private fun respondEnvelope(envelope: String, request: CapabilityRequest) {
         try {
-            respond.respond(
-                requestId = r.requestId,
-                resultJson = r.resultJson,
-                nextCursor = r.nextCursor,
-                truncated = r.truncated,
-                elapsedMs = r.elapsedMs,
-                token = r.token,
-                error = r.error,
-            )
+            respond.respond(envelope)
         } catch (t: Throwable) {
-            HookLog.e("$TAG  回响应失败：${t.javaClass.simpleName} ${t.message}")
+            HookLog.e(
+                "$TAG  回响应失败：${t.javaClass.simpleName} ${t.message}" +
+                    "（信封 ${envelope.length} 字符，request_id=${request.requestId}）",
+            )
         }
     }
 
@@ -541,29 +547,29 @@ class HookCapabilityRuntime(
 }
 
 /**
- * 回响应的出口。
+ * ③ 的**响应出口**：把**已编好的信封串**交给对端（`IHookHost.resolve`）。
  *
- * ## ⚠️ 为什么是 `fun interface` 而不是普通函数类型
+ * ## ⚠️⚠️ 为什么签名从「七个字段」改成「一个信封串」
  *
- * 具名参数让**调用点自解释**（7 个参数的 lambda 里，`String` / `Boolean` 混排时
- * 位置写错是**编译期通不过**的 —— 除非类型恰好相同）。
- * 用 [CapabilityResponder] 这个名字也让「唯一出口」这件事有个可被引用的标识。
+ * 旧签名收 `requestId / resultJson / nextCursor / truncated / elapsedMs / token / error`
+ * 七个字段，由调用方（`VFlowHookEntry`）去 `encodeResponse` **编码**。
+ * 那样有两个结构性问题，第一个已经造成真实缺陷：
+ *
+ * 1. ⚠️⚠️ **预算校验无处安放** —— 运行时手里只有 `resultJson`，
+ *    量不到真正发出去的信封（2026-10-01 的 `TransactionTooLargeException`）。
+ *    改成收信封串后，「量的对象」与「发的对象」**在类型上就是同一个**。
+ * 2. 分页两键的**编码规则**（非空白才写 / true 才写）会散到 `xposed/` 外面 ——
+ *    而 §3.6 的立意恰恰是「**由框架统一**，不是各写各的」。
+ *
+ * ⚠️ 现在编码发生在 [HookCapabilityRuntime] 内部（`encodeResponse`），
+ * 信封仍是 `CapabilityInvocationCodec` 的产物，规则仍收敛在一处。
  */
 fun interface CapabilityResponder {
     /**
-     * @param nextCursor 下一页游标（**不透明串**）。`null` ⇒ 没有下一页。
-     *   ⚠️ 编码规则（非空白才写键）由 `CapabilityInvocationCodec` 负责，本接口只传值。
-     * @param truncated 是否发生过截断。⚠️ 与 [nextCursor] 一样走**信封顶层**。
-     * @param error `ok=false` 时**必须非 null**（由 codec 的 `decodeResponse` 反向校验）。
+     * @param envelopeJson `CapabilityInvocationCodec.encodeResponse` 的**返回值**。
+     *   ⚠️ 运行时已按 [InvokePolicy.estimatedParcelBytes] 校验过它不超过
+     *   [ResultBudget.MAX_ENVELOPE_PARCEL_BYTES]。
      * @return 是否已交给对端
      */
-    fun respond(
-        requestId: String,
-        resultJson: String,
-        nextCursor: String?,
-        truncated: Boolean,
-        elapsedMs: Long,
-        token: String,
-        error: CapabilityError?,
-    ): Boolean
+    fun respond(envelopeJson: String): Boolean
 }

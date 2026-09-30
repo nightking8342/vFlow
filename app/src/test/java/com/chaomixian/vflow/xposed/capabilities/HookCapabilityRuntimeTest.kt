@@ -47,21 +47,14 @@ class HookCapabilityRuntimeTest {
     private var runtime: HookCapabilityRuntime? = null
 
     /**
-     * 真 codec 的编码路径 —— 与生产 `VFlowHookEntry` 的接线**逐字一致**。
+     * 响应出口 —— 与生产 `VFlowHookEntry` 的接线**逐字一致**：
+     * 收到信封串后**原样**解码，不再自己编码。
      *
-     * ⚠️ 这一处是全部 ③ 响应的唯一出口（分页两键的编码规则由 codec 负责）。
+     * ⚠️ 这里收的是 `json: String`（**已编好的信封**），而不是七个字段。
+     * 2026-10-01 之前是后者，而那个形态正是那个真机缺陷的温床：
+     * 运行时手里只有 `resultJson`，量不到真正发出去的信封。
      */
-    private fun responder() = CapabilityResponder { requestId, resultJson, nextCursor, truncated, elapsedMs, token, error ->
-        val json = CapabilityInvocationCodec.encodeResponse(
-            requestId = requestId,
-            ok = error == null,
-            resultJson = resultJson,
-            error = error,
-            nextCursor = nextCursor,
-            truncated = truncated,
-            elapsedMs = elapsedMs,
-            token = token,
-        )
+    private fun responder() = CapabilityResponder { json ->
         rawResponses += json
         // ⚠️ 解码失败返回 null —— 那本身就是一个应当变红的信号
         received += requireNotNull(CapabilityInvocationCodec.decodeResponse(json)) {
@@ -330,6 +323,118 @@ class HookCapabilityRuntimeTest {
         val r = awaitResponse()
         assertFalse("超上限不是成功", r.ok)
         assertEquals(CapabilityErrorCode.PAYLOAD_TOO_LARGE, r.error?.code)
+    }
+
+    // ═══ 4b · ★★ 校验对象必须是「信封」而非「result 字段」 ═══
+    //
+    // 2026-10-01 真机实测缺陷（小米 MIX Fold 3 / Android 17）的回归锁。
+    //
+    // 现象：`huge` 路径上截断**成功**了（日志「收下 1228/2000 项，nextCursor=1228」），
+    // 紧接着 `resolve` 抛 `TransactionTooLargeException  data parcel size 533700 bytes`。
+    //
+    // 根因：旧终检量的是 `resultJson` 的 **UTF-8 字节**（259,237 < 262,144 判通过），
+    // 而实际发出去的是**信封**，binder 按 **UTF-16 代码单元 × 2 字节** 计费
+    // ⇒ 533,514 字节，撞上 oneway 的异步半缓冲（≈508 KiB）。
+    //
+    // ## ⚠️⚠️ 本用例为什么能测到它（而原来的 71 例测不到）
+    //
+    // 原来的用例「经过的是**类型**，不是**传输**」：它们断言字段内容，
+    // 而 `resultJson` 与信封的**字节口径差 2 倍**这件事只体现在字节数上。
+    //
+    // 本用例构造一个**恰好卡在两口径之间**的载荷：
+    //
+    // | 口径 | 值 | 旧判据 | 新判据 |
+    // |---|---|---|---|
+    // | `result` 的 UTF-8 字节 | ≈180 KiB | ✅ 通过（< 256 KiB） | — |
+    // | 信封的 parcel 字节 | ≈360 KiB | ❌ **发不出去** | — |
+    //
+    // ⇒ 改回「只量 resultJson」时，本条会失败（得到 `ok=true` 而不是 `payload_too_large`）。
+
+    @Test
+    fun `the check measures the envelope not the result field`() {
+        // ## 夹具构造的关键：让【传输上限】成为唯一的约束
+        //
+        // 声明为默认（256 KiB 内容）⇒ 内容换算成 parcel 是 512 KiB，
+        // 但**传输上限**把它封顶到 384 KiB。于是「能收下多少」由传输上限决定，
+        // 而不由 result 的字节数决定 —— 这正是旧实现看不见的那一格。
+        //
+        // 单个 200 KiB 的元素：
+        // | 口径 | 值 | 旧判据 | 新判据 |
+        // |---|---|---|---|
+        // | `result` 的 UTF-8 字节 | ≈200 KiB | ✅ 通过（< 256 KiB） | — |
+        // | 信封 parcel（×2） | ≈400 KiB | ❌ **超出传输上限** | — |
+        val payloadBytes = 200 * 1024
+        HookCapabilityRegistry.register(
+            // ⚠️ 不声明 maxResultBytes ⇒ 用默认 256 KiB（内容口径）
+            FakeHandler("boundary") {
+                CapabilityOutcome.Items(listOf(mapOf("pad" to "x".repeat(payloadBytes))))
+            },
+        )
+        start().onInvoke(requestJson("boundary"))
+
+        val r = awaitResponse()
+
+        // ★ 核心断言：不能是「成功」。旧实现会在这里给 ok=true
+        //（因为 `resultJson` 的 UTF-8 字节 204,800 < 262,144），
+        // 而那条响应在真机上会抛 TransactionTooLargeException。
+        assertFalse(
+            "❌ 信封已超出传输上限，不该回成功 —— 这正是 2026-10-01 真机缺陷的形态" +
+                "（result 的 UTF-8 字节 ${ResultBudget.byteSizeOf(r.resultJson)}，" +
+                "而信封 parcel ${InvokePolicy.estimatedParcelBytes(rawResponses[0])}）",
+            r.ok,
+        )
+        assertEquals(CapabilityErrorCode.PAYLOAD_TOO_LARGE, r.error?.code)
+
+        // 反面证据：确认夹具**真的**落在两口径之间（否则本用例空转）
+        val resultUtf8 = ResultBudget.byteSizeOf(r.resultJson)
+        assertTrue(
+            "夹具没落在两口径之间（result UTF-8 = $resultUtf8）—— 本用例会空转",
+            resultUtf8 < ResultBudget.DEFAULT_MAX_RESULT_BYTES,
+        )
+    }
+
+    @Test
+    fun `a huge truncation that fits the transport still succeeds end to end`() {
+        // ⚠️ 与上一条配对：**修完不能把正常截断也弄坏**。
+        //
+        // `huge`（2000 项 × ~213 字节 ≈ 426 KiB 单层）必须仍然
+        // **截断成功**（而不是 `payload_too_large`）——
+        // 它在真机上是「收下 1228/2000 项」那条路径。
+        //
+        // ⚠️ 它同时锁住「预算换算后仍能装下可观数量」：若换算系数写错成 4，
+        // 收下的项数会骤降到 600 左右（虽然仍是成功），说明换算口径不对。
+        HookCapabilityRegistry.register(DiagnosticCapabilityHandler())
+        start().onInvoke(
+            requestJson(
+                com.chaomixian.vflow.xposed.capability.CapabilityNames.DIAGNOSTIC,
+                params = """{"mode":"huge"}""",
+            ),
+        )
+
+        val r = awaitResponse()
+        assertTrue("huge 必须截断成功而不是 payload_too_large（error=${r.error?.code}）", r.ok)
+        assertTrue(r.truncated)
+        assertNotNull(r.nextCursor)
+
+        // ★★ **真机同款判据**：信封的 parcel 字节必须在传输上限之内。
+        // 这一条就是真机 `TransactionTooLargeException` 的**直接**回归断言。
+        val parcel = InvokePolicy.estimatedParcelBytes(rawResponses[0])
+        assertTrue(
+            "信封 parcel $parcel 字节超出传输上限 " +
+                "${ResultBudget.MAX_ENVELOPE_PARCEL_BYTES} —— 真机上会抛 TransactionTooLargeException",
+            parcel <= ResultBudget.MAX_ENVELOPE_PARCEL_BYTES,
+        )
+
+        val items = JSONObject(r.resultJson).getJSONArray(InvokePolicy.KEY_ITEMS)
+        // ⚠️ 收下的项数是**预算换算正确性**的直接体现（实测边界 859，取 750 留余量）：
+        // | 换算口径 | 收下项数 |
+        // |---|---|
+        // | 旧实现（按 result 的 UTF-8 记 1:1） | ~1228 —— **但真机发不出去** |
+        // | **新实现**（按信封 parcel 的 1:2） | **~859** |
+        // | 若误写成 1:4 | ~430 |
+        assertTrue("收下 ${items.length()} 项，偏少说明预算换算系数偏大", items.length() > 750)
+        assertTrue("收下 ${items.length()} 项，偏多说明换算系数偏小", items.length() < 1000)
+        // ⚠️ 旧实现的 1228 项在这里会被上界挡下 —— 那是「结果发不出去」的信号
     }
 
     @Test

@@ -263,27 +263,21 @@ class VFlowHookEntry : XposedModule() {
         //
         // ⚠️⚠️ **这里是全部 ③ 响应的唯一出口**。
         //
-        // 分页两键（`next_cursor` / `truncated`）的**编码规则**
-        //（非空白才写 / true 才写）由 `CapabilityInvocationCodec` 负责 ——
-        // 若在别处再编一次信封，就会出现「有的带标志有的不带」（§3.6 明令要避免）。
+        // ⚠️ 本 lambda 现在**只负责发送**，不再编码 ——
+        // 信封由 `HookCapabilityRuntime` 内部用 `CapabilityInvocationCodec.encodeResponse` 编好
+        // 后**原样**传进来。
         //
-        // ⚠️ `ok = error == null`：与 codec 的契约一致
-        //（`decodeResponse` 会反向校验「ok=false 必须带 error」）。
+        // ## 为什么必须这样（2026-10-01 真机实测缺陷的修复）
+        //
+        // 旧形态是「运行时给出七个字段 → 本 lambda 编码 → 发送」，
+        // 于是运行时的**预算校验**手里只有 `resultJson`，量不到真正发出去的信封
+        // ⇒ 实测撞 `TransactionTooLargeException`（`data parcel size 533700 bytes`）。
+        //
+        // 改成收**已编好的信封串**后，「量的对象」与「发的对象」在类型上就是同一个，
+        // 结构上不可能再不一致。分页两键的编码规则也回到 `xposed/` 内部，
+        // 没有散到外面（§3.6 的立意）。
         val executor = HookCapabilityRuntime(
-            respond = { requestId, resultJson, nextCursor, truncated, elapsedMs, token, error ->
-                transport.resolve(
-                    CapabilityInvocationCodec.encodeResponse(
-                        requestId = requestId,
-                        ok = error == null,
-                        resultJson = resultJson,
-                        error = error,
-                        nextCursor = nextCursor,
-                        truncated = truncated,
-                        elapsedMs = elapsedMs,
-                        token = token,
-                    ),
-                )
-            },
+            respond = { envelopeJson -> transport.resolve(envelopeJson) },
         )
         transport.onInvoke { executor.onInvoke(it) }
         transport.onCapabilities { executor.capabilitiesJson() }

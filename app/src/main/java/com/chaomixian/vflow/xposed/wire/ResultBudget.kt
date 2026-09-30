@@ -52,8 +52,38 @@ object ResultBudget {
      *
      * ⚠️ 这是**上限**，不是目标 —— 单个 capability 可以声明更小的值
      *（`Capability.maxResultBytes`）。声明得越小越安全。
+     *
+     * ⚠️⚠️ **它是「结果的 UTF-8 字节」口径，不是「信封的 parcel 字节」** ——
+     * 后者才是能否发得出去的判据，见 [MAX_ENVELOPE_PARCEL_BYTES]。
      */
     const val DEFAULT_MAX_RESULT_BYTES = 256 * 1024
+
+    /**
+     * 信封能占用的**传输上限**（parcel 字节）—— 这是能否发得出去的硬边界。
+     *
+     * ## ⚠️⚠️ 为什么必须有这个常量（2026-10-01 真机实测暴露的缺陷）
+     *
+     * 旧实现只有 [DEFAULT_MAX_RESULT_BYTES]，终检也只量 `result` 字段 ⇒
+     * 一个 `result` 恰好 256 KiB 的响应，装进信封后是 **533,700 字节**
+     * ⇒ 撞上 oneway 的异步半缓冲（≈508 KiB）⇒ `TransactionTooLargeException`。
+     *
+     * 那一刻日志的形状极具误导性：「结果超预算，已截断：收下 1228/2000 项，
+     * nextCursor=1228」**紧跟**「resolve 异常：TransactionTooLargeException」——
+     * 截断看着成功、发送接着失败。
+     *
+     * ## 取值依据（见 [ResultBudget] 类注释的缓冲表）
+     *
+     * oneway 走**单独的异步半边**（`free_async_space = buffer_size / 2` ≈ 508 KiB），
+     * 而它**与同连接上所有在途的 `report` 事件共享**。
+     * 取 384 KiB 是「留够余量」与「尽量装下内容」的折中 ——
+     * 实测撞线的 533,700 字节确实高于它。
+     *
+     * ⚠️ 与 [DEFAULT_MAX_RESULT_BYTES] 的关系是**换算**而非并存：
+     * 256 KiB 的结果 ≈ 512 KiB+ 的信封 ⇒ 默认值本身就会撞线。
+     * ⇒ 预算取「按结果上限换算」与「本传输上限」的 **min**
+     *（换算见 `InvokePolicy.envelopeParcelBudget`）。
+     */
+    const val MAX_ENVELOPE_PARCEL_BYTES = 384 * 1024
 
     /**
      * UTF-8 字节数 —— **全仓唯一的口径处**。

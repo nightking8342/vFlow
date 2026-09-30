@@ -592,6 +592,56 @@ running out of binder buffer space
 > ⚠️ **截断发生在「产出」而不是「序列化后」** —— handler 组结果时就按上限收，
 > 不是拼完大对象再砍（后者内存已经占过，且跑在 system_server 里）。
 
+#### ⚠️⚠️ 契约 2 的补充：**校验对象必须是实际发出的信封，不是 `result` 字段**
+
+> **2026-10-01 真机实测（小米 MIX Fold 3 / Android 17 / LSPosed 2.2.0）暴露的真实缺陷。**
+
+这条原先只说「主动截断」，**没说清截什么**。第一版实现截的是 `result` 字段的
+**UTF-8 字节**，于是：
+
+```
+00:58:53.878  VFlowHook  结果超预算，已截断：收下 1228/2000 项，nextCursor=1228
+00:58:53.882  VFlowHook  resolve 异常：TransactionTooLargeException
+                          data parcel size 533700 bytes
+App 侧         Failed(TIMEOUT, 调用被取消（等待 5000ms 内未完成）)
+```
+
+**截断成功了，发送失败了** —— 而 App 侧只看到超时，排查方向完全错掉。
+
+##### 根因：两个口径差了 2 倍，且是**结构性的**
+
+响应是**双层 JSON**：`result` 是一个**字符串**，装进 `IHookHost.resolve` 的信封里。
+
+| 量 | 值（1228 个元素的 `huge` 夹具） |
+|---|---|
+| `resultJson`（单层，UTF-8） | 259,237 字节 ← **旧判据量的是它** |
+| 信封串（二次转义后） | 266,757 **字符** |
+| **信封的 parcel 字节** | **533,514**（实测 533,700，差 186 = 信封外固定开销）|
+
+⚠️ **「翻倍」的主因不是二次转义**（对全 ASCII 载荷只占 1.03×），而是
+**binder 把 AIDL 字符串按 UTF-16 代码单元 × 2 字节写进 parcel**（`writeString16`）。
+按「转义翻倍」理解会在纯 ASCII 载荷上算错 —— 两者结论相同（都是翻倍），
+但**成因不同，修法不同**。
+
+##### 修法（结构性，而非调参数）
+
+**让「校验对象」与「发送对象」在类型上就是同一个**：
+
+1. 编码**移进执行运行时**（`HookCapabilityRuntime`），出口
+   `CapabilityResponder` 从「收七个字段」改成「**收一个已编好的信封串**」；
+2. 预算按信封 parcel 算（`InvokePolicy.itemEnvelopeCost`），
+   **并受传输上限 `ResultBudget.MAX_ENVELOPE_PARCEL_BYTES`（384 KiB）封顶**；
+3. 终检量 `encodeResponse(...)` 的**返回值** —— 而那**正是**交给出口的那个串。
+
+⚠️ **另一条容易漏的**：预算换算后，**「内容预算」与「终检上限」必须是两个数**。
+`collectWithin` 会把给它的上限**用满**，而序列化还要额外付信封的固定键
+⇒ 拿内容预算去终检会**必然判超限**（改第一版时就踩了这个，3 条用例同时变红）。
+
+⚠️ **教训（与本仓库既有教训同源）**：71 个单测全绿而缺陷漏网，因为它们
+「经过的是**类型**，不是**传输**」—— 断言字段内容测不出字节口径差 2 倍。
+⇒ 回归锁必须是**按信封 parcel 字节断言**的用例（见
+`HookCapabilityRuntimeTest.the check measures the envelope not the result field`）。
+
 > ⚠️ **若将来真的需要传大块数据**：**不要加大上限**，改用带外通道
 > （`ParcelFileDescriptor` / 共享内存 / 上面的「句柄 + 双向取回」）。
 > 本仓库的 `artifact://` 就是同类思路。
@@ -834,7 +884,7 @@ Rhino 的指令级中断是靠**抛异常**打断的。这个异常必须在 hoo
 | 层 | 实现现状 |
 |---|---|
 | App 侧配对表 | ⚠️ **配对表零代码**（T1 的 App 侧调用运行时尚未合入本分支）——`HookChannelController` 里 `registerWaiter` / `failAllWaiters` / 断连唤醒**已实现**，但**没有发起调用的入口** |
-| hook 侧总时长 | ✅ **已实现**（2026-09-30，`xposed/capabilities/HookCapabilityRuntime`）—— 工作线程跑完 handler 后算 `elapsedMs`，`> budget` 回 `TIMEOUT`。⚠️ 是**事后判定**，不是看门狗（见下） |
+| hook 侧总时长 | ✅ **已实现**（2026-09-30，`xposed/capabilities/HookCapabilityRuntime`）—— 工作线程跑完 handler 后算 `elapsedMs`，`> budget` 回 `TIMEOUT`。⚠️ 是**事后判定**，不是看门狗（见下）。**2026-10-01 真机复验通过**（`elapsedMs=1751 > budget=1500` ⇒ `timeout`） |
 | Rhino 指令级 | ⚠️ **只有 survey 里的实验记录** —— 全仓 grep **无** `InstructionObserver` / `observeInstructionCount` |
 
 ⇒ App 侧那一层**仍然不要当成「已具备的能力」**：配对表**有**、发起方**没有**。
