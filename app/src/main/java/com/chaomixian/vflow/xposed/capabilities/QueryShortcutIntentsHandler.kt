@@ -64,10 +64,6 @@ class QueryShortcutIntentsHandler : CapabilityHandler {
             JSONObject()
         }
 
-        // ⚠️ 空参数 = 「查全部包」的语义**刻意不支持**：
-        // 全量遍历要跨 130+ 个包、每条都可能被 clone/序列化，
-        // 在我们只有 2 个工作线程的前提下会长时间占满池子。
-        // 而选择器**总是带着具体包名**调用（它就是按包列快捷方式的）⇒ 不构成功能缺口。
         val packageName = params.optString(KEY_PACKAGE_NAME).trim()
         // ⚠️⚠️ **空 `package_name` = 查全部包**（不是错误）
         //

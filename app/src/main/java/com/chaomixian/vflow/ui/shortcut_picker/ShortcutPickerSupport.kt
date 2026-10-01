@@ -48,35 +48,154 @@ object ShortcutPickerSupport {
      * 这是**替换型**能力（`Capability.fallback != null`）⇒ 有替代实现就**不该失败**，
      * 只是更差。`CapabilityInvokeOutcome.Degraded` 已把这个语义表达在类型上。
      */
-    suspend fun loadShortcutsWithFallback(context: Context): LoadResult =
-        when (
-            val outcome = com.chaomixian.vflow.core.xposed.CapabilityInvoker.invokeOrFallback(
-                capability = com.chaomixian.vflow.xposed.capability.CapabilityNames.QUERY_SHORTCUT_INTENTS,
-                params = emptyMap(),
-            )
-        ) {
-            is com.chaomixian.vflow.xposed.capability.CapabilityInvokeOutcome.Success ->
-                LoadResult(items = loadShortcuts(context), degraded = false)
+    suspend fun loadShortcutsWithFallback(context: Context): LoadResult {
+        val outcome = com.chaomixian.vflow.core.xposed.CapabilityInvoker.invokeOrFallback(
+            capability = com.chaomixian.vflow.xposed.capability.CapabilityNames.QUERY_SHORTCUT_INTENTS,
+            params = emptyMap(),
+        )
 
-            // ⚠️ 降级：**静默换源 + 留痕**。`reason.code` 只用于日志，
-            // 界面文案**不按 code 分支**（§6.4 约束 2：detail 与 code 都可能本地化，
-            // 而这里需要的只是「告诉用户走了有损路径」这一件事）
-            is com.chaomixian.vflow.xposed.capability.CapabilityInvokeOutcome.Degraded ->
-                LoadResult(
-                    items = loadShortcuts(context),
-                    degraded = true,
-                    notice = DEGRADED_NOTICE,
-                )
-
-            // ⚠️ 独占型才会走到这里；本能力是替换型 ⇒ 只有「降级实现自己也坏了」一种成因。
-            // 此时仍**尽力**给 dumpsys 的结果（连降级都失败时至少别显示空白）
-            is com.chaomixian.vflow.xposed.capability.CapabilityInvokeOutcome.Failed ->
-                LoadResult(
-                    items = loadShortcuts(context),
-                    degraded = true,
-                    notice = DEGRADED_NOTICE,
-                )
+        // ⚠️⚠️ **成功分支必须真的用 `result`** —— 这是本方法存在的全部意义。
+        //
+        // 我第一版三个分支**都调 `loadShortcuts(context)`**（dumpsys）⇒
+        // ③ 拿到的无损结果**被整个丢掉**，选择器实际**没换源**，
+        // 而且 `Success` 还对外谎报 `degraded=false`、不留痕。
+        // 这是「能力接线了但空转」——本仓库反复踩的坑，由独立评审抓出。
+        //
+        // ⚠️ 失败而 `items` 为空时**不要**回落到 dumpsys：那是**假成功**。
+        // 宁可返回空 + 留痕，让用户知道「没读到」而不是拿到一份来源不明的旧数据。
+        if (outcome is com.chaomixian.vflow.xposed.capability.CapabilityInvokeOutcome.Success) {
+            val lossless = itemsFromLossless(outcome.result)
+            return LoadResult(items = lossless, degraded = false)
         }
+
+        // ── 降级 / 失败：走 dumpsys（有损），**必须留痕** ──
+        //
+        // ⚠️ 两个分支合并处理是**对**的：对调用方而言处置完全一样
+        //（`Failed` 在替换型里只可能是「降级实现自己也坏了」）。
+        // `CapabilityInvokeOutcome` 的 KDoc 也是这个口径。
+        return LoadResult(
+            items = loadShortcuts(context),
+            degraded = true,
+            notice = DEGRADED_NOTICE,
+        )
+    }
+
+    /**
+     * 把 ③ 的**无损结果**映射成列表项。
+     *
+     * ## ⚠️ 与降级路径的差别（这正是「无损」两个字的落点）
+     *
+     * | | 无损（本方法） | 降级（dumpsys） |
+     * |---|---|---|
+     * | dat | ✅ 完整 | ❌ 18.1% 被省略 |
+     * | extras 类型 | ✅ **带 `type`** | ❌ 靠 `length < 10` 猜 |
+     *
+     * ⇒ `extras` 的 `type` 必须**原样传下去**（见 [buildLaunchCommandFromIntent]），
+     * 整条链里**任何一处把它丢掉**，米家那个「String 被猜成 Long」的故障就会原样复发。
+     *
+     * ⚠️ `result["items"]` 是 hook 层的产出列表；缺失或类型不符时**返回空**而不是抛
+     *（降级/失败路径已在外层处理，这里再抛只会把「读不到」变成崩溃）。
+     */
+    @Suppress("UNCHECKED_CAST")
+    private fun itemsFromLossless(result: Map<String, Any?>): List<ShortcutPickerItem> {
+        val raw = result["items"] as? List<*> ?: return emptyList()
+        val pm = requireContextOrNull()?.packageManager
+        return raw.filterIsInstance<Map<String, Any?>>().mapNotNull { m ->
+            val pkg = m["package_name"]?.toString().orEmpty()
+            val label = m["shortcut_label"]?.toString().orEmpty()
+            if (pkg.isBlank() || label.isBlank()) return@mapNotNull null
+
+            val activity = m["activity_name"]?.toString().orEmpty()
+            val command = buildLaunchCommandFromIntent(m) ?: return@mapNotNull null
+            ShortcutPickerItem(
+                appName = pm?.let { loadAppName(it, pkg) } ?: pkg,
+                packageName = pkg,
+                shortcutLabel = label,
+                activityName = activity,
+                launchCommand = command,
+                icon = pm?.let { loadAppIcon(it, pkg) },
+            )
+        }.distinctBy { it.stableId }
+    }
+
+    /**
+     * 从**结构化 Intent**（③ 的产物）构造 `am start` 命令。
+     *
+     * ## ⚠️⚠️ 这是「无损」相对 dumpsys 的**全部价值所在**
+     *
+     * dumpsys 路径走 [buildLaunchCommand]，它**只有文本** ⇒ extras 的类型只能靠
+     * `length < 10` 这类启发式去猜。米家 `extra_scene_account=1462285899` 就此被猜成
+     * `--el`（Long），而米家 `getString()` 读它 ⇒ `null` ⇒ 报「无账号权限」。
+     *
+     * 本方法拿到的是**带 `type` 的结构化数据** ⇒ 按 `type` **精确**选 flag，
+     * 不再猜。⇒ 米家那条会得到 `--es`（String），问题消失。
+     *
+     * 支持的 `type` 与 flag 的对应（`am` 的 extras 参数表）：
+     * `String`→`--es` / `Integer`→`--ei` / `Long`→`--el` / `Float`→`--ef` /
+     * `Double`→`--ed`（⚠️ `am` 用 `--ed` 表示 double，不是 `--ef`）/
+     * `Boolean`→`--ez` / 数组类→`--eia`(int) / `--ela`(long) / `--esa`(string) /
+     * 其它→`--es`（兜底，与 dumpsys 路径同款）
+     */
+    internal fun buildLaunchCommandFromIntent(item: Map<String, Any?>): String? {
+        val action = item["intent_action"]?.toString()
+        val data = item["intent_data"]?.toString()
+        val component = item["intent_component"]?.toString()
+        val packageName = item["intent_package"]?.toString()
+        val flags = item["intent_flags"]
+        @Suppress("UNCHECKED_CAST")
+        val categories = item["intent_categories"] as? List<*>
+
+        // ⚠️ 一个定位信息都没有 ⇒ 这条命令启动不了任何东西。
+        // 返回 null（与 dumpsys 路径同款：`intentData.isEmpty()` 时也返回 null）
+        if (action.isNullOrBlank() && data.isNullOrBlank() && component.isNullOrBlank()) {
+            return null
+        }
+
+        return buildString {
+            append("am start")
+            action?.takeIf { it.isNotBlank() }?.let { append(" -a ").append(shellQuote(it)) }
+            packageName?.takeIf { it.isNotBlank() }?.let { append(" -p ").append(shellQuote(it)) }
+            component?.takeIf { it.isNotBlank() }?.let { append(" -n ").append(shellQuote(it)) }
+            data?.takeIf { it.isNotBlank() }?.let { append(" -d ").append(shellQuote(it)) }
+            if (flags is Number && flags.toInt() != 0) {
+                // ⚠️ `am` 的 `-f` 收**十六进制**（与 dumpsys 路径 `-f 0x10000000` 一致）
+                append(" -f 0x").append(Integer.toHexString(flags.toInt()))
+            }
+            categories?.forEach { c ->
+                c?.toString()?.takeIf { it.isNotBlank() }?.let {
+                    append(" -c ").append(shellQuote(it))
+                }
+            }
+            @Suppress("UNCHECKED_CAST")
+            (item["extras"] as? List<*>)?.forEach { e ->
+                val em = e as? Map<*, *> ?: return@forEach
+                val key = em["key"]?.toString()
+                val value = em["value"]?.toString()
+                if (key.isNullOrBlank() || value == null) return@forEach
+                append(' ').append(extraFlagFor(em["type"]?.toString())).append(' ')
+                append(shellQuote(key)).append(' ').append(shellQuote(value))
+            }
+        }
+    }
+
+    /**
+     * `type`（`javaClass.simpleName`）→ `am` 的 extras flag。
+     *
+     * ⚠️ **必须按 type 精确选，不能猜** —— 猜就是 dumpsys 路径的错法。
+     * ⚠️ 未知类型走 `--es`（与 dumpsys 路径的兜底一致），但**这在无损路径上几乎不会发生**
+     *（hook 层给的是真实 `javaClass`）。
+     */
+    private fun extraFlagFor(type: String?): String = when (type) {
+        "Integer", "int" -> "--ei"
+        "Long", "long" -> "--el"
+        "Float", "float" -> "--ef"
+        "Double", "double" -> "--ed"     // ⚠️ am 用 --ed 表示 double
+        "Boolean", "boolean" -> "--ez"
+        "int[]", "Integer[]" -> "--eia"
+        "long[]", "Long[]" -> "--ela"
+        "String[]" -> "--esa"
+        else -> "--es"
+    }
 
     /**
      * 降级留痕文案。

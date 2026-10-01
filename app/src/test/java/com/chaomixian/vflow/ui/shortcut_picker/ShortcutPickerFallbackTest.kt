@@ -133,4 +133,127 @@ class ShortcutPickerFallbackTest {
         assertTrue(r.degraded)
         assertEquals("x", r.notice)
     }
+
+    // ══ ⭐ 行为级：无损路径的 extras **类型**必须变成正确的 flag ══════
+    //
+    // ⚠️⚠️ 这一组是本文件**唯一能证明「米家问题被修好」**的测试。
+    //
+    // 上面那些源码扫描型断言只能证明「某段代码存在」，**证明不了行为对**——
+    // 我第一版就是：三个分支都调 dumpsys、`outcome.result` 零消费，
+    // 而全部源码扫描断言**照样全绿**（独立评审抓出来的）。
+    //
+    // ⇒ 这里直接喂结构化的 item，断言产出的命令。
+
+    @Test
+    fun `lossless extras use the flag matching their declared type`() {
+        // ⚠️ 米家那条：`extra_scene_account=1462285899` 是 **String**，
+        // 而 dumpsys 路径按 `length < 10` 猜会得到 `--el`（Long）
+        // ⇒ 米家 `getString()` 读到 null ⇒ 报「无账号权限」。
+        // 无损路径拿到真实类型 ⇒ 必须是 `--es`。
+        val cmd = ShortcutPickerSupport.buildLaunchCommandFromIntent(
+            mapOf(
+                "intent_action" to "com.xiaomi.smarthome.scene.smarthomelauncher",
+                "intent_component" to "com.xiaomi.smarthome/.scene.activity.SmartHomeLauncherActivity",
+                "extras" to listOf(
+                    mapOf("key" to "extra_scene_account", "type" to "String", "value" to "1462285899"),
+                ),
+            ),
+        )
+        requireNotNull(cmd)
+        assertTrue(
+            "❌ String 类型的 extras 必须用 --es —— 这正是米家「无账号权限」那个故障的修法。\n" +
+                "（dumpsys 路径会因 `length < 10` 猜成 --el，本测试锁的就是它不被重演。）\n实际：$cmd",
+            cmd.contains("--es 'extra_scene_account' '1462285899'"),
+        )
+        assertTrue("不该出现 --el", !cmd.contains("--el"))
+    }
+
+    @Test
+    fun `lossless extras pick flags per type not by guessing`() {
+        fun cmd(type: String, value: String) = ShortcutPickerSupport.buildLaunchCommandFromIntent(
+            mapOf(
+                "intent_action" to "a",
+                "extras" to listOf(mapOf("key" to "k", "type" to type, "value" to value)),
+            ),
+        ).orEmpty()
+
+        // ⚠️ 逐类型验证 —— 尤其是 `Double` → `--ed`（`am` 的 double 不是 `--ef`，
+        //    这个很容易写错，而写错的表现是「参数类型不对」而非「崩溃」）
+        assertTrue("Integer → --ei", cmd("Integer", "5").contains("--ei 'k' '5'"))
+        assertTrue("Long → --el", cmd("Long", "5").contains("--el 'k' '5'"))
+        assertTrue("Float → --ef", cmd("Float", "1.5").contains("--ef 'k' '1.5'"))
+        assertTrue("Double → --ed", cmd("Double", "1.5").contains("--ed 'k' '1.5'"))
+        assertTrue("Boolean → --ez", cmd("Boolean", "true").contains("--ez 'k' 'true'"))
+        assertTrue("String[] → --esa", cmd("String[]", "a, b").contains("--esa 'k' 'a, b'"))
+        // 未知类型走兜底（应与 dumpsys 路径同款）
+        assertTrue("未知类型兜底 --es", cmd("Weird", "x").contains("--es 'k' 'x'"))
+    }
+
+    @Test
+    fun `lossless command carries dat and component`() {
+        val cmd = ShortcutPickerSupport.buildLaunchCommandFromIntent(
+            mapOf(
+                "intent_action" to "android.intent.action.VIEW",
+                "intent_data" to "imeituan://www.meituan.com/scan",
+                "intent_component" to "com.sankuai.meituan/.MainActivity",
+                "intent_flags" to 0x10000000,
+            ),
+        )
+        requireNotNull(cmd)
+        assertTrue("dat 是 dumpsys 路径丢的那 18.1% —— 必须带上:\n$cmd", cmd.contains("-d 'imeituan://"))
+        assertTrue("component 必须带上", cmd.contains("-n 'com.sankuai.meituan/.MainActivity'"))
+        assertTrue("flags 必须是十六进制", cmd.contains("-f 0x10000000"))
+    }
+
+    @Test
+    fun `lossless command returns null when no locating info at all`() {
+        // ⚠️ 与 dumpsys 路径同款语义：一个定位信息都没有 ⇒ 这条命令启动不了任何东西。
+        // 返回 null 让调用方**跳过**它，而不是产出一条 `am start` 空命令（那会启动到首页）。
+        assertEquals(
+            null,
+            ShortcutPickerSupport.buildLaunchCommandFromIntent(
+                mapOf("shortcut_label" to "只有标签", "extras" to emptyList<Any>()),
+            ),
+        )
+    }
+
+    @Test
+    fun `success branch actually consumes the capability result`() {
+        // ⚠️⚠️ 这条锁的是**接线本身**（源码级）：`Success` 分支必须消费 `outcome.result`，
+        // 而不是像第一版那样**三个分支都调 `loadShortcuts`**（dumpsys）——
+        // 那种写法下 ③ 的结果被整个丢掉、选择器根本没换源，而**所有形状类断言照样全绿**。
+        val code = codeOf(support)
+        // ⚠️ 用**括号配平**切出 `if (outcome is …Success) { … }` 这个块 ——
+        // 不能靠「找下一个分支关键字」或固定长度窗口：
+        //   · 固定 300 字符会越界抓进降级分支的 `loadShortcuts(context)`（我第一版就是这么误判的）
+        //   · 找 `Degraded` 也失效 —— 外层那个 `when` 已改成 `if + 无条件 return`，
+        //     Success 之后**没有** Degraded 标记了
+        val successAt = code.indexOf("CapabilityInvokeOutcome.Success)")
+        assertTrue("应能找到 Success 分支的判断", successAt >= 0)
+        val open = code.indexOf('{', successAt)
+        assertTrue("Success 分支应当是带块的形式", open >= 0)
+        var depth = 0
+        var end = open
+        for (i in open until code.length) {
+            when (code[i]) {
+                '{' -> depth++
+                '}' -> {
+                    depth--
+                    if (depth == 0) { end = i; break }
+                }
+            }
+        }
+        val successBlock = code.substring(open, end + 1)
+        assertTrue("应能切出非空的 Success 块（否则本条在空转）", successBlock.length > 20)
+        assertTrue(
+            "❌ Success 分支**必须**消费 `outcome.result` —— 否则 ③ 白调了，选择器仍走 dumpsys。\n" +
+                "实际片段：$successBlock",
+            successBlock.contains("outcome.result"),
+        )
+        assertTrue(
+            "❌ Success 分支不得回落到 `loadShortcuts`（那是有损的 dumpsys 路径）\n" +
+                "实际片段：$successBlock",
+            !successBlock.contains("loadShortcuts(context)"),
+        )
+    }
 }
