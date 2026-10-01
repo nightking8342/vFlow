@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="module_description">快捷方式探针：验证能否在 system_server 内读到完整 ShortcutInfo（只打日志，不做业务）</string>
+</resources>

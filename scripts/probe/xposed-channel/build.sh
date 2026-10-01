@@ -306,6 +306,108 @@ build_hookprobe() {
   echo "✓ $OUT/hookprobe.apk"
 }
 
+# ═══════════════════════════════════════════════════════════════
+# shortcutprobe：快捷方式探针（libxposed 模块，注入 system_server）
+# ═══════════════════════════════════════════════════════════════
+#
+# 目的：验掉 xposed-capability-invocation-design.md §6.2 的五项【推断】。
+# 与 hookprobe 同构（同一个 aar、同一套谱文件规则、同一条打包链路），
+# 差别只在：包名、入口类、以及**探针主体**（那个在 src/ 下）。
+#
+# ⚠️ 本函数是**纯追加**，没有改动 build_hookprobe() 一个字。
+build_shortcutprobe() {
+  local src="$HERE/shortcut-probe"
+  local w="$WORK/shortcutprobe"
+  rm -rf "$w"; mkdir -p "$w/classes"
+
+  echo "── [shortcutprobe] 准备 API + service 的 classes.jar ──"
+  # ⚠️ 两个 artifact 缺一不可（同 build_hookprobe 的说明）：
+  #    api     — compileOnly，编译期用
+  #    service — **必须打进 APK**！它提供 XposedProvider 的实现类，
+  #              只声明 provider 不打包实现 ⇒ 模块【静默不加载、零报错】。已实际踩过。
+  local api_aar="$src/libs/api-102.0.0.aar"
+  local svc_aar="$src/libs/service-102.0.0.aar"
+  [ -f "$api_aar" ] || { echo "✗ 缺 $api_aar" >&2; return 1; }
+  [ -f "$svc_aar" ] || { echo "✗ 缺 $svc_aar" >&2; return 1; }
+  ( cd "$w" && unzip -o -q "$api_aar" classes.jar && mv classes.jar api.jar )
+  ( cd "$w" && unzip -o -q "$svc_aar" classes.jar && mv classes.jar service.jar )
+  ( cd "$w" && unzip -o -q "$svc_aar" AndroidManifest.xml && mv AndroidManifest.xml service-manifest.xml )
+
+  echo "── [shortcutprobe] javac ──"
+  local sources; sources="$(find "$src/src" -name '*.java')"
+  [ -z "$sources" ] && { echo "✗ $src/src 下没有 .java" >&2; return 1; }
+  # ⚠️ classpath 上的 jar 必须【同一种路径风格】（Windows javac 会把
+  #    "D:/x.jar:/d/y.jar" 整体当成一个路径）。见 build_hookprobe 的同款注释。
+  local aj; aj="$(cygpath -w "$ANDROID_JAR")"
+  local api_jar; api_jar="$(cygpath -w "$w/api.jar")"
+  local svc_jar; svc_jar="$(cygpath -w "$w/service.jar")"
+  # shellcheck disable=SC2086
+  javac -nowarn -classpath "$aj;$api_jar;$svc_jar" -d "$w/classes" $sources
+  [ -n "$(find "$w/classes" -name '*.class' 2>/dev/null)" ] || { echo "✗ javac 失败" >&2; return 1; }
+
+  echo "── [shortcutprobe] d8（模块类 + service 实现类，一次编译）──"
+  ( cd "$w" && rm -rf svcclasses && mkdir -p svcclasses \
+      && unzip -o -q service.jar 'io/github/libxposed/service/*' -d svcclasses )
+  # shellcheck disable=SC2086
+  "$D8" --min-api 29 --lib "$ANDROID_JAR" \
+        --classpath "$(cygpath -w "$w/api.jar")" \
+        --output "$w" \
+        $(find "$w/classes" -name '*.class') \
+        $(find "$w/svcclasses" -name '*.class')
+  [ -f "$w/classes.dex" ] || { echo "✗ d8 失败" >&2; return 1; }
+  # 断言①：provider 实现类真的进了 dex
+  grep -aq "io/github/libxposed/service/XposedProvider" "$w/classes.dex" \
+    || { echo "✗ XposedProvider 实现类没进 dex" >&2; return 1; }
+
+  echo "── [shortcutprobe] aapt2 compile + link ──"
+  "$AAPT2" compile --dir "$src/res" -o "$w/res.zip"
+  "$AAPT2" link -o "$w/base.apk" -I "$ANDROID_JAR" \
+       --manifest "$src/AndroidManifest.xml" \
+       --min-sdk-version 29 --target-sdk-version 36 "$w/res.zip"
+  # 断言②：provider 声明在 manifest 里
+  "$AAPT2" dump xmltree --file AndroidManifest.xml "$w/base.apk" 2>/dev/null \
+    | grep -q "XposedProvider" \
+    || { echo "✗ XposedProvider 不在 manifest 里（模块将不被加载）" >&2; return 1; }
+
+  echo "── [shortcutprobe] 注入 dex + META-INF/xposed ──"
+  cp "$w/base.apk" "$w/merged.apk"
+  ( cd "$w" && jar uf merged.apk classes.dex )
+  [ -f "$w/classes2.dex" ] && ( cd "$w" && jar uf merged.apk classes2.dex )
+  ( cd "$src/resources" && jar uf "$w/merged.apk" META-INF/xposed )
+  # 断言③：META-INF/xposed/ 真的进包了（否则 LSPosed 不认识它是模块）
+  unzip -l "$w/merged.apk" | grep -q "META-INF/xposed/java_init.list" \
+    || { echo "✗ META-INF/xposed/ 未进包（LSPosed 将无法识别为模块）" >&2; return 1; }
+
+  # 断言④：三个谱文件【不含注释】—— 实测带 '#' 注释会让模块【静默不加载】且零报错
+  for f in module.prop scope.list java_init.list; do
+    if unzip -p "$w/merged.apk" "META-INF/xposed/$f" 2>/dev/null | grep -q '^#'; then
+      echo "✗ META-INF/xposed/$f 含注释行 —— 会导致模块静默不加载，必须去掉" >&2
+      return 1
+    fi
+    # 断言⑤（新增）：不得是 CRLF —— Windows 下极易被编辑器改成 CRLF，
+    # 而框架读错时同样**静默不加载**
+    if unzip -p "$w/merged.apk" "META-INF/xposed/$f" 2>/dev/null | grep -q $'\r'; then
+      echo "✗ META-INF/xposed/$f 含 CR（CRLF 行尾）—— 框架读错会静默不加载" >&2
+      return 1
+    fi
+  done
+
+  echo "── [shortcutprobe] 最终校验 ──"
+  "$AAPT2" dump xmltree --file AndroidManifest.xml "$w/merged.apk" 2>/dev/null \
+    | grep -q "XposedProvider" \
+    || { echo "✗ 最终 APK 里没有 XposedProvider" >&2; return 1; }
+  echo "    ✓ XposedProvider 在 · ✓ META-INF/xposed/ 在"
+
+  "$ZIPALIGN" -f -p 4 "$w/merged.apk" "$w/aligned.apk"
+
+  echo "── [shortcutprobe] 签名 ──"
+  local dbg="$HOME/.android/debug.keystore"
+  "$APKSIGNER" sign --ks "$dbg" --ks-key-alias androiddebugkey \
+      --ks-pass pass:android --key-pass pass:android \
+      --out "$OUT/shortcutprobe.apk" "$w/aligned.apk"
+  echo "✓ $OUT/shortcutprobe.apk"
+}
+
 # ---------- 主流程 ----------
 MODE="${1:-}"
 build_apk "$HERE/fake-vflow/src" "$HERE/fake-vflow/AndroidManifest.xml" \
@@ -326,11 +428,22 @@ case "$MODE" in
     ;;
 esac
 
+# 快捷方式探针：只构建，不随 hookprobe 一起（它有自己的安装流程与作用域）
+case "$MODE" in
+  shortcutprobe|all|install-shortcutprobe)
+    build_shortcutprobe
+    ;;
+esac
+
 case "$MODE" in
   install|verify) install_both ;;
   install-hookprobe)
     adb uninstall com.vflow.hookprobe.xposed >/dev/null 2>&1
     adb install -r -t "$OUT/hookprobe.apk"
+    ;;
+  install-shortcutprobe)
+    adb uninstall com.vflow.shortcutprobe.xposed >/dev/null 2>&1
+    adb install -r -t "$OUT/shortcutprobe.apk"
     ;;
 esac
 

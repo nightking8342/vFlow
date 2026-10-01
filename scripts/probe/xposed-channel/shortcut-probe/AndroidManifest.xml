@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  快捷方式探针：注入 system_server，验掉 §6.2 的五项【推断】。
+
+  ⚠️ 这是**探针 APK**，与 vFlow 无关，不进 vFlow 的 :app 模块。
+  它只声明「我是一个 libxposed 模块」，其余全在 META-INF/xposed/ 下。
+
+  模块元数据（minApiVersion / targetApiVersion / scope）都不在 manifest 里，
+  而在 META-INF/xposed/module.prop 与 scope.list。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    package="com.vflow.shortcutprobe.xposed">
+
+    <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="36" />
+
+    <application
+        android:label="vFlow ShortcutProbe"
+        android:description="@string/module_description"
+        android:hasCode="true">
+
+        <!--
+          ⚠️⚠️ 【必需】libxposed 框架通过这个 ContentProvider 与模块通信。
+
+          两条都要满足，缺一不可：
+            1. 本声明（框架靠它找到入口）
+            2. **对应的实现类** —— `io.github.libxposed.service.XposedProvider`
+               在 service 的 classes.jar 里，构建脚本会把它一起打进 dex。
+          只声明不打包实现 ⇒ 框架加载失败 ⇒ 模块【静默不加载】
+          （症状：勾选了、重启了、logcat 一条日志都没有）。已实际踩过。
+        -->
+        <provider
+            android:name="io.github.libxposed.service.XposedProvider"
+            android:authorities="com.vflow.shortcutprobe.xposed.XposedService"
+            android:exported="true"
+            tools:ignore="ExportedContentProvider" />
+
+    </application>
+
+</manifest>
