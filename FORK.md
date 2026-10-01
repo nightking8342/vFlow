@@ -442,6 +442,32 @@
 | `test/.../core/xposed/XposedDiagnosticsTest.kt`（新增，13 例） | fork 独有。重点是**反向断言**（锁「**不要**混到某一类里去」）：`payload_too_large` 的标题/正文都不等于 `channel_down`；`capability_absent` 同理（防用户被引去改本来正确的配置）；**只有 `channel_down` 用 LSPosed 标题**；`PAYLOAD_TOO_LARGE` 与 `TIMEOUT` 标题**必须相同**（同 `userAction()`）；**标题分组粒度必须等于 `userAction()` 分组粒度**（防手写一张「看起来差不多」的表）+ 逐对验证同处置同标题；**码仍是五个**（测试期的第二道锁，`bodyResOf` 的穷尽 `when` 是编译期锁）；**`messageFor` 的签名里不许有 `detail`**（反射断言参数表）；**源码扫描：生产代码不得对 `detail` 做判断**（扫所有提到 `CapabilityErrorCode` 的文件，⚠️ **必须先剥注释** —— 两个文件的注释正文里就写着 `if (detail.contains("…"))`，不剥会恒红）+ **防空转**（≥5 文件、剥注释后仍有代码行）；**三语 11 键齐全**（读三份 xml） | 我方 |
 | `test/.../services/TriggerServiceXposedNoticeWiringTest.kt`（新增，6 例） | fork 独有：**源码扫描型接线锚定**（形态照 `CoreDexFingerprintTest`）。锁住 `TriggerService` **真的**订阅了两条流、真的用了 `XposedReadiness` 的两个方法、真的走 `XposedDiagnostics.channelNoticeRes`、**`refreshXposedChannelNotice` 函数体内不出现 `saveWorkflow` / `isEnabled = false`**（需求硬约束 2 的机器化锁）、通知正文是条件式，外加一条**防空转**（函数体按大括号配对截取且跳过字符串字面量 —— 函数体里有 `joinToString { … }` 的插值）。⚠️ **存在理由**：本仓库在 `CoreLauncher` 上踩过「13 个纯函数单测全绿但调用点缺失」的坑 —— `TriggerService` 是 Android `Service`，纯 JVM 单测起不来它，接线只能在源码层锁 | 我方 |
 
+### Xposed 通道 ③ · **首个真实 capability**（`query_shortcut_intents`，2026-10-01）
+
+> ③ 的第三段落地，也是**它存在的理由**：拿 `ShortcutInfo` 的**完整 Intent + extras 真实类型**，
+> 把快捷方式选择器的数据源从 dumpsys（有损）换成无损。
+> 设计依据：`docs/fork/xposed-capability-invocation-design.md` §6；
+> 探针结论见 `.mindfs/tasks/plan-4.md` §9.0-bis（含**原路径被证伪**的 AOSP 源码依据）。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `app/src/main/java/.../xposed/capabilities/QueryShortcutIntentsHandler.kt`（新增） | fork 独有：③ 的首个真实 capability。⚠️⚠️ **取 Service 的方式与原设计不同（原设计被真机 + AOSP 源码双重证伪）**：原方案写 `LocalServices.getService(ShortcutService)`，实测**取不到** —— AOSP `ShortcutService.java:502` 只注册 `ShortcutServiceInternal`，**从不注册自己**（`:169` 它是 `IShortcutService.Stub`、`:678` 自己 `publishBinderService`）。✅ 正解是 `ServiceManager.getService("shortcut")`（hook 层与它同进程 ⇒ 拿到**本地对象**）。另含三个**纯读源码就能避免**的坑：① `matchFlags` 传 0 ⇒ `(si.getFlags() & shortcutFlags) != 0` 恒假、**必然 0 条**；② `getIntents()` 是 **`Intent[]` 数组**不是 `List`；③ `ctx.javaClass.classLoader` 是 `ContextImpl` 的 loader（加载不到系统类），必须 `ctx.getClassLoader()`。⚠️ **`package_name` 为空 = 查全部包**（选择器的实际用法），走反射遍历 `mUsers → mPackages → mShortcuts`，**按类型找候选、不写死字段名** | 我方 |
+| `app/src/main/java/.../xposed/capabilities/HookCapabilityRegistry.kt`（改） | `init` 追加一行 `register(QueryShortcutIntentsHandler())`（不重排既有注册） | **手动合并**（追加一行） |
+| `app/src/main/java/.../core/xposed/CapabilityFallbacks.kt`（改） | `registerAll()` 追加 `QUERY_SHORTCUT_INTENTS` 的注册。⚠️ **替换型**（`fallback != null` ⇒ Xposed 不可用时**静默降级**到 dumpsys + 留痕），`maxResultBytes = 128 KiB` | **手动合并**（追加） |
+| `app/src/main/java/.../ui/shortcut_picker/ShortcutPickerSupport.kt`（改） | ① 新增 `loadShortcutsWithFallback(context)`（换源入口，返回 `LoadResult(items, degraded, notice)`）；② 新增 `queryViaDumpsys(packageName)`（**降级实现**，**刻意复用** `loadShortcuts` 的整条解析链 —— 契约是「同入参、同形状、更差的实现」，另写一份会让升降级差异变成两个实现之间的差异）；③ 新增 `LoadResult` 数据类 | **手动合并** |
+| `app/src/main/java/.../ui/shortcut_picker/UnifiedShortcutPickerSheet.kt`（改） | ⚠️ **行为变更**：加载链路改走 `loadShortcutsWithFallback`；**前置条件放宽** —— 原先是「没 Shizuku/Root 就直接出提示、**连加载都不试**」，而 ③ 与 shell 权限无关 ⇒ 装了 Xposed 的设备会被**白白挡住**。空结果的三种成因分开处理（降级且无 shell / 降级但数据空 / 无损但数据空） | **手动合并** |
+| `test/.../ui/shortcut_picker/ShortcutPickerFallbackTest.kt`（新增） | fork 独有：**源码扫描型**（⚠️ **刻意不用构造字面量的写法** —— 那种测试**永远不会红**：第一版就是构造 `mapOf("source" to "dumpsys")` 断言它等于 dumpsys，反证时删掉源码里的字面量**测试照样全绿**）。改为扫源码后**两条反证均确认变红**：删 `source` 标记 ⇒ 红；把 Sheet 改回「没 shell 就直接 return」⇒ 红 | 我方 |
+| `.gitattributes`（改） | 追加新探针的三个谱文件 + 验证脚本的 `text eol=lf`。⚠️ 新建时**漏了这两行**，而本机 `core.autocrlf=true` ⇒ 提交进 git 的 `module.prop` / `java_init.list` 曾是 CRLF，表现是「克隆到别处后构建失败」而**本机测不出来** | **手动合并**（追加） |
+| `scripts/probe/xposed-channel/shortcut-probe/`（新增） | fork 独有：**快捷方式探针**（跨机型复测脚手架）。⚠️ 真机结论**已改由热重载路径取得**（用户否掉了「LSPosed + 重启设备」那条路：hook 层本来就跑在 system_server 里，反射读 `ShortcutService` 的能力与独立探针等价）；本工程保留为**跨机型脚手架**（同 `fold-trigger-verify.sh` 之于折叠屏） | 我方 |
+| `scripts/probe/xposed-channel/build.sh`（改，纯追加） | 新增 `build_shortcutprobe()` + `shortcutprobe` case；⚠️ 比 `build_hookprobe` **多一道断言**（谱文件不得含 CR —— CRLF 同样让模块静默不加载）。`build_hookprobe` 一字未改 | **手动合并**（追加） |
+| `scripts/xposed-shortcut-probe-verify.sh`（新增） | fork 独有：探针一键验证脚本。⚠️ **无设备时打印「未验证」并 `exit 0`** —— 不是报错退出，否则「没设备」看起来像「验证失败」 | 我方 |
+
+> ⚠️ **一处与方案的已知偏差**：方案 §4.2 要求结果带 `total`（截断前全量条数），
+> **未实现** —— 框架的 `CapabilityOutcome.Items` 只有 `items` + `startIndex`，
+> 且 `InvokePolicy.buildResultJson` **固定**产出 `{"items":[…]}`，没有结果元数据这一层。
+> 塞进 `items` 会污染列表。⇒ 取第三条路：**不实现、如实记录**（`truncated` 与 `next_cursor`
+> 走信封顶层，未受影响）。若将来要做全量遍历或确有包超预算，**应先扩框架的结果形状**。
+
 ---
 
 ## 暂未分歧、但日后改动时须登记的敏感点

@@ -1,6 +1,7 @@
 package com.chaomixian.vflow.core.xposed
 
 import com.chaomixian.vflow.core.logging.DebugLogger
+import com.chaomixian.vflow.ui.shortcut_picker.ShortcutPickerSupport
 import com.chaomixian.vflow.xposed.capability.Capability
 import com.chaomixian.vflow.xposed.capability.CapabilityFallbackPlan
 import com.chaomixian.vflow.xposed.capability.CapabilityNames
@@ -96,6 +97,33 @@ object CapabilityFallbacks {
                 name = CapabilityNames.DIAGNOSTIC,
                 risk = CapabilityRisk.READ_ONLY,
                 fallback = null,
+            ),
+        )
+
+        // ── 快捷方式完整 Intent（hook 侧执行体：`capabilities/QueryShortcutIntentsHandler.kt`）──
+        //
+        // ⚠️⚠️ **替换型**：`fallback` 非 null ⇒ Xposed 不可用时**静默降级**到 dumpsys 路径。
+        //    这是本能力存在的意义之外的另一半 —— 没有 ③ 时选择器仍**能用**，
+        //    只是有损（18.1% dat 残缺 + extras 类型靠猜）。
+        //
+        // ⚠️ **降级实现必须复用选择器既有的解析链**，不能另写一份：
+        //    契约是「**同样的入参、同形状的结果、更差的实现**」（§6.2 的 S7 修正）。
+        //    另写一份会让「升级/降级的结果差异」变成两个实现之间的差异，无从对照。
+        //
+        // ⚠️ `risk = READ_ONLY`：只读快捷方式，无副作用。
+        CapabilityRegistry.register(
+            Capability(
+                name = CapabilityNames.QUERY_SHORTCUT_INTENTS,
+                risk = CapabilityRisk.READ_ONLY,
+                fallback = { params ->
+                    ShortcutPickerSupport.queryViaDumpsys(
+                        packageName = params["package_name"]?.toString().orEmpty(),
+                    )
+                },
+                // ⚠️ 口径是「结果内容」，不是信封 parcel；框架会经
+                // `InvokePolicy.envelopeParcelBudget` 换算并与 384 KiB 传输上限取 min。
+                maxResultBytes = 128 * 1024,
+                timeoutMs = 3_000,
             ),
         )
 

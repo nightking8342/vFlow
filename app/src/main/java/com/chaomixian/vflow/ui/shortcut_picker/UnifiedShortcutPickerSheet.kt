@@ -73,24 +73,33 @@ class UnifiedShortcutPickerSheet : BottomSheetDialogFragment() {
             }
         })
 
+        // ⚠️ 前置条件放宽：**③ 通道可用时不再需要 Shizuku/Root** ——
+        // 无损路径走 hook 层（system_server 内反射读 ShortcutService），
+        // 与 shell 权限无关。原来的「没 Shizuku 就直接出提示、连加载都不试」
+        // 会在装了 Xposed 的设备上**白白挡住**可用路径。
         val shellReady = ShellManager.isShizukuActive(requireContext()) || ShellManager.isRootAvailable()
-        if (!shellReady) {
-            stateView.isVisible = true
-            stateView.text = getString(R.string.text_shortcut_picker_requires_shell)
-            return
-        }
 
         stateView.isVisible = true
         stateView.text = getString(R.string.text_shortcut_picker_loading)
 
         CoroutineScope(Dispatchers.IO).launch {
-            val items = ShortcutPickerSupport.loadShortcuts(requireContext())
+            val loaded = ShortcutPickerSupport.loadShortcutsWithFallback(requireContext())
             withContext(Dispatchers.Main) {
-                adapter.submitList(items)
-                stateView.isVisible = items.isEmpty()
-                if (items.isEmpty()) {
-                    stateView.text = getString(R.string.text_shortcut_picker_empty)
+                adapter.submitList(loaded.items)
+                // ⚠️ 三种「空」要分开说 —— 用户的自救方向完全不同：
+                //   · 走了降级且没有 shell ⇒ 提示装 Shizuku/Root（**唯一能自救的**）
+                //   · 走了降级但有 shell ⇒ 数据就是空的
+                //   · 走了无损路径 ⇒ 数据就是空的（不该再提 Shizuku）
+                stateView.isVisible = loaded.items.isEmpty() || loaded.notice != null
+                stateView.text = when {
+                    loaded.notice != null -> loaded.notice
+                    loaded.items.isEmpty() && !shellReady && loaded.degraded ->
+                        getString(R.string.text_shortcut_picker_requires_shell)
+                    loaded.items.isEmpty() ->
+                        getString(R.string.text_shortcut_picker_empty)
+                    else -> null
                 }
+                stateView.isVisible = stateView.text != null
             }
         }
     }

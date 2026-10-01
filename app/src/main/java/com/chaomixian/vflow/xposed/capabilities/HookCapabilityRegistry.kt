@@ -43,7 +43,12 @@ object HookCapabilityRegistry {
 
     init {
         // ── 加新 capability：**只在这里追加一行** ──
+        // ⚠️ 应用内注册顺序无关（按 name 去重），但**别重排**已有行 ——
+        // 让每次上游合并的冲突面停留在「尾部追加」这一种形态。
         register(DiagnosticCapabilityHandler())
+        // 首个真实 capability（③ 存在的理由）：拿 ShortcutInfo 的**完整 Intent + extras 类型**。
+        // 见 `QueryShortcutIntentsHandler` 的类注释（含「为什么 LocalServices 取不到」的真机结论）。
+        register(QueryShortcutIntentsHandler())
     }
 
     /**
