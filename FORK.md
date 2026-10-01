@@ -461,6 +461,7 @@
 | `scripts/probe/xposed-channel/shortcut-probe/`（新增） | fork 独有：**快捷方式探针**（跨机型复测脚手架）。⚠️ 真机结论**已改由热重载路径取得**（用户否掉了「LSPosed + 重启设备」那条路：hook 层本来就跑在 system_server 里，反射读 `ShortcutService` 的能力与独立探针等价）；本工程保留为**跨机型脚手架**（同 `fold-trigger-verify.sh` 之于折叠屏） | 我方 |
 | `scripts/probe/xposed-channel/build.sh`（改，纯追加） | 新增 `build_shortcutprobe()` + `shortcutprobe` case；⚠️ 比 `build_hookprobe` **多一道断言**（谱文件不得含 CR —— CRLF 同样让模块静默不加载）。`build_hookprobe` 一字未改 | **手动合并**（追加） |
 | `scripts/xposed-shortcut-probe-verify.sh`（新增） | fork 独有：探针一键验证脚本。⚠️ **无设备时打印「未验证」并 `exit 0`** —— 不是报错退出，否则「没设备」看起来像「验证失败」 | 我方 |
+| `scripts/xposed-shortcut-probe-verify.sh`（改，**修一处真实回归**） | ⚠️⚠️ **该文件曾被 `8b8f5ede` 整份清空成 0 字节** —— 那个提交的目的是「给新探针的谱文件与验证脚本锁 LF 行尾」（只加 `.gitattributes` 规则），却在同一次提交里把这份脚本记录成了 `192 deletions(-)`（工作区文件因 `core.autocrlf=true` 与 `text eol=lf` 规则叠加被 git 视作内容变更，提交时只落进了删除）。**影响**：方案 §8.1 的 A3 与 `P0-FINDINGS.md` §4 的三处用法全部失效（文件在 HEAD 里没有内容）。**已从 `f0537d36` 取回并确认落盘为纯 LF**（`tr=0 / LF=192`，逐字节核过）。⚠️ **这个缺陷能潜伏的原因值得记**：**空脚本跑 `logs` 子命令同样返回退出码 0**（`bash -n` 也报 0）⇒ A3 原来「只看退出码」的判据**不足以发现它**，我是靠 `git cat-file -s` 看到 0 才发现的 | **我方** |
 
 > ⚠️ **一处与方案的已知偏差**：方案 §4.2 要求结果带 `total`（截断前全量条数），
 > **未实现** —— 框架的 `CapabilityOutcome.Items` 只有 `items` + `startIndex`，
