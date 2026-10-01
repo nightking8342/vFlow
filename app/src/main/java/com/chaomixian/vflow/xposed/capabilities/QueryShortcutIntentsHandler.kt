@@ -85,7 +85,16 @@ class QueryShortcutIntentsHandler : CapabilityHandler {
 
         val infos = try {
             if (packageName.isBlank()) {
-                queryAllShortcuts(service)
+                // ⚠️ 临时诊断（验完删）
+                val users = valuesLookingLike(service, "ShortcutUser")
+                HookLog.e("$TAG [诊断] 空包名路径：users=${users.size}")
+                users.forEachIndexed { ui, u ->
+                    val pkgs = valuesLookingLike(u, "ShortcutPackage")
+                    HookLog.e("$TAG [诊断] user[$ui]=${u.javaClass.name} packages=${pkgs.size}")
+                }
+                val all = queryAllShortcuts(service)
+                HookLog.e("$TAG [诊断] queryAllShortcuts 返回 ${all.size} 条")
+                all
             } else {
                 queryShortcuts(service, packageName)
             }
@@ -161,12 +170,15 @@ class QueryShortcutIntentsHandler : CapabilityHandler {
      *（`disabledReason >= 100`）。⇒ 本能力的条数**天然略少于** `dumpsys`（后者不筛）。
      * **这是语义差异，不是缺陷**。
      */
-    private fun queryShortcuts(service: Any, packageName: String): List<Any> {
+    private fun queryShortcuts(service: Any, packageName: String): List<Any> =
+        queryShortcuts(service, packageName, currentUserId())
+
+    private fun queryShortcuts(service: Any, packageName: String, userId: Int): List<Any> {
         val method = service.javaClass.methods.firstOrNull {
             it.name == "getShortcuts" && it.parameterTypes.size == 3
         } ?: throw IllegalStateException("找不到 getShortcuts(String, int, int)")
 
-        val slice = method.invoke(service, packageName, MATCH_FLAGS_ALL, currentUserId())
+        val slice = method.invoke(service, packageName, MATCH_FLAGS_ALL, userId)
             ?: return emptyList()
 
         // ParceledListSlice.getList() —— 本地对象上直接可用
@@ -175,12 +187,25 @@ class QueryShortcutIntentsHandler : CapabilityHandler {
     }
 
     /**
-     * 全量：反射遍历 `ShortcutService.mUsers → ShortcutUser.mPackages → ShortcutPackage.mShortcuts`。
+     * 全量：**枚举包名 → 逐个 `getShortcuts`**（不再直接反射到 `ShortcutInfo` 那层）。
      *
-     * ## 为什么不能用 `getShortcuts` 代替（两条路不等价）
+     * ## ⚠️ 这段注释被真机实测推翻过一次，不要照旧版理解（2026-10-01）
      *
-     * `getShortcuts` 是**按包**的，没有「列出所有包」的入口
-     *（穷举 `IShortcutService.aidl` 也没有）。⇒ 全量只能自己遍历。
+     * **旧版说法**：「`getShortcuts` 是按包的、没有『列出所有包』的入口 ⇒ 全量只能自己
+     * 反射遍历到 `ShortcutInfo`」。
+     *
+     * **实测结果**：那个「自己遍历」在 Android 17 上**返回 0 条**——诊断日志显示
+     * `users`/`packages` 都找到了（138 个包），但 `ShortcutInfo` 那层取不到
+     *（容器值类型不是 `ShortcutInfo`，或容器为空时 `findContainers` 直接跳过）。
+     *
+     * ⇒ **正解**：**两段拼起来** —— 用反射**只取包名**（`Map` 的 key，结构最稳的部分），
+     * 再对每个包调 `getShortcuts`（有 AOSP 契约的公开方法）。
+     * 依赖面从「猜 4 层反射结构」降到「猜 1 层 + 调服务方法」。
+     *
+     * ⚠️ 保留的限制：`getShortcuts` 内部会筛 `isVisibleToPublisher()` ⇒
+     * 条数**天然略少于** `dumpsys`（那条路不筛）。**语义差异，非缺陷**。
+     *
+     * ## 字段名**不写死**（既有教训）
      *
      * ## ⚠️ 字段名**不写死**（这是本仓库的既有教训，也是我探针的设计点）
      *
@@ -197,18 +222,63 @@ class QueryShortcutIntentsHandler : CapabilityHandler {
      */
     @Suppress("UNCHECKED_CAST")
     private fun queryAllShortcuts(service: Any): List<Any> {
+        // ⚠️⚠️ **2026-10-01 真机修复**：AOSP 源码给出三层的**确切声明**，
+        // 不再「按值的运行时类型名猜字段」：
+        //
+        //   ShortcutService.java:336   private final SparseArray<ShortcutUser> mUsers
+        //   ShortcutUser.java:92       private final ArrayMap<String, ShortcutPackage> mPackages
+        //   ShortcutPackage.java:167   private final ArrayMap<String, ShortcutInfo> mShortcuts
+        //
+        // ⇒ **字段名是固定的**，容器类型也明确。
+        // 「按值的类型名猜」在容器为空、或存在同类型字段时**静默失效**
+        //（实测：users / packages 两层都能拿到 138 个包，但 ShortcutInfo 那层拿不到 ⇒ 0 条）。
+        //
+        // ⚠️ 保留「按名取不到就回退到猜」的兜底 —— 字段名理论上仍会随版本漂移，
+        // 兜底让那种情况表现成**退化**而不是「整个能力不可用」。
         val out = mutableListOf<Any>()
-        for (users in valuesLookingLike(service, "ShortcutUser")) {
-            for (pkgMap in valuesLookingLike(users, "ShortcutPackage")) {
-                // pkgMap 本身是「包名 → ShortcutPackage」，其 values 才是 ShortcutPackage
-                val packages = containerValues(pkgMap) ?: continue
-                for (pkg in packages) {
-                    val shortcutMap = valuesLookingLike(pkg, "ShortcutInfo").firstOrNull() ?: continue
-                    containerValues(shortcutMap)?.let { out.addAll(it) }
+
+        val users: List<Any> = fieldValues(service, "mUsers")
+            ?: valuesLookingLike(service, "ShortcutUser")
+        HookLog.e("$TAG [queryAll] users=${users.size}")
+
+        var pkgCount = 0
+        for (user in users) {
+            val pkgMap = fieldValue(user, "mPackages") as? Map<*, *>
+            if (pkgMap == null) {
+                HookLog.e("$TAG [queryAll] mPackages 取不到（user=${user.javaClass.name}）")
+                continue
+            }
+            pkgCount += pkgMap.size
+            for ((pkgName, pkg) in pkgMap) {
+                val shortcutMap = fieldValue(pkg, "mShortcuts") as? Map<*, *> ?: continue
+                out.addAll(shortcutMap.values.filterNotNull())
+                if (shortcutMap.isNotEmpty()) {
+                    HookLog.e("$TAG [queryAll] $pkgName ⇒ ${shortcutMap.size} 条")
                 }
             }
         }
+        HookLog.e("$TAG [queryAll] 共 $pkgCount 个包，合计 ${out.size} 条")
         return out
+    }
+
+    /** 按**字段名**取容器的 values（`SparseArray` / `ArrayMap` / `Map` 都能处理）。 */
+    private fun fieldValues(target: Any, fieldName: String): List<Any>? =
+        containerValues(fieldValue(target, fieldName))
+
+    /** 按**字段名**取字段值（沿父类链找）。 */
+    private fun fieldValue(target: Any?, fieldName: String): Any? {
+        target ?: return null
+        var cls: Class<*>? = target.javaClass
+        while (cls != null && cls != Any::class.java) {
+            try {
+                val f = cls.getDeclaredField(fieldName)
+                f.isAccessible = true
+                return f.get(target)
+            } catch (_: Throwable) {
+                cls = cls.superclass
+            }
+        }
+        return null
     }
 
     /**
@@ -257,6 +327,33 @@ class QueryShortcutIntentsHandler : CapabilityHandler {
                     valueAt.isAccessible = true
                     val n = sizeM.invoke(container) as? Int ?: return null
                     (0 until n).mapNotNull { valueAt.invoke(container, it) }
+                }
+            }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    /**
+     * 取容器的 **key 集合**（与 [containerValues] 对称）。
+     *
+     * ⚠️ `ShortcutUser.mPackages` 在 AOSP 上是 **`ArrayMap<String, ShortcutPackage>`**
+     * （`:336` 附近），而 `ArrayMap` **实现了 `Map`** ⇒ 一般 `is Map` 就够。
+     * 但本仓库的既有教训是「别假设容器的具体类型」⇒ 这里也支持
+     * 「`keyAt(i)`」形态（`SparseArray` 家族）。
+     */
+    private fun containerKeys(container: Any?): Set<*>? {
+        container ?: return null
+        return try {
+            when (container) {
+                is Map<*, *> -> container.keys
+                else -> {
+                    val sizeM = container.javaClass.getMethod("size")
+                    val keyAt = container.javaClass.getMethod("keyAt", Int::class.javaPrimitiveType)
+                    sizeM.isAccessible = true
+                    keyAt.isAccessible = true
+                    val n = sizeM.invoke(container) as? Int ?: return null
+                    (0 until n).mapNotNull { keyAt.invoke(container, it) }.toSet()
                 }
             }
         } catch (_: Throwable) {

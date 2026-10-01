@@ -1,6 +1,7 @@
 package com.chaomixian.vflow.xposed.capabilities
 
 import com.chaomixian.vflow.xposed.HookLog
+import com.chaomixian.vflow.xposed.wire.Budgeted
 import com.chaomixian.vflow.xposed.wire.CapabilityError
 import com.chaomixian.vflow.xposed.wire.CapabilityInvocationCodec
 import com.chaomixian.vflow.xposed.wire.CapabilityManifest
@@ -111,6 +112,15 @@ class HookCapabilityRuntime(
          * 2 是「能重叠一次调用」与「被占满的代价可接受」之间的折中。
          */
         const val DEFAULT_POOL_SIZE = 2
+
+        /**
+         * 终检超限后**最多收缩几轮**（2026-10-01 真机修复）。
+         *
+         * 每轮按「超出量 / 平均单项字节」估算该裁多少（至少 1 项）⇒ 收敛很快，
+         * 32 是远高于实际需要的上界；设上界只为**保证循环终止**（不设的话，
+         * 若 `estimatedParcelBytes` 对某项恒高估就会原地打转）。
+         */
+        const val MAX_SHRINK_ATTEMPTS = 32
 
         /**
          * ⚠️⚠️ **已废弃（2026-10-01）**：真机实测证明这条余量的**机制描述是错的**。
@@ -368,7 +378,7 @@ class HookCapabilityRuntime(
         val contentBudget = InvokePolicy.envelopeParcelBudget(maxBytes)
         val checkLimit = contentBudget + InvokePolicy.ENVELOPE_FIXED_OVERHEAD_BYTES
 
-        val budgeted = ResultBudget.collectWithin(
+        var budgeted = ResultBudget.collectWithin(
             items = outcome.items,
             maxBytes = contentBudget,
             // ⚠️⚠️ 按【信封内的 parcel 字节】而非单层 UTF-8 字节 ——
@@ -377,35 +387,65 @@ class HookCapabilityRuntime(
             startIndex = outcome.startIndex,
         )
 
-        val resultJson = InvokePolicy.buildResultJson(budgeted.items)
-
-        // ⚠️ `Budgeted.nextCursor` 是 `Int?`，而契约里它是**不透明串** ⇒ 转字符串。
-        // ✅ 分页两键**走信封顶层**（由 codec 决定「非空白才写」）——
-        // 塞进 `resultJson` 内部会让 App 侧的两个字段**永远填不上**。
-        val envelope = encodeResponse(
-            request = request,
-            ok = true,
-            resultJson = resultJson,
-            error = null,
-            nextCursor = budgeted.nextCursor?.toString(),
-            truncated = budgeted.truncated,
-            elapsedMs = elapsedMs,
-        )
+        // ⚠️⚠️ **2026-10-01 真机修复：终检超限要【继续裁】，不是直接回错。**
+        //
+        // 场景（真机 407 条时必然触发）：`collectWithin` 把 `contentBudget` **用满**，
+        // 但 `itemEnvelopeCost` 是**逐项估算**（`2 × JSONObject(item).toString().length`），
+        // 而真实信封还要付：数组逗号、键名引号、`{"items":[…]}` 外壳、
+        // 以及外层 `{"request_id":…,"result":"…"}` 的**二次转义**。
+        // ⇒ 估算乐观几百字节 ⇒ 收满后**实际 parcel 超 `checkLimit`**。
+        //
+        // 旧行为是「回 `payload_too_large`」⇒ **整个请求失败、一条都拿不到**
+        //（真机表现：App 侧 `degraded=true` + 走 dumpsys 回退，③ 的价值全丢）。
+        //
+        // 正确行为：**这是截断该干的事** —— 少收几项直到装得下，
+        // 并把 `truncated`/`nextCursor` 照常回给调用方。
+        //
+        // ⚠️ 循环有界（最多 32 次）+ 每次至少少 1 项 ⇒ 一定终止；
+        // 且**保留至少 1 项**（收 0 项等于「什么都没返回」，那才是该报错的形态）。
+        var attempts = 0
+        var envelope = encodeEnvelope(budgeted, request, elapsedMs)
+        while (InvokePolicy.estimatedParcelBytes(envelope) > checkLimit &&
+            budgeted.items.size > 1 &&
+            attempts < MAX_SHRINK_ATTEMPTS
+        ) {
+            attempts++
+            // 按超出比例估算该裁多少（至少裁 1 项，避免原地打转）
+            val over = InvokePolicy.estimatedParcelBytes(envelope) - checkLimit
+            val avg = (InvokePolicy.estimatedParcelBytes(envelope) / budgeted.items.size).coerceAtLeast(1)
+            val drop = ((over / avg) + 1).coerceIn(1, budgeted.items.size - 1)
+            val kept = budgeted.items.dropLast(drop)
+            budgeted = Budgeted(
+                items = kept,
+                truncated = true,
+                nextCursor = budgeted.nextCursor?.minus(drop) ?: kept.size,
+            )
+            envelope = encodeEnvelope(budgeted, request, elapsedMs)
+        }
+        if (attempts > 0) {
+            HookLog.e(
+                "$TAG  信封超限已收缩 ${attempts} 轮 ⇒ 收下 ${budgeted.items.size} 项" +
+                    "（parcel ${InvokePolicy.estimatedParcelBytes(envelope)} / 上限 $checkLimit）",
+            )
+        }
 
         // ⚠️⚠️ **量的是 `envelope` —— 与下面真正发出去的是同一个串。**
         // 这是本次修复的全部：校验对象与发送对象**结构上不可能不一致**。
+        //
+        // ⚠️ **2026-10-01 补**：上面的收缩循环已处理「靠多裁几项能解决」的情形。
+        // 走到这里只剩**收缩也救不了**的两种情况：
+        //   ① 已裁到只剩 1 项，而**那单项自己**就超 `checkLimit`
+        //      （`collectWithin` 的单元素超限特例 —— 它必须收下那项，否则分页死循环）
+        //   ② `estimatedParcelBytes` 严重低估（不该发生，但为兜底留着）
+        // ⇒ 此时回 `payload_too_large` 是对的（§6.4：它属「报告问题」而非用户可处理）。
         val actualParcel = InvokePolicy.estimatedParcelBytes(envelope)
         if (actualParcel > checkLimit) {
             // 归 `payload_too_large` 而**不是** `timeout` / `handler_error`：
             // 它是**实现缺陷或数据异常**，不是用户能处理的失败（§6.4）。
-            //
-            // 触发它的两种情形：
-            // ① `collectWithin` 的**单元素超限特例**（收下那个超限元素，否则分页死循环）
-            // ② `itemEnvelopeCost` 的估算余量不足以覆盖真实引号密度
             HookLog.e(
-                "$TAG  信封仍超传输上限，回 payload_too_large：实际 parcel $actualParcel 字节 > " +
-                    "上限 $checkLimit 字节（收下 ${budgeted.items.size} 项，" +
-                    "request_id=${request.requestId}）",
+                "$TAG  信封仍超传输上限（收缩 ${attempts} 轮后仍超），回 payload_too_large：" +
+                    "实际 parcel $actualParcel 字节 > 上限 $checkLimit 字节" +
+                    "（收下 ${budgeted.items.size} 项，request_id=${request.requestId}）",
             )
             emitFailure(request, InvokePolicy.payloadTooLargeError(actualParcel, checkLimit), elapsedMs)
             return
@@ -474,6 +514,26 @@ class HookCapabilityRuntime(
      * ⚠️ `ok = error == null`：与 codec 的契约一致
      *（`decodeResponse` 会反向校验「ok=false 必须带 error」）。
      */
+    /**
+     * 由**当前**的 [budgeted] 组装一次成功信封（供收缩循环反复调用）。
+     *
+     * ⚠️ 抽出来是为了让「量的对象」与「发的对象」是**同一段构造逻辑** ——
+     * 循环里量完还要再拼一次，若两处各写一遍就会漂移。
+     */
+    private fun encodeEnvelope(
+        budgeted: Budgeted<Map<String, Any?>>,
+        request: CapabilityRequest,
+        elapsedMs: Long,
+    ): String = encodeResponse(
+        request = request,
+        ok = true,
+        resultJson = InvokePolicy.buildResultJson(budgeted.items),
+        error = null,
+        nextCursor = budgeted.nextCursor?.toString(),
+        truncated = budgeted.truncated,
+        elapsedMs = elapsedMs,
+    )
+
     private fun encodeResponse(
         request: CapabilityRequest,
         ok: Boolean,
