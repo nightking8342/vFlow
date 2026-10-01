@@ -16,6 +16,7 @@ import com.chaomixian.vflow.xposed.wire.CapabilityResponse
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withTimeout
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
@@ -537,13 +538,55 @@ object CapabilityInvoker {
         )
     }
 
-    /** `JSONObject` → `Map<String, Any?>`（浅层即可：值原样保留，嵌套结构自己也是 JSON 类型）。 */
+    /**
+     * `JSONObject` → `Map<String, Any?>`，**递归到 Kotlin 集合类型**。
+     *
+     * ## ⚠️⚠️ 必须是**深层**转换（2026-10-01 真机实测暴露的缺陷）
+     *
+     * 本函数原本是**浅层**的（`out[key] = obj.opt(key)`，注释还写着「浅层即可：
+     * 值原样保留，嵌套结构自己也是 JSON 类型」）——**那个前提是错的**：
+     * 「嵌套结构自己也是 JSON 类型」意味着**每个消费者都要自己再转一次**，
+     * 而实际结果是**没有**任何消费者转。
+     *
+     * 后果（真机实证）：`query_shortcut_intents` 的结果 `result["items"]` 是
+     * `org.json.JSONArray`、元素是 `JSONObject`，而消费者写的是
+     * `as? List<*>` / `as? Map<*, *>` —— **`org.json` 的两个容器都不实现
+     * `java.util.List` / `Map`**，两道转换**全为 null** ⇒ 结果被**静默丢光**，
+     * 用户看到空列表。⚠️ 同一文件里 `CapabilityOutcome` 的 KDoc 早就写着
+     * 「结果**通用可解码**」，浅层转换**没有兑现这句话**。
+     *
+     * ## 为什么修在**这里**而不是各消费者
+     *
+     * 这里修一次，**所有** capability 的消费者受益；修在消费者里则是
+     * 「有的处理了有的没处理」——正是 `FORK.md` 记过的那类缺陷（logcat 双份实现）。
+     *
+     * ⚠️ 类型映射是**无损**的（不改变值的语义，只把 JSON 容器换成 Kotlin 容器）：
+     * `JSONObject`→`Map`、`JSONArray`→`List`、`JSONObject.NULL`→`null`、其余原样。
+     * ⚠️ 消费者若要判「原本是 JSON null 还是键不存在」，用法与 JSON 语义一致：
+     * 键存在值为 JSON null ⇒ 映射后键存在、值为 `null`。
+     */
     private fun jsonObjectToMap(obj: JSONObject): Map<String, Any?> {
         val out = LinkedHashMap<String, Any?>(obj.length())
         for (key in obj.keys()) {
-            out[key] = obj.opt(key)
+            out[key] = deepConvert(obj.opt(key))
         }
         return out
+    }
+
+    /**
+     * JSON 值 → Kotlin 值（递归）。见 [jsonObjectToMap] 的说明。
+     *
+     * ⚠️ `JSONObject.NULL` 必须显式判**在前**（它是 `JSONObject` 的一个哨兵实例，
+     * 不是 `null`），否则它会被当普通对象带下去，消费者拿到的是一个
+     * `toString() == "null"` 的怪东西。
+     * ⚠️ 用 `is JSONObject` / `is JSONArray` 而不是查 `opt` 的重载：
+     * `opt` 的类型由**调用点**决定，拿到的是 `Object`，只能靠运行时类型分派。
+     */
+    private fun deepConvert(value: Any?): Any? = when {
+        value == null || value === JSONObject.NULL -> null
+        value is JSONObject -> jsonObjectToMap(value)
+        value is JSONArray -> List(value.length()) { i -> deepConvert(value.opt(i)) }
+        else -> value
     }
 
     /** 构造 `channel_down` 失败（三处错误路径共用，避免口径漂移）。 */
@@ -557,6 +600,23 @@ object CapabilityInvoker {
         hooksOverride = null
         appContext = null
     }
+
+    /**
+     * **仅供测试**：把响应里的 `result` 串走一遍**真实的**解码链路。
+     *
+     * ## ⚠️⚠️ 它存在的理由（不要当多余而删掉）
+     *
+     * 本仓库踩过一次「测试夹具的类型 ≠ 生产数据的类型」的坑：
+     * 用例用手写的 `mapOf(...)` 喂消费者，那是**真正的** `Map`，
+     * **恰好绕过**了「生产数据是 `org.json.JSONObject`」这个事实 ⇒
+     * 类型失配的缺陷**全绿潜伏**（真机上 `itemsFromLossless` 恒返回空）。
+     *
+     * ⇒ 这条接缝让新用例从 **JSON 字符串**出发走真实转换，
+     * 使「夹具类型 ≠ 生产类型」在结构上不可能重演。
+     * `ShortcutPickerFallbackTest` 的 `json round trip…` 一例依赖它，且已做反证。
+     */
+    internal fun decodeResultForTest(resultJson: String): Map<String, Any?> =
+        jsonObjectToMap(JSONObject(resultJson))
 
     /**
      * ⚠️ 供测试与将来的调用方查「某能力的降级方案」。

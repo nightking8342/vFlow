@@ -85,16 +85,7 @@ class QueryShortcutIntentsHandler : CapabilityHandler {
 
         val infos = try {
             if (packageName.isBlank()) {
-                // ⚠️ 临时诊断（验完删）
-                val users = valuesLookingLike(service, "ShortcutUser")
-                HookLog.e("$TAG [诊断] 空包名路径：users=${users.size}")
-                users.forEachIndexed { ui, u ->
-                    val pkgs = valuesLookingLike(u, "ShortcutPackage")
-                    HookLog.e("$TAG [诊断] user[$ui]=${u.javaClass.name} packages=${pkgs.size}")
-                }
-                val all = queryAllShortcuts(service)
-                HookLog.e("$TAG [诊断] queryAllShortcuts 返回 ${all.size} 条")
-                all
+                queryAllShortcuts(service)
             } else {
                 queryShortcuts(service, packageName)
             }
@@ -133,8 +124,22 @@ class QueryShortcutIntentsHandler : CapabilityHandler {
         // ⚠️ 若将来要做「全量遍历」或发现确有包超过预算，**应先扩框架的结果形状**
         //（给 `CapabilityOutcome.Items` 加 `total`，并由 `buildResultJson` 放到顶层），
         // 而不是往 items 里塞元数据。
-        val window = infos.drop(cursor).map { toMap(it) }
-        return CapabilityOutcome.Items(items = window, startIndex = cursor)
+        // ⚠️⚠️ **返回【全量】列表 + `startIndex`，不要自己 `drop(cursor)`**
+        // —— 2026-10-01 真机实测暴露的**双重切片**缺陷。
+        //
+        // 框架的执行运行时会把 `Items.items` 与 `Items.startIndex` 一起交给
+        // `ResultBudget.collectWithin(items, …, startIndex = startIndex)`，
+        // 而**后者自己就会从 `startIndex` 开始收**。
+        //
+        // ⇒ 本文件若先 `drop(cursor)`、又传 `startIndex = cursor`，
+        // 第二页就是「已经跳过 cursor 项之后，再跳过 cursor 项」：
+        // 真机表现是**第 2 页恒返回空**（日志里第 2 次 invoke **没有**「结果超预算」，
+        // 因为根本没有元素可收）⇒ 用户**只拿得到第 1 页的 232 条，剩下 176 条永远丢失**。
+        //
+        // ✅ 正确写法由 `DiagnosticCapabilityHandler.MODE_HUGE` 确立（T2 的既有实现、
+        // 且有单测锁住）：**返回全量、`startIndex` 交给框架**。
+        // 元素对象由框架按预算**边收边序列化**，所以返回全量不会把 408 项都写进响应。
+        return CapabilityOutcome.Items(items = infos.map { toMap(it) }, startIndex = cursor)
     }
 
     // ── 取 Service ───────────────────────────────────────────────
@@ -239,24 +244,25 @@ class QueryShortcutIntentsHandler : CapabilityHandler {
 
         val users: List<Any> = fieldValues(service, "mUsers")
             ?: valuesLookingLike(service, "ShortcutUser")
-        HookLog.e("$TAG [queryAll] users=${users.size}")
 
         var pkgCount = 0
         for (user in users) {
             val pkgMap = fieldValue(user, "mPackages") as? Map<*, *>
             if (pkgMap == null) {
+                // ⚠️ 只记**失败**（每包一行会让 407 条这种规模刷 140+ 行日志进 system_server）
                 HookLog.e("$TAG [queryAll] mPackages 取不到（user=${user.javaClass.name}）")
                 continue
             }
             pkgCount += pkgMap.size
-            for ((pkgName, pkg) in pkgMap) {
+            for ((_, pkg) in pkgMap) {
                 val shortcutMap = fieldValue(pkg, "mShortcuts") as? Map<*, *> ?: continue
                 out.addAll(shortcutMap.values.filterNotNull())
-                if (shortcutMap.isNotEmpty()) {
-                    HookLog.e("$TAG [queryAll] $pkgName ⇒ ${shortcutMap.size} 条")
-                }
             }
         }
+        // ⚠️ **只留汇总一行**：逐包明细属诊断期信息，不进正式路径
+        //（407 条规模会刷 140+ 行）。用 `e` 而非更合适的级别，是因为
+        // `HookLog` 只有 `e`，且 LSPosed 的框架日志**只持久化 Error 级**
+        // —— 换别的级别这条汇总在导出日志里就看不到了。
         HookLog.e("$TAG [queryAll] 共 $pkgCount 个包，合计 ${out.size} 条")
         return out
     }

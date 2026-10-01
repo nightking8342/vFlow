@@ -49,34 +49,73 @@ object ShortcutPickerSupport {
      * 只是更差。`CapabilityInvokeOutcome.Degraded` 已把这个语义表达在类型上。
      */
     suspend fun loadShortcutsWithFallback(context: Context): LoadResult {
-        val outcome = com.chaomixian.vflow.core.xposed.CapabilityInvoker.invokeOrFallback(
-            capability = com.chaomixian.vflow.xposed.capability.CapabilityNames.QUERY_SHORTCUT_INTENTS,
-            params = emptyMap(),
-        )
+        // ⚠️⚠️ **必须翻页**（2026-10-01 真机实测暴露）。
+        //
+        // 本机 407 条 ⇒ 单次响应的**信封 parcel 上限**只装得下 232 条
+        //（真机日志：`收下 232/407 项，nextCursor=232`）。
+        // ⇒ 只调一次的话，**175 条永远拿不到**，而用户看到的是一个
+        // **看起来完整**的列表 —— 这正是「静默数据缺失」。
+        // ⚠️ 实测后果：米家那条（`com.xiaomi.smarthome`）恰好落在被丢的 175 条里。
+        //
+        // ## 终止条件（三条，缺一不可，都为了**不死循环**）
+        // 1. `nextCursor` 为 null/空白 ⇒ hook 层说「全量已取完」（正常结束）
+        // 2. `nextCursor` 与**本次请求的 cursor 相同** ⇒ 没前进 ⇒ 立刻停
+        //    （否则拿着同一个 cursor 无限请求，每轮都超时）
+        // 3. 达到 [MAX_PAGES] ⇒ 硬上界（防设备上有几千条时把 system_server 拖住）
+        //
+        // ⚠️ 条件 2/3 触发时**数据是不全的** ⇒ 必须留痕（见 [TRUNCATED_NOTICE]）。
+        val collected = mutableListOf<ShortcutPickerItem>()
+        var cursor: String? = null
+        var page = 0
+        var incomplete = false
 
-        // ⚠️⚠️ **成功分支必须真的用 `result`** —— 这是本方法存在的全部意义。
-        //
-        // 我第一版三个分支**都调 `loadShortcuts(context)`**（dumpsys）⇒
-        // ③ 拿到的无损结果**被整个丢掉**，选择器实际**没换源**，
-        // 而且 `Success` 还对外谎报 `degraded=false`、不留痕。
-        // 这是「能力接线了但空转」——本仓库反复踩的坑，由独立评审抓出。
-        //
-        // ⚠️ 失败而 `items` 为空时**不要**回落到 dumpsys：那是**假成功**。
-        // 宁可返回空 + 留痕，让用户知道「没读到」而不是拿到一份来源不明的旧数据。
-        if (outcome is com.chaomixian.vflow.xposed.capability.CapabilityInvokeOutcome.Success) {
-            val lossless = itemsFromLossless(outcome.result)
-            return LoadResult(items = lossless, degraded = false)
+        while (true) {
+            val outcome = com.chaomixian.vflow.core.xposed.CapabilityInvoker.invokeOrFallback(
+                capability = com.chaomixian.vflow.xposed.capability.CapabilityNames.QUERY_SHORTCUT_INTENTS,
+                // ⚠️ cursor 走 **`params`**：hook 侧读的是 `params.optString("cursor")`
+                //（不是信封顶层的那个 `cursor` 键 —— 两者同名但由不同层消费，别传错地方）。
+                params = cursor?.let {
+                    mapOf(com.chaomixian.vflow.xposed.wire.CapabilityInvocationCodec.KEY_CURSOR to it)
+                } ?: emptyMap(),
+            )
+
+            // ⚠️⚠️ **成功分支必须真的用 `result`** —— 这是本方法存在的全部意义。
+            //
+            // 我第一版三个分支**都调 `loadShortcuts(context)`**（dumpsys）⇒
+            // ③ 拿到的无损结果**被整个丢掉**，选择器实际**没换源**，
+            // 而且 `Success` 还对外谎报 `degraded=false`、不留痕。
+            // 这是「能力接线了但空转」——本仓库反复踩的坑，由独立评审抓出。
+            if (outcome !is com.chaomixian.vflow.xposed.capability.CapabilityInvokeOutcome.Success) {
+                // ⚠️ 一页都没拿到 ⇒ 走降级；**已经拿到一部分** ⇒ 保留它
+                //（部分无损数据仍优于整批有损），但要留痕说明不全。
+                if (collected.isEmpty()) {
+                    return LoadResult(
+                        items = loadShortcuts(context),
+                        degraded = true,
+                        notice = DEGRADED_NOTICE,
+                    )
+                }
+                incomplete = true
+                break
+            }
+
+            collected += itemsFromLossless(outcome.result)
+            page++
+
+            val next = outcome.nextCursor
+            if (next.isNullOrBlank()) break          // ① 全量取完（正常）
+            if (next == cursor) { incomplete = true; break }   // ② cursor 没前进 ⇒ 防死循环
+            if (page >= MAX_PAGES) { incomplete = true; break }  // ③ 硬上界
+            cursor = next
         }
 
-        // ── 降级 / 失败：走 dumpsys（有损），**必须留痕** ──
-        //
-        // ⚠️ 两个分支合并处理是**对**的：对调用方而言处置完全一样
-        //（`Failed` 在替换型里只可能是「降级实现自己也坏了」）。
-        // `CapabilityInvokeOutcome` 的 KDoc 也是这个口径。
+        // ⚠️ 跨页去重：同一目标不该因分页边界出现两次（`stableId` 是既有口径）。
+        val items = collected.distinctBy { it.stableId }
         return LoadResult(
-            items = loadShortcuts(context),
-            degraded = true,
-            notice = DEGRADED_NOTICE,
+            items = items,
+            degraded = false,
+            // ⚠️ 只在**真的没取全**时留痕 —— 正常翻完（406 条 = 2 页）不该打扰用户。
+            notice = if (incomplete) TRUNCATED_NOTICE else null,
         )
     }
 
@@ -209,6 +248,24 @@ object ShortcutPickerSupport {
      */
     private const val DEGRADED_NOTICE =
         "Xposed 通道不可用，已改用系统接口读取（数据可能有损：部分快捷方式的启动参数会缺失或类型不准）。"
+
+    /**
+     * 单次加载**最多翻几页**。
+     *
+     * 一页约 232 条（信封 parcel 上限决定）⇒ 8 页 ≈ 1800 条，远超任何真实设备，
+     * 纯粹作为「挂死的上界」（防设备上有几千条时把 system_server 拖住）。
+     */
+    private const val MAX_PAGES = 8
+
+    /**
+     * 翻页没翻完时的留痕文案。
+     *
+     * ⚠️ 与 [DEGRADED_NOTICE] 是**两件不同的事**，不要合并：
+     * 那条说的是「走了更差的实现」（dumpsys），这条说的是「无损源也**没取全**」。
+     * ⇒ 用户看到「少了一些」时，自救方向完全不同。
+     */
+    private const val TRUNCATED_NOTICE =
+        "快捷方式较多，未能全部载入（已显示前一部分）。"
 
     suspend fun loadShortcuts(context: Context): List<ShortcutPickerItem> {
         if (!ShellManager.isShizukuActive(context) && !ShellManager.isRootAvailable()) {

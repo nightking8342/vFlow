@@ -1,7 +1,9 @@
 package com.chaomixian.vflow.ui.shortcut_picker
 
+import com.chaomixian.vflow.core.xposed.CapabilityInvoker
+import com.chaomixian.vflow.xposed.wire.CapabilityInvocationCodec
 import org.junit.Assert.assertEquals
-
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -217,43 +219,167 @@ class ShortcutPickerFallbackTest {
         )
     }
 
+    // ══ ⭐⭐ 真实调用链（JSON 字符串 → 消费者）════════════════════════
+    //
+    // ⚠️⚠️ 这一组锁的是**生产数据的类型**，不是逻辑。
+    //
+    // 教训（2026-10-01，真机实测暴露）：上一版全部用例的输入都是**手写的
+    // `mapOf(...)` / `listOf(...)`** —— 那是**真正的** `Map` / `List`，
+    // **恰好绕过**了「生产数据是 `org.json.JSONObject` / `JSONArray`」这个事实。
+    // 而 `org.json` 的这两个容器**都不实现** `java.util.List` / `Map`：
+    //
+    //     result["items"] as? List<*>   // JSONArray  ⇒ 恒 null
+    //     it as? Map<*, *>              // JSONObject ⇒ 恒 null
+    //
+    // ⇒ `itemsFromLossless` 恒返回空、选择器实际**没换源**，而**全部用例照样全绿**。
+    // ⇒ 反证时把修复改回去也**不变红**（实测确认：12 例全绿）。
+    //
+    // ⇒ 本组从 **JSON 字符串**出发，经 `CapabilityInvoker.decodeResultForTest`
+    //（走真实的 `jsonObjectToMap`）再喂消费者 —— 让「夹具类型 ≠ 生产类型」
+    //   在结构上不可能重演。
+
+    /** 造一个**与 hook 层真实产出同形**的响应信封。 */
+    private fun envelopeFromHook(resultJson: String): String =
+        CapabilityInvocationCodec.encodeResponse(
+            requestId = "test-request",
+            ok = true,
+            resultJson = resultJson,
+            error = null,
+            elapsedMs = 1,
+            nextCursor = null,
+            truncated = false,
+            token = "t",
+        )
+
+    @Test
+    fun `json round trip from a real envelope still reaches the picker`() {
+        // ⚠️ 这是**米家那条**的真实形状（与真机 hook 日志逐字段一致）。
+        val hookResultJson = """
+            {"items":[{"package_name":"com.xiaomi.smarthome",
+                       "shortcut_label":"关闭灯与投影仪",
+                       "activity_name":"com.xiaomi.smarthome.SmartHomeMainActivity",
+                       "intent_count":1,
+                       "intent_action":"com.xiaomi.smarthome.scene.smarthomelauncher",
+                       "intent_component":"com.xiaomi.smarthome/.scene.activity.SmartHomeLauncherActivity",
+                       "intent_package":"com.xiaomi.smarthome",
+                       "intent_flags":268435456,
+                       "extras":[{"key":"extra_scene_account","type":"String","value":"1462285899"}]}]}
+        """.trimIndent()
+
+        // ① 走真实的编解码往返（生产链路上 hook 侧就是 `encodeResponse` 的产出）
+        val decoded = CapabilityInvocationCodec.decodeResponse(envelopeFromHook(hookResultJson))
+        requireNotNull(decoded)
+        assertEquals(true, decoded.ok)
+
+        // ② 走**真实的** `jsonObjectToMap`（`decodeResultForTest` 是它的透出接缝）
+        val result = CapabilityInvoker.decodeResultForTest(decoded.resultJson)
+
+        // ③ 断言**生产类型**真的被转成了 Kotlin 集合 —— 这是本组的存在理由
+        assertTrue(
+            "❌ `result[\"items\"]` 必须被转成 List（生产数据是 JSONArray，" +
+                "而 JSONArray 不实现 java.util.List）—— 否则消费者恒拿不到数据。" +
+                "实际类型：${result["items"]?.javaClass?.name}",
+            result["items"] is List<*>,
+        )
+        val first = (result["items"] as List<*>).firstOrNull()
+        assertTrue(
+            "❌ 列表元素必须被转成 Map（生产数据是 JSONObject，不实现 java.util.Map）。" +
+                "实际类型：${first?.javaClass?.name}",
+            first is Map<*, *>,
+        )
+
+        // ④ 端到端：喂给**真实的**消费者，断言真的拿到了条目
+        val items = losslessItemsOf(result)
+        assertEquals(
+            "❌ ③ 的结果必须能变成选择器条目（真机上这一步曾恒为空 ⇒ 用户看到「没有快捷方式」）",
+            1,
+            items.size,
+        )
+        assertEquals("关闭灯与投影仪", items[0].shortcutLabel)
+
+        // ⑤ 再往下走一步：extras 的**类型**必须原样传到命令里
+        //    （米家那个故障的全部区别就在这里）
+        validateExtras(item = first as Map<*, *>)
+    }
+
+    /** 取回真实的 `itemsFromLossless`（private）以便端到端断言。 */
+    @Suppress("UNCHECKED_CAST")
+    private fun losslessItemsOf(result: Map<String, Any?>): List<ShortcutPickerItem> {
+        val m = ShortcutPickerSupport::class.java
+            .getDeclaredMethod("itemsFromLossless", Map::class.java)
+        m.isAccessible = true
+        return m.invoke(ShortcutPickerSupport, result) as List<ShortcutPickerItem>
+    }
+
+    /**
+     * 从**已转换的**结果 Map 里取出 extras 的 `type`，断言它**没在链路上被丢掉**。
+     *
+     * ⚠️ 这一步是「无损」两个字的最终落点：`type` 一丢，米家的
+     * `String` 就会被重新猜成 `Long`，故障原样复发。
+     */
+    @Suppress("UNCHECKED_CAST")
+    private fun validateExtras(item: Map<*, *>) {
+        val extras = item["extras"] as? List<*>
+        assertNotNull(
+            "❌ extras 必须被转成 List 且非空（JSONArray 不实现 List ⇒ 这一层也会全丢）",
+            extras,
+        )
+        val first = extras!!.firstOrNull() as? Map<*, *>
+        assertNotNull("❌ extras 的元素必须被转成 Map", first)
+        assertEquals(
+            "❌ extras 的 type 必须在链路上原样保留（丢了就会把 String 猜成 Long，" +
+                "米家「无账号权限」故障复发）",
+            "String",
+            first!!["type"],
+        )
+
+        // 逐类型验一遍 flag 选择确实由 `type` 驱动（而非长度启发式）
+        val cmd = ShortcutPickerSupport.buildLaunchCommandFromIntent(
+            mapOf(
+                "intent_action" to item["intent_action"],
+                "intent_component" to item["intent_component"],
+                "extras" to extras,
+            ),
+        )
+        assertNotNull(cmd)
+        assertTrue(
+            "❌ String 类型的 extras 必须生成 --es（而不是 dumpsys 路径那条 --el）。实际：$cmd",
+            cmd!!.contains("--es 'extra_scene_account' '1462285899'"),
+        )
+        assertTrue("不该出现 --el", !cmd.contains("--el"))
+    }
+
     @Test
     fun `success branch actually consumes the capability result`() {
-        // ⚠️⚠️ 这条锁的是**接线本身**（源码级）：`Success` 分支必须消费 `outcome.result`，
+        // ⚠️⚠️ 这条锁的是**接线本身**（源码级）：成功路径必须消费 `outcome.result`，
         // 而不是像第一版那样**三个分支都调 `loadShortcuts`**（dumpsys）——
         // 那种写法下 ③ 的结果被整个丢掉、选择器根本没换源，而**所有形状类断言照样全绿**。
+        //
+        // ## ⚠️ 断言的形态在 2026-10-01 改过一次（加分页时）
+        //
+        // 原版用「括号配平切出 `if (outcome is Success) { … }` 块」——
+        // 而加分页时那个分支**改成了早退形状**（`if (outcome !is Success) { …降级/中断… }`），
+        // 于是锚点失配、本条变红。**这不是缺陷被引入**，是断言绑在了**代码形状**上而非**不变量**上。
+        // ⇒ 改为直接锁两个**不变量**（与形状无关）：
+        //   ① 成功路径**必须**调 `itemsFromLossless(outcome.result)`（真的消费结果）
+        //   ② `loadShortcuts(context)` 只允许出现在 `collected.isEmpty()` 守卫的降级分支里
         val code = codeOf(support)
-        // ⚠️ 用**括号配平**切出 `if (outcome is …Success) { … }` 这个块 ——
-        // 不能靠「找下一个分支关键字」或固定长度窗口：
-        //   · 固定 300 字符会越界抓进降级分支的 `loadShortcuts(context)`（我第一版就是这么误判的）
-        //   · 找 `Degraded` 也失效 —— 外层那个 `when` 已改成 `if + 无条件 return`，
-        //     Success 之后**没有** Degraded 标记了
-        val successAt = code.indexOf("CapabilityInvokeOutcome.Success)")
-        assertTrue("应能找到 Success 分支的判断", successAt >= 0)
-        val open = code.indexOf('{', successAt)
-        assertTrue("Success 分支应当是带块的形式", open >= 0)
-        var depth = 0
-        var end = open
-        for (i in open until code.length) {
-            when (code[i]) {
-                '{' -> depth++
-                '}' -> {
-                    depth--
-                    if (depth == 0) { end = i; break }
-                }
-            }
-        }
-        val successBlock = code.substring(open, end + 1)
-        assertTrue("应能切出非空的 Success 块（否则本条在空转）", successBlock.length > 20)
+
         assertTrue(
-            "❌ Success 分支**必须**消费 `outcome.result` —— 否则 ③ 白调了，选择器仍走 dumpsys。\n" +
-                "实际片段：$successBlock",
-            successBlock.contains("outcome.result"),
+            "❌ 成功路径必须消费 `outcome.result` —— 否则 ③ 白调了，选择器仍走 dumpsys。",
+            code.contains("itemsFromLossless(outcome.result)"),
         )
+
+        // ② 落回 dumpsys 必须**有守卫**：只在一页都没拿到时才允许降级。
+        //    ⚠️ 没有守卫的写法（无条件 `loadShortcuts`）正是「能力空转」那个缺陷。
+        val fallbackAt = code.indexOf("loadShortcuts(context)")
+        assertTrue("应当存在降级调用点", fallbackAt >= 0)
+        val guarded = code.substring((fallbackAt - 200).coerceAtLeast(0), fallbackAt)
         assertTrue(
-            "❌ Success 分支不得回落到 `loadShortcuts`（那是有损的 dumpsys 路径）\n" +
-                "实际片段：$successBlock",
-            !successBlock.contains("loadShortcuts(context)"),
+            "❌ 回落 dumpsys 必须有 `collected.isEmpty()` 守卫 —— " +
+                "无守卫意味着「已经拿到一部分无损数据也可能被整批丢掉换成有损的」。\n" +
+                "实际前置片段：$guarded",
+            guarded.contains("collected.isEmpty()"),
         )
     }
 }

@@ -309,6 +309,55 @@ class HookCapabilityRuntimeTest {
         assertEquals(collected.toString(), r.nextCursor)
     }
 
+    // ══════════ 分页的框架契约（真机实测暴露的缺陷，2026-10-01）══════════
+
+    @Test
+    fun `handler must return the full list and let the framework slice by startIndex`() {
+        // ⚠️⚠️ 这条锁的是**框架与 handler 的分工**，它来自一次真机缺陷。
+        //
+        // 框架把 `Items.items` 与 `Items.startIndex` 一起交给
+        // `ResultBudget.collectWithin(items, ..., startIndex)`，
+        // **后者自己就会从 `startIndex` 开始收**。
+        //
+        // ⇒ handler 若「先自己 `drop(cursor)`、又传 `startIndex = cursor`」，
+        // 第二页就是**双重切片** —— 真机表现是**第 2 页恒返回空**
+        //（`QueryShortcutIntentsHandler` 就写成了这样，实测 408 条只拿得到 232 条）。
+        //
+        // 本用例用一个**故意返回全量**的 handler 走两页，断言第二页**非空**且
+        // 两页**不重叠**。⇒ 任何人把框架改成「不按 startIndex 切片」或
+        // 误以为「handler 该自己切」都会让它变红。
+        HookCapabilityRegistry.register(FakeHandler("paged") { req ->
+            val cursor = JSONObject(req.paramsJson).optString("cursor").toIntOrNull() ?: 0
+            CapabilityOutcome.Items(
+                items = (0 until 500).map { mapOf("i" to it, "pad" to "x".repeat(900)) },
+                startIndex = cursor,
+            )
+        })
+
+        val rt = start()
+        rt.onInvoke(requestJson("paged", params = """{}""", requestId = "p1"))
+        val first = awaitResponse(0)
+        val firstItems = JSONObject(first.resultJson).getJSONArray(InvokePolicy.KEY_ITEMS)
+        assertTrue("第一页应当被截断", first.truncated)
+        assertNotNull("第一页应当给出游标", first.nextCursor)
+
+        rt.onInvoke(requestJson("paged", params = """{"cursor":"${first.nextCursor}"}""", requestId = "p2"))
+        val second = awaitResponse(1)
+        val secondItems = JSONObject(second.resultJson).getJSONArray(InvokePolicy.KEY_ITEMS)
+        assertTrue(
+            "❌ 第二页必须非空 —— 双重切片（handler 自己 drop + 框架按 startIndex 再跳）" +
+                "会让它恒为 0，表现为「后面的条目永远拿不到」。实际：${secondItems.length()}",
+            secondItems.length() > 0,
+        )
+
+        // 两页不重叠：第二页的首项下标 == 第一页项数（游标语义是下标）
+        assertEquals(
+            "第二页应从第一页的游标处接上（不重不漏）",
+            firstItems.length(),
+            secondItems.getJSONObject(0).getInt("i"),
+        )
+    }
+
     @Test
     fun `result that cannot fit even after truncation reports payload too large`() {
         // ⚠️ 兜的是 `collectWithin` 的**单元素超限特例**：它会收下那个超限元素
