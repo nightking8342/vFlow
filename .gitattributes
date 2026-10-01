@@ -8,6 +8,17 @@ app/src/main/resources/META-INF/xposed/module.prop    text eol=lf
 app/src/main/resources/META-INF/xposed/scope.list     text eol=lf
 app/src/main/resources/META-INF/xposed/java_init.list text eol=lf
 
+# 快捷方式探针的谱文件（同一条理由：带 CR 会让模块静默不加载）。
+#
+# ⚠️ 2026-10-01 补：新建该探针工程时**没有同步加这两行**，
+#    而本机 `core.autocrlf=true` ⇒ 提交进 git 的 `module.prop` / `java_init.list`
+#    已是 CRLF（`git show HEAD:...` 实测）。表现是「**克隆到别处后构建失败**」，
+#    而**本机测不出来**（工作区文件是 LF，只有 git 里的那份被改了）。
+#    这正是下面那段注释描述的「本地绿、别处红」的又一个实例。
+scripts/probe/xposed-channel/shortcut-probe/resources/META-INF/xposed/module.prop    text eol=lf
+scripts/probe/xposed-channel/shortcut-probe/resources/META-INF/xposed/scope.list     text eol=lf
+scripts/probe/xposed-channel/shortcut-probe/resources/META-INF/xposed/java_init.list text eol=lf
+
 # 验证脚本同样必须保持 LF 行尾。
 #
 # 依据：CRLF 会让 shebang 行的 `\r` 被当成解释器名字的一部分，
@@ -16,3 +27,4 @@ app/src/main/resources/META-INF/xposed/java_init.list text eol=lf
 # ⚠️ 仓库此前已有 `scripts/fold-trigger-verify.sh` 等同类脚本无此保护，
 #    这里只锁新增的这一个（不回溯改动既有文件，控制 diff 面积）。
 scripts/xposed-capability-hook-runtime-verify.sh text eol=lf
+scripts/xposed-shortcut-probe-verify.sh           text eol=lf
