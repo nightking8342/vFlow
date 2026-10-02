@@ -3102,4 +3102,21 @@
     <string name="output_vflow_trigger_activity_changed_extras_json_name">Intent パラメータ（JSON）</string>
     <string name="output_vflow_trigger_activity_changed_truncated_name">パラメータ切り捨て</string>
     <string name="msg_vflow_trigger_activity_changed_ready">Activity トリガーの準備ができました</string>
+
+    <!-- vflow.xposed.js（fork 新增：Xposed 通道 · 在系统进程里执行 JS） -->
+    <string name="module_vflow_xposed_js_name">Xposed JavaScript</string>
+    <string name="module_vflow_xposed_js_desc">システムプロセス内で JavaScript を実行し、システム内部にアクセスできます。スクリプトの誤りはシステム全体に影響します。「JavaScript スクリプト」と異なり、vFlow モジュールは呼び出せません。</string>
+    <string name="param_vflow_xposed_js_script_name">JavaScript スクリプト</string>
+    <string name="param_vflow_xposed_js_inputs_name">スクリプト入力</string>
+    <!-- ⚠️「既定/上限」は**ラベル**に書く（hint だけでは見えない）：
+         hint は自動フォームでは入力欄のプレースホルダで、この項目は 5000 が
+         事前入力されるため**プレースホルダは永久に表示されない**。 -->
+    <string name="param_vflow_xposed_js_timeout_name">タイムアウト（ミリ秒、既定 5000、上限 30000）</string>
+    <string name="param_vflow_xposed_js_timeout_hint">空欄なら既定 5000。上限 30000、範囲外は自動でクランプされます</string>
+    <string name="output_vflow_xposed_js_outputs_name">スクリプト戻り値</string>
+    <string name="summary_vflow_xposed_js_prefix">システムプロセスで JS 実行: </string>
+    <string name="error_vflow_xposed_js_script_empty">スクリプトエラー</string>
+    <string name="error_vflow_xposed_js_script_empty_desc">JavaScript スクリプトの内容は空にできません。</string>
+    <string name="msg_vflow_xposed_js_executing">システムプロセスで JavaScript を実行中…</string>
+    <string name="category_xposed">Xposed</string>
 </resources>

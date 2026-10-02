@@ -30,6 +30,17 @@ object ModuleCategories {
     const val EXTERNAL_EXTENSION = "external_extension"
     const val USER_MODULE = "user_module"
 
+    /**
+     * Xposed 通道（fork 独有）。
+     *
+     * ⚠️ 与 [SHIZUKU] / [CORE] 是同一类：「经哪条**特权通道**执行」。
+     * 下面 `specs` 里**必须**有对应的 spec —— 只在模块 metadata 写
+     * `categoryId = "xposed"` 不够：`getSortOrder` 对未登记分类返回
+     * `Int.MAX_VALUE`（排最后），`getLocalizedLabel` 回落 `defaultLabel`
+     * （= 传入的 categoryId，**显示成小写 `"xposed"`**）。
+     */
+    const val XPOSED = "xposed"
+
     private val specs = listOf(
         ModuleCategorySpec(TRIGGER, R.string.category_trigger, R.color.category_trigger, 0, "触发器"),
         ModuleCategorySpec(INTERACTION, R.string.category_interaction, R.color.category_ui_interaction, 1, "界面交互"),
@@ -45,7 +56,9 @@ object ModuleCategories {
         ModuleCategorySpec(FEISHU, R.string.category_feishu, R.color.category_feishu, 11, "飞书"),
         ModuleCategorySpec(APP_INTEGRATION, R.string.category_app_integration, R.color.category_app_integration, 12, "应用集成"),
         ModuleCategorySpec(EXTERNAL_EXTENSION, R.string.category_external_extension, R.color.category_external_extension, 13, "外部拓展"),
-        ModuleCategorySpec(USER_MODULE, null, R.color.category_user_module, 14, "用户模块")
+        ModuleCategorySpec(USER_MODULE, null, R.color.category_user_module, 14, "用户模块"),
+        // fork 追加（⚠️ 不重排任何既有分类的 sortOrder）：15 = 既有最大值 14 + 1
+        ModuleCategorySpec(XPOSED, R.string.category_xposed, R.color.category_xposed, 15, "Xposed"),
     )
 
     private val specsById = specs.associateBy { it.id }

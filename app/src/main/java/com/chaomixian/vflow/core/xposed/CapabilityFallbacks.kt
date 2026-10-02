@@ -127,6 +127,30 @@ object CapabilityFallbacks {
             ),
         )
 
+        // ── 在 system_server 里执行 JavaScript（hook 侧执行体：`capabilities/XposedJsCapabilityHandler.kt`）──
+        //
+        // ⚠️⚠️ **独占型**：`fallback = null` ⇒ 没有替代实现，不可用时「无从降级」，
+        //    调用方收到的是明确的 `Failed` + 引导（§6.2）—— **不是**静默失败。
+        //    （UID 1000 的权限是别的通道给不了的，App 进程里没有等价物可降。）
+        //
+        // ⚠️ `risk = HIGH`：脚本能读写系统内部状态，且崩溃半径是**整机**。
+        //
+        // ⚠️ `maxResultBytes = 64 KiB` 与 hook 侧 handler 声明保持**一致**。
+        //    它当前**没有 App 侧消费点**（`CapabilityInvoker` 明确不重复判大小，
+        //    用 `response.truncated`）—— 声明它是为了让口径集中在一处，不是死代码。
+        //
+        // ⚠️ `timeoutMs` 留 `null` ⇒ 用请求里的 `timeout_ms`（由用户在模块里配、
+        //    经 `clampTimeoutMs` 钳位后传入）。**两端都声明会造成错配**：
+        //    「App 配 30 秒、hook 按小值算」。
+        CapabilityRegistry.register(
+            Capability(
+                name = CapabilityNames.XPOSED_JS,
+                risk = CapabilityRisk.HIGH,
+                fallback = null,
+                maxResultBytes = 64 * 1024,
+            ),
+        )
+
         // ⚠️ 打一行日志而不是默默注册：排查「调用回 capability_absent」时，
         // 「注册表里到底有没有东西」是第一个要问的问题，而这行日志是它的答案。
         // （空表与「注册代码没跑到」在没有这行日志时长得一模一样。）
