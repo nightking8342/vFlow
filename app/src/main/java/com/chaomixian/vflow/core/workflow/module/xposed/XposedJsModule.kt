@@ -18,6 +18,7 @@ import com.chaomixian.vflow.permissions.PermissionManager
 import com.chaomixian.vflow.ui.workflow_editor.PillUtil
 import com.chaomixian.vflow.xposed.capability.CapabilityInvokeOutcome
 import com.chaomixian.vflow.xposed.capability.CapabilityNames
+import com.chaomixian.vflow.xposed.wire.ThreadModes
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -104,14 +105,23 @@ class XposedJsModule : BaseModule() {
                 append("返回值是字典时，它整体成为 outputs；返回非对象则包成 `{result: …}`。")
                 // ── ⚠️ 已知限制 ──
                 append("⚠️ 超时会中断纯计算死循环（`while(true){}`），但**阻塞的 Java 调用不可中断** —— ")
-                append("`Thread.sleep(...)` / 卡住的 IO 会把工作线程占满整个阻塞时长，而池只有 2 个线程。")
+                append("`Thread.sleep(...)` / 卡住的 IO 会把执行线程占满整个阻塞时长。")
                 append("⚠️ 脚本出错可能影响整个系统，且不可撤销。")
+                // ── 执行模式（三档）──
+                append("⚠️ 执行模式（thread_mode）决定脚本跑在哪种线程上：")
+                append("`default`=CPU 密集（弹性线程池）；`io`=阻塞等待（最多 64 并发，超了排队）；")
+                append("`ui`=**需要 Looper**（单线程，脚本里可 `new java.lang.Handler()`）。")
+                append("⚠️ 只在真正需要 Looper 时才选 `ui`：它是**单线程**且有界排队，")
+                append("一个卡住的脚本会让后续 `ui` 调用排队甚至被拒。")
             },
             "inputs" to "可选字典，作为脚本的输入。每个键会以**同名全局变量**注入脚本（如 `inputs.my_var`），" +
                 "值支持 {{变量}} 魔法变量引用。",
-            "timeout_ms" to "脚本执行上限（毫秒）。默认 5000、上限 30000，越界自动钳位。" +
-                "⚠️ 配得过长会占住通道：它跑在**容量只有 2** 的共享工作线程池上，" +
-                "两个被占满的调用会让后续调用直接失败。",
+            "timeout_ms" to "脚本执行上限（毫秒）。不填则不超时。" +
+                "⚠️ 配得过长会长时间占住执行线程；阻塞型脚本建议配 `io` 档。",
+            "thread_mode" to "脚本的执行模式（三档）：`default`（CPU 密集）/ `io`（阻塞等待）" +
+                "/ `ui`（需要 Looper，如脚本里要用 `new java.lang.Handler()`、`Looper` 相关 API）。" +
+                "⚠️ `ui` 档是**单线程**且队列有上限；在 system_server 里它意味着可以往整块屏幕贴窗口，" +
+                "且没有应用权限兜底 —— 只在确实需要 Looper 时才选它。",
         ),
         requiredInputIds = setOf("script"),
     )
@@ -195,6 +205,28 @@ class XposedJsModule : BaseModule() {
             nameStringRes = R.string.param_vflow_xposed_js_timeout_name,
             hintStringRes = R.string.param_vflow_xposed_js_timeout_hint,
         ),
+        InputDefinition(
+            id = "thread_mode",
+            // ⚠️ 约束写进标签（照 `timeout_ms` 的教训：自动表单里 hint 只是**输入框占位符**，
+            // 而本字段**有默认值** ⇒ 占位符永远不显示）。标签是**必然被渲染**的那处。
+            name = "执行模式",
+            staticType = ParameterType.ENUM,
+            // ⚠️ 存**稳定常量**（`default`/`io`/`ui`），不存本地化文案 ——
+            // 否则切语言后已保存的工作流失配（本仓库在数据卡切换上踩过同类坑）。
+            defaultValue = ThreadModes.DEFAULT,
+            options = listOf(ThreadModes.DEFAULT, ThreadModes.IO, ThreadModes.UI),
+            optionsStringRes = listOf(
+                R.string.option_vflow_xposed_js_thread_mode_default,
+                R.string.option_vflow_xposed_js_thread_mode_io,
+                R.string.option_vflow_xposed_js_thread_mode_ui,
+            ),
+            inputStyle = InputStyle.CHIP_GROUP,
+            // ⚠️ 编译期枚举：**不接受**运行时变量（值必须是三个常量之一）
+            acceptsMagicVariable = false,
+            acceptsNamedVariable = false,
+            nameStringRes = R.string.param_vflow_xposed_js_thread_mode_name,
+            hintStringRes = R.string.param_vflow_xposed_js_thread_mode_hint,
+        ),
     )
 
     override fun getOutputs(step: ActionStep?): List<OutputDefinition> = listOf(
@@ -241,6 +273,11 @@ class XposedJsModule : BaseModule() {
         // 详见 [clampTimeoutMs] 的 KDoc。
         val timeoutMs = clampTimeoutMs(context.getVariableAsNumber("timeout_ms")?.toLong())
 
+        // ⚠️ 执行模式（三档）。空 / 未指定 ⇒ 保持 `null` ⇒ codec **不写键**
+        //（保住 task-9 刻意保留的「未指定 ≠ 指定了 default」这个信息位）。
+        // 有值才归一后下发 —— `normalizeThreadMode` 是**纯函数**，未知值回落 default、绝不抛。
+        val rawMode = context.getVariableAsString("thread_mode").takeIf { it.isNotBlank() }
+
         val scriptInputs = scriptInputsOf(
             entries = rawInputEntries(context),
             hasReference = { VariableResolver.hasVariableReference(it) },
@@ -261,6 +298,8 @@ class XposedJsModule : BaseModule() {
                     // Kotlin Map.toString() 产出的是**非法 JSON**，绝不能自己拼串。
                     params = mapOf("script" to script, "inputs" to scriptInputs),
                     timeoutMs = timeoutMs,
+                    // ⚠️ `rawMode` 为 null ⇒ 不传 ⇒ codec 不写键（未指定 ≠ 指定了 default）
+                    threadMode = rawMode?.let { normalizeThreadMode(it) },
                 )
             }
 

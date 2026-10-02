@@ -81,10 +81,10 @@ class VFlowHookEntry : XposedModule() {
     private var transport: BinderTransport? = null
 
     /**
-     * ③ 的**执行运行时**（工作线程池 + 超时 + 截断）。
+     * ③ 的**执行运行时**（三档执行器 + 超时 + 截断）。
      *
-     * ⚠️⚠️ **必须与 `transport` 同生命周期**：池是**自建的**（容量 2），
-     * 热更新换代时旧代际的池若继续活着，会与新代际的池**并存**并抢
+     * ⚠️⚠️ **必须与 `transport` 同生命周期**：三档执行器（含自建 `HandlerThread`），
+     * 热更新换代时旧代际的执行器若继续活着，会与新代际的**并存**并抢
      * system_server 的资源 —— 需求明写的硬要求。
      *
      * ⚠️ 实例字段而非静态字段：热更新是新 classloader 加载新代码，

@@ -197,6 +197,44 @@ class InvokePolicyTest {
     }
 
     @Test
+    fun `uiQueueOverflowErrorIsHandlerErrorAndDistinctFromTimeout`() {
+        // ⚠️ 口径：UI 档排队到安全阀归 HANDLER_ERROR（「立刻就知道做不了」），
+        // **不新增第六个码**，也**不得**报成 TIMEOUT —— 后者会让用户「等更久」，
+        // 而这里的正确处置是「稍后重试、看看是谁占住了 UI 线程」。
+        val e = InvokePolicy.uiQueueOverflowError(257)
+        assertEquals(CapabilityErrorCode.HANDLER_ERROR, e.code)
+        assertTrue("detail 必须说明是 UI 档待处理过多：${e.detail}", e.detail.contains("待处理请求过多"))
+        assertTrue("detail 应含触发时的排队数：${e.detail}", e.detail.contains("257"))
+        assertFalse(
+            "❌ 不得复用「工作线程池已满」的文案 —— 那是自建有界池的形态，两者排查方向不同",
+            e.detail.contains("工作线程池已满"),
+        )
+
+        // 与 runtimeStoppedError 同码不同因：都归 HANDLER_ERROR，但 detail 必须可区分
+        val stopped = InvokePolicy.runtimeStoppedError()
+        assertEquals(e.code, stopped.code)
+        assertFalse("排队过多**不得**说成已停止", e.detail.contains("已停止"))
+        assertFalse("已停止**不得**说成排队过多", stopped.detail.contains("待处理请求过多"))
+    }
+
+    @Test
+    fun `maxUiQueueIsAProvisionalSafetyValve`() {
+        // ⚠️⚠️ **反向断言**：这个数**是拍的、没有依据**（见 MAX_UI_QUEUE 的 KDoc）。
+        // 本条不锁它的「正确性」（没有任何东西能定义它正确），只锁两条**结构性**事实：
+        //  ① 它必须是个正数且大得足以容纳任何真实并发（太小会让正常用例也被拒）；
+        //  ② 它必须**有限**（否则「有界保护」本身失效 —— 那正是本常量存在的全部意义）。
+        assertTrue("MAX_UI_QUEUE 必须 > 0", InvokePolicy.MAX_UI_QUEUE > 0)
+        assertTrue(
+            "安全阀必须有限：它防的是「UI 档无界排队 OOM 整机」",
+            InvokePolicy.MAX_UI_QUEUE < Int.MAX_VALUE,
+        )
+        assertTrue(
+            "太小会让正常并发被误拒（当前取 ${InvokePolicy.MAX_UI_QUEUE}）",
+            InvokePolicy.MAX_UI_QUEUE >= 64,
+        )
+    }
+
+    @Test
     fun `timeoutErrorIsTimeout`() {
         val e = InvokePolicy.timeoutError(1_250L, 1_000L)
         assertEquals(CapabilityErrorCode.TIMEOUT, e.code)
@@ -288,6 +326,7 @@ class InvokePolicyTest {
             InvokePolicy.timeoutError(1, 2),
             // ⚠️ 新构造必须进这份体检 —— 漏掉它会让「新增的错误构造超限」无人拦
             InvokePolicy.queuedExpiredError(2_350L, 2_000L),
+            InvokePolicy.uiQueueOverflowError(257),
             InvokePolicy.payloadTooLargeError(1, 2),
             InvokePolicy.throwableToError(IllegalStateException("y".repeat(2_000))),
         )

@@ -3492,6 +3492,11 @@
          而该字段预填了 5000 ⇒ 占位符永不显示 ⇒ 用户看不到上限。 -->
     <string name="param_vflow_xposed_js_timeout_name">Timeout (ms, blank means no timeout)</string>
     <string name="param_vflow_xposed_js_timeout_hint">Blank means no timeout</string>
+    <string name="param_vflow_xposed_js_thread_mode_name">Execution mode</string>
+    <string name="param_vflow_xposed_js_thread_mode_hint">Default: CPU-bound; IO: blocking; UI: needs a Looper</string>
+    <string name="option_vflow_xposed_js_thread_mode_default">Default (CPU-bound)</string>
+    <string name="option_vflow_xposed_js_thread_mode_io">IO (blocking)</string>
+    <string name="option_vflow_xposed_js_thread_mode_ui">UI (needs Looper)</string>
     <string name="output_vflow_xposed_js_outputs_name">Script Return Value</string>
     <string name="summary_vflow_xposed_js_prefix">Run JS in system process: </string>
     <string name="error_vflow_xposed_js_script_empty">Script Error</string>

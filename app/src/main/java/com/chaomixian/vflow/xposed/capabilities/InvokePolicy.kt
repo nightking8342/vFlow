@@ -392,6 +392,19 @@ object InvokePolicy {
      * | **池满**（本函数） | **立刻就知道做不了** | 看具体能力（是不是并发打满了） |
      *
      * ⚠️ `detail` 仍**只给人看、绝不参与判断**（它会被三语本地化）。
+     *
+     * ## ⚠️⚠️ 2026-10-03 补记：三档执行器下**无生产调用点**
+     *
+     * 执行器换成 `Dispatchers.Default` / `Dispatchers.IO` / 自建 `HandlerThread` 之后，
+     * 「自建的有界池」这个容器**没有了** ⇒ 它原先的触发点
+     * （`HookCapabilityRuntime.onInvoke` 的 `catch (RejectedExecutionException)`）
+     * **整块删除**。这一格「满了」的语义由 [uiQueueOverflowError] 继续承载。
+     *
+     * ⚠️ **但本函数保留、不删** —— `InvokePolicyTest` 有三处断言它，删掉会连带删测试。
+     * 这是 `docs/fork/xposed-thread-modes-design.md` §9-2 那条旧债的落地方式
+     *（「要么改成历史/防御并注明何时会复活，要么删」——这里选前者）。
+     *
+     * ⚠️ **它会在将来复活**：若某天选回有界队列/有界池，这一格就是它的错误构造。
      */
     fun poolExhaustedError(poolSize: Int): CapabilityError = sanitize(
         CapabilityError(
@@ -495,6 +508,64 @@ object InvokePolicy {
             code = CapabilityErrorCode.PAYLOAD_TOO_LARGE,
             detail = "结果超出上限：实际 $actualParcelBytes 字节 > 上限 $maxParcelBytes 字节。" +
                 "这通常是实现缺陷，请报告问题。",
+        ),
+    )
+
+    /**
+     * `ui` 档的**有界保护**上限。
+     *
+     * ⚠️ 为什么需要它：`Handler.post` **永不拒绝**（设计 §1.4 末表：「无界排队」），
+     * 而 UI 档只有 1 个线程 —— 一个卡死的脚本会让队列无限堆积直到 OOM。
+     * 而本进程是 **system_server**，OOM 的后果是**整机**。
+     *
+     * ## ⚠️⚠️ 这个数字的来源：**没有依据，就是拍的 —— 必须真机压测复评**
+     *
+     * **如实记录**（不粉饰）：
+     *
+     * | 问题 | 回答 |
+     * |---|---|
+     * | 256 是怎么来的？ | **拍板给出的**（父会话裁决「加，取 256」）。**不是**由任何实测、压测或公式推算得到 |
+     * | 有依据吗？ | ❌ **没有**。既没有量过「真实工作流的最大并发 `ui` 调用数」，也没有量过「256 个待执行协程占多少内存」 |
+     * | 那为什么不用别的数？ | 没有理由 —— 它选的是「明显大过任何真实并发」这个**方向**，具体数值是任意取的 |
+     *
+     * ⚠️ 本仓库对「拍数字」有**明确教训**：旧执行器的 `DEFAULT_POOL_SIZE = 2`
+     * 就是拍出来的，曾长期挂在 `xposed-architecture-v2.md` §10 **#21** 复评未决
+     * （2026-10-03 换成三档执行器后该常量已删除，容量由协程库与 `Looper` 决定）。
+     * ⇒ **不要**把这个 256 当成经过论证的容量，它只是一个**暂定的安全阀**。
+     *
+     * ## 复评要求（与真机项对应）
+     *
+     * 必须真机压测后回来改这个注释与数值。至少要知道两件事：
+     * 1. **真实并发**：正常使用下 `ui` 档同时在队的请求数上限是多少？
+     *    （若远小于 256 ⇒ 说明选大了，但无碍；若接近/超过 ⇒ 必须调整）
+     * 2. **卡死脚本的代价**：一个 `while(true)` 的 UI 脚本会让队列涨多快？排水速度是多少？
+     *
+     * ⚠️ **在压测之前，这个数字不得被引用为「已论证的容量」** ——
+     * 也不能用它去反推别的档的容量。
+     */
+    const val MAX_UI_QUEUE = 256
+
+    /**
+     * `ui` 档待执行数超上限 → `handler_error`（与超时是**两个不同的排查方向**）。
+     *
+     * ## ⚠️⚠️ 为什么归 `handler_error` 而不是 `timeout`
+     *
+     * 口径见 `CapabilityErrorCode.kt`：`handler_error` 是「**立刻就知道做不了**」，
+     * `timeout` 是「等了预算仍无结果」。本情形是前者 —— 请求**从未被投递执行**。
+     * **不新增第六个码。**
+     *
+     * ⚠️ 它与 [poolExhaustedError] 是**同一格**（都归 `handler_error`、都是「满了」）
+     * 的两个**形态**：那个是「自建有界池满了」，本函数是「UI 档无界排队到了安全阀」。
+     * 三档执行器下前者**无生产调用点**（见其 KDoc），「满了归 `HANDLER_ERROR`」
+     * 这条口径由本函数继续承载。
+     *
+     * @param queued 触发时的待执行数（含刚提交的这一个）
+     */
+    fun uiQueueOverflowError(queued: Int): CapabilityError = sanitize(
+        CapabilityError(
+            code = CapabilityErrorCode.HANDLER_ERROR,
+            detail = "UI 执行档待处理请求过多（$queued 个）。请稍后重试 —— " +
+                "通常是某个脚本占住 UI 线程过久。",
         ),
     )
 

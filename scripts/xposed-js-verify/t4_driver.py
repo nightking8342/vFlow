@@ -104,12 +104,16 @@ def api(method, path, body=None, tok=None):
 
 
 def make_workflow(tok, name, script, timeout_ms, out_file=None, inputs=None,
-                  probes=None):
+                  probes=None, thread_mode=None):
     s1 = {"id": "s1", "moduleId": "vflow.xposed.js",
           "parameters": {"script": script, "timeout_ms": timeout_ms,
                          "__error_policy": "STOP"}}
     if inputs is not None:
         s1["parameters"]["inputs"] = inputs
+    # ⚠️ 执行模式（三档）。`None` ⇒ **不写这个键** ⇒ 走 default ——
+    # 这个「未指定」的形态本身也是用例（见 case 14）。
+    if thread_mode is not None:
+        s1["parameters"]["thread_mode"] = thread_mode
     steps = [s1]
     if out_file:
         steps.append({"id": "s2", "moduleId": "vflow.data.file_operation",
@@ -213,6 +217,26 @@ CASES = {
     # ⚠️ 它**只能真机跑**：单测 JVM 的 TCCL 是对的，正则一直是好的，测不出这个缺陷。
     # 期望产物含 lit=true / grp=12 / rep=a#b# / typeof=function。
     "11": dict(file="11_regexp.js", timeout=5000, settle=6),
+    # ── 执行模式（三档）2026-10-03 ──
+    # 12：三档**落不同线程**。三条各跑一次，看 hook 日志的 `执行：… 档=… 线程=…`。
+    #     ⚠️ 不是为了看产物，是为了看**线程名**；产物里也回传了线程名便于交叉核对。
+    "12a": dict(file="12_thread_mode.js", timeout=5000, settle=6,
+                thread_mode="default", out="t4_out_12a.txt"),
+    "12b": dict(file="12_thread_mode.js", timeout=5000, settle=6,
+                thread_mode="io", out="t4_out_12b.txt"),
+    "12c": dict(file="12_thread_mode.js", timeout=5000, settle=6,
+                thread_mode="ui", out="t4_out_12c.txt"),
+    # 12d：**未知档**必须回落 default（不报错）—— 硬约束。
+    "12d": dict(file="12_thread_mode.js", timeout=5000, settle=6,
+                thread_mode="not-a-real-mode", out="t4_out_12d.txt"),
+    # 13：阳性对照 —— `ui` 档里 `new java.lang.Handler()` **不抛**。
+    #     这是「ui 档真的给了 Looper」在真机上的直接证据。
+    "13": dict(file="13_handler_ui.js", timeout=5000, settle=6,
+               thread_mode="ui", out="t4_out_13.txt"),
+    # 14：阴性对照 —— `default` 档里同样的代码**必须抛**。
+    #     ⚠️ 有它才能证明 13 不是平凡结论。
+    "14": dict(file="14_handler_default.js", timeout=5000, settle=6,
+               out="t4_out_14.txt"),
 }
 
 
@@ -231,7 +255,8 @@ def run_case(tok, cid, spec, cases_dir, out_dir):
                          out_file=("/sdcard/vFlow/exports/" + spec["out"])
                          if spec.get("out") else None,
                          probes=[(e, probe_paths[i])
-                                 for i, (e, _n) in enumerate(probes)])
+                                 for i, (e, _n) in enumerate(probes)],
+                         thread_mode=spec.get("thread_mode"))
     if not wfid:
         print("    ❌ 建工作流失败")
         return

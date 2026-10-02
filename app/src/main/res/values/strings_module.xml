@@ -3495,6 +3495,11 @@
          而该字段预填了 5000 ⇒ 占位符永不显示 ⇒ 用户看不到上限。 -->
     <string name="param_vflow_xposed_js_timeout_name">超时（毫秒，不填则不超时）</string>
     <string name="param_vflow_xposed_js_timeout_hint">不填则不超时</string>
+    <string name="param_vflow_xposed_js_thread_mode_name">执行模式</string>
+    <string name="param_vflow_xposed_js_thread_mode_hint">默认：CPU 密集；IO：阻塞等待；UI：需要 Looper</string>
+    <string name="option_vflow_xposed_js_thread_mode_default">默认（CPU 密集）</string>
+    <string name="option_vflow_xposed_js_thread_mode_io">IO（阻塞等待）</string>
+    <string name="option_vflow_xposed_js_thread_mode_ui">UI（需要 Looper）</string>
     <string name="output_vflow_xposed_js_outputs_name">脚本返回值</string>
     <string name="summary_vflow_xposed_js_prefix">系统进程执行 JS: </string>
     <string name="error_vflow_xposed_js_script_empty">脚本错误</string>

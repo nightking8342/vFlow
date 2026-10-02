@@ -564,6 +564,80 @@ do_judge() {
   fi
   verdict 9 "失败分类（handler_error 已验；channel_down 见说明）" "$v9" "$v9_why"
 
+  # ── 第 11 项（2026-10-03 新增）：三档落不同线程 ──
+  #
+  # ⚠️ 证据来源是 **hook 侧日志**的 `执行：… 档=<mode> 线程=<name>` 行
+  #（在档位线程上打，见 `HookCapabilityRuntime.onInvoke` 的 `scope.launch` 体内）。
+  #
+  # 判据：
+  #   default / io → 线程名含 `DefaultDispatcher-worker`
+  #   ui           → 线程名含 `VFlowHook-ui`
+  local t12_ok=1 t12_why=""
+  for pair in "12a:default:DefaultDispatcher-worker" "12b:io:DefaultDispatcher-worker" \
+              "12c:ui:VFlowHook-ui"; do
+    local cid="${pair%%:*}" rest="${pair#*:}"
+    local mode="${rest%%:*}" expect="${rest#*:}"
+    local f="$OUT/cases/$cid.hook.txt"
+    if [ ! -f "$f" ]; then
+      t12_ok=0; t12_why="$t12_why $cid:无采集;"; continue
+    fi
+    local line
+    line="$(grep -E "执行：.*档=$mode" "$f" | head -1)"
+    if [ -z "$line" ]; then
+      t12_ok=0; t12_why="$t12_why $cid:未见「档=$mode」的分发行;"; continue
+    fi
+    local tname
+    tname="$(sed -E 's/.*线程=([^ （]+).*/\1/' <<<"$line")"
+    if [[ "$tname" == *"$expect"* ]]; then
+      t12_why="$t12_why $cid→$tname ✓;"
+    else
+      t12_ok=0; t12_why="$t12_why $cid 期望含「$expect」实得「$tname」✗;"
+    fi
+  done
+  if [ "$t12_ok" = 1 ]; then
+    verdict 11 "三档落不同线程" pass "$t12_why"
+  else
+    verdict 11 "三档落不同线程" fail "$t12_why"
+  fi
+
+  # ── 第 12 项（新增）：未知档回落 default（硬约束，不得报错）──
+  if [ -f "$OUT/cases/12d.hook.txt" ]; then
+    if grep -qE "执行：.*档=default" "$OUT/cases/12d.hook.txt"; then
+      verdict 12 "未知 thread_mode 静默回落 default" pass "12d 的日志里档=default"
+    else
+      verdict 12 "未知 thread_mode 静默回落 default" fail \
+        "12d 未见档=default（$(grep -oE '档=[a-z]+' "$OUT/cases/12d.hook.txt" | head -1)）"
+    fi
+  else
+    verdict 12 "未知 thread_mode 静默回落 default" unknown "没有 12d 的采集"
+  fi
+
+  # ── 第 13 项（新增）：ui 档真有 Looper（阴阳对照）──
+  #
+  # ⚠️⚠️ 这一对是**整个三档改造的核心断言**：
+  #   13（ui 档）   `new java.lang.Handler()` 必须**不抛** ⇒ ok=true
+  #   14（default）同样代码必须**抛**       ⇒ ok=false 且 err 含 Looper
+  # 只有**两者同时成立**才能证明「ui 档给了 Looper」是真的区别。
+  local v13=unknown v13_why="" v13_pos=0 v13_neg=0
+  if [ -f "$OUT/cases/13.out.txt" ]; then
+    if grep -q "ok: true" "$OUT/cases/13.out.txt"; then v13_pos=1; else v13_pos=0; fi
+  fi
+  if [ -f "$OUT/cases/14.out.txt" ]; then
+    if grep -q "ok: false" "$OUT/cases/14.out.txt" && grep -qi "looper" "$OUT/cases/14.out.txt"; then
+      v13_neg=1
+    else
+      v13_neg=0
+    fi
+  fi
+  if [ "$v13_pos" = 1 ] && [ "$v13_neg" = 1 ]; then
+    v13=pass; v13_why="ui 档 new Handler() 不抛 ✓；default 档抛且提到 Looper ✓（阴性对照成立）"
+  elif [ "$v13_pos" = 1 ]; then
+    v13=unknown; v13_why="ui 档不抛（阳性成立），但**阴性对照 14 未成立或缺失** —— 无法排除「任何线程都能 new Handler」"
+  else
+    v13=fail; v13_why="ui 档 new Handler() 仍抛（$(head -c 120 "$OUT/cases/13.out.txt" 2>/dev/null)）"
+  fi
+  verdict 13 "★ ui 档真有 Looper（阴阳对照）" "$v13" "$v13_why"
+
   # ── 第 10 项：整机稳定 ──
   local pid_before pid_now
   pid_before="$(cat "$OUT/system_server_pid.txt" 2>/dev/null)"

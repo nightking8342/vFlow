@@ -919,8 +919,33 @@ Rhino 的指令级中断是靠**抛异常**打断的。这个异常必须在 hoo
 | 层 | 实现现状 |
 |---|---|
 | App 侧配对表 | ✅ **已实现**（2026-09-30，`HookChannelController` 的 `registerWaiter` / `failAllWaiters` / 断连唤醒 + **2026-10-01 的发起方 `CapabilityInvoker`**）—— 逐调用 `timeout_ms` + 兜底默认值，超时后 `unregisterWaiter`。**真机验证**：`slow` 路径返回 `TIMEOUT`（`elapsedMs=1751 > budget=1500`） |
-| hook 侧总时长 | ✅ **已实现**（2026-09-30，`xposed/capabilities/HookCapabilityRuntime`）—— 工作线程跑完 handler 后算 `elapsedMs`，`> budget` 回 `TIMEOUT`。⚠️ 是**事后判定**，不是看门狗（见下） |
+| hook 侧总时长 | ✅ **已实现**（2026-09-30，`xposed/capabilities/HookCapabilityRuntime`）—— 工作线程跑完 handler 后算 `elapsedMs`，`> budget` 回 `TIMEOUT`。⚠️ 是**事后判定**，不是看门狗（见下）。**2026-10-03 起执行器由「自建有界池（容量 2）」换成三档**（见下） |
 | Rhino 指令级 | ⚠️ **仍只有 survey 里的实验记录** —— 全仓 grep **无** `InstructionObserver` / `observeInstructionCount`。⚠️ **不在 ③ 的范围**（那是 `execute_script` capability 的事，见 `xposed-executor-design.md`） |
+
+##### ⚠️⚠️ 执行器：三档（`default` / `io` / `ui`）—— 2026-10-03 替换了自建有界池
+
+请求里的 `thread_mode` 选档；未知值一律回落 `default`（`ThreadModes.normalize`，**静默降级不报错**）。
+
+| 档 | dispatcher | 「满」时怎么办 | 用户选它的理由 |
+|---|---|---|---|
+| `default` | `Dispatchers.Default` | **弹性建线程**（不排队） | 我是**算**的（CPU 密集） |
+| `io` | `Dispatchers.IO` | **排队**（64 并发上限） | 我是**等**的（阻塞调用） |
+| `ui` | 自建 `HandlerThread("VFlowHook-ui")`（容量 1） | **无界排队** ⇒ 本类加安全阀 | 我**需要 Looper**（`new java.lang.Handler()` 等） |
+
+⚠️⚠️ **三档的「满」行为【不同】，这是有意的** —— 它们的容量来自库与 `Looper` 的物理常量，
+**不是取舍**（`shortx-script-capability` 的对照：ShortX 三个选项同样如此，且它也不自建线程池）。
+**不要试图统一它们。**
+
+⚠️ **两处语义变化**（**本替换主动引入**，都已登记）：
+1. **`ui` 档从「立刻拒绝」变成「无界排队」** ⇒ 一个卡死的 UI 脚本能让队列无限涨到 OOM，
+   而本进程是 **system_server** ⇒ 后果是**整机**。缓解 = `InvokePolicy.MAX_UI_QUEUE = 256`
+   这道安全阀（超了回 `handler_error`）。⚠️ **256 是拍的，无实测依据**，标为待复评。
+2. **`default`/`io` 档的「池满」语义消失** ⇒ 改为「排队等，最终 App 侧超时」。
+   用户看到的排查方向从「工作线程池已满」变成「超时」。`InvokePolicy.poolExhaustedError`
+   因此**无生产调用点**（保留并标注，口径由 `uiQueueOverflowError` 继续承载）。
+
+⚠️ **`ui` 档不是主线程** —— 是 `HandlerThread("VFlowHook-ui")`（照 ShortX 的 `SX-ShortXJS`）。
+`Dispatchers.Main` 在 system_server 里指的是**系统的主线程**，往那里投脚本是另一类危险。**不采用。**
 
 ⇒ **前两层已可用**（真机验证过）；**第三层仍待做**，但它属另一个 capability，不影响 ③ 的其余部分。
 
@@ -2296,7 +2321,7 @@ payload_too_large      → §3.6 契约 2（截断/分页，属实现缺陷或�
 | 原未决项 | 结论 |
 |---|---|
 | ③ 的 `invoke` 用同步还是 oneway | ✅ **oneway + 配对响应**（§3.4）—— 两者不冲突，是假两难 |
-| 线程与超时模型 | ✅ 三层超时 + 自建有界工作线程池（§5.1/5.2）—— ⚠️ **池满时立即回 error**（§3.4 末） |
+| 线程与超时模型 | ✅ 三层超时 + **三档协程执行器**（§5.2；2026-10-03 由「自建有界池（容量 2）」换成）—— ⚠️ 三档的「满」行为**不同**（`Default` 弹性 / `IO` 排队 / `UI` 无界排队 + 安全阀），**不是回归** |
 | hook 点挂载/卸载策略 | ✅ **不做空闲卸载**，规范早退（§5.4） |
 | 「同一连接上的调用串行 ⇒ 慢 handler 挡后续」 | ✅ **不成立** —— `completes` 指 `onTransact` 返回，而 §5.1 要求它立即返回（§3.4） |
 

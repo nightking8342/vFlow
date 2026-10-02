@@ -20,8 +20,9 @@ import com.chaomixian.vflow.xposed.wire.CapabilityRequest
  *
  * ## ⚠️ 实现约束
  *
- * - [handle] **跑在工作线程上**（不是 binder 线程）—— 可以阻塞，
- *   但**不得**做长耗时的 IPC/等待以外的操作（池只有 2 个线程）。
+ * - [handle] **跑在工作线程上**（不是 binder 线程）—— 可以阻塞。
+ *   ⚠️ 三档之后「可阻塞」的程度**按档而异**：`io` 档（`Dispatchers.IO`，最多 64 并发）
+ *   适合阻塞等待；`ui` 档是**单线程**且队列有上限，卡住会让后续 `ui` 调用排队甚至被拒。
  * - 实现**不必**自己包 `try/catch`：执行运行时的顶层会兜
  *   （异常转 `handler_error`）。**但那不是偷懒的理由** ——
  *   自己能判定的失败走 [CapabilityOutcome.Failure] 比抛异常好，

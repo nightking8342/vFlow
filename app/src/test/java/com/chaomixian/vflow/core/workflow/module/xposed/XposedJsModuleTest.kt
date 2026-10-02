@@ -13,7 +13,9 @@ import com.chaomixian.vflow.permissions.PermissionType
 import com.chaomixian.vflow.xposed.capability.CapabilityNames
 import com.chaomixian.vflow.xposed.script.ScriptExecutor
 import com.chaomixian.vflow.xposed.capability.CapabilityRegistry
+import com.chaomixian.vflow.xposed.wire.ThreadModes
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
@@ -150,12 +152,58 @@ class XposedJsModuleTest {
     // ════════════════════ 输入 / 输出契约 ════════════════════
 
     @Test
-    fun `inputs are exactly script inputs timeout_ms with snake_case ids`() {
+    fun `inputs are exactly script inputs timeout_ms thread_mode with snake_case ids`() {
         val ids = module.getInputs().map { it.id }.toSet()
-        assertEquals(setOf("script", "inputs", "timeout_ms"), ids)
+        assertEquals(setOf("script", "inputs", "timeout_ms", "thread_mode"), ids)
         ids.forEach { id ->
             assertTrue("参数 key `$id` 应为 snake_case", id.matches(Regex("[a-z][a-z0-9_]*")))
         }
+    }
+
+    @Test
+    fun `thread mode is a compile time enum of the three stable constants`() {
+        // ⚠️⚠️ 三条都必须锁：
+        // ① 存的是**稳定常量**（`default`/`io`/`ui`）而不是本地化文案 ——
+        //    存文案会让切语言后已保存的工作流失配（本仓库在数据卡切换上踩过）。
+        // ② `thread_mode` 的值域恰好是 `ThreadModes.KNOWN`（加第四档时两处必须同改）。
+        // ③ **不接受**魔法变量 / 命名变量 —— 它是编译期枚举，值必须是三个常量之一。
+        val input = module.getInputs().first { it.id == "thread_mode" }
+        assertEquals(ParameterType.ENUM, input.staticType)
+        assertEquals(ThreadModes.DEFAULT, input.defaultValue)
+        assertEquals(ThreadModes.KNOWN.toList().toSet(), input.options?.toSet())
+        assertFalse("编译期枚举不接受魔法变量", input.acceptsMagicVariable)
+        assertFalse("编译期枚举不接受命名变量", input.acceptsNamedVariable)
+        // 三语文案齐全（漏一种语言会让该语言下显示成 key 或另一语言）
+        assertNotNull("thread_mode 必须有本地化名", input.nameStringRes)
+        assertNotNull("thread_mode 必须有三语选项文案", input.optionsStringRes)
+        assertEquals("三个选项各要一条本地化文案", 3, input.optionsStringRes?.size)
+    }
+
+    @Test
+    fun `the thread mode is forwarded to the invocation and defaults to absent`() {
+        // ⚠️⚠️ **接线源码扫描**（形态照本文件既有的注册点扫描）。
+        // 纯函数 `normalizeThreadMode` 的用例**证不了**「execute 真的把它传下去了」——
+        // 本仓库反复踩过「纯函数全绿但调用点缺失」（CoreLauncher / messageFor）。
+        val code = sourceOf(MODULE_PATH)
+            .replace(Regex("""/\*[\s\S]*?\*/"""), " ")
+            .lineSequence().joinToString("\n") { it.substringBefore("//") }
+
+        assertTrue(
+            "❌ execute 必须把 threadMode 透传给 invokeOrFallback —— " +
+                "漏了它，用户选的档位永远不生效，而纯函数用例照样绿",
+            code.contains("threadMode ="),
+        )
+        assertTrue(
+            "❌ 取参后必须归一（normalizeThreadMode）—— 直接把原始串下发会让未知值落不到 default",
+            code.contains("normalizeThreadMode("),
+        )
+        // ⚠️ 未指定必须保持 null（codec 不写键），不能预先填 default ——
+        // 「未指定 ≠ 指定了 default」这个信息位是 task-9 刻意保留的。
+        assertTrue(
+            "❌ 空 / 未指定时必须保持 null（不能 `?: ThreadModes.DEFAULT` 预填）—— " +
+                "那会让「未指定」与「显式 default」在协议上无法区分",
+            code.contains("takeIf { it.isNotBlank() }"),
+        )
     }
 
     @Test
@@ -363,6 +411,19 @@ class XposedJsModuleTest {
         val file = candidates.firstOrNull { it.exists() }
             ?: error("找不到 ModuleRegistry.kt，候选路径：${candidates.map { it.absolutePath }}")
         return file.readText()
+    }
+
+    /** 读一个被测源文件（Gradle test 工作目录 = `app/`，故两个候选都试）。 */
+    private fun sourceOf(relative: String): String {
+        val candidates = listOf(File("app/$relative"), File(relative))
+        val file = candidates.firstOrNull { it.exists() }
+            ?: error("找不到 $relative，候选路径：${candidates.map { it.absolutePath }}")
+        return file.readText()
+    }
+
+    private companion object {
+        const val MODULE_PATH =
+            "src/main/java/com/chaomixian/vflow/core/workflow/module/xposed/XposedJsModule.kt"
     }
 
     /** 读三语之一的 `strings_module.xml`（用于断言标签文案，见超时那条用例）。 */

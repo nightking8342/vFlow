@@ -57,7 +57,7 @@ import com.chaomixian.vflow.xposed.wire.CapabilityRequest
  *
  * ## ⚠️ 线程：跑在**工作线程**上（可以阻塞）
  *
- * 由 [HookCapabilityRuntime] 投递到**容量 2 的自建有界池** —— **不是** binder 线程。
+ * 由 [HookCapabilityRuntime] 投递到**按 `thread_mode` 选出的那一档** —— **不是** binder 线程。
  * 本 handler **不需要**自己管线程，也**不要**自己起线程
  *（那会绕过池的容量控制，而池必须小正是因为它兜的是「不可中断的执行」）。
  * 见 [CapabilityHandler.handle] 的约束说明。
@@ -129,13 +129,13 @@ class XposedJsCapabilityHandler : CapabilityHandler {
      * ⇒ 让调用方定。
      *
      * ⚠️ 代价：脚本可能被给到 30s（上限）。这是**已被设计接受**的代价 ——
-     * 配合容量 2 的池与 [com.chaomixian.vflow.xposed.script.ScriptSandbox] KDoc 里
+     * 配合执行档位与 [com.chaomixian.vflow.xposed.script.ScriptSandbox] KDoc 里
      * 记录的「阻塞的 Java 调用不可中断」限制。
      */
     override val timeoutMs: Long? = null
 
     /**
-     * 执行。**跑在工作线程上**（容量 2 的有界池），**可以阻塞**。
+     * 执行。**跑在工作线程上**（按 `thread_mode` 选档），**可以阻塞**。
      *
      * 流程：解析 `params` → 跑脚本 → 把 [ScriptExecutor.Outcome] 映射成
      * [CapabilityOutcome]。

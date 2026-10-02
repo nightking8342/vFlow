@@ -3113,6 +3113,11 @@
          事前入力されるため**プレースホルダは永久に表示されない**。 -->
     <string name="param_vflow_xposed_js_timeout_name">タイムアウト（ミリ秒、空欄ならタイムアウトなし）</string>
     <string name="param_vflow_xposed_js_timeout_hint">空欄ならタイムアウトなし</string>
+    <string name="param_vflow_xposed_js_thread_mode_name">実行モード</string>
+    <string name="param_vflow_xposed_js_thread_mode_hint">既定：CPU 依存；IO：ブロッキング；UI：Looper が必要</string>
+    <string name="option_vflow_xposed_js_thread_mode_default">既定（CPU 依存）</string>
+    <string name="option_vflow_xposed_js_thread_mode_io">IO（ブロッキング）</string>
+    <string name="option_vflow_xposed_js_thread_mode_ui">UI（Looper が必要）</string>
     <string name="output_vflow_xposed_js_outputs_name">スクリプト戻り値</string>
     <string name="summary_vflow_xposed_js_prefix">システムプロセスで JS 実行: </string>
     <string name="error_vflow_xposed_js_script_empty">スクリプトエラー</string>
