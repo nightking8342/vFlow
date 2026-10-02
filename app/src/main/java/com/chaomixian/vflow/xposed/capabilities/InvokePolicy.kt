@@ -2,7 +2,9 @@ package com.chaomixian.vflow.xposed.capabilities
 
 import com.chaomixian.vflow.xposed.wire.CapabilityError
 import com.chaomixian.vflow.xposed.wire.CapabilityErrorCode
+import com.chaomixian.vflow.xposed.wire.CapabilityRequest
 import com.chaomixian.vflow.xposed.wire.ResultBudget
+import com.chaomixian.vflow.xposed.wire.ThreadModes
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -299,6 +301,29 @@ object InvokePolicy {
      */
     fun itemByteCost(item: Map<String, Any?>): Int =
         ResultBudget.byteSizeOf(JSONObject(item).toString())
+
+    /**
+     * 请求里的执行模式 → 三档之一（`default` / `io` / `ui`）。
+     * **未知 / `null` 一律回落 [ThreadModes.DEFAULT]，绝不抛。**
+     *
+     * ## ⚠️ 为什么是这个签名（收 `CapabilityRequest` 而不是 `String?`）
+     *
+     * 调用点在 [HookCapabilityRuntime] 的 `onInvoke`，那里手上只有 `CapabilityRequest`
+     * —— 直接把「信封字段 → 执行器选择」这一步收进策略层，
+     * 运行时那一侧就只需 `when (InvokePolicy.threadModeOf(request)) { … }`，
+     * 不必自己知道 `null` 该怎么解释。
+     *
+     * ## ⚠️ 本函数**不**引用 App 侧的 `normalizeThreadMode`
+     *
+     * `xposed/` 包禁止引用 `com.chaomixian.vflow.core.*`
+     *（`WireLayerPurityTest.FORBIDDEN_APP_PACKAGES`，本文件会被 hook 层加载）。
+     * 两侧共用的是 [ThreadModes]，**不是彼此** —— 故归一逻辑只有一份实现。
+     *
+     * ⚠️ **静默降级是硬约束，不是偷懒**：新 App 发 `io`、旧 hook 层不认识时报错
+     * 会让它变成一次**调用失败**；降级只损失「资源画像准确度」。完整论证见
+     * [ThreadModes.normalize]。
+     */
+    fun threadModeOf(request: CapabilityRequest): String = ThreadModes.normalize(request.threadMode)
 
     /**
      * 把收下的元素序列化成 **`resultJson`** —— `{"items":[…]}`。

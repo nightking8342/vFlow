@@ -570,6 +570,54 @@ class CapabilityInvokerTest {
         assertEquals("应用 capability 声明的超时", 250L, req.timeoutMs)
     }
 
+    // ── 执行模式（thread_mode）：本层只透传，不归一 ──────────────
+    //
+    // ⚠️ 为什么它走信封而不是 `params`：`params` 不透明，而**分发在信封层**
+    //（`HookCapabilityRuntime.onInvoke` 要按 mode 选执行器）
+    // ⇒ 模式必须在信封层可读，性质与 `cursor` 完全相同。
+
+    @Test
+    fun `build request json carries the thread mode`() {
+        val json = CapabilityInvoker.buildRequestJson(
+            CAP,
+            emptyMap(),
+            1_234L,
+            "rid",
+            threadMode = "ui",
+            token = "tk",
+        )
+        assertTrue("应写出 thread_mode 键", json.contains("thread_mode"))
+        assertEquals("ui", CapabilityInvocationCodec.decodeRequest(json)!!.threadMode)
+    }
+
+    @Test
+    fun `null thread mode is transmitted as an absent key`() {
+        // ⚠️ 照 `null timeout is transmitted as an absent key` 的写法：
+        // 「不存在的键」比「值为 null 的键」更明确，且旧 hook 层不必认识它。
+        val json = CapabilityInvoker.buildRequestJson(CAP, emptyMap(), null, "rid", token = "tk")
+        assertTrue("未指定时不得写出 thread_mode 键", !json.contains("thread_mode"))
+        assertNull(CapabilityInvocationCodec.decodeRequest(json)!!.threadMode)
+    }
+
+    @Test
+    fun `invoke carries the thread mode to the channel`() = runBlocking {
+        // ⚠️⚠️ **本用例必须经过调用点**（上面两条只测纯函数 `buildRequestJson`）。
+        //
+        // 本仓库反复踩过的形态：纯函数测试全绿，而调用方忘了传参 ——
+        // 那时上面两条**照样绿**（它们根本不经过 `invoke`）。
+        // （先例：`CoreLauncher` 漏调 `recordLaunchedDexFingerprint`，13 个纯函数单测全绿；
+        //   `XposedDiagnostics.messageFor` 写了但零生产调用点。）
+        registerCap()
+        val cb = connect(FakeHookCallback())
+        autoSucceed(cb)
+
+        CapabilityInvoker.invoke(CAP, emptyMap(), LONG_TIMEOUT, threadMode = "io")
+
+        assertEquals(1, cb.invokeCount)
+        val req = CapabilityInvocationCodec.decodeRequest(cb.receivedRequests[0])!!
+        assertEquals("invoke 必须把 threadMode 透传进信封", "io", req.threadMode)
+    }
+
     // ══════════════════ ⑨ 结果不是合法 JSON ══════════════════
 
     @Test

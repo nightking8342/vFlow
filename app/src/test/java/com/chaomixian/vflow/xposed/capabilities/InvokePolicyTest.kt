@@ -1,6 +1,7 @@
 package com.chaomixian.vflow.xposed.capabilities
 
 import com.chaomixian.vflow.xposed.wire.CapabilityErrorCode
+import com.chaomixian.vflow.xposed.wire.CapabilityRequest
 import com.chaomixian.vflow.xposed.wire.ResultBudget
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -278,4 +279,43 @@ class InvokePolicyTest {
             )
         }
     }
+
+    // ── threadModeOf：未知一律 default ─────────────────────
+    //
+    // ⚠️ 硬约束：新 App 发 `io`、旧 hook 层不认识时**必须静默降级**，不能报错 ——
+    // 报错会让它变成一次调用失败，而降级只损失「资源画像准确度」。
+
+    @Test
+    fun `threadModeOfDefaultsWhenAbsent`() {
+        assertEquals("default", InvokePolicy.threadModeOf(requestWithThreadMode(null)))
+    }
+
+    @Test
+    fun `threadModeOfFallsBackOnUnknown`() {
+        // ⚠️ 含大小写不信：协议值一律小写，`"IO"` 属未知值
+        for (bogus in listOf("xxx", "", "  ", "IO", "DEFAULT", "ui ")) {
+            assertEquals(
+                "未知值 <$bogus> 应回落 default（而不是抛异常）",
+                "default",
+                InvokePolicy.threadModeOf(requestWithThreadMode(bogus)),
+            )
+        }
+    }
+
+    @Test
+    fun `threadModeOfPassesThroughTheThreeModes`() {
+        assertEquals("default", InvokePolicy.threadModeOf(requestWithThreadMode("default")))
+        assertEquals("io", InvokePolicy.threadModeOf(requestWithThreadMode("io")))
+        assertEquals("ui", InvokePolicy.threadModeOf(requestWithThreadMode("ui")))
+    }
+
+    /** 构造请求夹具（照仓库既有风格用**命名参数**，新字段才不会挤坏位置参数）。 */
+    private fun requestWithThreadMode(mode: String?) = CapabilityRequest(
+        requestId = "r",
+        protocolVersion = 1,
+        capability = "c",
+        paramsJson = "{}",
+        threadMode = mode,
+        token = "t",
+    )
 }

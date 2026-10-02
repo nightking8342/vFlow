@@ -384,6 +384,76 @@ class CapabilityInvocationCodecTest {
         assertEquals("truncated", CapabilityInvocationCodec.KEY_TRUNCATED)
     }
 
+    // ── 执行模式（thread_mode）：信封层只搬运 ────────────────────
+    //
+    // ⚠️ 为什么它必须在**信封层**（不能塞进 `params`）：
+    // `params` 是不透明的（「信封层不认识任何业务字段」），而**分发发生在信封层**
+    // —— `HookCapabilityRuntime.onInvoke` 要按 mode 选执行器。
+    // ⇒ 性质与 `cursor` 完全相同：信封层只搬运、不解释。
+
+    @Test
+    fun `request round-trips the thread mode`() {
+        val json = CapabilityInvocationCodec.encodeRequest(
+            requestId = "r",
+            capability = "c",
+            threadMode = "io",
+            token = "t",
+        )
+        val req = CapabilityInvocationCodec.decodeRequest(json)
+        assertNotNull(req)
+        assertEquals("io", req!!.threadMode)
+    }
+
+    @Test
+    fun `absent thread mode is not written at all`() {
+        // ⚠️ 与 `cursor` / 分页三键同款约定：「不存在的键」比「值为 null 的键」更明确。
+        // 两种输入都要覆盖：null（没传）与空白（传了个空壳）
+        for (mode in listOf<String?>(null, "   ")) {
+            val obj = JSONObject(
+                CapabilityInvocationCodec.encodeRequest("r", "c", threadMode = mode),
+            )
+            assertFalse(
+                "threadMode=<$mode> 时不该写这个键",
+                obj.has(CapabilityInvocationCodec.KEY_THREAD_MODE),
+            )
+        }
+    }
+
+    @Test
+    fun `missing thread mode decodes to null not to the default`() {
+        // ⚠️⚠️ 这里刻意**不是** `"default"`：要让「旧端没写」与「写了 default」
+        // 在解码层可区分（与 cursor / 分页三键同一约定）。
+        // `default` 的语义只在 `ThreadModes.normalize` / `InvokePolicy.threadModeOf` 兜。
+        val req = CapabilityInvocationCodec.decodeRequest(
+            """{"request_id":"r","capability":"c"}""",
+        )
+        assertNotNull(req)
+        assertNull("缺失 ⇒ null（不是 default）", req!!.threadMode)
+    }
+
+    @Test
+    fun `an unrecognized thread mode decodes to null`() {
+        // ⚠️⚠️ 硬约束 1 的**解码侧**落实：无法识别的值 ⇒ null，**绝不抛异常**
+        //（本函数跑在 system_server 侧，抛异常会危及整机）。
+        // 未知 ⇒ null ⇒ 下游 normalize 回 default，全程无异常。
+        for (bogus in listOf("xxx", "DEFAULT", "IO", "  ", "default ")) {
+            val req = CapabilityInvocationCodec.decodeRequest(
+                """{"request_id":"r","capability":"c","thread_mode":"$bogus"}""",
+            )
+            assertNotNull("输入 <$bogus> 时不该返回坏信封", req)
+            assertNull(
+                "无法识别的 thread_mode=<$bogus> 应解成 null（留待下游归一），而不是原样透传",
+                req!!.threadMode,
+            )
+        }
+    }
+
+    @Test
+    fun `thread mode key name is stable`() {
+        // ⚠️ 与上面那条 key 断言同源：本键也是**跨进程协议的一部分**
+        assertEquals("thread_mode", CapabilityInvocationCodec.KEY_THREAD_MODE)
+    }
+
     @Test
     fun `envelope is not event envelope`() {
         // ⚠️ §3.3：「绝不复用 EventEnvelope（它含 seq/dropped，与请求-响应语义相反）」

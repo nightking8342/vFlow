@@ -1,5 +1,7 @@
 package com.chaomixian.vflow.core.workflow.module.xposed
 
+import com.chaomixian.vflow.xposed.wire.ThreadModes
+
 /**
  * `vflow.xposed.js` 模块的**纯函数层**。
  *
@@ -124,3 +126,18 @@ internal fun scriptInputsOf(
 ): Map<String, Any?> = entries.mapValues { (_, text) ->
     if (hasReference(text)) resolve(text) else text
 }
+
+/**
+ * 用户配的执行模式 → 三档之一（`default` / `io` / `ui`）。**未知 / null 一律回落
+ * `default`，绝不抛**。
+ *
+ * ## ⚠️ 语义在 [ThreadModes] —— 本函数只是 App 侧的入口
+ *
+ * 三档词汇表与归一逻辑**只有一份实现**（[ThreadModes.normalize]），本函数是单行委托。
+ * **不要**在这里另写一份 `when`：hook 侧 `InvokePolicy.threadModeOf` 用的是同一份
+ * [ThreadModes]（它够不到本文件，见 [ThreadModes] 的类注释），
+ * 两处各写一份会让「加了第四档只改一边」变成**静默的分裂**。
+ *
+ * 完整理由（含为什么未知值静默降级而不是报错）见 [ThreadModes.normalize]。
+ */
+internal fun normalizeThreadMode(raw: String?): String = ThreadModes.normalize(raw)
