@@ -80,11 +80,38 @@ class XposedJsModule : BaseModule() {
             "脚本能访问系统内部接口，但没有 vFlow 模块树（不能调用 vflow.* —— 需要调模块请用 " +
             "vflow.system.js）。脚本执行出错可能影响整个系统，且不可撤销。",
         inputHints = mapOf(
-            "script" to "JavaScript 源码。⚠️ 环境里没有 vflow.* 模块树，" +
-                "不能像 vflow.system.js 那样调用 vFlow 模块；inputs 以全局变量形式注入，顶层 return 的值即为 outputs。",
-            "inputs" to "可选字典，作为脚本的输入（以全局变量形式注入，支持 {{变量}} 魔法变量引用）。",
-            "timeout_ms" to "超时毫秒数。默认 5000，上限 30000；越界会自动钳位。" +
-                "⚠️ 脚本跑在容量只有 2 的共享工作线程池上，配得过长会占住整条通道。",
+            // ⚠️ 这份 hints 是**给 LLM 读的**（它随 query_module_schema 一起进上下文），
+            // 比 `defaultValue` 更权威 —— Agent 通常先读 hints、再去看 [default: …]。
+            // 所以「怎么写」这件事写在这里，`defaultValue` 只留「给人看的最小可用示例」。
+            "script" to buildString {
+                append("要执行的 JavaScript 源码。")
+                // ── 这个模块**是什么**（Agent 判断「该不该用它」的依据）──
+                append("运行在系统进程（system_server）内，UID 1000 —— ")
+                append("能拿到 shell（UID 2000）拿不到的签名级权限、也能同进程访问系统内部对象。")
+                append("判据：需要 UID 1000 专属权限、或要读 system_server 内部对象时才用它；")
+                append("只是「构造对象参数 / 读返回值」的话，vflow.core.* 更省且崩溃半径只有单进程。")
+                // ── 环境：没有模块树（与 vflow.system.js 的分工）──
+                append("⚠️ 环境里【没有】vflow.* 模块树，`vflow.device.toast(...)` 之类一律 ReferenceError；")
+                append("要用 vFlow 模块请改用 vflow.system.js。")
+                // ── 环境：有什么（Agent 推不出来的）──
+                append("可用：Java 互操作（`importClass` / `Packages` / `JavaAdapter` / `getClass`）、")
+                append("`console.log(...)`（调试输出的唯一手段，会进系统日志）、")
+                append("全局 `inputs`（见 inputs 字段）。标准内建（String/Array/JSON/Math/Date/Map/Set/Promise/RegExp）齐全。")
+                // ── ⚠️⚠️ 三条写法契约（踩过坑的，不写 Agent 必错）──
+                append("⚠️ 返回值必须用【末行表达式】，**不能用顶层 `return`** —— ")
+                append("Rhino 把顶层代码当表达式求值，顶层 return 直接报「返回的值无效」（解析期错误，脚本一行都不执行）。")
+                append("例：`var r = {}; r.sum = 1 + 1; r;`（`return` 只在函数体内合法）。")
+                append("返回值是字典时，它整体成为 outputs；返回非对象则包成 `{result: …}`。")
+                // ── ⚠️ 已知限制 ──
+                append("⚠️ 超时会中断纯计算死循环（`while(true){}`），但**阻塞的 Java 调用不可中断** —— ")
+                append("`Thread.sleep(...)` / 卡住的 IO 会把工作线程占满整个阻塞时长，而池只有 2 个线程。")
+                append("⚠️ 脚本出错可能影响整个系统，且不可撤销。")
+            },
+            "inputs" to "可选字典，作为脚本的输入。每个键会以**同名全局变量**注入脚本（如 `inputs.my_var`），" +
+                "值支持 {{变量}} 魔法变量引用。",
+            "timeout_ms" to "脚本执行上限（毫秒）。默认 5000、上限 30000，越界自动钳位。" +
+                "⚠️ 配得过长会占住通道：它跑在**容量只有 2** 的共享工作线程池上，" +
+                "两个被占满的调用会让后续调用直接失败。",
         ),
         requiredInputIds = setOf("script"),
     )
