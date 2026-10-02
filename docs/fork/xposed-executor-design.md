@@ -24,6 +24,28 @@
 >
 > **⚠️ 注意**：V2.0 §3.4 定了 ③ 用 **oneway + 配对响应**，而本文 §2.2 主张「**必须同步**」——
 > **以 V2.0 为准**（两者不冲突：「失败可感知」≠「调用方原地阻塞」）。
+>
+> ---
+>
+> ### ⚠️ 2026-10-01 正文订正（`§5` / `§6`，**以 V2.0 为准**）
+>
+> 复核「本文是否符合我们讨论的 JS 模块设计」时，发现**四处写于「两个模块」决策之前**，
+> 已就地修正（不是只在头部标注）：
+>
+> | # | 位置 | 初稿 | 订正后 |
+> |---|---|---|---|
+> | **1** | §5.1 | 孤立的新模块，未提与 `vflow.system.js` 的关系 | ⚠️ **与已有的并列的第二个 JS 模块** + **三个前提**（共享契约骨架 / 能力导向命名 / **互相指路**） |
+> | **2** | §5.1 | `id = "vflow.xposed.script"` | ⚠️ **占位** —— 能力导向命名，不带「Xposed」前缀 |
+> | **3** | §2.2 / §3.3 / §4.1 / §4.3 / §5.2 | 通篇的 `executeScript(json, token): String`、「必须同步」 | ⚠️ **`invoke(requestJson)` oneway void**（③ 统一入口 + 配对响应）。**§2.2 整节标注作废**（含 `String executeScript(...)` 的 AIDL 片段）；§3.3 的 AIDL 清单、§4.1 的文件组织、§4.3 的执行流程、§5.2 的调用路径**全部就地改成新形态** |
+> | **4** | §6 / §5.3 | 「只有一个模块」 | ⚠️ **只有【一个】能进 system_server 的脚本模块**（App 进程那个不在收敛范围）；文案**必须互相指路** |
+>
+> ⚠️ **一处措辞纠错（记下来避免再犯）**：
+> 复核中我曾把「新增一个模块」写成**「已被推翻」** —— **那是错的**。
+> 「新增一个模块」（相对现状）与「两个模块」（目标形态）**是同一件事的两种说法**，不冲突。
+> **S1 修正的是【命名】与【与已有模块的关系】，不是「新增」这个动作。**
+>
+> ✅ **本文作为「实现级细节唯一来源」的地位不变** ——
+> 请求/响应字段表、文件组织、执行流程七步、返回值序列化的坑、6 条未决项仍以本文为准。
 
 ---
 
@@ -116,10 +138,18 @@
 | `HookRuntime` | ❌ 不复用 | 它的职责是「装配信封 + 有界队列」，与请求-响应冲突 |
 | token 鉴权 / 恒定时间比较 | ✅ 复用逻辑 | |
 
-### 2.2 决策 2：**同步阻塞**（不用 `oneway`）
+### 2.2 决策 2：~~**同步阻塞**（不用 `oneway`）~~ → ⚠️ **已推翻，见 V2.0 §3.4**
+
+> ⚠️⚠️ **本节整节作废（2026-10-01）。** 原决策是「必须同步（非 oneway）」，
+> 理由是「脚本执行要等结果」——**那是把「等结果」当成了「原地阻塞」**。
+> **V2.0 §3.4 定案：oneway + 配对响应**（`oneway invoke` + `IHookHost.resolve`），
+> 两者不冲突 —— **「失败可感知」≠「调用方原地阻塞」**。
+>
+> ✅ **本节保留的只有一条**：**「执行失败必须能被感知」这条纪律**（它仍然成立，
+> 只是承载方式从「同步返回值」换成了「配对响应」）。下面的论证请当作**史料**读。
 
 ```aidl
-// 新增：IHookCallback 上的执行入口
+// ⚠️ 初稿（已作废）—— 正确形态见 V2.0 §3.4
 String executeScript(String requestJson, String token);
 ```
 
@@ -239,17 +269,22 @@ cx.setInstructionObserverThreshold(N)          // 每 N 条指令回调一次
 
 ```
 IHookHost（App 提供）
-  ├─ registerCallback(cb)           ← 连接建立
-  └─ report(envelopeJson)  oneway   ← 上行：事件
+  ├─ registerCallback(cb)                  ← 连接建立
+  ├─ report(envelopeJson)  oneway          ← 上行：事件
+  └─ resolve(responseJson)  oneway         ← ★ 新增：③ 的应答（V2.0 §3.4）
 
 IHookCallback（hook 层实现）
-  ├─ pushConditions(json, token)    ← 下行：过滤条件（同步）
-  ├─ ping(): Int                    ← 心跳
-  └─ executeScript(json, token): String   ← ★ 新增：执行（同步）
+  ├─ pushConditions(json, token)           ← 下行：过滤条件（同步，不变）
+  ├─ ping(): Int / capabilities(): String  ← 心跳 / 能力清单（不变）
+  └─ invoke(requestJson)  oneway void      ← ★ 新增：③ 统一入口（**非同步**）
 ```
 
+⚠️ **与初稿的两处不同（V2.0 §3.4 / §3.2）**：
+① `executeScript` → **`invoke`**（统一入口，不是专用方法）；
+② **`oneway void`**（不是 `String` 返回值）—— 结果与错误码经 `resolve` 配对回来。
+
 **为什么不新开一个 AIDL 接口**：一条连接上多一个方法，比多一条连接简单得多
-（见 §2.3）。且 `report` 与 `executeScript` 方向相反、互不干扰。
+（见 §2.3）。且 `report` 与 `invoke` 方向相反、互不干扰。
 
 ---
 
@@ -261,7 +296,9 @@ IHookCallback（hook 层实现）
 app/src/main/java/com/chaomixian/vflow/xposed/
 ├── VFlowHookEntry.kt          （改：接入 executor）
 ├── HookRuntime.kt             （不动）
-├── BinderTransport.kt         （改：callback 加 executeScript 实现）
+├── BinderTransport.kt         （改：callback 加 invoke 分发）
+├── capabilities/              （⚠️ 已有目录，V2.0 的 ③ 运行时在这里 —— 本 capability 注册进它）
+│   └── <ScriptCapabilityHandler>.kt
 ├── script/                    （新目录）
 │   ├── ScriptExecutor.kt      · 接请求 → 建 Rhino 环境 → 跑 → 序列化结果
 │   ├── ScriptSandbox.kt       · 超时/指令数中断（ContextFactory 子类）
@@ -314,9 +351,14 @@ hook 层跑在 system_server，**引用面是硬约束**：
 
 ### 4.3 执行流程
 
+> ⚠️ **函数名与签名已按 V2.0 订正（2026-10-01）**：初稿写 `executeScript(requestJson, token)`
+> —— **那是「专用方法」的形态，正是 V2.0 §3.2 推翻的**。③ 走**统一入口** `invoke`，
+> 且它是 **`oneway void`**（无返回值，结果经 `IHookHost.resolve` 回）。
+> ⚠️ `token` **不在参数里** —— 它在信封内（V2.0 §3.3：请求与响应两个信封**都带 token**）。
+
 ```
-executeScript(requestJson, token)
-  ├─ 1. 校验 token（恒定时间比较，复用逻辑）
+IHookCallback.invoke(requestJson)          ← oneway void，无返回值
+  ├─ 1. 校验 token（恒定时间比较，复用逻辑；token 在信封里，不在参数）
   ├─ 2. 解析请求（org.json）
   ├─ 3. 建 Rhino 环境
   │     · Context.enter()
@@ -326,10 +368,10 @@ executeScript(requestJson, token)
   │     · 注入 systemContext（system_server 的 Context，若可取）
   │     · 注入 console（**移植版**）
   │     · **不注入 vflow.* 模块树**（见 §1.2 的前提）
-  ├─ 4. 执行（带超时中断）
-  ├─ 5. 序列化结果（JSON.stringify 思路）
-  ├─ 6. 组装响应
-  └─ 7. 返回字符串
+  ├─ 4. 投递到**自建有界工作线程池**执行（⚠️ 不在 binder 线程上跑 —— V2.0 §5.1）
+  ├─ 5. 执行（带超时中断）
+  ├─ 6. 序列化结果（JSON.stringify 思路）
+  └─ 7. 组装响应 → 经 IHookHost.resolve(responseJson) 回（oneway）
 ```
 
 ### 4.4 线程与阻塞
@@ -347,9 +389,28 @@ executeScript(requestJson, token)
 
 ### 5.1 新模块
 
+> ⚠️ **本节已按 V2.0 §5.7 订正（2026-10-01）。** 三处与初稿不同，**动手前必须照此实现**：
+>
+> | 项 | v1.0 初稿 | **订正后（V2.0 为准）** |
+> |---|---|---|
+> | 模块定位 | 孤立的新模块 | ⚠️ **与已有的 `vflow.system.js` 并列的第二个 JS 模块**（「新增一个模块」是对的，但**必须共享契约骨架**） |
+> | `id` | `vflow.xposed.script` | ⚠️ **能力导向命名，不带「Xposed」前缀**（初稿的 id 是占位） |
+> | 调用形态 | `HookChannelController.executeScript(...)` 返回 `Boolean` | ⚠️ **③ 的 oneway + 配对响应** ⇒ 返回**结果对象**（含 `error` / 错误码），不是 `Boolean` |
+> | 文案 | 只说代价 | ⚠️ **必须互相指路**（告诉用户「若需要 xxx 请用另一个模块」） |
+
+#### 三个前提（缺一不可，V2.0 §5.7）
+
+| # | 前提 | 说明 |
+|---|---|---|
+| **1** | **共享契约骨架** | 参数（`script` / `inputs` / `timeout_ms`）、输出（`outputs`）、编辑器布局**与 `vflow.system.js` 完全一致** ⇒ 抽基类或共享 UIProvider。**真实差异只有三处**：执行器 / `riskLevel`+权限 / 文案 |
+| **2** | **能力导向命名与文案** | ❌ 不叫「JS 脚本 (Xposed)」；✅ 要叫出**能力差别**（能在哪跑、能做什么） |
+| **3** | **互相指路** | 两个模块的描述里都要写清分工 —— 这是化解「AI 面板出现两个近同名工具」的**唯一手段**（`survey §7.1` 的担忧是真的） |
+
+#### 模块定义
+
 ```
-core/workflow/module/xposed/XposedScriptModule.kt
-  id = "vflow.xposed.script"
+core/workflow/module/**（按能力命名选目录）**/XxxScriptModule.kt
+  id = "vflow.???.???"          ← ⚠️ 占位，能力导向命名（V2.0 §5.7）
   riskLevel = HIGH（在 system_server 执行 + UID 1000）
   requiredPermissions = listOf(PermissionManager.XPOSED_HOOK)
   usageScopes = TEMPORARY_WORKFLOW（**不给 DIRECT_TOOL** —— 见 §6）
@@ -357,23 +418,36 @@ core/workflow/module/xposed/XposedScriptModule.kt
 
 **输入**：
 
-| key | 类型 | 说明 |
-|---|---|---|
-| `script` | STRING | 脚本正文 |
-| `inputs` | ANY | 传给脚本的 inputs（JSON 序列化后下行） |
-| `timeout_ms` | NUMBER | 默认 5000，上限 30000 |
+| key | 类型 | 说明 | 与 `vflow.system.js` |
+|---|---|---|---|
+| `script` | STRING | 脚本正文 | ✅ **同名同义** |
+| `inputs` | ANY | 传给脚本的 inputs（JSON 序列化后下行） | ✅ **同名同义** |
+| `timeout_ms` | NUMBER | 默认 5000，上限 30000 | ⚠️ **本模块独有**（App 侧那个没有超时，见 §8 开工前置条件） |
 
-**输出**：`outputs`（DICTIONARY）—— 脚本返回的字典。
+**输出**：`outputs`（DICTIONARY）—— 脚本返回的字典。**与 `vflow.system.js` 同名同义。**
 
 ### 5.2 调用路径
 
+⚠️ **初稿写「与 `pushConditions` 同构」是错的** —— 那个形态（同步返回 `Boolean`）
+正是 V2.0 §3.4 推翻的。**③ 是 oneway + 配对响应**：
+
 ```kotlin
-// 与 pushConditions 同构（现有范式）
-val ok = HookChannelController.executeScript(requestJson, timeoutMs)
-if (!ok) return ExecutionResult.Failure(...)   // **失败绝不静默**
+// ③ 的统一入口（V2.0 §3.4）；结果经 IHookHost.resolve 配对回来
+val outcome = CapabilityInvoker.invoke(
+    capability = <本模块的 capability 名>,
+    params = mapOf("script" to script, "inputs" to inputs),
+    timeoutMs = timeoutMs,
+)
+// ⚠️ 返回的是【结果对象】而非 Boolean —— 失败要能区分错误码
+//    （CAPABILITY_ABSENT / TIMEOUT / HANDLER_ERROR / CHANNEL_DOWN / PAYLOAD_TOO_LARGE）
+when (outcome) {
+    is Success -> ExecutionResult.Success(...)
+    is Failed  -> ExecutionResult.Failure(...)   // **失败绝不静默**
+    is Degraded -> ...                            // 见 V2.0 §6.2（本 capability 是独占型 ⇒ 无降级）
+}
 ```
 
-**⚠️ 不能在主线程调用** —— 沿用 `pushConditions` 的约束。
+**⚠️ 不能在主线程调用** —— 它最终是一次到 system_server 的调用，且有超时等待。
 
 ### 5.3 模块文案（三语）
 
@@ -383,16 +457,26 @@ if (!ok) return ExecutionResult.Failure(...)   // **失败绝不静默**
 > 脚本运行在 system_server（系统进程）内，可访问系统内部接口，
 > 但**脚本出错会影响整个系统**。请谨慎使用。
 
+⚠️ **且必须互相指路**（V2.0 §5.7 前提 3）—— 文案里要写清与 App 进程那个 JS 模块的分工：
+
+| 该用哪个 | 判据 |
+|---|---|
+| **App 进程的 JS 模块** | 需要 `vflow.*` 模块树编排、读写全局变量 |
+| **本模块** | 需要 UID 1000 权限、或访问 system_server 内部对象 |
+
+> ⚠️ **默认不要让用户「猜」** —— 两个都叫 JS，用户/AI 唯一的依据就是这段文案。
+> 具体措辞在实现时定（三语同步），但**分工说明不能省**。
+
 ---
 
 ## 6. 安全边界
 
 | 面向 | 措施 |
 |---|---|
-| **入口收敛** | 只有一个模块 `vflow.xposed.script`，且需 `XPOSED_HOOK` 权限（用户须已配 LSPosed） |
+| **入口收敛** | ⚠️ **只有【一个】能进 system_server 的脚本模块**（需 `XPOSED_HOOK` 权限，用户须已配 LSPosed）。⚠️ **App 进程那个 JS 模块不在收敛范围内** —— 它跑在单进程、崩溃半径不是整机（V2.0 §5.7） |
 | **不给 AI 直调** | `usageScopes` 只给 `TEMPORARY_WORKFLOW`，**不给 `DIRECT_TOOL`** —— 避免 AI 未经人审就写 system_server 脚本 |
-| **riskLevel = HIGH** | 走审批流程 |
-| **超时** | 三层（§2.4） |
+| **riskLevel = HIGH** | 走审批流程。⚠️ **这也正是「两个模块」而非「一个模块 + 环境参数」的理由之一** —— 否则 App 进程那个模块会被迫一起标 HIGH（V2.0 §5.7） |
+| **超时** | 三层（§2.4）。⚠️ **但阻塞的 Java 调用不可中断** —— 指令级观察器只覆盖纯计算死循环（V2.0 §5.7） |
 | **无沙箱** | ⚠️ 本期不做，理由是「用户即设备主人」；**若来源扩展到下载/AI，必须补** |
 
 ---
