@@ -92,6 +92,8 @@
     <color name="category_external_extension">#536DFE</color>
     <color name="category_shizuku">#3F4DAB</color>
     <color name="category_user_module">#A8E066</color>
+    <!-- fork 新增：Xposed 通道分类（特权通道色系） -->
+    <color name="category_xposed">#7E57C2</color>
     <color name="variable_pill_color">#93B1CF</color>
     <color name="static_pill_color">#687E89</color>
     <color name="inline_script_pill_color">#F7DF1E</color>

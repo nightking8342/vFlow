@@ -18,6 +18,7 @@ import com.chaomixian.vflow.core.workflow.module.snippet.*
 import com.chaomixian.vflow.core.workflow.module.ui.blocks.*
 import com.chaomixian.vflow.core.workflow.module.ui.components.*
 import com.chaomixian.vflow.core.workflow.module.core.*
+import com.chaomixian.vflow.core.workflow.module.xposed.*
 
 object ModuleRegistry {
     private val modules = mutableMapOf<String, ActionModule>()
@@ -266,6 +267,9 @@ object ModuleRegistry {
 
         // Shizuku 模块
         register(ShellCommandModule(), context)
+
+        // Xposed 通道模块（fork 新增，⚠️ 追加在末尾，不重排既有注册）
+        register(XposedJsModule(), context)
 
         // Snippet 模板
         register(FindTextUntilSnippet(), context)

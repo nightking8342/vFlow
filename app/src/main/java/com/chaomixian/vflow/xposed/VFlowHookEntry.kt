@@ -3,6 +3,7 @@ package com.chaomixian.vflow.xposed
 import android.content.ComponentName
 import android.util.Log
 import com.chaomixian.vflow.xposed.capabilities.HookCapabilityRuntime
+import com.chaomixian.vflow.xposed.capabilities.XposedJsCapabilityHandler
 import com.chaomixian.vflow.xposed.sources.ActivityChangedSource
 import com.chaomixian.vflow.xposed.wire.CapabilityInvocationCodec
 import io.github.libxposed.api.XposedInterface
@@ -97,7 +98,7 @@ class VFlowHookEntry : XposedModule() {
      * ⚠️ 失败返回 null 而不是抛：拿不到时 [BinderTransport] 会继续轮询重试
      * （`onSystemServerStarting` 时系统服务尚未就绪，约 11 秒后才可用）。
      */
-    private fun systemContext(): android.content.Context? = try {
+    internal fun systemContext(): android.content.Context? = try {
         val activityThread = Class.forName("android.app.ActivityThread")
         val current = activityThread.getDeclaredMethod("currentActivityThread").apply {
             isAccessible = true
@@ -260,7 +261,21 @@ class VFlowHookEntry : XposedModule() {
         rt.register(ActivityChangedSource())
 
         // ── ③ 执行运行时（能力调用）──
+
+        // ⚠️ `xposed_js` 的执行环境需要 system_server 的 Context（脚本里的 `context`）。
         //
+        // ⚠️ **必须在 `rt.start()` 之前赋值** —— 见下面的调用顺序。
+        // 赋值晚了的后果**不是报错**，而是「第一次调用时 context 还是 null」——
+        // 脚本里 `typeof context === "undefined"`，表现为「context 用不了」，
+        // 而用户会去查自己的脚本（错的方向）。
+        //
+        // ⚠️ `HookCapabilityRegistry` 是 `object`，它的 `init`（含上面那行 `register`）
+        // 在**首次引用时**就跑完，而本方法里的 `::systemContext` 那时还拿不到
+        // ⇒ 只能走这个可写字段，**不能**用构造参数。
+        // ⚠️ 存的是**函数引用**（每次调用现取 Context），不是取到的 Context 本身 ——
+        // 热更新是新 classloader 加载新代码，静态字段在新代际是全新的。
+        XposedJsCapabilityHandler.contextProvider = ::systemContext
+
         // ⚠️⚠️ **这里是全部 ③ 响应的唯一出口**。
         //
         // ⚠️ 本 lambda 现在**只负责发送**，不再编码 ——

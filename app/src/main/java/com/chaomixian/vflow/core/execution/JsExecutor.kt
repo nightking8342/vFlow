@@ -19,13 +19,35 @@ class JsExecutor(private val executionContext: ExecutionContext) {
 
     /**
      * 执行一段 JavaScript 脚本。
+     *
      * @param script 要执行的 JS 代码。
      * @param inputs 从工作流传递给脚本的输入变量 Map (可读写)。
+     * @param timeoutMs 超时上限（毫秒）。`null` 或 `<= 0` 表示**不超时** ——
+     *   与加该参数之前的行完全等价（不设指令观察器阈值、不产生 deadline）。
+     *
+     *   ⚠️⚠️ **只覆盖纯计算死循环**，对**阻塞的 Java 调用**（`java.lang.Thread.sleep`、
+     *   网络 IO、等锁）**无效** —— 指令级观察器只在「执行下一条指令」时才能被触发，
+     *   阻塞期间根本没有下一条指令。实测 `while(true){ Thread.sleep(2000); }` 配 800ms
+     *   预算时，中断发生在 **164680ms**（即等阻塞自己返回）。
+     *   详见 [JsTimeoutContextFactory] 的 KDoc。
+     *
      * @return 脚本返回的对象，已转换为 Kotlin Map。
+     * @throws JsScriptTimeoutException [timeoutMs] 到期时抛出。**原样抛出、不包装**，
+     *   便于调用方按类型区分「超时」与「脚本报错」。
      */
-    fun execute(script: String, inputs: MutableMap<String, Any?>): Map<String, Any?> {
-        val context = Context.enter()
+    fun execute(
+        script: String,
+        inputs: MutableMap<String, Any?>,
+        timeoutMs: Long? = null,
+    ): Map<String, Any?> {
+        // 必须用带超时能力的 factory：全局默认 factory 的 observeInstructionCount
+        // 是**空实现**，用它时即便设了阈值也永远不会被回调（实测：死循环 16784ms 跑完）。
+        val context = JsTimeoutContextFactory.enter()
         try {
+            // 进入带预算的执行段。必须与 finally 里的 endBudget 配对。
+            // 无论 timeoutMs 是否为 null 都要入栈，否则会弹掉外层的预算。
+            JsTimeoutContextFactory.beginBudget(context, timeoutMs)
+
             // 设置优化级别，-1 表示解释模式，0+ 表示优化模式
             @Suppress("DEPRECATION")
             context.optimizationLevel = -1
@@ -119,6 +141,12 @@ class JsExecutor(private val executionContext: ExecutionContext) {
                 else -> mapOf("result" to JsValueConverter.coerceToKotlin(result))
             }
 
+        } catch (e: JsScriptTimeoutException) {
+            // 超时必须**原样抛出**：它是 RuntimeException，若不在此处拦下，
+            // 会落到下面的 catch(Exception) 被包装成 "Execution failed: ..."，
+            // 上层就无法把「脚本超时」与「脚本报错」区分开。
+            DebugLogger.w(TAG, "JavaScript 脚本执行超时（${e.timeoutMs}ms）")
+            throw e
         } catch (e: RhinoException) {
             val details = e.details().takeIf { it.isNotBlank() } ?: e.message.orEmpty()
             val source = e.lineSource()?.takeIf { it.isNotBlank() }?.let { " - $it" }.orEmpty()
@@ -129,7 +157,10 @@ class JsExecutor(private val executionContext: ExecutionContext) {
             DebugLogger.e(TAG, "Script execution failed", e)
             throw RuntimeException("Execution failed: ${e.message}", e)
         } finally {
-            Context.exit()
+            // ⚠️ 顺序不能反：endBudget 要读 context.instructionObserverThreshold，
+            // 而 exit() 之后 Context 已被释放。
+            JsTimeoutContextFactory.endBudget(context)
+            JsTimeoutContextFactory.exit()
         }
     }
 

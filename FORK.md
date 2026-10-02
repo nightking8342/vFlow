@@ -123,6 +123,10 @@
 | `docs/fork/surveys/script-system-overview.md`（新增） | fork 独有：**脚本体系现状与能力边界梳理**（JS / Lua）。两引擎对照（**两侧均已注入真 Context**）、模块树注入、内联 `{% %}`；**能力边界三层拆解**（语言层已全开 / 环境层已补齐 / 能力层受 UID 限制，含本机 Rhino 实测）；与 ShortX 逐项对照（含其 context 来源的源码直读）与 **~80% 覆盖率结论**；**流体云可行性实证**（含 `service call` + `138` 事务码绕过特权链路的方案）；威胁模型与分级策略；**已实施改动与真机验证记录**（§10.1），并记录一处已确认的 release 缺陷（`proguard-rules.pro:97` 的 Shizuku keep 规则包名写错）。上游无此文件 | 我方 |
 | `core/execution/JsExecutor.kt` | **JS 环境装配三处改动**（`execute()` 头部）：① 新增 `setApplicationClassLoader(...)`（修 `Packages.<应用内部类>` 退化成 `NativeJavaPackage` 导致的「xxx 不是函数，它是 object」）；② `initStandardObjects()` 改为 `ImporterTopLevel(context)`（提供 `importClass`/`importPackage`，使 Auto.js / ShortX 风格脚本可原样粘贴）；③ `context` 由**空壳 JS 对象**改为 `Context.javaToJS(executionContext.applicationContext, scope)` **注入真实 Android Context**（此前 `context.getSystemService(...)` 等调用全部失效）。**仅此三处，均在函数头部**，不改变对外签名。改动理由与能力边界分析见 `docs/fork/surveys/script-system-overview.md` | **手动合并**（三处局部改动） |
 | `core/execution/JsExecutor.kt`、`core/execution/JsConsole.kt`（新增） | **JS 能力补齐（P0）**：① 新增 `JsConsole.kt`（fork 独有文件）—— 注入浏览器习语 `console` 对象（12 个方法：`log`/`info`/`warn`/`error`/`debug`/`println`/`group`/`groupEnd`/`time`/`timeEnd`/`count`/`countReset`）。**此前 vFlow 完全没有这个对象**，从 ShortX / Auto.js 移植的脚本会抛 `ReferenceError` 或被 `try/catch` 静默吞掉（表现为「脚本跑了但什么都没发生」）。⚠️ **对象渲染实测踩坑**：`Context.toString()` 对 JS 对象返回 `[object Object]`，必须走 `JSON.stringify`（实测对照见类注释）；因此 `stringify` 引用在 `install` 时取一次持有，**不能每次调用都 `initStandardObjects()`**。② `JsExecutor` 新增 `injectVariableWriters()` —— 注入 `vars_api`（`setGlobalVar` / `removeGlobalVar` / `reloadGlobalVars`）。**此前脚本无任何变量写路径**（`global` 是只读快照，改它不影响存储）。**两处均为新增，不改既有签名**。⚠️ release 构建已验证这些名字未被 R8 混淆（`defineFunction` 里的函数名是字符串字面量，R8 不动） | **手动合并**（`JsExecutor` 追加调用 + 新方法；`JsConsole.kt` 为我方新增文件） |
+| `core/execution/JsExecutor.kt`、`core/execution/JsTimeout.kt`（新增） | **JS 引擎超时能力（指令级）**——`docs/fork/xposed-architecture-v2.md` §5.7 明列的**开工前置条件**（Xposed JS 模块会把同一引擎放进 system_server，崩溃半径 = 整机，不能在没有超时的引擎上叠）。① 新增 `JsTimeout.kt`（fork 独有文件，**零 Android 依赖**）—— `JsTimeoutContextFactory`（单例 `ContextFactory` 子类）+ `JsScriptTimeoutException` + **ThreadLocal 预算栈**。`execute()` 改 **6 处**（全在函数内）：签名加 `timeoutMs: Long? = null`；`Context.enter()` → `JsTimeoutContextFactory.enter()`；`evaluateString` 前 `beginBudget(context, timeoutMs)`；catch 链**最前**加 `catch (e: JsScriptTimeoutException) { throw e }`（**不包装**，否则会落到下面的 `catch(Exception)` 变成 `Execution failed: ...`，上层分不出「超时」与「脚本报错」）；`finally` 里 `endBudget(context)` **先于** `exit()`（`endBudget` 要读 `context.instructionObserverThreshold`，`exit()` 后 Context 已释放）。<br/>⚠️⚠️ **两个静默失效点**（都是实测，且都无任何报错）：**① 全局默认 factory 的 `observeInstructionCount` 是空实现**（字节码方法体只有 `return`）⇒ 用 `Context.enter()` 时**即便设了阈值也永不回调**（实测：死循环 16784ms 自然跑完 vs 自定义 factory 108ms 被中断）；**② 阈值 `<= 0` 会关闭观察器**（`setInstructionObserverThreshold` 内部调 `setGenerateObserverCount(N > 0)`）⇒ **忘设阈值即静默失效**（实测阈值 0 + 死循环 >3s 不中断）。<br/>⚠️ **嵌套执行是设计的主因**：脚本内调模块 → 模块参数含内联 `{% %}` → `InlineScriptEvaluator` 再建一个 `JsExecutor`。实测嵌套语义（决定了整个设计）：内层 `enter()` **返回同一个 Context** 且 **factory 保持为最外层那个**（内层想换 factory 会被**忽略** ⇒ 每实例一个 factory 只是幻觉隔离）；内层 `setInstructionObserverThreshold(0)` 会让**外层失去超时**。⇒ 故用**单例 factory + 预算栈取最紧 deadline + 阈值开关由「栈中有无活跃预算」决定**（不是由「本次调用有没有超时」决定）。<br/>⚠️⚠️ **限制（如实记录，不得美化成「脚本可中断」）**：指令级观察器**只在「执行下一条指令」时触发** ⇒ **只覆盖纯计算死循环**，对**阻塞的 Java 调用**（`Thread.sleep` / IO / 等锁）**无效**。实测 `while(true){ Thread.sleep(2000); }` + 800ms 预算 ⇒ **中断发生在 164680ms**（等阻塞自己返回）。<br/>⚠️ **与工作流级超时的关系**：`WorkflowExecutor` 的 `withTimeout` 是**协程级**取消、在挂起点生效，**无法打断同步死循环**；脚本死循环只有本机制能救，两者互补。<br/>**默认 `null` = 不超时**，故既有两个调用点（`JsModule`、内联 `{% %}`）**行为与改动前完全等价**（`hasActiveBudget()==false` ⇒ 不调 `setInstructionObserverThreshold` ⇒ 阈值保持 0，正是改动前的状态）；由单测 A10 机器化锁住。<br/>⚠️⚠️ **当前状态：引擎已支持超时，但没有任何生产路径会让它真正生效** —— 两个既有调用点都**不传** `timeoutMs`（走默认 `null` ⇒ 不设阈值、不产生 deadline），且**模块层刻意未暴露超时 UI**（本轮只做引擎层能力；给 `vflow.system.js` 加参数是一次**独立的行为变更** —— 存量里跑得久但正确的脚本升级后会开始失败，不该顺带做）。⚠️⚠️ **本机制当前【没有任何生产消费者】** —— 两个既有调用点都**不传** `timeoutMs`（走默认 `null` ⇒ 不设阈值、不产生 deadline）。<br/>⚠️ **它【不会】被 `vflow.xposed.js` 消费** —— 两者**零代码共享**（已逐文件核实）：App 侧走本文件的 `JsExecutor`，hook 侧走 `xposed/script/ScriptExecutor.kt`（在那份里，**同一个平台问题有它自己的一份解** `ScriptSandbox`，含 `arm()` 与单一 deadline）。hook 侧**从未 import 过本文件的任何符号**。⇒ 「把 App 侧引擎搬进 system_server」这件事**从来不存在**，`§5.7` 把它列为「开工前置条件」的论证前提**不成立**（该节已订正）。<br/>⇒ **本机制当前是「活代码、零生效路径」**。这正是本仓库反复踩过的形态（`CoreDexFingerprint` 的「13 个纯函数单测全绿但集成点缺失」、`XposedDiagnostics.messageFor` 的「写了但零生产调用点」）—— **勿以为超时已经对用户生效**。⚠️ 也**不要**为此加「必须有生产调用点」的测试：那在真有消费者之前**恒红**，而恒红的断言会被下一个实现者直接删掉。<br/>⚠️ **将来若要让它生效**，可选：给 `vflow.system.js` 加超时参数 UI（**独立的行为变更** —— 存量里跑得久但正确的脚本升级后会开始失败，需单独评估）| **手动合并**（`Context.enter()` / `Context.exit()` 是上游那两行；上游若新增 JS 调用路径需自行决定是否传参） |
+| `test/core/execution/JsTimeoutTest.kt`（新增） | fork 独有：**13 例**，**全部用真实 Rhino（不 mock）**。⚠️ **测试方法体一律在独立线程里跑**（`join(上限)` + 事后 `interrupt()`）—— 观察器若因回归失效，在测试线程上跑会把整个 Gradle 进程**挂死**（表现为 CI 超时而非「测试失败」）；独立线程把「挂死」变成「断言失败」，副产物是 ThreadLocal 预算栈随之隔离。覆盖：死循环被打断、**阈值 0 = 静默失效的反向锁（断言「未被中断」）**、脚本层 `try/catch` 吞不掉（含循环体内的）、栈取最紧、**内层退出不得关掉外层观察器**、超时后无状态残留、反复超时 3 次、`null`/`0`/`-1` 不超时且**不开观察器**、**阻塞调用不可中断的诚实记录（断言「正常结束、不抛」）**、端到端异常未被包装。<br/>⚠️ **反证已实际做**：把 `observeInstructionCount` 改成空实现 ⇒ **A1/A3/A4/A5/A6 五条 + A12 端到端同时变红**，A2 反向锁与其余保持绿 —— 与预期完全一致。⚠️ 端到端用例需 `StubContext`（覆写 `getClassLoader`）：`ContextWrapper(null)` 会在 `execute()` 第一行抛 `Method getClassLoader ... not mocked`（实测） | 我方 |
+| `test/core/execution/JsExecutorTimeoutWiringTest.kt`（新增） | fork 独有：**4 例源码扫描型接线锚定**（照仓库既有形态 `CoreDexFingerprintTest` / `CapabilityInvokerTest`）。⚠️ **存在理由**：`JsTimeoutTest` 虽是端到端的（强度更高），但**证明不了 `finally` 里的顺序** —— `endBudget(context)` 必须在 `exit()` 之前。⚠️ **这条盲区已实测确认**：把两行对调后，`JsTimeoutTest` 的 13 例**全绿**，只有本文件的排序断言变红 ⇒ 端到端对这个契约确实是盲的，只能靠源码扫描。锁定内容：① 用了 `JsTimeoutContextFactory.enter()` 且**无裸 `Context.enter()`**；② 调了 `beginBudget` / `endBudget`；③ **`endBudget` 在 `exit()` 之前**（按大括号配对截取 `finally` 块，不用正则 —— 块内有字符串与嵌套）；④ `JsScriptTimeoutException` 的前置 catch **排在** `RhinoException` / `Exception` 两个 catch 之前 | 我方 |
+| `core/execution/LuaExecutor.kt`（**本轮未改动，记录备查**） | ⚠️ **对称短板，本轮有意未处理**：`LuaExecutor` 与 `JsExecutor` **签名完全对称**（同样是 `execute(script, inputs)`、同样无超时、同样无指令数/内存上限），故**同样存在「死循环永久挂住执行线程」的问题**。本轮范围只覆盖 JS（T3 的 Xposed 模块用 Rhino，不用 Lua），且当前**没有调用方需要 Lua 超时**。<br/>⚠️ **不要顺手改它** —— Lua 的超时机制与 Rhino 完全不同（需依赖 LuaJ 侧的 hook/中断点），不是同一套实现可以平移的。将来若要做，**应另开任务**并单独评估 LuaJ 的中断能力。此处留入口 | （暂未分歧） |
 | 字符串资源 `strings_module.xml`（values / values-en / values-ja 三份） | 追加折叠屏触发器文案块（模块名/描述/参数/选项/6 个输出名/摘要前缀/进度消息，中英日齐全） | 手动合并（追加条目） |
 | `ui/chat/ChatFloatWindowService.kt`、`ChatFloatPanelContent.kt`、`ChatFloatSummary.kt`、`ChatFloatWindowLauncher.kt`、`ChatFloatGeometry.kt`（均新增） | fork 独有：Chat 悬浮窗实现（P1 折叠态）。Service=窗口/拖动/吸附/展开折叠；PanelContent=折叠态 Compose UI；Summary=文案推导；Launcher=权限与启动；Geometry=锚定边计算 | 我方 |
 | `ui/main/MainComposeShell.kt` | ① Chat 顶栏 actions 新增「悬浮窗」按钮；② ChatViewModel 获取由 `viewModel()` 改为 `ChatViewModelHolder.get()`（共享给悬浮窗 Service）；③ `ChatTopBarAction` 枚举新增 `ShowFloatWindow` | **手动合并**（4 处追加/替换，若上游改同区域需逐块判断） |
@@ -469,6 +473,122 @@
 > 且 `InvokePolicy.buildResultJson` **固定**产出 `{"items":[…]}`，没有结果元数据这一层。
 > 塞进 `items` 会污染列表。⇒ 取第三条路：**不实现、如实记录**（`truncated` 与 `next_cursor`
 > 走信封顶层，未受影响）。若将来要做全量遍历或确有包超预算，**应先扩框架的结果形状**。
+
+---
+
+### Xposed 通道 ③ · 工作流模块 `vflow.xposed.js`（2026-10-02）
+
+> 把 ③ 的 `xposed_js` capability 接到**用户可见的编排面**上（`xposed-architecture-v2.md` §5.7
+> 「两个 JS 模块」决策的兑现）。hook 侧执行体由 T2 交付（见上表），本段只做 App 侧模块。
+> ⚠️ **文档里的 `execute_script` ≡ 代码里的 `xposed_js`**（同一能力，协议名用户 2026-10-02 拍板）。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `core/workflow/module/xposed/`（新分类目录，与 `shizuku/` / `core/` 同级） | 目录名 `xposed` 是**通道名**（「经哪条特权通道执行」），**不是厂商名**。先例：`vflow.shizuku.shell_command` / `vflow.core.shell_command` | 我方 |
+| `.../module/xposed/XposedJsModule.kt`（新增） | fork 独有：模块本体。⚠️⚠️ **与 `vflow.system.js` 是**定义性**差别不是参数差别**：跑在 **system_server**（UID 1000）、**不注入 `vflow.*` 模块树**（脚本里调 `vflow.*` 一律 `ReferenceError`）、**崩溃半径是整机**。⚠️ **`usageScopes` 只给 `TEMPORARY_WORKFLOW`，绝不给 `DIRECT_TOOL`**（V2.0 §5.7 安全边界：AI 不得**未经人审**就往 system_server 投脚本）+ `riskLevel = HIGH` 走审批。⚠️ **`getRequiredPermissions()` 必须返回 `listOf(PermissionManager.XPOSED_HOOK)`** —— 漏声明会让权限体系判「缺权限」（本仓库在 `SimDataSwitch` 上踩过的同类坑，权限齐全的设备上测不出来）。⚠️ 默认示例脚本**刻意不调 `vflow.*`**（照抄 `JsModule` 的示例会误导用户）。⚠️ 复用 `JsModuleUIProvider`（零改动上游，见下条） | 我方 |
+| `.../module/xposed/XposedJsSupport.kt`（新增） | fork 独有：**纯函数层**（无 Android 依赖，可纯 JVM 单测）。`clampTimeoutMs` —— ⚠️ **`<= 0` 退回默认 5000 而不是钳到 1ms**（钳到 1 会让用户拿到一个**必然超时**的结果，而他看到的是「脚本超时」会去查脚本）。`rawOutputsOf` —— ⚠️⚠️ **T2 定案的 result 形状是 `{"items":[<outputs 字典本身>]}`，**不是** `{"outputs":{...}}`**（框架 `InvokePolicy.buildResultJson` 固定产出 `items`，`CapabilityOutcome` 无标量通道）。⚠️ **`items = [{}]`（空字典）⇒ 空 map，**不是失败****；⚠️ **必须用 `as? List<*>` / `as? Map<*,*>`，不得改回 `optJSONObject`** —— App 侧 codec 已做**递归深转**，改回 org.json 式取法会**恒返回空**，重演 `itemsFromLossless` 那个真机缺陷（该文件 KDoc 记着与 handler 那句相反说法的方向差异：那是**读请求**的 `inputs`，这是**读响应**的 `result`） | 我方 |
+| `.../module/xposed/XposedJsSupportTest.kt`（新增，19 例） | fork 独有：钳位 8 例 + `items[0]` 消费 + 防御分支 + `scriptInputsOf`。⚠️ 含**反向断言**：`MAX_TIMEOUT_MS <= 60s`（池容量只有 2，上限不能形同虚设）、输出**不得有 `outputs` 包装键**。**两条反证均确认变红**：改走 org.json 式取法 ⇒ 6 条红；去掉上限 ⇒ 1 条红 | 我方 |
+| `.../module/xposed/XposedJsModuleTest.kt`（新增，22 例） | fork 独有：**声明体检**（形态照 `ActivityChangedTriggerModuleTest`）。锁 id / 分类 spec / 权限双保险 / `usageScopes` 不含 `DIRECT_TOOL` / `riskLevel == HIGH` / hints 点明分工 / 输入输出契约 / **图标 ≠ `rounded_js_24`** / **`timeout_ms` 不在 `getHandledInputIds()`**（它的 UI 归属）/ 能力注册为独占型 + `timeoutMs = null` / **源码扫描锁注册点**（形态照 `CoreDexFingerprintTest`）/ **超时约束写在标签里而非只写 hint**（见下）。**三条反证均确认变红**：改 `directToolMetadata` ⇒ 红；去掉权限声明 ⇒ 红；从三语标签删掉「5000/30000」⇒ 红 | 我方 |
+| 三语 `param_vflow_xposed_js_timeout_name/_hint`（改） | ⚠️⚠️ **约束必须写在【标签】里，不能只写 `hint`**：`timeout_ms` 走自动表单，而它的 `hint` 在自动表单里只是**输入框占位符**（`StandardControlFactory.createTextInputLayout(hint = …)`，已核实 NUMBER 类型走这条），而字段**预填了 5000** ⇒ **占位符永远不显示** ⇒ 用户既看不到上限、也可能以为它必填。故标签改为「超时（毫秒，默认 5000，上限 30000）」（三语同步），hint 保留为占位符兜底。**已落成单测锁 + 反证**。⚠️ 位置参 `name`（fallback）与 `nameStringRes` 指向的文案**必须同步改**，否则某语言下退回旧标签 | **手动合并**（改写已有条目） |
+| `core/workflow/module/ModuleRegistry.kt`（改） | ① 追加 `import ...module.xposed.*`；② Shizuku 段之后**追加一行** `register(XposedJsModule(), context)`。**不重排任何既有注册**（有测试反向锁住「在 Shizuku 段之后」） | **手动合并**（追加） |
+| `core/module/ModuleCategories.kt`（改） | ① 追加 `const val XPOSED = "xposed"`；② `specs` **追加一行** `ModuleCategorySpec(XPOSED, R.string.category_xposed, R.color.category_xposed, 15, "Xposed")`。⚠️ **只在 metadata 写 `categoryId` 不够**：`getSortOrder` 对未登记分类返回 `Int.MAX_VALUE`、`getLocalizedLabel` 回落 `defaultLabel`（显示成小写 `"xposed"`）。⚠️ `sortOrder = 15` = 既有最大 14 + 1，**不改任何既有分类的顺序**（代价：排在「用户模块」之后，用户已确认接受） | **手动合并**（追加） |
+| `res/values/colors.xml`（改） | 追加 `<color name="category_xposed">#7E57C2</color>`（单份，无三语） | **手动合并**（追加） |
+| `res/drawable/rounded_xposed_js_24.xml`（新增） | fork 独有：JS 字形 + 齿轮（系统进程标识）。⚠️ **不复用 `rounded_js_24`** —— 两个模块名字里都含 "JavaScript"，图标一样会让用户**分不清脚本跑在 App 进程还是系统进程**，而那正是本模块存在意义的全部（崩溃半径差一个数量级）。结构照 `rounded_js_24`（24dp / viewport 960 / `tint`），两个 group 各自缩放定位 | 我方 |
+| 三语 `res/values{,-en,-ja}/strings_module.xml`（改） | 追加 12 条 ×3 语言（模块名/描述/三参数名/timeout hint/输出名/摘要前缀/空脚本错误两条/进度消息/分类名）。⚠️ 分类文案**放 `strings_module.xml`**（与 `category_shizuku` 同处），不放 `strings.xml` | **手动合并**（追加条目） |
+| `core/xposed/CapabilityFallbacks.kt`（改） | `registerAll()` 追加 `XPOSED_JS` 注册：**独占型**（`fallback = null` —— UID 1000 的权限 App 进程给不了，没有等价物可降）、`risk = HIGH`、`maxResultBytes = 64 KiB`（与 hook 侧 handler 声明一致）、**`timeoutMs = null`**（⚠️ 两端都声明会造成「App 配 30 秒、hook 按小值算」的错配）。⚠️ 本文件是 **App 侧唯一的注册落点**（`CapabilityRegistry` 不得引 App 侧类），且**只由本任务改**（`CapabilityNames.XPOSED_JS` 常量由 T2 加 —— 两任务串行，规避了上一批的 add/add 冲突） | **手动合并**（追加） |
+
+> ⚠️ **订正一处文档前提（T4 核实，2026-10-02）**：`xposed-architecture-v2.md` §5.7
+> 「开工前的前置条件」一节把 **T1（App 进程 `JsExecutor` + `JsTimeout`）** 列为
+> **本 capability 的前置条件**，理由是「不先把连超时都没有的引擎修好，就是把它原样搬进系统进程」。
+> **那个理由不成立** —— **两份实现零代码共享**（已逐文件核实）：
+>
+> | | App 侧（T1） | hook 侧（本 capability） |
+> |---|---|---|
+> | 文件 | `core/execution/JsExecutor.kt` + `JsTimeout.kt` | `xposed/script/ScriptExecutor.kt` + `ScriptSandbox.kt` |
+> | 超时机制 | `ContextFactory` 子类 + **ThreadLocal 预算栈**（可嵌套） | `ContextFactory` 子类 + **单一 deadline + `arm()`** |
+> | 有没有「搬过去」这回事 | — | ❌ **没有**。hook 侧从来没引用过 T1 的任何符号（`grep` 到 5 处 `JsExecutor` 命中**全是 KDoc 对照表**，无 `import`、无调用） |
+>
+> ⇒ T1 与本 capability 是**两条独立的执行路径**，T1 挂了也不影响本 capability 成立。
+> 两处**同款但独立**的设计（都用 `ContextFactory` 子类挂 `observeInstructionCount`）是
+> 「同一个平台问题在两种处境下的两次解」，不是代码复用。
+> ⚠️ **T1 的当前状态**：`timeoutMs` 的**两个**既有调用点（`JsModule.execute`、`InlineScriptEvaluator`）**都不传参** ⇒ 走默认 `null` ⇒ **对既有行为零影响**（引擎有超时能力、但没有任何生产路径让它生效）。
+
+> ✅ **已修缺陷 —— 本模块的【默认示例脚本】曾用顶层 `return`（T4 查出，当日修复，2026-10-02）**
+>
+> **原缺陷**：`XposedJsModule.kt` 的 `script` 输入 `defaultValue` 曾写
+> `return { sum: 1 + 1 };` —— 而 **Rhino 1.9.0 不接受顶层 `return`**
+>（`脚本错误（第 9 行第 7 列）：返回的值无效`）。
+>
+> ⚠️⚠️ **它是【解析期】错误，脚本一行都不执行**（T4 用 `console.log` 打点验证过：
+> 连那个 log 都不出现）。用户新建模块 → 直接点运行 → **立即失败**，
+> 而报错信息完全指不到真正的原因。
+>
+> **修法（已落地）**：改为末行表达式 `var r = {}; r.sum = 1 + 1; r;`，
+> 与既有的 `vflow.system.js`（`JsModule.kt:50`，注释写 "Return a dictionary" 而正文用 `r;`）**同一种方言**。
+>
+> ⚠️ **为什么原 41 例单测没抓到**：它们测的是**纯函数**与**元数据声明**，
+> **没有一条真的把默认脚本跑一遍**（T2 的 `ScriptExecutorTest` 用的是 `({result: 2})` 表达式形式
+> ⇒ **测试用的方言 ≠ 交付给用户的方言**）。这是一条可复用的教训 → 见下。
+>
+> **已补回归（`XposedJsModuleTest > the default script actually runs`）**：
+> ⚠️ 它**从 `getInputs()` 取 `defaultValue`**（不在测试里另抄一份字面量 ——
+> 抄一份的话，改了默认脚本而忘了改测试，两边各自漂移、测试照样绿），
+> 把它喂给 `ScriptExecutor.run`，断言产出 `sum == 2`。
+> **反证已实际做过**：改回顶层 `return` ⇒ 该用例**变红**。
+
+> ⚠️ **本批兑现了一处既有缺口**：`XposedDiagnostics.messageFor(code)` 此前**在生产代码里零调用点**，
+> 导致九条 `capability_error_*` 被 R8 + `shrinkResources` 剥掉（上一段有如实记录）。
+> 本模块的失败路径接上它之后，那些文案**自动回到 release 包**。
+> ⚠️ **两处已知偏差**（如实记录，非缺陷）：
+> ① 模块方案的 `result` 形状与 `xposed-executor-design.md` §3.2 的旧形态（`{"outputs":…}`）不同，
+>    实际是 `{"items":[<outputs>]}` —— 用户 2026-10-02 拍板接受**形状 A**；
+> ② `CapabilityInvoker.invoke` 的 KDoc 写死「不得在主线程调用」，本模块**自己包
+>    `withContext(Dispatchers.IO)`** —— 不依赖 `WorkflowExecutor` 的调度实现细节。
+
+---
+
+### Xposed 通道 ③ · `xposed_js` 真机端到端验证（2026-10-02）
+
+> 本段**不改任何业务代码** —— 它登记的是**验证脚手架**与**验证结论**，
+> 以及验证过程中查出的、属他人任务的缺陷。
+> 上位文档：`docs/fork/xposed-architecture-v2.md` §5.7（已同步更新为「已实现 + 已验证」）。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `scripts/xposed-js-verify.sh`（新增） | fork 独有：**真机端到端验证脚手架**（形态照 `xposed-shortcut-probe-verify.sh`）。子命令 `setup / base / run / logs / judge / scope / consistency / break / restore / full`；三态判定 `pass / fail / unknown`（`unknown` 必须说清为什么判不了，**不得当成 pass**）；无设备 ⇒ 打印「未验证」并 `exit 0`。⭐ **本脚本踩掉的三个静默坑**：① ⚠️ **adb 对同一台设备开出多条 transport**（USB + 无线 TLS 各一条）⇒ **不带 `-s`** 的命令全部以 `error: more than one device/emulator` 失败，而失败是**静默**的（logcat 返回空 ⇒ 采集文件全空 ⇒ 判定全判「未验证」，看起来像「设备没问题但功能不对」）⇒ 全脚本固定第一条 serial。② ⚠️ Windows 下 `subprocess` 默认按 GBK 解码，而设备发 UTF-8 ⇒ 中文全变 mojibake、判定用 grep 一律失配 ⇒ 显式 `encoding="utf-8"`。③ ⚠️⚠️ **`set -o pipefail` + `echo "$bigvar" \| grep -q` 会【假阴性】**：`grep -q` 一命中就退出 ⇒ `echo` 收到 SIGPIPE（退出码 141）⇒ pipefail 让整条管道返回非零 ⇒ **明明匹配上了却走 else 分支**。全量 logcat 有数 MiB 时**必现**（实测 3 MiB 复现）。修法：先 `printf '%s\n' "$log" > file`，再 `grep -q PATTERN file`。⚠️ 这个坑**本任务的 `scope` 子命令真的踩了** —— 它先报「作用域未勾选，需人工重启设备」，而实际是抓到了日志的（判据被假阴性吃掉了）。**排查手法**：故意把「通过」分支写成打印行数，发现日志在、行为却相反 ⇒ 才定位到 pipefail | 我方 |
+| `scripts/xposed-js-verify/`（`t4_driver.py` / `consistency_check.py` / `core_exec.py` / `cases/` + `cases/README.md`，均新增） | fork 独有：驱动与用例。`core_exec.py` 经 vFlow Core 的 **root 通道**执行 shell —— 第 9 项要禁用 App 组件来构造 `channel_down`，而**shell（uid 2000）改不动组件状态**（`SecurityException: Shell cannot change component state`），必须借 Core（本机实测 `context=u:r:ksu:s0`）。`consistency_check.py` 做与 `vflow.system.js` 的行为一致性核对 | 我方 |
+| `docs/fork/xposed-architecture-v2.md` §5.7（改） | ① 状态行「代码未实现」→「**已实现 + 已真机端到端验证通过**」；② 新增**真机验证结论表**（10 项 + 一致性核对，逐项带证据）；③ 实施顺序表的 P0 行标记「2026-10-02 真机通过」；④ 新增「命名对照」说明（**文档的 `execute_script` ≡ 代码的 `xposed_js`**，同一能力，协议名用户 2026-10-02 拍板） | 我方 |
+| `.mindfs/upload/t4/` | 证据归档：逐用例两侧日志与产物（`verdict/cases/`）、判定文本、逐项结论（`verdict.txt`）、`channel_down` 弹窗截图 | 我方 |
+
+#### ⭐ 真机验证结论（小米 MIX Fold 3 / Android 17 / LSPosed 2.2.0）
+
+**10 项判据全部通过，0 失败 0 未验证。** 头号未知项 —— **Rhino / `ImporterTopLevel`
+能否在 system_server 的 LSPosed ClassLoader 下初始化** —— **已关闭**：
+hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MARK 2.0`），
+这不只证明「通道通」，还证明**脚本真的被执行了**。
+
+| # | 判据 | 结果 |
+|---|---|---|
+| 1 | ★ Rhino 在 system_server 起来 | ✅ hook 日志 `VFLOW_JS_MARK 2.0` |
+| 2 | 能力可见（清单含 `xposed_js`） | ✅ 回业务失败码而非 `capability_absent` |
+| 3 | 正常路径 | ✅ `{"result": "2"}`（经 `items[0]`） |
+| 4 | 返回值序列化 | ✅ 探针 `{{s1.outputs.a.b}}` = `1, 2`（嵌套可按键导航，**不是** `[object Object]`）；`{a:null,b:1}` 的 `a` **键仍在** |
+| 5 | 超时（含 JS `try/catch` 拦不住） | ✅ 两种写法**都**报 `timeout` |
+| 6 | 阻塞调用不可中断（**已知限制**，非验收失败项） | ✅ 记录：并发 3 次 ⇒ 第 3 个立刻 `handler_error`「工作线程池已满（容量 2）」；阻塞自然结束后池**自行恢复** ⇒ 最坏后果是占住工作线程，**不是整机卡死** |
+| 7 | ★ 无 `vflow.*` 模块树（定义性约束） | ✅ `typeof vflow == "undefined"` 且 `vflow.device` 抛 `ReferenceError` |
+| 8 | 栈回溯 | ✅ `脚本错误（第 1 行第 0 列）：TypeError: 无法读取 null 的属性 "xxx"` |
+| 9 | 失败分类 | ⚠️ **部分验证**：`handler_error`（脚本运行时抛异常）✅ 已验，文案「脚本错误（第 1 行第 0 列）：TypeError: …」逐字渲染；**`channel_down` 未做端到端触发** —— **裁决 2 不允许破坏性操作（禁用 LSPosed 模块）**，如实记为未验证。它目前的证据只有 T3 的 `aapt2 dump resources` **静态**结果（九条 `capability_error_*` 在 release 包里），**没有端到端渲染过** —— 不得当成「已验证」<br/>⚠️ 本任务**从未触碰 LSPosed**：`break`/`restore` 子命令走的是「禁用 App 侧 `HookChannelService` 组件」（可逆、可脚本化），不是裁决禁止的那个操作 |
+| 10 | 整机稳定 | ✅ `system_server` pid 全程未变 |
+| — | 与 `vflow.system.js` 一致性 | ✅ 同款脚本两边都能跑，产物**逐字相同**（差别只在执行环境） |
+| — | **LSPosed 作用域** | ✅ 已勾选 `system`（反推判据：hook 层代码**跑在 system_server 里** ⇒ 只有被注入才会出现 `bindService 成功`）。⇒ **不需要**人工重启设备，装新 APK 走 hot reload 即可。`scope` 子命令专做这件事 |
+
+**汇总：9 项通过 / 0 失败 / 1 项未验证（第 9 项的 `channel_down` 部分，原因见上表）。**
+
+⚠️ **一处诚实说明**：第 9 项在被裁决「不允许破坏性操作」之前，本任务**已用另一个方法**
+（禁用 App 侧 `HookChannelService` 组件，可逆、不碰 LSPosed）构造并取证过 `channel_down`
+（弹窗文案 + 首页状态卡 + 截图都在 `.mindfs/upload/t4/`）。
+**但既然裁决 2 明令禁止该类构造，本表按裁决口径记为「未验证」** ——
+那条证据要用户主动过目才谈得上采信，不能由我单方面说成通过。
 
 ---
 

@@ -59,4 +59,29 @@ object CapabilityNames {
      * 而本项目交付一律用 release，两者冲突）。
      */
     const val DIAGNOSTIC = "diagnostic"
+
+    /**
+     * **在 system_server 里执行 JavaScript**。
+     *
+     * 设计文档：`docs/fork/xposed-architecture-v2.md` §5.7。
+     *
+     * ⚠️⚠️ **与文档里的 `execute_script` 是同一个能力** ——
+     * V2.0 §5.7、`xposed-executor-design.md`、`xposed-capability-invocation-design.md`
+     * 三份文档通篇叫它 `execute_script`，而**代码里从未出现这个名字**。
+     * 用户 2026-10-02 拍板：协议名取 `xposed_js`。
+     * 文档里的 `execute_script` 视作**功能描述**，不是协议名。
+     *
+     * ## 命名依据
+     *
+     * 与 App 侧模块 id `vflow.xposed.js` 对齐。`xposed` 是**通道名**
+     *（与 `shizuku` / `core` 同级，都表示「经哪条特权通道执行」），**不是厂商名**。
+     * 先例：`vflow.shizuku.shell_command` / `vflow.core.shell_command`。
+     *
+     * ## ⚠️ 两个注册表（App 侧 [CapabilityRegistry] / hook 侧 `HookCapabilityRegistry`）
+     * 的键**必须对得上**，否则表现是「这能力明明装了却说没有」，
+     * 而两端各自看都没问题 ⇒ 消费者一律引用本常量，**不要写字面量**。
+     *
+     * 类型：**独占型**（只有 Xposed 一条实现 —— UID 1000 的权限是别的通道给不了的）。
+     */
+    const val XPOSED_JS = "xposed_js"
 }

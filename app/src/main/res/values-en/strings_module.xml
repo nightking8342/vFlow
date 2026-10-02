@@ -3482,4 +3482,20 @@
     <string name="output_vflow_trigger_activity_changed_extras_json_name">Intent extras (JSON)</string>
     <string name="output_vflow_trigger_activity_changed_truncated_name">Extras truncated</string>
     <string name="msg_vflow_trigger_activity_changed_ready">Activity trigger is ready</string>
+
+    <!-- vflow.xposed.js（fork 新增：Xposed 通道 · 在系统进程里执行 JS） -->
+    <string name="module_vflow_xposed_js_name">Xposed JavaScript</string>
+    <string name="module_vflow_xposed_js_desc">Runs JavaScript inside the system process, with access to system internals. A faulty script can affect the whole system. Unlike "JavaScript Script": this module cannot call vFlow modules — it only exposes system-level capability.</string>
+    <string name="param_vflow_xposed_js_script_name">JavaScript Script</string>
+    <string name="param_vflow_xposed_js_inputs_name">Script Inputs</string>
+    <!-- ⚠️「默认/上限」写在**标签**里而不是只写 hint：hint 在自动表单里是输入框占位符，
+         而该字段预填了 5000 ⇒ 占位符永不显示 ⇒ 用户看不到上限。 -->
+    <string name="param_vflow_xposed_js_timeout_name">Timeout (ms, default 5000, max 30000)</string>
+    <string name="param_vflow_xposed_js_timeout_hint">Leave blank for the default 5000; max 30000, out-of-range values are clamped</string>
+    <string name="output_vflow_xposed_js_outputs_name">Script Return Value</string>
+    <string name="summary_vflow_xposed_js_prefix">Run JS in system process: </string>
+    <string name="error_vflow_xposed_js_script_empty">Script Error</string>
+    <string name="error_vflow_xposed_js_script_empty_desc">JavaScript script content cannot be empty.</string>
+    <string name="msg_vflow_xposed_js_executing">Executing JavaScript in the system process…</string>
+    <string name="category_xposed">Xposed</string>
 </resources>

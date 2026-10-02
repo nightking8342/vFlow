@@ -3485,4 +3485,20 @@
     <string name="output_vflow_trigger_activity_changed_extras_json_name">Intent 参数（JSON）</string>
     <string name="output_vflow_trigger_activity_changed_truncated_name">参数是否被截断</string>
     <string name="msg_vflow_trigger_activity_changed_ready">Activity 切换触发器已就绪</string>
+
+    <!-- vflow.xposed.js（fork 新增：Xposed 通道 · 在系统进程里执行 JS） -->
+    <string name="module_vflow_xposed_js_name">Xposed JavaScript</string>
+    <string name="module_vflow_xposed_js_desc">在系统进程中执行 JavaScript，可访问系统内部接口；脚本出错会影响整个系统。与「JavaScript脚本」不同：本模块不能调用 vFlow 模块，只提供系统级能力。</string>
+    <string name="param_vflow_xposed_js_script_name">JavaScript 脚本</string>
+    <string name="param_vflow_xposed_js_inputs_name">脚本输入</string>
+    <!-- ⚠️「默认/上限」写在**标签**里而不是只写 hint：hint 在自动表单里是输入框占位符，
+         而该字段预填了 5000 ⇒ 占位符永不显示 ⇒ 用户看不到上限。 -->
+    <string name="param_vflow_xposed_js_timeout_name">超时（毫秒，默认 5000，上限 30000）</string>
+    <string name="param_vflow_xposed_js_timeout_hint">留空则用默认 5000；上限 30000，越界会自动钳位</string>
+    <string name="output_vflow_xposed_js_outputs_name">脚本返回值</string>
+    <string name="summary_vflow_xposed_js_prefix">系统进程执行 JS: </string>
+    <string name="error_vflow_xposed_js_script_empty">脚本错误</string>
+    <string name="error_vflow_xposed_js_script_empty_desc">JavaScript 脚本内容不能为空。</string>
+    <string name="msg_vflow_xposed_js_executing">正在系统进程中执行 JavaScript…</string>
+    <string name="category_xposed">Xposed</string>
 </resources>
