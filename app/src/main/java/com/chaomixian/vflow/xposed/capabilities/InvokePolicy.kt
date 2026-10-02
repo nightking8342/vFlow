@@ -238,8 +238,14 @@ object InvokePolicy {
      * @param requestedMs 请求里的 `timeout_ms`（[com.chaomixian.vflow.xposed.wire.CapabilityRequest.timeoutMs]）
      * @param declaredMs capability 自己声明的超时（[CapabilityHandler.timeoutMs]），null ⇒ 用请求里的
      */
-    fun effectiveTimeoutMs(requestedMs: Long, declaredMs: Long?): Long =
-        if (declaredMs == null) requestedMs else minOf(requestedMs, declaredMs)
+    fun effectiveTimeoutMs(requestedMs: Long?, declaredMs: Long?): Long? = when {
+        // ⚠️⚠️ `null` = **不超时**（2026-10-02 改）。两个来源都为 null ⇒ 不超时。
+        // 注意顺序：只要**【请求侧】是 null**，就不超时 —— 即便 capability 自己
+        // 声明了一个值。理由见下方「为什么 declared 不能把 null 拉回有限值」。
+        requestedMs == null -> null
+        declaredMs == null -> requestedMs
+        else -> minOf(requestedMs, declaredMs)
+    }
 
     /**
      * §3.6 契约 1：有效字节上限。声明非法（`<= 0`）时回落 [ResultBudget.DEFAULT_MAX_RESULT_BYTES]。
@@ -265,9 +271,15 @@ object InvokePolicy {
      * ⚠️ **严格大于** —— 恰好用满预算**不算**超时。
      * 用 `>=` 会让「正好卡在预算上」的调用被误判，而那是**合法**的成功执行。
      *
+     * ⚠️ `budgetMs == null` ⇒ **永远不超时**（2026-10-02 改）。
+     * ⚠️ 会写这个判据是因为**负数不能用来表达「不超时」**：
+     * `elapsed > -1` 恒真 ⇒ 每次调用立刻判超时（新 App + 旧 hook 层时会真的发生）。
+     * ⇒ 「不超时」只能靠**可空**表达，绝不能靠哨兵值。
+     *
      * ⚠️ 本判定是**事后**的（跑完才算），不是看门狗 —— 见 [HookCapabilityRuntime] 类注释。
      */
-    fun isTimedOut(elapsedMs: Long, budgetMs: Long): Boolean = elapsedMs > budgetMs
+    fun isTimedOut(elapsedMs: Long, budgetMs: Long?): Boolean =
+        budgetMs != null && elapsedMs > budgetMs
 
     /**
      * 单个元素的**单层** UTF-8 字节成本（元素的 JSON 串本身，不含信封）。

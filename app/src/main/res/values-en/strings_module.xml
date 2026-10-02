@@ -3490,8 +3490,8 @@
     <string name="param_vflow_xposed_js_inputs_name">Script Inputs</string>
     <!-- ⚠️「默认/上限」写在**标签**里而不是只写 hint：hint 在自动表单里是输入框占位符，
          而该字段预填了 5000 ⇒ 占位符永不显示 ⇒ 用户看不到上限。 -->
-    <string name="param_vflow_xposed_js_timeout_name">Timeout (ms, default 5000, max 30000)</string>
-    <string name="param_vflow_xposed_js_timeout_hint">Leave blank for the default 5000; max 30000, out-of-range values are clamped</string>
+    <string name="param_vflow_xposed_js_timeout_name">Timeout (ms, blank means no timeout)</string>
+    <string name="param_vflow_xposed_js_timeout_hint">Blank means no timeout</string>
     <string name="output_vflow_xposed_js_outputs_name">Script Return Value</string>
     <string name="summary_vflow_xposed_js_prefix">Run JS in system process: </string>
     <string name="error_vflow_xposed_js_script_empty">Script Error</string>

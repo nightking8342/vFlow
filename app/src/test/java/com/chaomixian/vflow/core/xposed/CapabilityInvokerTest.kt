@@ -16,6 +16,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -536,12 +537,23 @@ class CapabilityInvokerTest {
     }
 
     @Test
-    fun `null timeout falls back to the codec default`() {
+    fun `null timeout is transmitted as an absent key meaning no timeout`() {
+        // ⚠️⚠️ 2026-10-02 翻面。此前断言「回落 codec 默认值（5000）」——
+        // 那会把「不超时」**静默改写成 5 秒超时**，失败表现是
+        // 「我的长脚本无缘无故被掐断」，没有任何线索指向真正原因。
         val json = CapabilityInvoker.buildRequestJson(CAP, emptyMap(), null, "rid", token = "tk")
-        assertEquals(
-            CapabilityInvocationCodec.DEFAULT_TIMEOUT_MS,
+        assertTrue("不超时时不得写出 timeout_ms 键", !json.contains("timeout_ms"))
+        assertNull(
+            "缺失该键 ⇒ 解码为 null = 不超时",
             CapabilityInvocationCodec.decodeRequest(json)!!.timeoutMs,
         )
+    }
+
+    @Test
+    fun `an explicit timeout is transmitted as a number`() {
+        // 反向断言：显式给了值就必须写出去（否则「不超时」的判据会把正常路径也吞掉）
+        val json = CapabilityInvoker.buildRequestJson(CAP, emptyMap(), 1_234L, "rid", token = "tk")
+        assertEquals(1_234L, CapabilityInvocationCodec.decodeRequest(json)!!.timeoutMs)
     }
 
     @Test

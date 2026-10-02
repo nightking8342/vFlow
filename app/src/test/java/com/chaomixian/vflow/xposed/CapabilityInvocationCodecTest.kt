@@ -201,17 +201,21 @@ class CapabilityInvocationCodecTest {
     }
 
     @Test
-    fun `missing timeout decodes to the default not to zero`() {
-        // ⚠️ 0 意味着「立刻超时」⇒ 一个正常请求会必然失败
+    fun `missing timeout decodes to null meaning no timeout`() {
+        // ⚠️⚠️ 2026-10-02 翻面。此前「缺失 ⇒ 回落默认值 5000」，
+        // 那会把「不超时」静默改写成 5 秒超时。现在缺失 = 不超时。
         val req = CapabilityInvocationCodec.decodeRequest("""{"request_id":"r","capability":"c"}""")
-        assertEquals(CapabilityInvocationCodec.DEFAULT_TIMEOUT_MS, req!!.timeoutMs)
+        assertNull("缺失 timeout_ms ⇒ 不超时", req!!.timeoutMs)
 
-        // 显式给了 0 才用 0（钳到非负，负值不产生荒谬的计时结果）
+        // ⚠️ 显式 0 **不等于**「不超时」—— 它是「立刻超时」，语义完全不同。
+        // 这条正是「为什么不能用 0 当哨兵」的锁。
         val zero = CapabilityInvocationCodec.decodeRequest(
             """{"request_id":"r","capability":"c","timeout_ms":0}""",
         )
         assertEquals(0L, zero!!.timeoutMs)
 
+        // ⚠️ 负数同样不能在解码层变成 null —— 那会把一个**错误输入**
+        // 静默升级成「永不超时」。钳到非负（0 = 立刻超时）更容易被发现。
         val negative = CapabilityInvocationCodec.decodeRequest(
             """{"request_id":"r","capability":"c","timeout_ms":-5}""",
         )

@@ -68,9 +68,13 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * **一个永久卡住的 handler 永远不会产生响应**，且那个工作线程**永久被占用**。
  * App 侧靠第一层超时兜（`HookChannelController` 的配对表），
- * 而这里**没有**补救手段 —— 这正是「池有界 + 总时长上限」的兜底方式，
- * 也是 [DEFAULT_POOL_SIZE] 必须**小**的原因（容量 2 时，两个卡住的 handler
- * 会让后续调用全部立刻收到「池已满」，而不是整个池无限膨胀）。
+ * 而这里**没有**补救手段 —— 这正是「池有界 + 总时长上限」的兜底方式。
+ *
+ * ⚠️ **但这条只论证了「必须有界」，没有论证「必须小」**（2026-10-02 补记）。
+ * 原先此处写的是「也是 [DEFAULT_POOL_SIZE] 必须**小**的原因」—— 那是**结论先行**：
+ * 「两个卡住的 handler 会让后续立刻收到池满」描述的是**池满的表现**，不是**小池的好处**；
+ * 同样是「有界」，容量 8 的池要 8 个卡住的 handler 才会满。
+ * ⇒ 容量数字本身的依据仍未补齐，见 [DEFAULT_POOL_SIZE] 的 KDoc 与 §10 #21。
  *
  * ⚠️ **Rhino 指令级超时不在本类范围**（那是脚本类 handler 自己的事）。
  *
@@ -120,15 +124,49 @@ class HookCapabilityRuntime(
          * 一个慢 JS 会把 `query_shortcut_intents` 这类**非脚本**能力一起挡掉，
          * 而后者根本不存在「不可中断」的问题（它只是查数据）。这一点当初定案时没考虑到。
          *
-         * 📌 **外部对照**：ShortX 的 `ExecuteJS` 同样是工作流里的一个 Action，
-         * 但**线程是按脚本可选的**（proto 带 `CoroutineContext` 字段，见
-         * `references/shortx` 的 `MP.java:152-163`）。⚠️ 同时要知道：**它没有任何超时机制**，
-         * 而我们有 —— 两边是**用不同手段回避同一个问题**，不是我们落后。
+         * ## 📌 外部对照：ShortX（`references/shortx`，**同处 system_server**）
          *
-         * ⇒ **待复评**（`xposed-architecture-v2.md` §10 未决项 **#21**），
-         * 评估方向：按 capability 分类隔离池 / system_server 内线程上限的真实代价 /
-         * 队列容量 0 在**非脚本** handler 上是否过严。
-         * **改这个数字前先做真机压测，别只凭「小更安全」的直觉。**
+         * ⚠️ 先破一个**流传的误说**（含本仓库 `整体架构分析.md` §5.9 的旧版本，已订正）：
+         * **它的三个选项里没有一个是主线程**。`UI` 不是 `Looper.getMainLooper()`，
+         * 而是 `HandlerThread("SX-ShortXJS")` 这个**专用后台线程**
+         * （`G00.java:3016` 新建；那个 `getMainLooper()` 在 `AbstractC10756yc0` 里，
+         * 属 `Dispatchers.Main`，与本选项无关）。
+         *
+         * | 档 | 用户实际在选什么 | 落到哪 | 容量 | 容量的来源 |
+         * |---|---|---|---|---|
+         * | `Default` | 「我是**算**的」 | `Dispatchers.Default` | `max(2, 核数)` | **库的默认值** |
+         * | `IO` | 「我是**等**的」 | `Dispatchers.IO` | 64 | **库的默认值** |
+         * | `UI` | 「我**需要 Looper**」 | `SX-ShortXJS` | **1** | ⚠️ **`Looper` 的物理必然** |
+         *
+         * ⚠️⚠️ **这三个容量【都不是取舍】，所以不能拿它们对照我们的 2**：
+         * `Default`/`IO` 的数字是 **kotlinx-coroutines 的实现细节**，且二者**共用同一个线程池**
+         * （`ID2.java` 的 dispatch 落到 `Dispatchers.Default` 的单例池，`IO` 只是「最多 64」的视图）；
+         * `UI` 的 1 **不是「配成 1」，是「它本来就是 1」** —— `HandlerThread` 内部就是一个 `Looper`，
+         * 而一个 `Looper` 只能挂 1 个线程。它服务的是 `UiAutomationApi`（弹窗 / 点击事件），
+         * 正是**必须有 Looper 才能做**的事。
+         * ⇒ 拿「库默认值 / 物理常量」跟「一个刻意挑的数字」比，**没有意义**。
+         *
+         * ⇒ **它提供不了容量依据**，但有两条**有价值的旁证**：
+         * ① 它证明了「**在 system_server 里给用户选执行环境**」**可行**，不是禁区；
+         * ② 它证明了「**不自建线程池**」也能跑 —— 它**一行 `ThreadPoolExecutor` 都没有**，
+         *    借的是协程库与 `HandlerThread`。⚠️ 这反过来质疑 §5.1「工作线程池必须是我们自己创建的」
+         *    那条推导（从「不能占 binder 池」推不出「必须自建」，中间还有「系统现成的非 binder 设施」）。
+         *
+         * ⚠️ **不能从它反推的**：「它容量大所以我们也该大」—— 见上，那些数字不是取舍。
+         * 而且**它同样没解决「一个脚本卡住拖累同池的人」**：`SX-ShortXJS` 容量 1 ⇒
+         * 一个选 `UI` 的脚本卡死会让其他选 `UI` 的全部排队；`Default`/`IO` 是全进程共享池，
+         * 脚本卡死会**拖累规则引擎**。⇒ 它靠的是**余量大**，不是**隔离好**。
+         * ⚠️ 恰恰相反 —— **我们的池只有 ③ capability 在用，隔离程度高于它**。
+         *
+         * ⚠️ **必须同时看到的两面**：**ShortX 的 JS 执行没有任何超时机制**
+         * （grep `observeInstructionCount` / `deadline` 全空），而我们有指令级中断 + 三层超时。
+         * ⇒ 两边是**用不同手段回避同一个问题**（它靠「给足线程」，我们靠「限制并发」），
+         * **不是我们落后**。
+         *
+         * ⇒ **待复评**（`xposed-architecture-v2.md` §10 未决项 **#21** + §21.1），
+         * 评估方向：**是否该自建池**（对面没有池也跑得好）/ system_server 内线程上限的真实代价 /
+         * 队列容量 0 在**非脚本** handler 上是否过严 / 容量数字本身。
+         * ⚠️ **改这个数字前先做真机压测，不得从 ShortX 反推。**
          */
         const val DEFAULT_POOL_SIZE = 2
 
@@ -320,12 +358,17 @@ class HookCapabilityRuntime(
                     elapsedMs,
                 )
 
+                // ⚠️ `budget == null` ⇒ 不超时，这个分支不会被走到（见 `isTimedOut`）。
                 InvokePolicy.isTimedOut(elapsedMs, budget) -> {
                     HookLog.e(
                         "$TAG  执行超时：${request.capability}" +
                             "（elapsedMs=$elapsedMs > budget=$budget）→ 回 timeout",
                     )
-                    emitFailure(request, InvokePolicy.timeoutError(elapsedMs, budget), elapsedMs)
+                    emitFailure(
+                        request,
+                        InvokePolicy.timeoutError(elapsedMs, budget ?: 0L),
+                        elapsedMs,
+                    )
                 }
 
                 outcome is CapabilityOutcome.Items ->

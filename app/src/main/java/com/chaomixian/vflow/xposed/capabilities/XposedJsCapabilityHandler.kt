@@ -156,6 +156,8 @@ class XposedJsCapabilityHandler : CapabilityHandler {
         // ⚠️ 把 `request.timeoutMs` **直接**当预算传给沙箱，不另算 ——
         // 框架还会做一次事后判定（第 ② 层），两者同源才能避免
         // 「沙箱按 A 中断、框架按 B 判定」的错配。
+        // ⚠️⚠️ 它是**可空的**：`null` = 不超时（2026-10-02 改）。
+        // 沙箱对 null 的处理是不设指令观察器阈值 ⇒ 纯计算死循环也**不会**被中断。
         val outcome = ScriptExecutor.run(
             script = params.script,
             inputs = params.inputs,

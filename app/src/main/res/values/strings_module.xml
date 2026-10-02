@@ -3493,8 +3493,8 @@
     <string name="param_vflow_xposed_js_inputs_name">脚本输入</string>
     <!-- ⚠️「默认/上限」写在**标签**里而不是只写 hint：hint 在自动表单里是输入框占位符，
          而该字段预填了 5000 ⇒ 占位符永不显示 ⇒ 用户看不到上限。 -->
-    <string name="param_vflow_xposed_js_timeout_name">超时（毫秒，默认 5000，上限 30000）</string>
-    <string name="param_vflow_xposed_js_timeout_hint">留空则用默认 5000；上限 30000，越界会自动钳位</string>
+    <string name="param_vflow_xposed_js_timeout_name">超时（毫秒，不填则不超时）</string>
+    <string name="param_vflow_xposed_js_timeout_hint">不填则不超时</string>
     <string name="output_vflow_xposed_js_outputs_name">脚本返回值</string>
     <string name="summary_vflow_xposed_js_prefix">系统进程执行 JS: </string>
     <string name="error_vflow_xposed_js_script_empty">脚本错误</string>

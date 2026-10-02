@@ -68,6 +68,15 @@ class DiagnosticCapabilityHandler : CapabilityHandler {
          */
         const val SLOW_OVERSHOOT_MS = 250L
 
+        /**
+         * `slow` 模式在**请求没给超时**（`timeout_ms` 缺失 = 不超时）时的兜底睡眠。
+         *
+         * ⚠️ 存在的理由：`null` 意味着「没有预算可超」⇒ 超时判定不会命中。
+         * 若把 `null` 传播下去，这个模式会变成**永久挂起**（诊断能力反而成了死点）。
+         * 取 1 秒：足够让调用方观察到「慢」，又不会真的卡住验证流程。
+         */
+        const val DIAGNOSTIC_SLOW_FALLBACK_MS = 1_000L
+
         /** 造一个 `huge` 元素（单元素 ≈213 字节）。 */
         fun hugeItem(index: Int): Map<String, Any?> =
             mapOf("i" to index, "pad" to "x".repeat(HUGE_PAD_CHARS))
@@ -97,7 +106,12 @@ class DiagnosticCapabilityHandler : CapabilityHandler {
             // ⚠️ 用 `request.timeoutMs + SLOW_OVERSHOOT_MS` 而不是写死一个数：
             // 调用方把 timeout 设小了（如 1ms）时，写死的睡眠可能反而**不超时**，
             // 于是这个诊断能力会给出与预期相反的结果。
-            sleepQuietly(request.timeoutMs + SLOW_OVERSHOOT_MS)
+            //
+            // ⚠️⚠️ `timeoutMs == null`（= 不超时）时**没有预算可超** ⇒
+            // 这个模式无意义。取一个有限的固定值，让调用方**必然**拿到
+            // `handler_error`（超时判定不会命中，但调用方自己会超时/取消），
+            // 而不是让 `null` 传播成「永远睡下去」—— 那会把诊断能力变成挂死点。
+            sleepQuietly((request.timeoutMs ?: DIAGNOSTIC_SLOW_FALLBACK_MS) + SLOW_OVERSHOOT_MS)
             CapabilityOutcome.Items(listOf(mapOf("mode" to MODE_SLOW)))
         }
 

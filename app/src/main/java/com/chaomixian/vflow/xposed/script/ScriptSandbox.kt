@@ -77,13 +77,14 @@ import org.mozilla.javascript.ContextFactory
  * 构造前后 `ContextFactory.getGlobal()` 是**同一实例**、`hasExplicitGlobal() == false`。
  * ⇒ 可以放心在 system_server 里实例化本类，不影响其他组件。
  *
- * @param timeoutMs 超时**预算时长**（毫秒）。⚠️ 与 [deadlineMs] 别混：
+ * @param timeoutMs 超时**预算时长**（毫秒）。**`null` = 不超时**（2026-10-02 改，
+ *   与 `JsExecutor` 的 `null` 语义一致）。⚠️ 与 [deadlineMs] 别混：
  *   前者用于**用户可见的文案**，后者只用于比较。
  * @param step 指令观察器的续期间隔（字节码指令条数）。取小值让心跳更密、
  *   中断更精准，代价是回调更频繁。1000 是实测精确的取值。
  */
 class ScriptSandbox(
-    private val timeoutMs: Long,
+    private val timeoutMs: Long?,
     private val step: Int = DEFAULT_STEP,
 ) : ContextFactory() {
 
@@ -118,7 +119,14 @@ class ScriptSandbox(
      *（反证：把 `arm()` 改成空实现 ⇒ 该用例变红）。
      */
     @Volatile
-    private var deadlineMs: Long = System.currentTimeMillis() + timeoutMs
+    private var deadlineMs: Long = deadlineFrom(timeoutMs)
+
+    /**
+     * 上次 [arm] 的时刻。**不超时时不能用 `deadlineMs - timeoutMs` 反推**
+     *（那个算式在 `timeoutMs == null` 时无意义），故单独记一个。
+     */
+    @Volatile
+    private var armedAtMs: Long = System.currentTimeMillis()
 
     /**
      * 把「现在」设为超时计时的起点。**在 `evaluateString` 之前调用**。
@@ -141,11 +149,12 @@ class ScriptSandbox(
      * `ScriptSandboxTest` 有一条专门的门禁守着这件事。
      */
     fun arm() {
-        deadlineMs = System.currentTimeMillis() + timeoutMs
+        deadlineMs = deadlineFrom(timeoutMs)
+        armedAtMs = System.currentTimeMillis()
     }
 
     /** 自上次 [arm] 起的耗时（毫秒）。给超时结果用的（`TimedOut.elapsedMs`）。 */
-    fun elapsedSinceArm(): Long = System.currentTimeMillis() - (deadlineMs - timeoutMs)
+    fun elapsedSinceArm(): Long = System.currentTimeMillis() - armedAtMs
 
     /**
      * 是否已经因超时中断。
@@ -172,6 +181,14 @@ class ScriptSandbox(
      * 2. 没超就**续期**，否则下一次永远不会被回调（见类注释）。
      */
     override fun observeInstructionCount(cx: Context, instructionCount: Int) {
+        // ⚠️⚠️ 不超时 ⇒ 直接返回。**必须早退**，因为下面那句
+        // `setInstructionObserverThreshold(step)` 会**开启观察器** ——
+        // 在「不超时」下开着它只是白付回调开销（每次回调读一次时钟）。
+        // ⚠️ 但阈值已经由 `ScriptExecutor` 设过一次（`DEFAULT_STEP`），
+        // 所以这里的早退**不能**省掉回调本身，只能省掉我们的判断 —— 有意的：
+        // 关掉阈值要调 `setInstructionObserverThreshold(0)`，而那会让
+        // `RhinoServiceWarmUp` 之外的路径行为分叉，收益不抵复杂度。
+        if (timeoutMs == null) return
         if (System.currentTimeMillis() > deadlineMs) {
             timedOut = true
             throw ScriptTimeoutException("脚本执行超时（预算 ${timeoutMs}ms）")
@@ -193,5 +210,16 @@ class ScriptSandbox(
          * 更小的值只是徒增回调开销（每次回调都要读一次时钟）。
          */
         const val DEFAULT_STEP = 1000
+
+        /**
+         * `timeoutMs` → deadline 绝对时刻。**`null` ⇒ `Long.MAX_VALUE`（永不超时）**。
+         *
+         * ⚠️ 用 `Long.MAX_VALUE` 而不是「加一个大数」：后者在
+         * `System.currentTimeMillis() + big` 处会**溢出成负数** ⇒
+         * 观察器判 `now > deadline` 恒真 ⇒ **立刻中断**（与意图完全相反）。
+         * 也没用负数当哨兵 —— 同上，符号反了语义就反了。
+         */
+        internal fun deadlineFrom(timeoutMs: Long?): Long =
+            timeoutMs?.let { System.currentTimeMillis() + it } ?: Long.MAX_VALUE
     }
 }

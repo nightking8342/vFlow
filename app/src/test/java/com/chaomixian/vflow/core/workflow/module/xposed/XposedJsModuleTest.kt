@@ -162,48 +162,39 @@ class XposedJsModuleTest {
     fun `timeout default and type match the clamp contract`() {
         val timeout = module.getInputs().first { it.id == "timeout_ms" }
         assertEquals(ParameterType.NUMBER, timeout.staticType)
-        assertEquals(DEFAULT_TIMEOUT_MS, timeout.defaultValue)
-        assertNotNull("timeout_ms 必须带 hint 说明钳位规则", timeout.hintStringRes)
+        // ⚠️ 2026-10-02 起**刻意不给默认值**（不填 = 不超时，对齐 JsExecutor）。
+        assertNull("timeout_ms 不应有默认值（不填即不超时）", timeout.defaultValue)
+        assertNotNull("timeout_ms 必须带 hint 说明「不填则不超时」", timeout.hintStringRes)
         assertNotNull("timeout_ms 必须有本地化名", timeout.nameStringRes)
     }
 
     @Test
-    fun `the timeout bounds are written into the label not only the hint`() {
+    fun `the no-timeout rule is written into the label not only the hint`() {
         // ⚠️⚠️ 这条锁的是**用户在编辑器里能不能看见约束**。
         //
         // `timeout_ms` 走自动表单，而它的 `hint` 在自动表单里只是**输入框占位符**
-        //（`StandardControlFactory.createTextInputLayout(hint = …)`）——
-        // 字段**预填了 5000** ⇒ 占位符**永远不显示**。
-        // ⇒ 「默认 5000、上限 30000」若只写在 hint 里，用户既看不到上限、
-        //   也可能以为它是必填项。
+        //（`StandardControlFactory.createTextInputLayout(hint = …)`）。
+        // ⚠️ 2026-10-02 起该字段**没有默认值**，占位符本该可见 ——
+        // 但仍要求写进标签：标签是**必然被渲染**的那一处，不依赖表单行为。
         //
-        // 故约束**必须在标签里**。三语标签都查（漏一种语言就会有一批用户看不到）。
+        // 三语标签都查（漏一种语言就会有一批用户看不到）。
         val inputs = module.getInputs().first { it.id == "timeout_ms" }
         assertTrue(
-            "位置参 name（fallback）必须含默认值与上限",
-            (inputs.name.contains("5000") && inputs.name.contains("30000")),
+            "位置参 name（fallback）必须说明「不填则不超时」",
+            inputs.name.contains("不填"),
         )
 
-        val nameResId = inputs.nameStringRes!!
         for (dir in listOf("values", "values-en", "values-ja")) {
             val xml = readStringsModule(dir)
             val line = xml.lineSequence().firstOrNull { it.contains("param_vflow_xposed_js_timeout_name") }
             assertNotNull("$dir 缺 param_vflow_xposed_js_timeout_name", line)
+            // ⚠️ 不再断言「含 5000 / 30000」—— 默认值与上限都已废除。
+            // 反向断言：**不得**再出现已废除的数字，否则是改了一半。
             assertTrue(
-                "$dir 的超时标签必须含默认值 5000 与上限 30000（只写 hint 用户看不到）",
-                line!!.contains("5000") && line.contains("30000"),
+                "$dir 的超时标签不得再出现已废除的默认值/上限：$line",
+                !line!!.contains("5000") && !line.contains("30000"),
             )
         }
-        assertTrue("nameStringRes 必须真的被声明", nameResId != 0)
-    }
-
-    private fun readStringsModule(dir: String): String {
-        val candidates = listOf(
-            File("app/src/main/res/$dir/strings_module.xml"),
-            File("src/main/res/$dir/strings_module.xml"),
-        )
-        return candidates.firstOrNull { it.exists() }?.readText()
-            ?: error("找不到 $dir/strings_module.xml")
     }
 
     @Test
@@ -371,6 +362,17 @@ class XposedJsModuleTest {
         )
         val file = candidates.firstOrNull { it.exists() }
             ?: error("找不到 ModuleRegistry.kt，候选路径：${candidates.map { it.absolutePath }}")
+        return file.readText()
+    }
+
+    /** 读三语之一的 `strings_module.xml`（用于断言标签文案，见超时那条用例）。 */
+    private fun readStringsModule(dir: String): String {
+        val candidates = listOf(
+            File("app/src/main/res/$dir/strings_module.xml"),
+            File("src/main/res/$dir/strings_module.xml"),
+        )
+        val file = candidates.firstOrNull { it.exists() }
+            ?: error("找不到 $dir/strings_module.xml，候选路径：${candidates.map { it.absolutePath }}")
         return file.readText()
     }
 }

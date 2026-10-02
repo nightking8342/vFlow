@@ -171,13 +171,15 @@ object ScriptExecutor {
    *   单测传 null 或任意假对象）。顺带也让它**不引任何 `android.*`**，
    *   不必去动 `WireLayerPurityTest` 的 `ANDROID_ALLOWLIST`。
      * @param budgetMs 第 ① 层超时预算（毫秒）。由 handler 从 `request.timeoutMs` 取。
+     *   **`null` = 不超时**（2026-10-02 改）：沙箱不设 deadline，
+     *   纯计算死循环也**不会**被指令观察器中断。
      * @param maxResultBytes `outputs` 的字节上限（UTF-8，与框架同口径）。
      */
     fun run(
         script: String,
         inputs: Map<String, Any?>,
         context: Any?,
-        budgetMs: Long,
+        budgetMs: Long?,
         maxResultBytes: Int,
     ): Outcome {
         // ⚠️ 沙箱在**执行前**建立，但 `arm()` 会重置 deadline ——
@@ -234,6 +236,9 @@ object ScriptExecutor {
             if (sandbox.timedOut) {
                 return Outcome.TimedOut(elapsedMs = sandbox.elapsedSinceArm())
             }
+            // ⚠️ 不超时时 `sandbox.timedOut` 恒 false（观察器早退），
+            // 异常一律走 scriptErrorOf —— 语义正确：一个没有被超时中断的异常
+            // 就是脚本自己的错，不是超时。
             return scriptErrorOf(t)
         } finally {
             // ⚠️ 与 sandbox.enterContext() 配对。**不配对**会让 Rhino 的线程局部

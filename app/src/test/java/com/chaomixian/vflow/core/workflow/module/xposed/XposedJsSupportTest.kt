@@ -2,6 +2,7 @@ package com.chaomixian.vflow.core.workflow.module.xposed
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -16,44 +17,45 @@ import org.junit.Test
 class XposedJsSupportTest {
 
     // ════════════════════ clampTimeoutMs ════════════════════
+    //
+    // ⚠️⚠️ 本段于 2026-10-02 **整段翻面**：`null` / `<= 0` 从「回落 5000」
+    // 改为「不超时（返回 null）」，以对齐 `JsExecutor` 的既有约定
+    //（「`null` 或 `<= 0` 表示不超时」）。上限 `MAX_TIMEOUT_MS` 同时删除。
 
     @Test
-    fun `null falls back to the default`() {
-        // 未配过 / getVariableAsNumber 对 VNull 返回 null
-        assertEquals(DEFAULT_TIMEOUT_MS, clampTimeoutMs(null))
+    fun `null means no timeout`() {
+        // 没填过 / getVariableAsNumber 对 VNull 返回 null
+        assertNull(clampTimeoutMs(null))
     }
 
     @Test
-    fun `zero and negatives fall back to the default instead of clamping to one ms`() {
-        // ⚠️⚠️ 这条锁的是**语义选择**，不是数值。
-        // 钳到 1ms 会让用户拿到一个必然超时的结果（一次 binder 往返都不止 1ms），
-        // 而他看到的是「脚本超时」，会去查脚本本身。
-        assertEquals(DEFAULT_TIMEOUT_MS, clampTimeoutMs(0L))
-        assertEquals(DEFAULT_TIMEOUT_MS, clampTimeoutMs(-1L))
-        assertEquals(DEFAULT_TIMEOUT_MS, clampTimeoutMs(Long.MIN_VALUE))
+    fun `zero and negatives mean no timeout`() {
+        // ⚠️⚠️ 这条锁的是**与 JsExecutor 的语义对齐**，不是数值。
+        // 此前这里断言的是「回落 5000」—— 那会让两个 JS 模块在同一个数值上
+        // 行为相反（填 0 时 system.js 永不超时、xposed.js 5 秒就断）。
+        assertNull(clampTimeoutMs(0L))
+        assertNull(clampTimeoutMs(-1L))
+        assertNull(clampTimeoutMs(Long.MIN_VALUE))
     }
 
     @Test
-    fun `in-range values are passed through unchanged`() {
+    fun `positive values are passed through unchanged and uncapped`() {
         assertEquals(1L, clampTimeoutMs(1L))
         assertEquals(5_000L, clampTimeoutMs(5_000L))
         assertEquals(30_000L, clampTimeoutMs(30_000L))
+        // ⚠️ 上限已删：既然「不填」就等于无限，用户想要 60 秒只需不填 ——
+        // 旧上限拦不住任何真实意图，只能拦住「填了 60 秒」这种更明确的写法。
+        assertEquals(60_000L, clampTimeoutMs(60_000L))
+        assertEquals(Long.MAX_VALUE, clampTimeoutMs(Long.MAX_VALUE))
     }
 
     @Test
-    fun `values above the max are clamped to the max`() {
-        assertEquals(MAX_TIMEOUT_MS, clampTimeoutMs(30_001L))
-        assertEquals(MAX_TIMEOUT_MS, clampTimeoutMs(60_000L))
-        assertEquals(MAX_TIMEOUT_MS, clampTimeoutMs(Long.MAX_VALUE))
-    }
-
-    @Test
-    fun `the max is meaningful because the hook side pool has only two workers`() {
-        // 反向断言：上限必须**真的**小于一个「会占住工作线程很久」的量级。
-        // 这防止将来有人「顺手」把 MAX 调到几分钟 —— 那会让两个慢脚本就把
-        // hook 侧容量 2 的池占满，此后所有调用立刻回 handler_error。
-        assertTrue("超时上限不应超过 60 秒（池容量只有 2）", MAX_TIMEOUT_MS <= 60_000L)
-        assertTrue("默认值应小于上限", DEFAULT_TIMEOUT_MS < MAX_TIMEOUT_MS)
+    fun `the timeout input has no default value`() {
+        // ⚠️ 反向断言：`timeout_ms` **不得**有 `defaultValue`。
+        // 有默认值 = 表单预填 = hint（「不填则不超时」）永远不显示、
+        // 且用户拿到的其实是「默认超时」而不是「不超时」。
+        val timeout = XposedJsModule().getInputs().first { it.id == "timeout_ms" }
+        assertNull("timeout_ms 不应有默认值", timeout.defaultValue)
     }
 
     // ════════════════════ rawOutputsOf ════════════════════

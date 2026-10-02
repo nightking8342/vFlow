@@ -177,18 +177,20 @@ class XposedJsModule : BaseModule() {
         ),
         InputDefinition(
             id = "timeout_ms",
-            // ⚠️⚠️ 「（默认 5000，上限 30000）」**必须写在标签里，不能只写进 hint**。
+            // ⚠️⚠️ 「不填则不超时」**必须写在标签里，不能只写进 hint**。
             // `hint` 在自动表单里只是**输入框占位符**（`StandardControlFactory` →
-            // `createTextInputLayout(hint = …)`），而字段**预填了 5000** ⇒ 占位符
-            // **永远不显示** ⇒ 用户既看不到上限、也可能以为它必填。
-            // （实测路径：该字段不在 `JsModuleUIProvider.getHandledInputIds()` 里
-            //  ⇒ 由自动表单渲染；`ActionEditorSheet.createViewForInputDefinition`
-            //  → `StandardControlFactory` → `createTextInputLayout`。）
+            // `createTextInputLayout(hint = …)`），字段一旦有值占位符就**永远不显示**。
+            // 而本字段现在**没有默认值**（见 `defaultValue`），占位符本该可见 ——
+            // 但仍写进标签：标签是**必然被渲染**的那一处，不依赖表单行为。
             // ⚠️ 位置参 `name` 只是**未本地化时的 fallback** —— 真正渲染的是
             // `nameStringRes` 指向的三语文案，两处必须同步改（否则某语言下退回旧标签）。
-            name = "超时（毫秒，默认 5000，上限 30000）",
+            name = "超时（毫秒，不填则不超时）",
             staticType = ParameterType.NUMBER,
-            defaultValue = DEFAULT_TIMEOUT_MS,
+            // ⚠️⚠️ **刻意不给默认值**（2026-10-02 改，与 `vflow.system.js` 对齐）：
+            // 不填 = 不超时。此前预填 5000，而 `JsExecutor` 的约定是
+            // 「`null` 或 `<= 0` 表示不超时」⇒ 两个 JS 模块在同一个数值上行为相反。
+            // ⚠️ 不给默认值也让 `hint`（=「不填则不超时」）**真的能显示出来**。
+            defaultValue = null,
             acceptsMagicVariable = true,
             nameStringRes = R.string.param_vflow_xposed_js_timeout_name,
             hintStringRes = R.string.param_vflow_xposed_js_timeout_hint,
@@ -235,13 +237,9 @@ class XposedJsModule : BaseModule() {
             )
         }
 
-        val rawTimeout = context.getVariableAsNumber("timeout_ms")?.toLong()
-        val timeoutMs = clampTimeoutMs(rawTimeout)
-        if (rawTimeout != null && rawTimeout != timeoutMs) {
-            // ⚠️ 钳位发生时**必须留痕**：否则用户看到的是「脚本超时」，
-            // 而真相是他配的数值被钳了 —— 两者的排查方向完全不同。
-            DebugLogger.w(TAG, "timeout_ms=$rawTimeout 越界，已钳位为 $timeoutMs")
-        }
+        // ⚠️ `null` / `<= 0` = **不超时**（与 `vflow.system.js` 的 `JsExecutor` 对齐）。
+        // 详见 [clampTimeoutMs] 的 KDoc。
+        val timeoutMs = clampTimeoutMs(context.getVariableAsNumber("timeout_ms")?.toLong())
 
         val scriptInputs = scriptInputsOf(
             entries = rawInputEntries(context),

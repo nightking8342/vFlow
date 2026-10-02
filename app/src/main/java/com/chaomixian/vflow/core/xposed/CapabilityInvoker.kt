@@ -290,13 +290,18 @@ object CapabilityInvoker {
         }
 
         // ── 步骤 4：oneway 提交 ──
-        val effectiveTimeout = timeoutMs
-            ?: cap.timeoutMs
-            ?: CapabilityInvocationCodec.DEFAULT_TIMEOUT_MS
+        //
+        // ⚠️⚠️ `effectiveTimeout == null` = **不超时**（2026-10-02 改）。
+        // 判据是「两个来源都是 null」，而 `Capability.timeoutMs` 也 null ⇒ 不超时。
+        // 详见下方「不超时如何跨进程表达」。
+        val effectiveTimeout = timeoutMs ?: cap.timeoutMs
 
         val requestJson = buildRequestJson(
             capability = capability,
             params = params,
+            // ⚠️ **null ⇒ 不写 `timeout_ms` 键**（不是写 0）——
+            // hook 侧的 `decodeRequest` 见到键缺失会走它自己的兜底，
+            // 而写 0 会被理解为「立刻超时」（见 `InvokePolicy.effectiveTimeoutMs` 的注释）。
             timeoutMs = effectiveTimeout,
             requestId = requestId,
             token = token,
@@ -317,9 +322,20 @@ object CapabilityInvoker {
             )
         }
 
-        // ── 步骤 5：等待（带超时）──
+        // ── 步骤 5：等待（可带超时）──
+        //
+        // ⚠️⚠️ `effectiveTimeout == null` ⇒ **无限等**（`deferred.await()` 不带 `withTimeout`）。
+        // 这不是遗漏 —— 是「不填则不超时」的落实（与 `JsExecutor` 的 `null` 语义一致）。
+        // ⚠️ **代价必须知道**：hook 侧脚本若阻塞（`Thread.sleep` / 卡住的 IO），
+        // 指令级中断对它无效 ⇒ 本函数会**一直挂着**，该工作流也一直停在这一步。
+        // 兜底是**工作流级**的 `Workflow.maxExecutionTime`（`WorkflowExecutor.kt:246`），
+        // ⚠️ 而它**默认是关的**（`null`）。
         val response = try {
-            withTimeout(effectiveTimeout) { deferred.await() }
+            if (effectiveTimeout == null) {
+                deferred.await()
+            } else {
+                withTimeout(effectiveTimeout) { deferred.await() }
+            }
         } catch (t: Throwable) {
             // ⚠️⚠️ CancellationException 也走这里（withTimeout 的超时就是靠取消实现的）。
             // 若只 catch TimeoutCancellationException，协程被上游取消时会**漏掉注销** ⇒ 泄漏。
@@ -330,10 +346,13 @@ object CapabilityInvoker {
 
             // 区分「真超时」与「被上游取消」是有必要的：
             // 前者是 §6.4 里「报告问题」那一类，后者是正常的生命周期事件（不该报 bug）
+            // ⚠️ `effectiveTimeout` 可能是 null（= 不超时）⇒ 文案要分开写，
+            // 否则会渲染成「等待 nullms 内未完成」。
+            val window = effectiveTimeout?.let { "${it}ms 内" } ?: "（未设超时）"
             val detail = if (t is CancellationException) {
-                "调用被取消（等待 ${effectiveTimeout}ms 内未完成）"
+                "调用被取消（等待 $window 未完成）"
             } else {
-                "等待 ${effectiveTimeout}ms 内无响应（hook 层未回 resolve）"
+                "等待 $window 无响应（hook 层未回 resolve）"
             }
             DebugLogger.w(TAG, "调用失败：$detail（capability=$capability requestId=$requestId）")
             return CapabilityInvokeOutcome.Failed(
@@ -461,7 +480,12 @@ object CapabilityInvoker {
         requestId = requestId,
         capability = capability,
         paramsJson = JSONObject(params).toString(),
-        timeoutMs = timeoutMs ?: CapabilityInvocationCodec.DEFAULT_TIMEOUT_MS,
+        // ⚠️⚠️ **原样透传，不要把 null 变成默认值**（2026-10-02 改）。
+        // 此前这里是 `timeoutMs ?: DEFAULT_TIMEOUT_MS`，会把「不超时」静默改写成 5000 ——
+        // 那种失败**没有任何报错**，只表现为「我的长脚本无缘无故被掐断」。
+        // codec 见到 null 会**不写这个键**（旧 hook 层收到缺失则走它自己的兜底，
+        // 是安全的降级方向：旧端按 5000 处理，不会永久挂起）。
+        timeoutMs = timeoutMs,
         cursor = cursor,
         token = token,
     )

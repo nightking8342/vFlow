@@ -172,7 +172,7 @@ class HookCapabilityRuntimeTest {
     @Test
     fun `handler running past the budget yields timeout and no result`() {
         HookCapabilityRegistry.register(FakeHandler("slow") { request ->
-            Thread.sleep(request.timeoutMs + 200)
+            Thread.sleep((request.timeoutMs ?: 1_000L) + 200)
             CapabilityOutcome.Items(listOf(mapOf("late" to true)))
         })
         // ⚠️ 用 ~120ms 量级的预算而不是默认 5s，否则单测要跑 5 秒

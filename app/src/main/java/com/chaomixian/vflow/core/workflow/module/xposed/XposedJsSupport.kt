@@ -18,46 +18,40 @@ package com.chaomixian.vflow.core.workflow.module.xposed
  */
 
 /**
- * 默认超时（ms）。
+ * 把用户配的超时钳到合法值。**`null` / `<= 0` = 不超时**（返回 `null`）。
  *
- * ⚠️ 与 `CapabilityInvocationCodec.DEFAULT_TIMEOUT_MS` **同值但刻意不引用它** ——
- * 那个常量在 `xposed/wire/` 下（会被注入 system_server 的代码加载），
- * 引用它会把 app 侧依赖带进本模块的依赖面。**同值是巧合，也是口径**，
- * 由 `XposedJsSupportTest` 的注释钉住「改一处要想到另一处」。
- */
-internal const val DEFAULT_TIMEOUT_MS = 5_000L
-
-/**
- * 超时上限（ms）。
+ * ## ⚠️⚠️ 语义与 `vflow.system.js` 严格对齐（2026-10-02 改）
  *
- * ⚠️ 存在的理由不是「数字好看」：hook 侧的工作线程池**容量只有 2、且不排队**
- * ⇒ 一个跑很久的脚本会**占住半边池**，两个就池满（此后所有调用立刻回
- * `handler_error`）。故上限必须**显式**存在，让「池被长时间占住」有个天花板。
- */
-internal const val MAX_TIMEOUT_MS = 30_000L
-
-/**
- * 把用户配的超时钳到合法区间。
+ * `core/execution/JsExecutor.kt` 的 KDoc 逐字写着：
  *
- * ## 语义（每条分支都能被独立断言）
+ * > `@param timeoutMs` 超时上限（毫秒）。`null` 或 `<= 0` 表示**不超时**
+ *
+ * 本模块此前是**相反**的（`null` / `<= 0` 都退回 5000），这会让两个 JS 模块
+ * 在同一个数值上给出不同行为 —— 用户填 `0` 时，「JavaScript 脚本」永不超时，
+ * 而「Xposed JavaScript」5 秒就断。⇒ 现统一为前者。
  *
  * | 输入 | 输出 | 理由 |
  * |---|---|---|
- * | `null`（没配过 / 取值失败） | 5000 | 默认值 |
- * | `<= 0` | 5000 | ⚠️ **退回默认，而不是钳到 1ms** —— 见下 |
- * | `1 .. 30000` | 原样 | |
- * | `> 30000` | 30000 | 上限 |
+ * | `null`（没填过 / 取值失败） | **`null`（不超时）** | 与 `JsExecutor` 对齐 |
+ * | `<= 0` | **`null`（不超时）** | 同上；`0` 是被显式写成「无限」的既有约定 |
+ * | `> 0` | 原样 | ⚠️ **没有上限**（见下） |
  *
- * ⚠️⚠️ **`<= 0` 为什么退回默认而不是钳到最小值**：
- * 钳到 1ms 会让用户拿到一个**必然超时**的结果 —— 连一次 binder 往返到 system_server
- * 都不止 1ms。那时用户看到的是「脚本超时」，会去查脚本本身，
- * 而真相是他填了个 `0`。退回默认至少让脚本能跑完。
- * （0 / 负数本身也没有任何有意义的语义。）
+ * ## ⚠️ 为什么去掉了原来的 `MAX_TIMEOUT_MS = 30_000` 上限
+ *
+ * 旧上限的理由是「让『池被长时间占住』有个天花板」。但那条论证**自我矛盾**：
+ * 既然「不填」就等于**无限**，用户想要 60 秒只需**不填** —— 上限拦不住任何
+ * 真实意图，只能拦住「填了 60 秒」这种**更明确、更好排查**的写法。
+ * ⇒ 上限已删（连同 `MAX_TIMEOUT_MS` 常量）。
+ *
+ * ⚠️ **不超时的代价是真实的、且必须承认**：hook 侧的工作线程池容量小且不排队，
+ * 一个 `Thread.sleep(999999)` 的脚本会**永久占住一个工作线程**
+ *（指令级中断对阻塞调用无效，见 `ScriptSandbox`）。兜底手段是**工作流级**
+ * 的 `Workflow.maxExecutionTime`（`WorkflowExecutor.kt:246`）——
+ * ⚠️ 它**默认是关的**（`null`）。即：用户不配它 + 脚本阻塞 ⇒ 该工作流会永久挂起。
  */
-internal fun clampTimeoutMs(raw: Long?): Long = when {
-    raw == null -> DEFAULT_TIMEOUT_MS
-    raw <= 0L -> DEFAULT_TIMEOUT_MS
-    raw > MAX_TIMEOUT_MS -> MAX_TIMEOUT_MS
+internal fun clampTimeoutMs(raw: Long?): Long? = when {
+    raw == null -> null
+    raw <= 0L -> null
     else -> raw
 }
 

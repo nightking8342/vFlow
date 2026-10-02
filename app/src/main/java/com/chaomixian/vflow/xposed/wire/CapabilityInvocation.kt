@@ -69,12 +69,18 @@ object CapabilityInvocationCodec {
      *   与 [EventEnvelope.payloadJson] 同一设计语言：信封层不认识任何业务字段
      *   （「Hook 层不知道工作流的存在」在数据层的体现）。
      *   传 `Map<String, Any>` 会在 org.json 转换中丢嵌套类型，而原始串不会。
+     * @param timeoutMs `null` ⇒ **不写这个键 = 不超时**（2026-10-02 改）。
+     *   ⚠️⚠️ **不能用 `0` 或负数表达「不超时」**：`0` 已被定义为「立刻超时」
+     *   （见 `InvokePolicy.effectiveTimeoutMs` 的注释），而负数会在 hook 侧
+     *   被 `isTimedOut` 判成恒真 ⇒ **每次调用立刻回 timeout**。
+     *   用「键缺失」还有第二个好处：**旧 hook 层**（不认识这个语义）收到缺失会
+     *   回落到它自己的默认值 ⇒ 安全降级，不会出现「新 App 让旧 hook 层永久挂起」。
      */
     fun encodeRequest(
         requestId: String,
         capability: String,
         paramsJson: String = "{}",
-        timeoutMs: Long = DEFAULT_TIMEOUT_MS,
+        timeoutMs: Long? = DEFAULT_TIMEOUT_MS,
         cursor: String? = null,
         token: String = "",
         protocolVersion: Int = EventEnvelopeCodec.PROTOCOL_VERSION,
@@ -84,8 +90,12 @@ object CapabilityInvocationCodec {
             .put(KEY_PROTOCOL, protocolVersion)
             .put(KEY_CAPABILITY, capability)
             .put(KEY_PARAMS, paramsJson)
-            .put(KEY_TIMEOUT_MS, timeoutMs)
             .put(KEY_TOKEN, token)
+
+        // ⚠️ 与 `cursor` 同一条约定：「不存在的键」比「值为 null 的键」更明确。
+        if (timeoutMs != null) {
+            obj.put(KEY_TIMEOUT_MS, timeoutMs)
+        }
 
         // ⚠️ `cursor` 为空时**不写这个键**（而不是写 null）——
         // 与下面 `ok=true` 时不写 `error` 是同一条约定：
@@ -186,13 +196,16 @@ object CapabilityInvocationCodec {
         val capability = obj.optString(KEY_CAPABILITY)
         if (capability.isBlank()) return null
 
-        // ⚠️ timeout_ms 缺失时给默认值而非 0 —— 0 意味着「立刻超时」，
-        // 会让一个正常请求必然失败。而协议里它本来就是可选的兜底项
-        val timeout = if (obj.has(KEY_TIMEOUT_MS)) {
-            obj.optLong(KEY_TIMEOUT_MS, DEFAULT_TIMEOUT_MS)
-        } else {
-            DEFAULT_TIMEOUT_MS
-        }
+        // ⚠️⚠️ `timeout_ms` **缺失 ⇒ null = 不超时**（2026-10-02 改）。
+        //
+        // 此前缺失时回落 `DEFAULT_TIMEOUT_MS` —— 那会让「不超时」在跨进程时
+        // **被静默改写成 5000ms**，而失败表现是「我的长脚本无缘无故被掐断」，
+        // 没有任何线索指向真正的原因。
+        //
+        // ⚠️ **不能改用 0 或负数当哨兵**：`0` 已被定义为「立刻超时」
+        //（见 `InvokePolicy.effectiveTimeoutMs` 的注释），而负数会让
+        // `isTimedOut(elapsed, budget)` 恒真 ⇒ 每次调用立刻回 timeout。
+        val timeout = if (obj.has(KEY_TIMEOUT_MS)) obj.optLong(KEY_TIMEOUT_MS, 0L) else null
 
         return CapabilityRequest(
             requestId = requestId,
@@ -202,7 +215,8 @@ object CapabilityInvocationCodec {
             capability = capability,
             paramsJson = obj.optString(KEY_PARAMS).ifBlank { "{}" },
             // ⚠️ 钳到非负：负超时会让工作线程的计时逻辑得到荒谬的结果
-            timeoutMs = timeout.coerceAtLeast(0L),
+            // ⚠️ 但**保留 null** —— 它是「不超时」的唯一表达（见上）。
+            timeoutMs = timeout?.coerceAtLeast(0L),
             // ⚠️ 缺省 null（不是空串）：`optString` 对缺失键返回 `""`，
             // 而空串与 null 在分页语义里是**两回事**（前者是「一个空的游标」，
             // 后者是「没有游标」）。归一成 null 让调用方只需判一种情形。
@@ -289,7 +303,15 @@ data class CapabilityRequest(
     val protocolVersion: Int,
     val capability: String,
     val paramsJson: String,
-    val timeoutMs: Long,
+    /**
+     * 超时预算（毫秒）。**`null` = 不超时**（协议里表现为**这个键不存在**）。
+     *
+     * ⚠️ 改动史（2026-10-02）：此前是非空 `Long`，缺失时回落 5000。
+     * 现在契约改为「缺失 ⇒ 不超时」，与 `JsExecutor` 的 `null` 语义一致。
+     * ⇒ **不要**为它加 `?: DEFAULT_TIMEOUT_MS` 之类的回落，那会把「不超时」
+     * 静默改写成「5 秒超时」。
+     */
+    val timeoutMs: Long? = null,
     val cursor: String? = null,
     val token: String,
 )
