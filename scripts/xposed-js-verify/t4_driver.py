@@ -209,6 +209,10 @@ CASES = {
     # 交付要求点名要验：「脚本无返回值 ⇒ items = [{}]（空字典，**不是**空 items）——
     # 断言时别误判为失败」。工作流**不能失败**。
     "10": dict(file="10_noreturn.js", timeout=5000, settle=6),
+    # 11：正则可用性 —— 修 `RhinoServiceWarmUp`（TCCL/ServiceLoader）之后的回归。
+    # ⚠️ 它**只能真机跑**：单测 JVM 的 TCCL 是对的，正则一直是好的，测不出这个缺陷。
+    # 期望产物含 lit=true / grp=12 / rep=a#b# / typeof=function。
+    "11": dict(file="11_regexp.js", timeout=5000, settle=6),
 }
 
 

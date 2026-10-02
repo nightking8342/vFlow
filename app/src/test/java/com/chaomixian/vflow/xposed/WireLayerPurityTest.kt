@@ -393,6 +393,16 @@ class WireLayerPurityTest {
             "HookCapabilityRegistry.kt",
             "DiagnosticCapabilityHandler.kt",
             "HookCapabilityRuntime.kt",
+            // ③ 的 JS 执行体（`script/` 目录）。⚠️ 这几个文件**尤其**要受管辖：
+            // 它们 `import org.mozilla.javascript.*`（Rhino 在 system_server 里跑），
+            // 一旦顺手引了 `android.*` 或 App 侧包，崩溃半径就是整机。
+            "ScriptExecutor.kt",
+            "ScriptSandbox.kt",
+            "ScriptRequest.kt",
+            "JsConsole.kt",
+            // ⚠️ Rhino 的 ServiceLoader 预热（修「正则表达式不可用」）——
+            // 它改 TCCL，是最需要盯着引用面的那一个
+            "RhinoServiceWarmUp.kt",
         )) {
             assertTrue(
                 "xposed/ 下缺少 $expected —— 是否改名/搬走了？",

@@ -513,6 +513,54 @@
 > 「同一个平台问题在两种处境下的两次解」，不是代码复用。
 > ⚠️ **T1 的当前状态**：`timeoutMs` 的**两个**既有调用点（`JsModule.execute`、`InlineScriptEvaluator`）**都不传参** ⇒ 走默认 `null` ⇒ **对既有行为零影响**（引擎有超时能力、但没有任何生产路径让它生效）。
 
+> ✅ **已修缺陷 —— hook 层的正则（`RegExp`）曾整体不可用（2026-10-02，当日修复并真机验证）**
+>
+> **现象**：在 `vflow.xposed.js` 里写**任何**正则都失败 ——
+> `脚本错误（第 3 行第 0 列）：正则表达式不可用。`；`typeof RegExp === "undefined"`。
+> **同一个 App 的 `vflow.system.js` 一切正常**。
+>
+> **根因（已实验确证，非推断）**：Rhino 的正则引擎是**可插拔**的，靠 ServiceLoader 发现 ——
+> `META-INF/services/org.mozilla.javascript.RegExpLoader → …regexp.RegExpLoaderImpl`。
+> 而 `Context` 静态初始化里用的是 **`ServiceLoader.load(Class)`（单参版）**，
+> 它走**线程上下文 ClassLoader（TCCL）**、**不是**定义 Rhino 的那个：
+>
+> | 进程 | TCCL | 能否找到服务文件 |
+> |---|---|---|
+> | App（`vflow.system.js`） | 应用 ClassLoader（能看 APK 内 `META-INF/services`） | ✅ |
+> | **hook 层** | LSPosed 给的模块 ClassLoader | ❌ |
+>
+> ⚠️ **该查找只在类初始化时做一次、失败不重试**，且 Rhino 1.9.0 **没有公开 API** 能补救
+> （`Context`/`ContextFactory` 全部 public 方法里没有 `setRegExpProxy`）⇒ 只能让第一次成功。
+>
+> ⚠️ **一句本地化文案曾被误当成「主动拦截」**：「正则表达式不可用。」是 Rhino 自带的
+> `Messages_zh_CN.properties` 文案（`msg.no.regexp`），**不是**我方拦截 ——
+> 全仓 grep `setRegExpProxy` / `ClassShutter` 均零命中。
+>
+> **修法**：`xposed/script/RhinoServiceWarmUp.kt`（新增）。把 TCCL **临时**换成模块
+> ClassLoader → `Class.forName("…Context", true, cl)` 触发查找 → **`finally` 立刻还原**。
+> ⚠️ **实测「还原之后正则仍可用」**（这正是敢临时改的前提）：静态字段已把结果缓存住，此后与 TCCL 无关。
+> 副作用被压到「一个线程 + 一次类加载」的瞬时窗口，窗口内不调用任何回调。
+>
+> ⚠️⚠️ **触发点必须两处，缺一不可（真机踩出来的）**：
+> 起初只挂 `onSystemServerStarting` ⇒ **装包后正则仍然坏**（设备 `uptime` 是 `up 3 days`，从未重启）
+> —— 那个回调**只在 system_server 启动时跑一次、官方不在热更新里重放**，而 `Context` 是**框架的类**、
+> 热更新不重置它 ⇒ 不重新预热就永远救不回来。
+> ⇒ 补挂 `onHotReloaded`（用 `javaClass.classLoader`；`HotReloadedParam` **没有** `getClassLoader()`）。
+>
+> ✅ **真机验证（小米 MIX Fold 3 / Android 17）**：
+> `REGEXP_PROBE lit=true ctor=true grp=12 rep=a#b# typeof=function`
+> —— 字面量 / 构造函数 / 捕获组 / `replace` + `g` 全部恢复；用例 01/07 回归通过
+> （`vflow` 仍为 `undefined`，定义性约束未被破坏）。
+>
+> ⚠️ **一处只验到「行为」没验到「机制」的地方**（如实记录）：热更新后再预热**为什么**有效，
+> 按「静态初始化只跑一次」推本该是 no-op，但真机确实修好了 —— 推测是 LSPosed 换代后
+> hook 层可达的 `Context` 也跟着是新的一份（静态状态全新）。**行为已实证，机制未验**
+> ⇒ 将来若要动这里，**先跑上面那条 PROBE 复验**，别只看推导。
+>
+> ⚠️ **只能真机验，单测测不出**：单测 JVM 的 TCCL 是对的（能看到 Rhino jar 的 service 文件），
+> 正则一直是好的 ⇒ `RhinoServiceWarmUpTest` 必须**人为造一个隔离 ClassLoader** 才能复现。
+> **反证已做**：去掉「换 TCCL」那一步 ⇒ 用例变红。
+>
 > ✅ **已修缺陷 —— 本模块的【默认示例脚本】曾用顶层 `return`（T4 查出，当日修复，2026-10-02）**
 >
 > **原缺陷**：`XposedJsModule.kt` 的 `script` 输入 `defaultValue` 曾写

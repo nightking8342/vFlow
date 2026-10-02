@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.util.Log
 import com.chaomixian.vflow.xposed.capabilities.HookCapabilityRuntime
 import com.chaomixian.vflow.xposed.capabilities.XposedJsCapabilityHandler
+import com.chaomixian.vflow.xposed.script.RhinoServiceWarmUp
 import com.chaomixian.vflow.xposed.sources.ActivityChangedSource
 import com.chaomixian.vflow.xposed.wire.CapabilityInvocationCodec
 import io.github.libxposed.api.XposedInterface
@@ -191,6 +192,28 @@ class VFlowHookEntry : XposedModule() {
             say("  classLoader = ${param.classLoader}")
         } catch (t: Throwable) {
             warn("onSystemServerStarting 日志失败", t)
+        }
+
+        // ── ⚠️⚠️ Rhino 服务发现预热 —— **必须排在最前** ──
+        //
+        // 为什么必须最先：Rhino 找它的正则引擎用的是 `ServiceLoader.load(Class)`，
+        // 走**线程上下文 ClassLoader（TCCL）**，而 hook 层的 TCCL 是 LSPosed 给的
+        // 模块 ClassLoader ⇒ 找不到 APK 里的 `META-INF/services/…RegExpLoader`
+        // ⇒ `Context.regExpProxy` 恒为 null ⇒ **脚本里任何正则都报「正则表达式不可用」**。
+        //
+        // ⚠️ 那个查找**只在 `Context` 类初始化时做一次、失败不重试**，
+        // 且 Rhino 1.9.0 没有公开 API 能补救 ⇒ **只能让第一次就成功**。
+        // ⇒ 一旦有别的代码先碰了 `Context`，就永久救不回来，故本行必须排在
+        //    任何可能触碰 Rhino 的动作之前（`startChannel` 不碰 Rhino，
+        //    但将来若在它前面加了什么，顺序仍要保持）。
+        //
+        // 详见 `RhinoServiceWarmUp` 的类注释（含真机症状与「还原 TCCL 后仍可用」的实测）。
+        try {
+            val ok = RhinoServiceWarmUp.warmUp(param.classLoader)
+            say("  Rhino 服务预热：${if (ok) "已执行" else "跳过（已初始化或无需）"}")
+        } catch (t: Throwable) {
+            // ⚠️ 预热失败**不阻断**启动：代价只是「正则不可用」，与本修复之前一致
+            warn("Rhino 服务预热失败（正则将不可用，其余功能不受影响）", t)
         }
 
         // ── P1b：建立与 App 的双向通道 ──
@@ -396,6 +419,30 @@ class VFlowHookEntry : XposedModule() {
         // 而日志里只有一行 onHotReloaded，看起来一切正常。
         //
         // 这正是本仓库反复记录的静默失效形态。
+        // ⚠️⚠️ **Rhino 服务预热也要在这里补一次。**
+        //
+        // 为什么：预热挂在 `onSystemServerStarting`，而**官方不会重放那个回调**
+        // （就是上面这段注释记录的事）。⇒ 光靠 `onSystemServerStarting`，
+        // **重装 APK 之后预热不会跑**，正则继续不可用。
+        // ⚠️ 本条是**真机实测发现的**（2026-10-02）：装包后跑正则用例，仍报
+        // 「正则表达式不可用」—— 因为设备没重启、`Context` 还是旧那份。
+        //
+        // ⚠️ 用**新代际自己的** ClassLoader（`javaClass.classLoader` 在这个新
+        // classloader 下加载的实例上取，正是新代际的那个）。
+        // 不能用 `systemServerClassLoader()` —— 那是 system_server 的 PathClassLoader，
+        // 在 hook 层未必能解析到本模块的 `META-INF/services`。
+        //
+        // ⚠️ 为什么放这里而**不是** `startChannel` 内部：`startChannel` 在
+        // `onSystemServerStarting` 时拿得到 ClassLoader、在 `onHotReloaded` 时拿不到
+        //（`HotReloadedParam` 没有 `getClassLoader()`）—— 而本预热**需要** ClassLoader。
+        // ⇒ 两处分别处理：前者用 `param.classLoader`，后者用 `javaClass.classLoader`。
+        try {
+            val ok = RhinoServiceWarmUp.warmUp(javaClass.classLoader)
+            say("  热更新后 Rhino 服务预热：${if (ok) "已执行" else "跳过（无需）"}")
+        } catch (t: Throwable) {
+            warn("热更新后 Rhino 服务预热失败（正则将不可用）", t)
+        }
+
         try {
             say("  热更新后重建通道（官方不会重放 onSystemServerStarting）")
             // ⚠️ 传 null ClassLoader：`HotReloadedParam` **没有** getClassLoader()（实测）。
