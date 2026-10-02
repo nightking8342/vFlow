@@ -47,7 +47,12 @@ class JsModule : BaseModule() {
             id = "script",
             name = "JavaScript 脚本",
             staticType = ParameterType.STRING,
-            defaultValue = "vflow.device.toast({ message: 'Hello from JavaScript!' })\n\n// Read values from script inputs.\n// var myVar = inputs.my_variable\n\n// Return a dictionary as outputs.\nvar r = {};\nr.result = 1 + 1;\nr;",
+            // ⚠️ 默认脚本的写法是**有意的**：返回字典必须用【末行表达式】（`r;`），
+            //    不能用顶层 `return` —— Rhino 把顶层代码当表达式求值，顶层 `return`
+            //    直接报 `返回的值无效`（实测，带行列号但指不到真正原因）。
+            //    注释若写成 "Return a dictionary" 会误导用户去写 `return {...}`。
+            //    `return` 只有在**函数体内**才合法。
+            defaultValue = "vflow.device.toast({ message: 'Hello from JavaScript!' })\n\n// Read values from script inputs.\n// var myVar = inputs.my_variable\n\n// Emit a dictionary as outputs: use a trailing expression, NOT a top-level `return`.\nvar r = {};\nr.result = 1 + 1;\nr;",
             acceptsMagicVariable = true,
             acceptsInlineScript = false
         ),

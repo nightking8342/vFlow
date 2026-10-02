@@ -128,8 +128,10 @@ class XposedJsModule : BaseModule() {
                 // var myVar = inputs.my_variable
 
                 // 返回一个字典作为下游可见的 outputs —— 用【末行表达式】，
-                // ⚠️ 不要用顶层 `return`：Rhino 在脚本顶层遇到 `return` 是
-                //    解析期错误（报「返回的值无效」），脚本一行都不执行。
+                // ⚠️ 不要用顶层 `return`：Rhino 把**顶层代码当表达式求值**，
+                //    顶层 `return` 直接报「返回的值无效」（实测，行列号指不到真正原因）。
+                //    `return` 本身没被禁，**只在函数体内合法**：`function f(){ return {...}; } f();`
+                //    是可行的。
                 var r = {};
                 r.sum = 1 + 1;
                 r;
