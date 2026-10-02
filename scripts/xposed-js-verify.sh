@@ -480,6 +480,13 @@ do_judge() {
   #  a) 三次**并发**（必须用三个不同工作流 —— 同一个会被 `block_new` 重入保护挡住，
   #     请求到不了 capability 层，池永远不满）⇒ 第 3 个立刻 `handler_error`「池已满」；
   #  b) 等阻塞自然结束（sleep 3s）后**池会恢复**（tail 那一次不再被拒）。
+  #
+  #  ⚠️ 本项同时是「出队判过期」（hook 侧 `runOnWorker` 首行那处判定）的**回归判据**：
+  #     当前池是 `SynchronousQueue`（容量 0）⇒ 并发打满时第 3 个请求在 `onInvoke`
+  #     就被拒，**根本不会进队列** ⇒「排队已超预算」这一格在真机上**不可达**
+  #     （与端到端单测同一根因）。故真机这边只验「行为与改动前一致」——
+  #     第 3 个仍必须是 `handler_error`「工作线程池已满」，**不得**被那个判据
+  #     改写成 `timeout`。判据语义本身由接缝级单测覆盖。
   local v6="unknown" v6_why="没有 case 06 的采集"
   if [ -f "$OUT/cases/06.app.txt" ]; then
     local full tail_ok

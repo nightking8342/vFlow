@@ -15,9 +15,11 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import java.io.File
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * [HookCapabilityRuntime] 的**整个执行运行时**单测。
@@ -37,6 +39,12 @@ import java.util.concurrent.TimeUnit
  * 正常 / 超时 / 异常 / 截断 / 池满 / 未知名。
  */
 class HookCapabilityRuntimeTest {
+
+    private companion object {
+        /** 被测运行时（源码扫描用；Gradle test 工作目录 = `app/`）。 */
+        const val RUNTIME_PATH =
+            "src/main/java/com/chaomixian/vflow/xposed/capabilities/HookCapabilityRuntime.kt"
+    }
 
     /** 收到的响应（已解码）。`Collections.synchronizedList` —— 工作线程会往里写。 */
     private val received = Collections.synchronizedList(mutableListOf<CapabilityResponse>())
@@ -83,11 +91,18 @@ class HookCapabilityRuntimeTest {
         HookCapabilityRegistry.resetForTest()
     }
 
-    /** 造一条能力请求（走真 codec 编码 ⇒ 顺便验了请求侧的解码路径）。 */
+    /**
+     * 造一条能力请求（走真 codec 编码 ⇒ 顺便验了请求侧的解码路径）。
+     *
+     * ⚠️ `timeoutMs` 是 **`Long?`** 而非非空 —— `null` ⇒ **不写 `timeout_ms` 键**
+     *（= 不超时，见 `encodeRequest`）。出队判过期那组用例需要构造
+     * 「不含该键」的请求来验「budget 为 null 时判据是 no-op」，
+     * 非空签名**编译不过**。
+     */
     private fun requestJson(
         capability: String,
         params: String = "{}",
-        timeoutMs: Long = 5_000L,
+        timeoutMs: Long? = 5_000L,
         requestId: String = "req-1",
         token: String = "tok",
     ): String = CapabilityInvocationCodec.encodeRequest(
@@ -569,8 +584,227 @@ class HookCapabilityRuntimeTest {
         }
     }
 
-    // ═══ 6 · 未知名 ═════════════════════════════════════════
+    // ═══ 5b · ★★ 出队判过期（hook 侧）═══════════════════════
+    //
+    // 需求：没有这一判据，「App 侧已判超时失败、脚本却仍在 system_server 里真的执行」
+    // 就会发生 —— 用户看到「超时失败」，副作用却已经发生（对 risk=HIGH 的
+    // `vflow.xposed.js` 不可接受）。
+    //
+    // ## ⚠️⚠️ 为什么这一格必须用**接缝直调**而不是「钉住 worker 让 B 排队」
+    //
+    // 当前池是 `ThreadPoolExecutor(core = max = 2, SynchronousQueue)` —— 队列**容量 0**。
+    // 钉住 2 个 worker 后，第 3 个提交在 `onInvoke` 就被 `RejectedExecutionException` 拒绝，
+    // **根本进不了 `runOnWorker`** ⇒ 断言会拿到 `handler_error`（池满）而**不是** `timeout`。
+    // 这是池结构使然，**调夹具救不回来**（真机与端到端单测是同一根因）。
+    //
+    // ⇒ 用 `runOnWorkerForTest` 直接喂一个**过去的** `arrivedAtMs` 精确制造该状态
+    //（确定性、无 sleep、无 latch、无 flaky）。
+    //
+    // ⚠️ 该接缝证明的只是「判据语义对」；「`onInvoke` 真的把 arrivedAtMs 传下去」由
+    // 后面源码扫描那条锁住 —— 两者缺一不可（本仓库反复踩过「纯函数全绿但集成点缺失」）。
 
+    /** 受控地直接跑一次工作线程体，返回记录调用次数的计数器。 */
+    private fun runSeam(
+        capability: String,
+        timeoutMs: Long?,
+        arrivedOffsetMs: Long,
+        handler: CapabilityHandler? = null,
+    ): AtomicInteger {
+        val calls = AtomicInteger(0)
+        val h = handler ?: FakeHandler(capability) {
+            calls.incrementAndGet()
+            CapabilityOutcome.Items(listOf(mapOf("ok" to true)))
+        }
+        HookCapabilityRegistry.register(h)
+        val rt = start()
+        val request = requireNotNull(
+            CapabilityInvocationCodec.decodeRequest(
+                requestJson(capability, timeoutMs = timeoutMs),
+            ),
+        ) { "自造请求解不开" }
+        rt.runOnWorkerForTest(
+            request = request,
+            handler = h,
+            arrivedAtMs = System.nanoTime() - arrivedOffsetMs * 1_000_000L,
+        )
+        return calls
+    }
+
+    @Test
+    fun `a request that expired while queued is not executed`() {
+        // ⚠️⚠️ **反证 #1 的落点**：删掉整个判过期块 ⇒ 本条变红（`calls` 会变成 1）。
+        //
+        // 排队 600ms，预算 200ms ⇒ 出队时判据必须命中。
+        val calls = runSeam(
+            capability = "queued",
+            timeoutMs = 200L,
+            arrivedOffsetMs = 600L,
+        )
+
+        // ★★ 核心：handler **从未被调用**（这正是「不执行」的意义）
+        assertEquals("❌ 排队已超预算却仍执行了 handler —— 副作用发生了", 0, calls.get())
+
+        val r = awaitResponse()
+        assertFalse("过期不是成功", r.ok)
+        assertEquals(CapabilityErrorCode.TIMEOUT, r.error?.code)
+        // 文案必须让用户知道**没有发生副作用**（区别于「执行超时」的「耗时 Nms 超过预算」）。
+        // ⚠️ 断言字面取 `queuedExpiredError` 的定稿文案（「在队列中等待」），
+        // 而不是「排队」—— 后者是同义口语，不在生产文案里。
+        assertTrue(
+            "detail 应说明是排队导致：${r.error?.detail}",
+            r.error!!.detail.contains("在队列中等待"),
+        )
+        assertTrue("detail 必须点明未执行：${r.error?.detail}", r.error!!.detail.contains("未执行"))
+        // elapsedMs 应回「等了多久」（不是 0）—— 调用方时间轴才有意义
+        assertTrue("elapsedMs 应为排队时长而非 0（实际 ${r.elapsedMs}）", r.elapsedMs >= 500L)
+    }
+
+    @Test
+    fun `a request still within the queue budget executes normally`() {
+        // 排队 50ms、预算 2000ms ⇒ 判据不该命中
+        val calls = runSeam(
+            capability = "fresh",
+            timeoutMs = 2_000L,
+            arrivedOffsetMs = 50L,
+        )
+
+        assertEquals("排队未超预算，handler 应正常执行", 1, calls.get())
+        assertTrue("正常路径应成功（error=${received.firstOrNull()?.error?.code}）", awaitResponse().ok)
+    }
+
+    @Test
+    fun `no budget means the queue wait never expires the request`() {
+        // ⚠️⚠️ **反向断言**：`budget == null`（不超时）⇒ 判据 **no-op**，
+        // **不许**因为等待时间长就丢弃。
+        //
+        // **反证 #2 的落点**：把判据写成 `if (queuedMs > (queuedBudget ?: 0L))`
+        // ⇒ 本条变红（等 3 秒 > 0 ⇒ 会被误丢弃）。
+        //
+        // ⚠️ 请求**不含 `timeout_ms` 键**（`timeoutMs = null`），走真 codec 编码 ⇒
+        // 键确实不写 ⇒ 解码后 `request.timeoutMs` 为 null。
+        val calls = runSeam(
+            capability = "nobudget",
+            timeoutMs = null,
+            arrivedOffsetMs = 3_000L,
+        )
+
+        assertEquals("budget 为 null 时判据必须 no-op（不因等待久而丢弃）", 1, calls.get())
+        assertTrue("应正常成功（error=${received.firstOrNull()?.error?.code}）", awaitResponse().ok)
+    }
+
+    @Test
+    fun `the queue expiry judgement is wired from onInvoke and runs before handler`() {
+        // ⚠️⚠️ **接线源码扫描**（形态照 `CoreDexFingerprintTest` / `CapabilityRuntimeWiringTest`）。
+        //
+        // 接缝级用例证明的是「判据语义对」，**证不了「`onInvoke` 真的把 arrivedAtMs 传下去了」**
+        // —— 接线若漏（例如改回两参数调用），接缝用例**照样全绿**。
+        // 这正是本仓库反复踩的形态（纯函数全绿但集成点缺失）。
+        //
+        // ⚠️ **必须剥注释后再断言** —— 本文件里到处是 `arrivedAtMs` / `runOnWorker` 字样
+        //（KDoc 与说明注释），只做 `contains` 的话「删掉代码保留注释」照样绿。
+        val code = codeOnly(source(RUNTIME_PATH))
+
+        val onInvokeBody = functionBody(code, "fun onInvoke(requestJson: String)")
+        assertTrue(
+            "onInvoke 必须在方法首行记 arrivedAtMs = System.nanoTime()（全链路最早的点）",
+            onInvokeBody.contains("val arrivedAtMs = System.nanoTime()"),
+        )
+        assertTrue(
+            "❌ 投递必须是**三参数**形态 runOnWorker(request, handler, arrivedAtMs) —— " +
+                "改回两参数会让接缝用例仍绿、而生产判据永远拿不到真实到达时刻",
+            onInvokeBody.contains("runOnWorker(request, handler, arrivedAtMs)"),
+        )
+
+        val workerBody = functionBody(code, "private fun runOnWorker(")
+        val judgeIndex = workerBody.indexOf("isTimedOut(queuedMs, queuedBudget)")
+        val handleIndex = workerBody.indexOf("handler.handle(request)")
+        assertTrue("runOnWorker 里应有出队判过期", judgeIndex >= 0)
+        assertTrue("runOnWorker 里应有 handler 调用", handleIndex >= 0)
+        assertTrue(
+            "❌ 判过期必须排在 handler.handle **之前** —— 放后面等于跑了脚本再判过期",
+            judgeIndex < handleIndex,
+        )
+        assertTrue(
+            "判过期命中后必须 return（绝不落到 handler.handle）",
+            workerBody.substring(judgeIndex, handleIndex).contains("return"),
+        )
+
+        // 防空转：剥注释后仍应有实质代码
+        val codeLines = code.lineSequence().count { it.isNotBlank() }
+        assertTrue("剥注释后代码行数异常（$codeLines），剥得太狠了", codeLines > 200)
+    }
+
+    @Test
+    fun `the pool exhausted path still reports handler_error not timeout`() {
+        // ⚠️ 本判据与**池满**是两条**独立**路径，本条锁住它们不互相污染：
+        // 池满在 `onInvoke` 的 `catch (RejectedExecutionException)` 就回错了，
+        // **根本没进 `runOnWorker`** ⇒ 无论判过期怎么改，池满都必须是 `handler_error`。
+        val gate = CountDownLatch(1)
+        val entered = CountDownLatch(1)
+        HookCapabilityRegistry.register(FakeHandler("blocker") {
+            entered.countDown()
+            gate.await(10, TimeUnit.SECONDS)
+            CapabilityOutcome.Items(emptyList())
+        })
+
+        val rt = start(poolSize = 1)
+        try {
+            rt.onInvoke(requestJson("blocker", requestId = "first"))
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+
+            rt.onInvoke(requestJson("blocker", requestId = "second", timeoutMs = 50L))
+            val r = awaitResponse()
+
+            assertEquals(CapabilityErrorCode.HANDLER_ERROR, r.error?.code)
+            assertTrue(
+                "池满的 detail 必须仍是「工作线程池已满」：${r.error?.detail}",
+                r.error!!.detail.contains("工作线程池已满"),
+            )
+            assertFalse(
+                "❌ 池满**不得**被出队判过期改写成 timeout —— 两者是不同排查方向",
+                r.error!!.detail.contains("未执行"),
+            )
+        } finally {
+            gate.countDown()
+        }
+    }
+
+    // ══ 源码扫描的辅助（形态照 CapabilityRuntimeWiringTest）══
+
+    private fun source(path: String): String {
+        val f = File(path)
+        assertTrue("找不到 $path（当前目录 ${File(".").absolutePath}）", f.exists())
+        return f.readText()
+    }
+
+    /** 剥掉块注释与行注释 —— 否则注释里的同名字样会让「删掉代码」照样绿。 */
+    private fun codeOnly(text: String): String {
+        val withoutBlock = text.replace(Regex("""/\*[\s\S]*?\*/"""), " ")
+        return withoutBlock.lineSequence().joinToString("\n") { it.substringBefore("//") }
+    }
+
+    /** 按大括号配对截取函数体（跳过字符串字面量不够、但本文件无相关用法）。 */
+    private fun functionBody(code: String, signatureFragment: String): String {
+        val start = code.indexOf(signatureFragment)
+        assertTrue("找不到函数：$signatureFragment", start >= 0)
+        val braceStart = code.indexOf('{', start)
+        assertTrue("函数 $signatureFragment 没有函数体", braceStart >= 0)
+        var depth = 0
+        var index = braceStart
+        while (index < code.length) {
+            when (code[index]) {
+                '{' -> depth++
+                '}' -> {
+                    depth--
+                    if (depth == 0) return code.substring(braceStart, index + 1)
+                }
+            }
+            index++
+        }
+        error("函数 $signatureFragment 的大括号不配对")
+    }
+
+    // ═══ 6 · 未知名 ═════════════════════════════════════════
     @Test
     fun `unknown capability name yields capability_absent naming the name`() {
         // ⚠️⚠️ **反证 #3 的另一个落点**：改成静默 return 后本条会「等不到响应」。
