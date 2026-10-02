@@ -1,5 +1,7 @@
 package com.chaomixian.vflow.ui.chat
 
+import com.chaomixian.vflow.core.execution.ExecutionState
+
 /**
  * 流式消息的**原位补丁**纯函数层（`chat-streaming-design.md` §4.4 / B4）。
  *
@@ -216,4 +218,178 @@ internal fun List<ChatConversation>.finalizeStreamingMessage(
     // 即便消息已被删除（applied=false），只要会话还在且要求置顶，也应重排。
     val ordered = if (patch.sortConversationToTop) updated.sortedByDescending { it.updatedAtMillis } else updated
     return StreamingFinalizeOutcome(conversations = ordered, applied = applied)
+}
+
+// ---------------------------------------------------------------------------
+// 临时工作流的失败可见性（`docs/fork/agent-debug-failure-visibility.md`）
+// ---------------------------------------------------------------------------
+
+/**
+ * 失败摘要的日志行前缀。
+ *
+ * ⚠️ 必须含 `E/` + tag，不能只找「模块执行失败」四个字 ——
+ * 错误消息**本身**可能包含这四个字，会产生误匹配。
+ */
+private const val FAILURE_LINE_PREFIX = "E/WorkflowExecutor: 模块执行失败: "
+
+/**
+ * SKIP 策略的**专属**日志行前缀（`WorkflowExecutor` 的 SKIP 分支）。
+ *
+ * ⚠️⚠️ **这是判定「有步骤被跳过」的唯一可靠锚点**，不能用失败行代替：
+ *
+ * `WorkflowExecutor` 的重试循环里 `finalResult` 每轮被重新赋值，任一次成功就 `break`，
+ * 最后的 `when` **只在最终结果上执行**。所以：
+ *
+ * | 场景 | `E/模块执行失败` | 结果 |
+ * |---|---|---|
+ * | 直接失败（STOP / RETRY 耗尽） | 会打 | 判失败 ✓ |
+ * | `RETRY` 重试 N 次后**成功** | **不会打** | — |
+ * | `RETRY` 途中抛异常（最终成功） | 每次尝试都打 `E/模块执行异常` | ⚠️ 日志有 E 行但执行正确 |
+ *
+ * ⇒ 若判据是「含 E 行」，最后一行会把**正确的执行误判成失败**。
+ * 而本行由 SKIP 分支自己打，**只在最终 Failure 且策略为 SKIP 时出现**。
+ */
+private const val SKIPPED_FAILURE_LINE_PREFIX = "W/WorkflowExecutor: 根据策略，跳过错误继续执行。"
+
+/** 日志行的时间戳前缀形如 `[14:12:22.657] `（见 `WorkflowExecutor.appendToLog`）。 */
+private val LOG_LINE_PATTERN = Regex("""^\[\d{2}:\d{2}:\d{2}\.\d{3}\] """)
+
+/**
+ * 把多行文本截到 [maxLength] 字符，超出时追加 `...` 提示。
+ *
+ * ⚠️ 取的是**开头**——所以调用方必须**先抽取、后截断**：
+ * 失败行写在执行末尾，先截断会让它落进被丢弃的部分（见 [buildTemporaryWorkflowOutputText]）。
+ *
+ * （原为 `ChatAgentModuleExecutor` 的私有方法，随失败可见性改造下移到本纯函数文件。）
+ */
+internal fun truncateMultiline(text: String, maxLength: Int = 4_000): String {
+    val normalized = text.trim()
+    return if (normalized.length > maxLength) {
+        normalized.take(maxLength) + "\n..."
+    } else {
+        normalized
+    }
+}
+
+/**
+ * 逐行找以 [prefix] 开头的日志行，返回**最后一条**的正文；没有则 null。
+ *
+ * ⚠️ **逐行扫描**，不要对整个文本做 `substringAfterLast` ——
+ * 堆栈回溯里出现同样前缀会误匹配。必须先剥掉行首的 `[时间] ` 再看前缀。
+ */
+private fun lastLogLineAfter(detailedLog: String, prefix: String): String? {
+    var found: String? = null
+    detailedLog.lineSequence().forEach { rawLine ->
+        val line = rawLine.removePrefix(LOG_LINE_PATTERN.find(rawLine)?.value.orEmpty()).trim()
+        if (line.startsWith(prefix)) {
+            found = line.removePrefix(prefix).trim()
+        }
+    }
+    // ⚠️ 这里**不能**加 `takeIf { it.isNotBlank() }` —— 前缀本身可能就是整行的全部内容
+    // （SKIP 标记行就是：`W/…根据策略，跳过错误继续执行。` 之后没有别的字），
+    // 加了会把「命中」误判成「没找到」。空与非空由调用方各自决定。
+    return found
+}
+
+/**
+ * 从执行日志里取失败摘要（最后一条 `E/模块执行失败`）；取不到返回 null。
+ *
+ * ⚠️ **必须传入【未截断】的 `detailedLog`**：日志是先截断到 4000 字符再拼进卡片的，
+ * 而失败行写在执行**末尾** —— 工作流越长越容易被截掉，届时本函数静默返回 null。
+ */
+internal fun extractFailureSummary(detailedLog: String): String? =
+    lastLogLineAfter(detailedLog, FAILURE_LINE_PREFIX)?.takeIf { it.isNotBlank() }
+
+/**
+ * 日志里是否存在 SKIP 专属行 —— 即「有步骤失败但按策略跳过了」。
+ *
+ * 判据理由见 [SKIPPED_FAILURE_LINE_PREFIX] 的注释。
+ */
+internal fun hasSkippedFailure(detailedLog: String): Boolean =
+    lastLogLineAfter(detailedLog, SKIPPED_FAILURE_LINE_PREFIX) != null
+
+/**
+ * 临时工作流的**终态 → 工具结果状态**。
+ *
+ * ⚠️⚠️ 不能只判 `Finished`：**`Finished` 只说明「跑完了」，不等于「没出错」**。
+ * 某步失败但策略为 `SKIP` 时工作流会继续跑完 ⇒ 终态 `Finished` ⇒
+ * 若直接映射成 `SUCCESS`，卡片和 Agent 会**同时**看到 `completed successfully.`，
+ * 而失败只在日志里。故此处额外查 SKIP 专属行。
+ */
+internal fun temporaryWorkflowStatus(terminalState: ExecutionState): ChatToolResultStatus =
+    when (terminalState) {
+        is ExecutionState.Finished ->
+            if (hasSkippedFailure(terminalState.detailedLog)) ChatToolResultStatus.ERROR
+            else ChatToolResultStatus.SUCCESS
+
+        else -> ChatToolResultStatus.ERROR
+    }
+
+/**
+ * 拼装临时工作流卡片 / 工具结果的正文。
+ *
+ * ⚠️ **返回值形状**：本函数与 [temporaryWorkflowStatus] 必须**成对**使用 ——
+ * 状态与正文要一起产出。若只抽状态而把正文构造留在别处，本函数里
+ * 「摘要提到最前」「`Execution log` 段保留」这些改动就会在重构中丢失，且**静默**
+ * （卡片仍显示 ERROR，只是没有详情）—— 与本次改造目的相反。
+ *
+ * ⚠️ [detailedLog] 必须是**未截断**的原始日志：摘要先从这里抽，再交给
+ * [truncateMultiline] 截断（先抽取、后截断）。
+ */
+internal fun buildTemporaryWorkflowOutputText(
+    workflowName: String,
+    stepDescriptions: List<String>,
+    terminalState: ExecutionState,
+    detailedLog: String,
+    maxSteps: Int = 30,
+): String {
+    // ⚠️ 用未截断的 detailedLog 提取，理由见函数注释
+    val failureSummary = extractFailureSummary(detailedLog)
+    val skippedFailure = terminalState is ExecutionState.Finished && hasSkippedFailure(detailedLog)
+
+    return buildString {
+        append(
+            when (terminalState) {
+                is ExecutionState.Finished -> if (skippedFailure) {
+                    "Temporary workflow `$workflowName` completed, but one or more steps failed and were skipped."
+                } else {
+                    "Temporary workflow `$workflowName` completed successfully."
+                }
+
+                is ExecutionState.Failure ->
+                    "Temporary workflow `$workflowName` failed at step ${terminalState.stepIndex + 1}."
+
+                is ExecutionState.Cancelled -> "Temporary workflow `$workflowName` was cancelled."
+                is ExecutionState.Running -> "Temporary workflow `$workflowName` is still running."
+            }
+        )
+
+        // 失败摘要提到步骤清单之前 —— 否则它会被埋在清单与日志之间，
+        // 而卡片默认只显示 6 行（`ToolMessageCard` 的 contentCollapsed 阈值）。
+        if (failureSummary != null) {
+            append("\n\n")
+            append(failureSummary)
+        }
+
+        append("\n\nSteps:\n")
+        stepDescriptions.take(maxSteps).forEachIndexed { index, description ->
+            append("- ")
+            append(index + 1)
+            append(". ")
+            append(description)
+            append("\n")
+        }
+        if (stepDescriptions.size > maxSteps) {
+            append("- ... ")
+            append(stepDescriptions.size - maxSteps)
+            append(" more steps\n")
+        }
+
+        val trimmedLog = detailedLog.trim()
+        if (trimmedLog.isNotBlank()) {
+            append("\nExecution log:\n")
+            append(truncateMultiline(trimmedLog))
+            append("\n")
+        }
+    }.trim()
 }

@@ -1991,6 +1991,12 @@ internal class ChatAgentModuleExecutor(
                 workflow = workflow.workflow,
                 context = appContext,
                 triggerStepId = workflow.workflow.manualTrigger()?.id,
+                // ⚠️ Agent 调试不弹错误弹窗：用户看的是聊天卡片，卡片与交给模型的
+                // 文本**同源**（`ChatScreen` / `ChatCompletionClient`），已完整承载失败详情。
+                // 而那个弹窗是 suspend 的、且排在终止状态广播之前 —— 用户不点它，
+                // `postState(Failure)` 就永远不执行，这条 `terminalState.await()` 只能等满
+                // 超时（`DEFAULT_TEMPORARY_WORKFLOW_MAX_SECONDS`），错误详情也拿不到。
+                showErrorDialog = false,
             )
             if (executionInstanceId.isBlank()) {
                 terminalState.cancel()
@@ -2762,49 +2768,20 @@ internal class ChatAgentModuleExecutor(
         workflow: ChatPreparedToolItem.TemporaryWorkflow,
         terminalState: ExecutionState,
     ): ChatToolResult {
-        val status = if (terminalState is ExecutionState.Finished) {
-            ChatToolResultStatus.SUCCESS
-        } else {
-            ChatToolResultStatus.ERROR
+        val stepDescriptions = workflow.preparedSteps.map { readyStep ->
+            "${readyStep.definition.title} (${readyStep.step.moduleId})"
         }
         return ChatToolResult(
             callId = workflow.toolCall.id,
             name = workflow.toolCall.name,
-            status = status,
+            status = temporaryWorkflowStatus(terminalState),
             summary = workflow.definition.title,
-            outputText = buildString {
-                append(
-                    when (terminalState) {
-                        is ExecutionState.Finished -> "Temporary workflow `${workflow.workflow.name}` completed successfully."
-                        is ExecutionState.Failure -> "Temporary workflow `${workflow.workflow.name}` failed at step ${terminalState.stepIndex + 1}."
-                        is ExecutionState.Cancelled -> "Temporary workflow `${workflow.workflow.name}` was cancelled."
-                        is ExecutionState.Running -> "Temporary workflow `${workflow.workflow.name}` is still running."
-                    }
-                )
-                append("\n\nSteps:\n")
-                workflow.preparedSteps.take(30).forEachIndexed { index, readyStep ->
-                    append("- ")
-                    append(index + 1)
-                    append(". ")
-                    append(readyStep.definition.title)
-                    append(" (")
-                    append(readyStep.step.moduleId)
-                    append(")")
-                    append("\n")
-                }
-                if (workflow.preparedSteps.size > 30) {
-                    append("- ... ")
-                    append(workflow.preparedSteps.size - 30)
-                    append(" more steps\n")
-                }
-
-                val detailedLog = terminalState.detailedLogOrEmpty().trim()
-                if (detailedLog.isNotBlank()) {
-                    append("\nExecution log:\n")
-                    append(truncateMultiline(detailedLog))
-                    append("\n")
-                }
-            }.trim(),
+            outputText = buildTemporaryWorkflowOutputText(
+                workflowName = workflow.workflow.name,
+                stepDescriptions = stepDescriptions,
+                terminalState = terminalState,
+                detailedLog = terminalState.detailedLogOrEmpty(),
+            ),
         )
     }
 
@@ -2855,15 +2832,6 @@ internal class ChatAgentModuleExecutor(
         val normalized = text.replace('\n', ' ').trim()
         return if (normalized.length > maxLength) {
             normalized.take(maxLength) + "..."
-        } else {
-            normalized
-        }
-    }
-
-    private fun truncateMultiline(text: String, maxLength: Int = 4_000): String {
-        val normalized = text.trim()
-        return if (normalized.length > maxLength) {
-            normalized.take(maxLength) + "\n..."
         } else {
             normalized
         }

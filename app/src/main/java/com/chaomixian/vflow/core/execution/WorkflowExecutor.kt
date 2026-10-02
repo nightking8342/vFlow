@@ -129,12 +129,29 @@ object WorkflowExecutor {
      * @param workflow 要执行的工作流。
      * @param context Android 上下文。
      * @param triggerData (可选) 触发器传入的外部数据。
+     * @param showErrorDialog 失败时是否弹阻塞式错误弹窗。
+     *        ⚠️ **默认 true = 保持既有行为**，只有 Agent 调试（Chat 面板跑临时工作流）传 false。
+     *
+     *        **为什么 Agent 场景要关掉**：那个弹窗是 suspend 的，且排在
+     *        `ExecutionStateBus.postState(Failure)` **之前**（见失败分支的实现）——
+     *        用户不点它，终止状态就永远不广播，协程的 `finally`（WakeLock 释放、
+     *        工作目录清理、工作流摘除）也永不执行。
+     *
+     *        而 Agent 调试时用户在看聊天卡片，卡片渲染的 `message.content`
+     *        与交给模型的文本**同源**（`ChatScreen.kt` / `ChatCompletionClient.kt`），
+     *        已完整承载失败详情 ⇒ 弹窗是重复报告，还盖在卡片上。
+     *
+     *        ⚠️ 识别方式刻意用**调用参数**而不是给 [Workflow] 加字段：
+     *        「这次执行是不是 Agent 发起的」是**某一次调用**的属性，不是工作流的属性。
+     *        加字段的话，`buildWorkflowForSave`（Agent 的「存为工作流」）有泄漏风险 ——
+     *        用户保存后的正式工作流会**从此不再弹错误弹窗**且无任何提示。
      */
     fun execute(
         workflow: Workflow,
         context: Context,
         triggerData: Parcelable? = null,
-        triggerStepId: String? = null
+        triggerStepId: String? = null,
+        showErrorDialog: Boolean = true,
     ): String {
         when (workflow.reentryBehavior) {
             WorkflowReentryBehavior.BLOCK_NEW -> {
@@ -230,7 +247,12 @@ object WorkflowExecutor {
                         try {
                             withTimeout(maxExecutionTime * 1000L) {
                                 seedTriggerOutputs(workflow, initialContext, triggerStepId)
-                                executeWorkflowInternal(workflow, initialContext, executionInstanceId)
+                                executeWorkflowInternal(
+                                    workflow,
+                                    initialContext,
+                                    executionInstanceId,
+                                    showErrorDialog = showErrorDialog,
+                                )
                             }
                         } catch (e: TimeoutCancellationException) {
                             DebugLogger.e("WorkflowExecutor", "工作流执行超时（最大 ${maxExecutionTime} 秒）")
@@ -252,7 +274,12 @@ object WorkflowExecutor {
                         }
                     } else {
                         seedTriggerOutputs(workflow, initialContext, triggerStepId)
-                        executeWorkflowInternal(workflow, initialContext, executionInstanceId)
+                        executeWorkflowInternal(
+                            workflow,
+                            initialContext,
+                            executionInstanceId,
+                            showErrorDialog = showErrorDialog,
+                        )
                     }
 
                     if (!isTimeout) {
@@ -437,6 +464,11 @@ object WorkflowExecutor {
      * @param workflow 要执行的工作流。
      * @param initialContext 初始执行上下文。
      * @param executionInstanceId 本次执行的实例 ID。
+     * @param showErrorDialog 失败时是否弹阻塞式错误弹窗，见 [execute] 的同名参数。
+     *        ⚠️ **带默认值 true 是必需的**：本方法有 **3 个**调用点
+     *        （`execute()` 的超时分支与普通分支、以及 `executeSubWorkflow()`），
+     *        默认值让第 3 处（子工作流）无需改动即保持旧行为。
+     *        子工作流是「被调方」，它的弹窗归属应继承调用方。
      * @param isSubWorkflow 是否是「被其它工作流通过调用模块唤起」的子工作流。
      *        子工作流不发通知——通知只反映用户实际触发的那个工作流，内部调用了谁
      *        属于实现细节。且子工作流的执行收尾在主工作流的 finally 之外，
@@ -447,6 +479,7 @@ object WorkflowExecutor {
         workflow: Workflow,
         initialContext: ExecutionContext,
         executionInstanceId: String,
+        showErrorDialog: Boolean = true,
         isSubWorkflow: Boolean = false
     ): Any? {
         val stepOutputs = initialContext.stepOutputs.toMutableMap()
@@ -684,23 +717,31 @@ object WorkflowExecutor {
 
                         // 尝试获取 UI 服务并显示错误弹窗
                         // 仅当应用在前台或有悬浮窗权限时，弹窗才会显示（由 ExecutionUIService 处理）
-                        try {
-                            val localizedAppContext = LocaleManager.applyLanguage(
-                                initialContext.applicationContext,
-                                LocaleManager.getLanguage(initialContext.applicationContext)
-                            )
-                            val uiService = initialContext.services.get(ExecutionUIService::class)
-                            uiService?.showError(
-                                workflowName = workflow.name,
-                                moduleName = localizedAppContext.getString(
-                                    R.string.execution_error_step_module_name,
-                                    pc + 1,
-                                    module.metadata.getLocalizedName(localizedAppContext)
-                                ),
-                                errorMessage = result.errorMessage
-                            )
-                        } catch (e: Exception) {
-                            DebugLogger.e("WorkflowExecutor", "显示错误弹窗失败", e)
+                        //
+                        // ⚠️ Agent 调试（`showErrorDialog = false`）时整段跳过。这不是优化，
+                        // 是**正确性**要求：`showError` 是 suspend 的，且下面几行才广播终止状态。
+                        // 用户不点弹窗 ⇒ `postState(Failure)` 永不执行 ⇒ Agent 那条 `await`
+                        // 收不到终态、本协程的 `finally`（WakeLock / 工作目录 / 摘除登记）也不执行。
+                        // 而 Agent 场景下用户看的是聊天卡片，卡片已完整承载失败详情，弹窗纯属重复。
+                        if (showErrorDialog) {
+                            try {
+                                val localizedAppContext = LocaleManager.applyLanguage(
+                                    initialContext.applicationContext,
+                                    LocaleManager.getLanguage(initialContext.applicationContext)
+                                )
+                                val uiService = initialContext.services.get(ExecutionUIService::class)
+                                uiService?.showError(
+                                    workflowName = workflow.name,
+                                    moduleName = localizedAppContext.getString(
+                                        R.string.execution_error_step_module_name,
+                                        pc + 1,
+                                        module.metadata.getLocalizedName(localizedAppContext)
+                                    ),
+                                    errorMessage = result.errorMessage
+                                )
+                            } catch (e: Exception) {
+                                DebugLogger.e("WorkflowExecutor", "显示错误弹窗失败", e)
+                            }
                         }
 
                         // 获取完整日志并广播失败状态
