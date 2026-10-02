@@ -261,6 +261,23 @@ class InvokePolicyTest {
     }
 
     @Test
+    fun `queuedExpiredErrorIsTimeout`() {
+        // ⚠️⚠️ 出队判过期的失败必须归 `TIMEOUT`（**不新增第六个码**）——
+        // 用户侧被告知的本来就是「超时」，而枚举有「每码映射一个用户动作」的硬约束。
+        val e = InvokePolicy.queuedExpiredError(2_350L, 2_000L)
+        assertEquals(CapabilityErrorCode.TIMEOUT, e.code)
+
+        // 两个数字都要出现：用户据此判断「是排队排太久」而不是「脚本算得慢」
+        assertTrue("detail 应含排队时长：${e.detail}", e.detail.contains("2350"))
+        assertTrue("detail 应含预算：${e.detail}", e.detail.contains("2000"))
+
+        // ★★ 关键信息：告诉用户**没有发生副作用**。
+        // 这正是它不能复用 `timeoutError`（文案「耗时 Nms 超过预算」）的原因——
+        // 那种文案会让人以为脚本执行了很久，去查「脚本为什么这么慢」。
+        assertTrue("detail 必须点明未执行：${e.detail}", e.detail.contains("未执行"))
+    }
+
+    @Test
     fun `everyErrorConstructorReturnsDetailWithinTheLimit`() {
         // 体检：所有错误构造函数的 detail 都落在上限内（否则一条错误响应能撑爆 binder 缓冲）
         val errors = listOf(
@@ -268,6 +285,8 @@ class InvokePolicyTest {
             InvokePolicy.poolExhaustedError(2),
             InvokePolicy.runtimeStoppedError(),
             InvokePolicy.timeoutError(1, 2),
+            // ⚠️ 新构造必须进这份体检 —— 漏掉它会让「新增的错误构造超限」无人拦
+            InvokePolicy.queuedExpiredError(2_350L, 2_000L),
             InvokePolicy.payloadTooLargeError(1, 2),
             InvokePolicy.throwableToError(IllegalStateException("y".repeat(2_000))),
         )

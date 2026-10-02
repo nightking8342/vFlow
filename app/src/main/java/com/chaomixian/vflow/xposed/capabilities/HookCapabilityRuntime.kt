@@ -248,6 +248,16 @@ class HookCapabilityRuntime(
      * 本方法会被单测直接调用，而且双重防护在 system_server 里不算冗余。
      */
     fun onInvoke(requestJson: String) {
+        // ★★ 全链路**最早**的点：请求刚抵达 binder 线程。
+        // 工作线程用它算「排队等了多久」（见 [runOnWorker] 的出队判过期）。
+        //
+        // ⚠️ 是**局部变量**，随 `pool.execute { … }` 的闭包传给工作线程 ——
+        // 不加字段、不改 `CapabilityRequest`（那是跨进程 codec 类，加字段 = 改协议）、
+        // 不跨进程：到达时刻是 **hook 侧进程内**的事实。
+        //
+        // ⚠️ 取在 `try` **之外**：即使后面解码失败需要早退，取值本身也无副作用
+        //（`nanoTime` 不抛）。反过来放在 try 里会让「早退路径没有它」看起来像个缺口。
+        val arrivedAtMs = System.nanoTime()
         try {
             val request = try {
                 CapabilityInvocationCodec.decodeRequest(requestJson)
@@ -295,7 +305,7 @@ class HookCapabilityRuntime(
             }
 
             try {
-                pool.execute { runOnWorker(request, handler) }
+                pool.execute { runOnWorker(request, handler, arrivedAtMs) }
             } catch (_: RejectedExecutionException) {
                 // ⚠️⚠️ 两道拒绝对应两种成因，`detail` **必须不同**
                 //（否则排查方向会错 —— 见 InvokePolicy 的两个构造函数注释）
@@ -324,9 +334,66 @@ class HookCapabilityRuntime(
      * ⚠️ 这里是**最容易被漏掉**的一处：`BinderTransport.invoke` 的 `try/catch`
      * 只护住 binder 线程那一段，投出去的 Runnable 在**另一个线程**上跑，
      * 它抛出的异常**不会**被那里的 catch 看到 —— 会直接成为该线程的未捕获异常。
+     *
+     * @param arrivedAtMs 请求抵达 binder 线程的时刻（`System.nanoTime()`，由 [onInvoke] 传入），
+     *   用于出队时判定「排队是否已吃满预算」。
      */
-    private fun runOnWorker(request: CapabilityRequest, handler: CapabilityHandler) {
+    private fun runOnWorker(
+        request: CapabilityRequest,
+        handler: CapabilityHandler,
+        arrivedAtMs: Long,
+    ) {
         try {
+            // ── ★★ 出队判过期（必须在 handler.handle 之前，且在此之前不做任何别的活）──
+            //
+            // ## ⚠️⚠️ 没有它，「超时 + 队列」= 一个**假的失败提示**
+            //
+            // ```
+            // T+5s    App 侧超时 → 用户看到「失败」，而任务【还在队列里】
+            // T+30s   出队、执行 → 脚本真的跑了（改系统状态 / 开广播 / 开窗口）
+            // ```
+            // ⇒ 用户看到「超时失败」，**副作用却已经发生**。
+            //
+            // ## ⚠️ 为什么必须在 `handler.handle` **之前**、且是这里第一件事
+            //
+            // 判据的意义就是「**不执行**」——放在后面等于跑了脚本再判过期，
+            // 白付了副作用。而「不做别的活」是为了让它在**每个**出队请求上都
+            // 最先发生（附带收益：塞满过期请求的队列会被快速抽干，每个 worker
+            // 弹出、立即 return）。
+            //
+            // ## ⚠️ `queuedBudget == null`（不超时）时本判据是 **no-op**
+            //
+            // 由 [InvokePolicy.isTimedOut] 保证（`budgetMs == null` ⇒ 恒 false）——
+            // **不因等待久而丢弃**。这是契约，不是巧合：不能拿 `queuedBudget ?: 0L` 兜底，
+            // 那会让「不超时」退化成「等 0ms 就过期」。**不加任何 `?: 5000` 回落**。
+            //
+            // ⚠️ 命名刻意与下面在途判定的 `budget` 区分（两者同值同源，但分属
+            // 「排队期」与「执行期」两个判据）；同名还会在同一作用域里**编译冲突**。
+            val queuedMs = (System.nanoTime() - arrivedAtMs) / 1_000_000L
+            val queuedBudget = InvokePolicy.effectiveTimeoutMs(request.timeoutMs, handler.timeoutMs)
+            if (InvokePolicy.isTimedOut(queuedMs, queuedBudget)) {
+                HookLog.e(
+                    "$TAG  排队已超预算：${request.capability}" +
+                        "（queuedMs=$queuedMs > budget=$queuedBudget）→ 不执行" +
+                        "（request_id=${request.requestId}）",
+                )
+                // ⚠️ `queuedBudget ?: 0L`：只在 `isTimedOut` 已判真（即它 != null）时求值，
+                // 故安全。别为它再加别的回落 —— 那会把预算语义改掉。
+                // ⚠️ `elapsedMs` 传 `queuedMs`：让 App 侧看到「它等了多久」而不是 0
+                //（调用方的时间轴才有意义）。
+                emitFailure(
+                    request,
+                    InvokePolicy.queuedExpiredError(queuedMs, queuedBudget ?: 0L),
+                    queuedMs,
+                )
+                // ★★ 绝不调用 `handler.handle` —— 这是本判据的全部意义
+                return
+            }
+
+            // ── 以下与原实现逐字一致 ──
+
+            // ⚠️ `started` **保持在原位不动**（判过期之后）⇒ 在途执行的超时仍只量
+            // 「执行时长」，不量排队 —— 两者是两个不同的判据（见 §3.3 的两侧口径讨论）。
             val started = System.nanoTime()
 
             var outcome: CapabilityOutcome? = null
@@ -666,6 +733,31 @@ class HookCapabilityRuntime(
 
     /** 仅供测试：池是否已停止。 */
     internal fun isStoppedForTest(): Boolean = stopped
+
+    /**
+     * 仅供测试：以**受控的 [arrivedAtMs]** 直接执行一次工作线程体。
+     *
+     * ## ⚠️⚠️ 存在的唯一理由：那一格经真实池**物理不可达**
+     *
+     * 当前池是 `ThreadPoolExecutor(core = max = [DEFAULT_POOL_SIZE], SynchronousQueue)`
+     * —— 队列**容量 0** ⇒ 第 3 个并发提交在 [onInvoke] 的
+     * `catch (RejectedExecutionException)` 就被拒，**根本进不了 [runOnWorker]**。
+     *
+     * ⇒ 「出队时已过期」这个状态**既无法在真机复现、也无法经真实池在单测复现**
+     *（同一根因）。本接缝直接喂一个**过去的时刻**制造该状态，
+     * 使判据可被**确定性**断言（无 sleep、无 latch、无 flaky）。
+     *
+     * ⚠️ 形态照本类既有的 [activeWorkerCount] / [isStoppedForTest]（都是
+     * `internal` + `ForTest` 后缀）。
+     *
+     * ⚠️ 它**不改变任何生产行为** —— 只是把已有的 private 方法以受控入参暴露给测试。
+     * 真正生效要等池换成会排队的形态（`Dispatchers.IO` 的 64 并发信号量）。
+     */
+    internal fun runOnWorkerForTest(
+        request: CapabilityRequest,
+        handler: CapabilityHandler,
+        arrivedAtMs: Long,
+    ) = runOnWorker(request, handler, arrivedAtMs)
 }
 
 /**

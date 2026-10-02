@@ -50,7 +50,19 @@ interface CapabilityHandler {
 
     /**
      * §5.2：本 capability 的超时。
-     * `null` ⇒ 用请求里的 `timeout_ms`（执行运行时会取两者的 **min**）。
+     * `null` ⇒ 用请求里的 `timeout_ms`（执行运行时会取两者的 **min**，
+     * 且**请求侧为 null 时不超时** —— 见 `InvokePolicy.effectiveTimeoutMs`）。
+     *
+     * ## ⚠️ 这一个值**同时**用于两处判定（别以为它只影响其一）
+     *
+     * | 判定 | 位置 | 量的是什么 |
+     * |---|---|---|
+     * | **出队期** | `HookCapabilityRuntime.runOnWorker` 首行 | 请求**在队列里等了多久** —— 超了则**不执行** |
+     * | **执行期** | 同上，`handler.handle` 返回后 | handler **跑了多久** —— 超了则结果作废、回 `timeout` |
+     *
+     * 两处都用 `InvokePolicy.effectiveTimeoutMs(request.timeoutMs, this)`，
+     * 且都是 `isTimedOut`（**严格大于**）。⇒ 声明一个值就等于给
+     * 「排队 + 执行」的**总时长**设了上限，不是只给执行。
      */
     val timeoutMs: Long? get() = null
 

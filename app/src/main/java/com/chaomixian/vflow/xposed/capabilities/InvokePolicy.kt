@@ -408,6 +408,49 @@ object InvokePolicy {
     )
 
     /**
+     * **出队时**已超预算（**从未执行过**）→ `timeout`。
+     *
+     * 由 [HookCapabilityRuntime.runOnWorker] 在**出队后第一件事**判定：
+     * 请求在队列里等待的时间已经吃满了预算 ⇒ 直接回失败，**绝不调用 handler**。
+     *
+     * ## ⚠️⚠️ 没有这个判据会发生什么（本函数存在的全部理由）
+     *
+     * ```
+     * T+0     App 提交，App 侧超时开始计时
+     * T+0s    入队（前面还有别的请求在跑）
+     * T+5s    App 侧超时 → 工作流按错误策略继续/终止（用户看到「失败」）
+     *         而那个任务【还在队列里】
+     * T+30s   出队、执行 → 脚本真的跑了（改系统状态 / 开广播 / 开窗口）
+     * T+30s+  结果回来 → App 侧无配对 waiter → 丢弃
+     * ```
+     *
+     * ⇒ **用户看到「超时失败」，副作用却已经发生。** 对 `risk = HIGH` 的
+     * `vflow.xposed.js` 不可接受。
+     *
+     * ## ⚠️ 为什么不复用 [timeoutError]
+     *
+     * 两者 `code` 相同（都是 `TIMEOUT`），但**文案必须不同**：
+     *
+     * | | 文案 | 问题 |
+     * |---|---|---|
+     * | [timeoutError] | 「耗时 Nms 超过预算」 | 本情形**耗时是 0、脚本根本没跑** ⇒ 会把排查引向「脚本为什么这么慢」 |
+     * | **本函数** | 「等待 Nms…**因此未执行**」 | 直接告诉用户**没有发生副作用**（这正是本判据要给的信息） |
+     *
+     * ⚠️ **不新增错误码** —— `CapabilityErrorCode` 是五值枚举，有「每个码可映射到
+     * 一个用户动作」的硬约束（见 `CapabilityErrorCode`）。这边 `timeout` 语义本就正确：
+     * 用户侧被告知的就是「超时」。
+     *
+     * @param queuedMs 出队时刻减到达时刻 = 在队列里等了多久
+     * @param budgetMs 有效预算（由 [effectiveTimeoutMs] 算出，调用点已确保非 null）
+     */
+    fun queuedExpiredError(queuedMs: Long, budgetMs: Long): CapabilityError = sanitize(
+        CapabilityError(
+            code = CapabilityErrorCode.TIMEOUT,
+            detail = "执行超时：请求在队列中等待 ${queuedMs}ms，已超过预算 ${budgetMs}ms，因此未执行。",
+        ),
+    )
+
+    /**
      * 载荷超上限 → `payload_too_large`。
      *
      * ⚠️ **不是用户能处理的失败** —— 正常路径下**不该出现这个码**
