@@ -243,7 +243,8 @@ class BinderTransport(
          *
          * ⚠️ **执行已接入**：`invokeSink` 由 `VFlowHookEntry` 注入为
          * `HookCapabilityRuntime.onInvoke`，那里只做「解码 + 校验 + 查注册表 + 投递」，
-         * handler 在工作线程上跑（有界池，容量 2）。
+         * handler 在**按 `thread_mode` 选出的那一档**上跑
+         * （`Dispatchers.Default` / `Dispatchers.IO` / 自建 `HandlerThread`）。
          *
          * ⚠️ [respondUnimplemented] **保留**为「executor 未注入」时的降级路径
          * （例如 `startChannel` 中途失败、或将来有人只装配了部分运行时）。

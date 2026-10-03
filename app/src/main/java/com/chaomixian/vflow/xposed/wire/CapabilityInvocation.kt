@@ -55,6 +55,13 @@ object CapabilityInvocationCodec {
     const val KEY_NEXT_CURSOR = "next_cursor"
     const val KEY_TRUNCATED = "truncated"
 
+    /**
+     * 执行模式（`default` / `io` / `ui`）。⚠️ 跨进程协议的一部分，**一经发布不要改**。
+     *
+     * ⚠️ 键值不在这里归一（`"xxx"` 不会被改写成 `"default"`）—— 见 [encodeRequest] 的说明。
+     */
+    const val KEY_THREAD_MODE = "thread_mode"
+
     /** 缺省超时（§5.1 的默认值）。逐 capability 可覆盖（`Capability.timeoutMs`）。 */
     const val DEFAULT_TIMEOUT_MS = 5_000L
 
@@ -75,6 +82,12 @@ object CapabilityInvocationCodec {
      *   被 `isTimedOut` 判成恒真 ⇒ **每次调用立刻回 timeout**。
      *   用「键缺失」还有第二个好处：**旧 hook 层**（不认识这个语义）收到缺失会
      *   回落到它自己的默认值 ⇒ 安全降级，不会出现「新 App 让旧 hook 层永久挂起」。
+     * @param threadMode 执行模式（[ThreadModes] 里的三个值）。`null` / 空白 ⇒
+     *   **不写这个键 = 未指定**（照 `cursor` 的既有约定）。
+     *   ⚠️⚠️ **本函数刻意不做归一**（不把 `"xxx"` 改写成 `"default"`）：
+     *   这一层只回答「写不写这个键」，归一是 [ThreadModes.normalize] 的职责。
+     *   若在这里也归一，「发出去的值」与「调用方给的值」不再相等，
+     *   round-trip 断言就失去意义（它测不出归一是否覆盖了所有未知名）。
      */
     fun encodeRequest(
         requestId: String,
@@ -82,6 +95,7 @@ object CapabilityInvocationCodec {
         paramsJson: String = "{}",
         timeoutMs: Long? = DEFAULT_TIMEOUT_MS,
         cursor: String? = null,
+        threadMode: String? = null,
         token: String = "",
         protocolVersion: Int = EventEnvelopeCodec.PROTOCOL_VERSION,
     ): String {
@@ -106,6 +120,12 @@ object CapabilityInvocationCodec {
         // 「空串游标」与「没有游标」两种实为同义的情形。
         if (!cursor.isNullOrBlank()) {
             obj.put(KEY_CURSOR, cursor)
+        }
+
+        // ⚠️ 同 `cursor`：未指定时**不写这个键**，而不是写 null。
+        // 旧 hook 层收到含本键的请求只会 `optString` 忽略它，行为与改动前逐字相同。
+        if (!threadMode.isNullOrBlank()) {
+            obj.put(KEY_THREAD_MODE, threadMode)
         }
 
         return obj.toString()
@@ -221,6 +241,27 @@ object CapabilityInvocationCodec {
             // 而空串与 null 在分页语义里是**两回事**（前者是「一个空的游标」，
             // 后者是「没有游标」）。归一成 null 让调用方只需判一种情形。
             cursor = obj.optString(KEY_CURSOR).takeIf { it.isNotBlank() },
+            // ⚠️⚠️ 缺失 / 空白 / **无法识别的值** 一律归一成 `null`，**不抛异常**
+            //（本函数跑在 system_server 侧，抛异常会危及整机 —— 见上方类注释）。
+            //
+            // ## 为什么「缺失」是 `null` 而不是 `"default"`
+            //
+            // 让「旧端没写」与「新端写了 default」在解码层**可区分**，
+            // 与 `cursor` / 分页三键同一约定。`default` 的语义只在
+            // [ThreadModes.normalize] / `InvokePolicy.threadModeOf` 兜住 ——
+            // 那里对 `null` 的处理就是回落 `default`，故行为不变，
+            // 但解码结果多携带了一个信息位（「没指定」≠「指定了默认」）。
+            //
+            // ## 为什么未知名也解成 `null`（而不是原样透传字符串）
+            //
+            // 为 `CapabilityRequest.threadMode` 保住一个不变量：
+            // **要么是 `null`，要么是 [ThreadModes.KNOWN] 里的三个值之一**。
+            // 原样透传会让本字段可能持有垃圾值，下游每个消费者都得自己再判一次。
+            //
+            // ⚠️ 这**不是**「未知值报错」—— 它是硬约束 1 在解码侧的落实：
+            // 未知 ⇒ `null` ⇒ 下游 `normalize` 回 `default`，全程无异常。
+            threadMode = obj.optString(KEY_THREAD_MODE)
+                .takeIf { it.isNotBlank() && it in ThreadModes.KNOWN },
             token = obj.optString(KEY_TOKEN),
         )
     }
@@ -313,6 +354,16 @@ data class CapabilityRequest(
      */
     val timeoutMs: Long? = null,
     val cursor: String? = null,
+    /**
+     * 执行模式（`default` / `io` / `ui`）。`null` ⇒ 未指定（等同 [ThreadModes.DEFAULT]）。
+     *
+     * ⚠️ 与 [cursor] 同类：信封层只**搬运**它，不解释它的业务含义。
+     *
+     * ⚠️ 不变量：本字段要么是 `null`，要么是 [ThreadModes.KNOWN] 里的三个值之一 ——
+     * 由 [CapabilityInvocationCodec.decodeRequest] 保证（无法识别的值解成 `null`）。
+     * ⇒ 消费者不必自己防垃圾值，判「未知」只需判 `null`。
+     */
+    val threadMode: String? = null,
     val token: String,
 )
 

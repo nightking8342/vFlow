@@ -1,5 +1,7 @@
 package com.chaomixian.vflow.xposed.capabilities
 
+import android.os.Handler
+import android.os.HandlerThread
 import com.chaomixian.vflow.xposed.HookLog
 import com.chaomixian.vflow.xposed.wire.Budgeted
 import com.chaomixian.vflow.xposed.wire.CapabilityError
@@ -8,12 +10,17 @@ import com.chaomixian.vflow.xposed.wire.CapabilityManifest
 import com.chaomixian.vflow.xposed.wire.CapabilityRequest
 import com.chaomixian.vflow.xposed.wire.EventEnvelopeCodec
 import com.chaomixian.vflow.xposed.wire.ResultBudget
-import java.util.concurrent.RejectedExecutionException
-import java.util.concurrent.SynchronousQueue
-import java.util.concurrent.ThreadFactory
-import java.util.concurrent.ThreadPoolExecutor
-import java.util.concurrent.TimeUnit
+import com.chaomixian.vflow.xposed.wire.ThreadModes
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineName
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.android.asCoroutineDispatcher
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.coroutines.CoroutineContext
 
 /**
  * ③（能力调用）的 **hook 侧执行运行时** —— 在 system_server 里安全地执行 capability。
@@ -34,23 +41,37 @@ import java.util.concurrent.atomic.AtomicInteger
  * | **工作线程**（[runOnWorker]） | 执行 handler + 超时判定 + 截断 | 让异常逃逸 |
  * | 回响应的出口（构造参数 `respond`） | 交给对端（`IHookHost.resolve`） | 自己编信封（那是 codec 的活） |
  *
- * ## 自建有界线程池（**必须是我们自己创建的**）
+ * ## ⚠️⚠️ 执行器：**三档协程 dispatcher**（2026-10-03 替换了自建有界池）
  *
- * ⚠️ 不借 system_server 的线程池（`ForkJoinPool.commonPool` / `AsyncTask`）：
- * 容量不可控、且与系统自身任务共享 —— 把它占满会拖慢系统本身。
+ * 请求里的 `thread_mode` 决定用哪一档（见 [ThreadModes]），未知一律回落 `default`：
  *
- * ## ⚠️⚠️ 为什么用 `SynchronousQueue`（容量 0）而不是有界队列
+ * | 档 | dispatcher | 「满」时怎么办 | 用户选它的理由 |
+ * |---|---|---|---|
+ * | `default` | `Dispatchers.Default` | **弹性建线程**（不排队） | 我是**算**的（CPU 密集） |
+ * | `io` | `Dispatchers.IO` | **排队**（64 并发上限） | 我是**等**的（阻塞调用） |
+ * | `ui` | 自建 `HandlerThread`（容量 1） | **无界排队** ⇒ 本类加了安全阀 | 我**需要 Looper** |
  *
- * 需求与 §3.4 的定案都是「池满**立即**回 error」。
+ * ⚠️⚠️ **三档的「满」行为【不同】，且这是有意的** —— 它们的容量来自库与 `Looper` 的
+ * 物理常量，**不是取舍**（设计文档 §1.4 末表）。**不要试图统一它们。**
  *
- * 用有界队列会让「排队中」变成**第三种状态** —— 它既不阻塞 binder 线程（算合规），
- * 又**把池满伪装成超时**：调用方等不到结果，最后看到的是 `timeout`。
- * 而 `CapabilityErrorCode.kt:68-87` 恰恰花了一整段论证
- * 「池满与超时是**两个不同的排查方向**」（前者该「降并发/重试」，
- * 后者该「报告问题，可能真的慢」）。
+ * ## ⚠️ 为什么不再自建 `ThreadPoolExecutor`
  *
- * ⇒ 容量 0 让这两种情况在语义上真正分开。代价是池满时不做等待重试 ——
- * 那是**有意**的：宁可让调用方立刻知道，也不要让它等一个不确定的时间。
+ * 旧的「容量 2 + `SynchronousQueue`（不排队、满即拒）」只能表达**一种**执行环境，
+ * 而用户的需求有三种（算 / 等 / 需要 Looper）。三档分别对应三种资源画像，
+ * 自建池得建三个 —— 而那正是 `xposed-thread-modes-design.md` §1.3 被否决的方案
+ *（协程库与 `HandlerThread` 已经把这三件事做好了，且它们的容量是既定事实而非拍的）。
+ *
+ * ⚠️ **ShortX 同样不自建池**（一行 `ThreadPoolExecutor` 都没有）—— 外部旁证。
+ *
+ * ## ⚠️⚠️ 两档新增的失败模式（本替换**主动引入**的，必须知道）
+ *
+ * 1. **`ui` 档从「立刻拒绝」变成「无界排队」** —— `Handler.post` 永不拒绝，
+ *    而 `Looper` 只有 1 个线程 ⇒ 一个卡死的 UI 脚本会让队列无限涨到 OOM，
+ *    而本进程是 **system_server** ⇒ 后果是**整机**。
+ *    缓解是 [InvokePolicy.MAX_UI_QUEUE] 这道安全阀（超了回 `handler_error`）。
+ * 2. **`default`/`io` 档的「池满」语义消失** —— 改为「排队等，最终 App 侧超时」。
+ *    ⚠️ 用户看到的排查方向从「工作线程池已满」变成「超时」，**这不是回归**，
+ *    而是「三档各自的天然行为」。
  *
  * ## ⚠️⚠️ 超时是**事后判定**，不做看门狗强制应答
  *
@@ -68,20 +89,18 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * **一个永久卡住的 handler 永远不会产生响应**，且那个工作线程**永久被占用**。
  * App 侧靠第一层超时兜（`HookChannelController` 的配对表），
- * 而这里**没有**补救手段 —— 这正是「池有界 + 总时长上限」的兜底方式。
- *
- * ⚠️ **但这条只论证了「必须有界」，没有论证「必须小」**（2026-10-02 补记）。
- * 原先此处写的是「也是 [DEFAULT_POOL_SIZE] 必须**小**的原因」—— 那是**结论先行**：
- * 「两个卡住的 handler 会让后续立刻收到池满」描述的是**池满的表现**，不是**小池的好处**；
- * 同样是「有界」，容量 8 的池要 8 个卡住的 handler 才会满。
- * ⇒ 容量数字本身的依据仍未补齐，见 [DEFAULT_POOL_SIZE] 的 KDoc 与 §10 #21。
+ * 而这里**没有**补救手段 —— 这正是「总时长上限」的兜底方式。
+ * ⚠️ 三档之后这条**更宽松了**（`default`/`io` 会排队、不会因满而拒），
+ * 但 `ui` 档的容量仍是 1 —— 那道安全阀见 [InvokePolicy.MAX_UI_QUEUE]。
  *
  * ⚠️ **Rhino 指令级超时不在本类范围**（那是脚本类 handler 自己的事）。
  *
  * ## 依赖白名单
  *
  * 本文件在 `xposed/` 下（会被 hook 层加载），只允许 `org.json` / `java.*` / `kotlin.*` /
- * `com.chaomixian.vflow.xposed.*`。由 `WireLayerPurityTest` 源码扫描锁住。
+ * `kotlinx.coroutines.*` / `com.chaomixian.vflow.xposed.*`。
+ * ⚠️ 两个新 android import（`android.os.Handler` / `android.os.HandlerThread`）
+ * 已登记进 `WireLayerPurityTest.ANDROID_ALLOWLIST` —— 它们都是纯线程原语、无 App Context 初始化。
  */
 class HookCapabilityRuntime(
     /**
@@ -103,72 +122,33 @@ class HookCapabilityRuntime(
      */
     private val respond: CapabilityResponder,
     private val registry: HookCapabilityRegistry = HookCapabilityRegistry,
-    poolSize: Int = DEFAULT_POOL_SIZE,
+    /**
+     * `mode → dispatcher` 表。
+     *
+     * ## ⚠️ 这个接缝是**三档分发唯一能在纯 JVM 测的方式**
+     *
+     * 形态照仓库既有的 `injectTokenForTest` —— **不要删**。
+     * 单测注入**记录身份的假 dispatcher** 来断言「`default`/`io`/`ui` 各落自己那个」；
+     * 而真 `ui` 档在纯 JVM 里起不来（`Looper.myLooper()` 抛 `not mocked`），
+     * 那条语义只能由 instrumented 测试覆盖（见 §7.1）。
+     *
+     * ⚠️ 生产路径**不传**它 —— 走 [defaultDispatchers]。
+     */
+    private val dispatchers: Map<String, CoroutineDispatcher> = defaultDispatchers(),
 ) {
 
     companion object {
         /**
-         * 工作线程池容量。
+         * 默认三档：`default` / `io` / `ui`。
          *
-         * ⚠️ **必须小**。见类注释：不可中断的 handler 会**永久**占住一个线程，
-         * 容量越大，「被永久占用」的绝对量越大；而且本池跑在 system_server 里。
-         *
-         * 2 是「能重叠一次调用」与「被占满的代价可接受」之间的折中。
-         *
-         * ## ⚠️ 但这个数字**缺乏依据**，且代价被低估了（2026-10-02 补记）
-         *
-         * **实测已知**：阻塞的 Java 调用不可中断（`Thread.sleep` / 卡住的 IO）
-         * ⇒ 那个工作线程被占满**整个阻塞时长** ⇒ **两个这样的脚本就能把池占满**。
-         *
-         * ⚠️⚠️ **而本池是【所有 ③ capability 共享】的** —— 不只是脚本。
-         * 一个慢 JS 会把 `query_shortcut_intents` 这类**非脚本**能力一起挡掉，
-         * 而后者根本不存在「不可中断」的问题（它只是查数据）。这一点当初定案时没考虑到。
-         *
-         * ## 📌 外部对照：ShortX（`references/shortx`，**同处 system_server**）
-         *
-         * ⚠️ 先破一个**流传的误说**（含本仓库 `整体架构分析.md` §5.9 的旧版本，已订正）：
-         * **它的三个选项里没有一个是主线程**。`UI` 不是 `Looper.getMainLooper()`，
-         * 而是 `HandlerThread("SX-ShortXJS")` 这个**专用后台线程**
-         * （`G00.java:3016` 新建；那个 `getMainLooper()` 在 `AbstractC10756yc0` 里，
-         * 属 `Dispatchers.Main`，与本选项无关）。
-         *
-         * | 档 | 用户实际在选什么 | 落到哪 | 容量 | 容量的来源 |
-         * |---|---|---|---|---|
-         * | `Default` | 「我是**算**的」 | `Dispatchers.Default` | `max(2, 核数)` | **库的默认值** |
-         * | `IO` | 「我是**等**的」 | `Dispatchers.IO` | 64 | **库的默认值** |
-         * | `UI` | 「我**需要 Looper**」 | `SX-ShortXJS` | **1** | ⚠️ **`Looper` 的物理必然** |
-         *
-         * ⚠️⚠️ **这三个容量【都不是取舍】，所以不能拿它们对照我们的 2**：
-         * `Default`/`IO` 的数字是 **kotlinx-coroutines 的实现细节**，且二者**共用同一个线程池**
-         * （`ID2.java` 的 dispatch 落到 `Dispatchers.Default` 的单例池，`IO` 只是「最多 64」的视图）；
-         * `UI` 的 1 **不是「配成 1」，是「它本来就是 1」** —— `HandlerThread` 内部就是一个 `Looper`，
-         * 而一个 `Looper` 只能挂 1 个线程。它服务的是 `UiAutomationApi`（弹窗 / 点击事件），
-         * 正是**必须有 Looper 才能做**的事。
-         * ⇒ 拿「库默认值 / 物理常量」跟「一个刻意挑的数字」比，**没有意义**。
-         *
-         * ⇒ **它提供不了容量依据**，但有两条**有价值的旁证**：
-         * ① 它证明了「**在 system_server 里给用户选执行环境**」**可行**，不是禁区；
-         * ② 它证明了「**不自建线程池**」也能跑 —— 它**一行 `ThreadPoolExecutor` 都没有**，
-         *    借的是协程库与 `HandlerThread`。⚠️ 这反过来质疑 §5.1「工作线程池必须是我们自己创建的」
-         *    那条推导（从「不能占 binder 池」推不出「必须自建」，中间还有「系统现成的非 binder 设施」）。
-         *
-         * ⚠️ **不能从它反推的**：「它容量大所以我们也该大」—— 见上，那些数字不是取舍。
-         * 而且**它同样没解决「一个脚本卡住拖累同池的人」**：`SX-ShortXJS` 容量 1 ⇒
-         * 一个选 `UI` 的脚本卡死会让其他选 `UI` 的全部排队；`Default`/`IO` 是全进程共享池，
-         * 脚本卡死会**拖累规则引擎**。⇒ 它靠的是**余量大**，不是**隔离好**。
-         * ⚠️ 恰恰相反 —— **我们的池只有 ③ capability 在用，隔离程度高于它**。
-         *
-         * ⚠️ **必须同时看到的两面**：**ShortX 的 JS 执行没有任何超时机制**
-         * （grep `observeInstructionCount` / `deadline` 全空），而我们有指令级中断 + 三层超时。
-         * ⇒ 两边是**用不同手段回避同一个问题**（它靠「给足线程」，我们靠「限制并发」），
-         * **不是我们落后**。
-         *
-         * ⇒ **待复评**（`xposed-architecture-v2.md` §10 未决项 **#21** + §21.1），
-         * 评估方向：**是否该自建池**（对面没有池也跑得好）/ system_server 内线程上限的真实代价 /
-         * 队列容量 0 在**非脚本** handler 上是否过严 / 容量数字本身。
-         * ⚠️ **改这个数字前先做真机压测，不得从 ShortX 反推。**
+         * ⚠️ `ui` 档的 `HandlerThread` **懒启动**（见 [UiDispatcherHolder]）——
+         * 没有任何脚本用 `ui` 档时不会建那个线程。这不是优化，是「不用的东西不占 system_server 资源」。
          */
-        const val DEFAULT_POOL_SIZE = 2
+        fun defaultDispatchers(): Map<String, CoroutineDispatcher> = mapOf(
+            ThreadModes.DEFAULT to Dispatchers.Default,
+            ThreadModes.IO to Dispatchers.IO,
+            ThreadModes.UI to UiDispatcherHolder.dispatcher(),
+        )
 
         /**
          * 终检超限后**最多收缩几轮**（2026-10-01 真机修复）。
@@ -206,33 +186,29 @@ class HookCapabilityRuntime(
     /**
      * 已停止标志。
      *
-     * ⚠️⚠️ **`stop()` 必须先置它、再 `shutdownNow()`** —— [onInvoke] 读的就是它，
-     * 反过来会让一个正在投递的调用被误判成「池满」（见 [RejectionCause]）。
+     * ⚠️⚠️ **`stop()` 必须先置它、再 `cancel()`** —— [onInvoke] 读的就是它。
+     * ⚠️ 两者**都不能少**：`CoroutineScope.cancel()` 之后的 `launch` 是**静默 no-op**
+     * （不抛、不执行），若不先判标志，那种情形会表现为「**没有任何响应**」，
+     * 而用户看到的是「超时」—— 与真实原因（运行时已停）不符。
      */
     @Volatile
     private var stopped = false
 
-    private val threadCounter = AtomicInteger(0)
+    /** `ui` 档的待执行计数（安全阀用，见 [InvokePolicy.MAX_UI_QUEUE]）。 */
+    private val uiPending = AtomicInteger(0)
 
     /**
-     * 自建的**有界**工作线程池。见类注释：`SynchronousQueue` = 不排队、满即拒绝。
+     * 每档一个 scope（都在**构造期**建）。
      *
-     * ⚠️ daemon 线程：`stop()` 的 interrupt 对不可中断的 handler 无效
-     * （见类注释的已知限制），此时至少不能让这些线程**阻止进程退出**。
+     * ⚠️ 每档**独立的 `SupervisorJob`** —— 一个 handler 抛异常不该拖垮同档其他协程
+     * （`runOnWorker` 已顶层 `try/catch(Throwable)`，这是**双保险**）。
+     *
+     * ⚠️ `CoroutineName` 让 logcat 能认出档位（`DefaultDispatcher-worker-*` /
+     * `VFlowHook-ui`）。
      */
-    private val pool: ThreadPoolExecutor = ThreadPoolExecutor(
-        poolSize.coerceAtLeast(1),
-        poolSize.coerceAtLeast(1),
-        0L,
-        TimeUnit.MILLISECONDS,
-        // ⚠️ 容量 0：没有空闲 worker 就**立刻**拒绝，绝不排队（见类注释）
-        SynchronousQueue(),
-        ThreadFactory { r ->
-            Thread(r, "VFlowHook-cap-${threadCounter.incrementAndGet()}").apply { isDaemon = true }
-        },
-        // ⚠️ AbortPolicy ⇒ RejectedExecutionException（我们在 onInvoke 里接住它）
-        ThreadPoolExecutor.AbortPolicy(),
-    )
+    private val scopes: Map<String, CoroutineScope> = dispatchers.mapValues { (mode, d) ->
+        CoroutineScope(d + SupervisorJob() + CoroutineName("VFlowHook-cap-$mode"))
+    }
 
     // ── binder 线程入口 ─────────────────────────────────────
 
@@ -248,6 +224,16 @@ class HookCapabilityRuntime(
      * 本方法会被单测直接调用，而且双重防护在 system_server 里不算冗余。
      */
     fun onInvoke(requestJson: String) {
+        // ★★ 全链路**最早**的点：请求刚抵达 binder 线程。
+        // 工作线程用它算「排队等了多久」（见 [runOnWorker] 的出队判过期）。
+        //
+        // ⚠️ 是**局部变量**，随 `pool.execute { … }` 的闭包传给工作线程 ——
+        // 不加字段、不改 `CapabilityRequest`（那是跨进程 codec 类，加字段 = 改协议）、
+        // 不跨进程：到达时刻是 **hook 侧进程内**的事实。
+        //
+        // ⚠️ 取在 `try` **之外**：即使后面解码失败需要早退，取值本身也无副作用
+        //（`nanoTime` 不抛）。反过来放在 try 里会让「早退路径没有它」看起来像个缺口。
+        val arrivedAtMs = System.nanoTime()
         try {
             val request = try {
                 CapabilityInvocationCodec.decodeRequest(requestJson)
@@ -287,28 +273,67 @@ class HookCapabilityRuntime(
                 return
             }
 
-            // ⚠️ 先判「已停止」再投递 —— `shutdownNow()` 之后的拒绝同样是
-            // RejectedExecutionException，若不先判就会报成「池满」（见 RejectionCause）。
+            // ⚠️ 先判「已停止」再投递 —— `scope.cancel()` 之后的 `launch` 是**静默 no-op**，
+            // 若不先判，那种情形会表现为「**没有任何响应**」（用户看到的是「超时」），
+            // 而真实原因是「运行时已停」—— 两个完全不同的排查方向。
             if (stopped) {
                 emitFailure(request, InvokePolicy.runtimeStoppedError(), elapsedMs = 0L)
                 return
             }
 
-            try {
-                pool.execute { runOnWorker(request, handler) }
-            } catch (_: RejectedExecutionException) {
-                // ⚠️⚠️ 两道拒绝对应两种成因，`detail` **必须不同**
-                //（否则排查方向会错 —— 见 InvokePolicy 的两个构造函数注释）
-                val error = if (stopped) {
-                    InvokePolicy.runtimeStoppedError()
-                } else {
-                    InvokePolicy.poolExhaustedError(pool.maximumPoolSize)
+            // ── 按 `thread_mode` 选执行器（未知 / null ⇒ default，绝不抛）──
+            //
+            // ⚠️ 表缺项也走 default（`?:` 兜住）—— 注入假 dispatcher 的测试可以
+            // 只给一个档，那种情形不该崩。
+            val mode = InvokePolicy.threadModeOf(request)
+            val scope = scopes[mode] ?: scopes.getValue(ThreadModes.DEFAULT)
+            val dispatcher = dispatchers[mode] ?: Dispatchers.Default
+
+            // ── ⚠️ UI 档的**有界保护**（见 [InvokePolicy.MAX_UI_QUEUE]）──
+            //
+            // `Handler.post` **永不拒绝** ⇒ UI 档（1 个线程）会无界排队 ⇒
+            // 一个卡死的脚本能让队列涨到 OOM。而本进程是 **system_server**
+            // ⇒ OOM 的后果是**整机**。这是本次替换**主动引入**的失败模式，
+            // 安全阀是本类主动加的缓解。
+            val isUi = dispatcher === dispatchers[ThreadModes.UI]
+            if (isUi) {
+                val pending = uiPending.incrementAndGet()
+                if (pending > InvokePolicy.MAX_UI_QUEUE) {
+                    uiPending.decrementAndGet()
+                    HookLog.e(
+                        "$TAG  UI 档待处理过多（$pending > ${InvokePolicy.MAX_UI_QUEUE}），" +
+                            "回 handler_error（request_id=${request.requestId}）",
+                    )
+                    emitFailure(request, InvokePolicy.uiQueueOverflowError(pending), elapsedMs = 0L)
+                    return
                 }
-                HookLog.e(
-                    "$TAG  ${if (stopped) "运行时已停止" else "工作线程池已满"}" +
-                        "（容量 ${pool.maximumPoolSize} 个并发），回 handler_error",
-                )
-                emitFailure(request, error, elapsedMs = 0L)
+            }
+
+            HookLog.e(
+                "$TAG  分发：${request.capability} → 档=$mode" +
+                    "（request_id=${request.requestId}）",
+            )
+
+            // ⚠️ `scope.launch` **不阻塞 binder 线程、不等结果** ——
+            // 语义与旧的 `pool.execute` 一致（§5.1.1）。
+            // ⚠️ 绝不 `launch` 后再同步等待（`runBlocking` / `future.await`）——
+            // 那会占住 binder 线程，违反「binder 线程只投递不执行」。
+            scope.launch {
+                try {
+                    // ⚠️ 打**执行线程名**（在档位线程上打，不是 binder 线程）——
+                    // 它是「三档真的落不同线程」唯一可从 logcat 观测的证据
+                    //（`default`/`io` → `DefaultDispatcher-worker-*`，`ui` → `VFlowHook-ui`）。
+                    HookLog.e(
+                        "$TAG  执行：${request.capability} 档=$mode " +
+                            "线程=${Thread.currentThread().name}" +
+                            "（request_id=${request.requestId}）",
+                    )
+                    runOnWorker(request, handler, arrivedAtMs)
+                } finally {
+                    // ⚠️ 递减必须在 finally —— 否则 handler 抛异常（虽已被 runOnWorker
+                    // 内部吞掉）时计数会泄漏，安全阀会被**逐渐堵死**。
+                    if (isUi) uiPending.decrementAndGet()
+                }
             }
         } catch (t: Throwable) {
             // ★★ 最后一道兜底：连「解码 + 查表 + 投递」本身抛了也不许逃逸
@@ -324,9 +349,66 @@ class HookCapabilityRuntime(
      * ⚠️ 这里是**最容易被漏掉**的一处：`BinderTransport.invoke` 的 `try/catch`
      * 只护住 binder 线程那一段，投出去的 Runnable 在**另一个线程**上跑，
      * 它抛出的异常**不会**被那里的 catch 看到 —— 会直接成为该线程的未捕获异常。
+     *
+     * @param arrivedAtMs 请求抵达 binder 线程的时刻（`System.nanoTime()`，由 [onInvoke] 传入），
+     *   用于出队时判定「排队是否已吃满预算」。
      */
-    private fun runOnWorker(request: CapabilityRequest, handler: CapabilityHandler) {
+    private fun runOnWorker(
+        request: CapabilityRequest,
+        handler: CapabilityHandler,
+        arrivedAtMs: Long,
+    ) {
         try {
+            // ── ★★ 出队判过期（必须在 handler.handle 之前，且在此之前不做任何别的活）──
+            //
+            // ## ⚠️⚠️ 没有它，「超时 + 队列」= 一个**假的失败提示**
+            //
+            // ```
+            // T+5s    App 侧超时 → 用户看到「失败」，而任务【还在队列里】
+            // T+30s   出队、执行 → 脚本真的跑了（改系统状态 / 开广播 / 开窗口）
+            // ```
+            // ⇒ 用户看到「超时失败」，**副作用却已经发生**。
+            //
+            // ## ⚠️ 为什么必须在 `handler.handle` **之前**、且是这里第一件事
+            //
+            // 判据的意义就是「**不执行**」——放在后面等于跑了脚本再判过期，
+            // 白付了副作用。而「不做别的活」是为了让它在**每个**出队请求上都
+            // 最先发生（附带收益：塞满过期请求的队列会被快速抽干，每个 worker
+            // 弹出、立即 return）。
+            //
+            // ## ⚠️ `queuedBudget == null`（不超时）时本判据是 **no-op**
+            //
+            // 由 [InvokePolicy.isTimedOut] 保证（`budgetMs == null` ⇒ 恒 false）——
+            // **不因等待久而丢弃**。这是契约，不是巧合：不能拿 `queuedBudget ?: 0L` 兜底，
+            // 那会让「不超时」退化成「等 0ms 就过期」。**不加任何 `?: 5000` 回落**。
+            //
+            // ⚠️ 命名刻意与下面在途判定的 `budget` 区分（两者同值同源，但分属
+            // 「排队期」与「执行期」两个判据）；同名还会在同一作用域里**编译冲突**。
+            val queuedMs = (System.nanoTime() - arrivedAtMs) / 1_000_000L
+            val queuedBudget = InvokePolicy.effectiveTimeoutMs(request.timeoutMs, handler.timeoutMs)
+            if (InvokePolicy.isTimedOut(queuedMs, queuedBudget)) {
+                HookLog.e(
+                    "$TAG  排队已超预算：${request.capability}" +
+                        "（queuedMs=$queuedMs > budget=$queuedBudget）→ 不执行" +
+                        "（request_id=${request.requestId}）",
+                )
+                // ⚠️ `queuedBudget ?: 0L`：只在 `isTimedOut` 已判真（即它 != null）时求值，
+                // 故安全。别为它再加别的回落 —— 那会把预算语义改掉。
+                // ⚠️ `elapsedMs` 传 `queuedMs`：让 App 侧看到「它等了多久」而不是 0
+                //（调用方的时间轴才有意义）。
+                emitFailure(
+                    request,
+                    InvokePolicy.queuedExpiredError(queuedMs, queuedBudget ?: 0L),
+                    queuedMs,
+                )
+                // ★★ 绝不调用 `handler.handle` —— 这是本判据的全部意义
+                return
+            }
+
+            // ── 以下与原实现逐字一致 ──
+
+            // ⚠️ `started` **保持在原位不动**（判过期之后）⇒ 在途执行的超时仍只量
+            // 「执行时长」，不量排队 —— 两者是两个不同的判据（见 §3.3 的两侧口径讨论）。
             val started = System.nanoTime()
 
             var outcome: CapabilityOutcome? = null
@@ -535,33 +617,45 @@ class HookCapabilityRuntime(
     fun capabilitiesJson(): String = CapabilityManifest.encode(registry.names(), protocolVersion)
 
     /**
-     * 停止池 + 中断工作线程。由 `onHotReloading` / 通道关闭时调。
+     * 停掉三档执行器。由 `onHotReloading` / 通道关闭时调。
      *
-     * ## ⚠️⚠️ 顺序：**先置标志，再 shutdown**
+     * ## ⚠️⚠️ 顺序：**先置标志，再 cancel**
      *
-     * [onInvoke] 读的就是 [stopped]。反过来（先 shutdown）会让一个正在投递的调用
-     * 撞上 `shutdownNow` 的拒绝，而此时标志还是 false ⇒ 被报成「**池满**」——
-     * 而真实原因是「运行时已停，不会再有响应」。用户会去查并发，排查方向整个错掉。
+     * [onInvoke] 读的就是 [stopped]。`CoroutineScope.cancel()` 之后的 `launch`
+     * 是**静默 no-op**（既不抛、也不执行）⇒ 不先置标志的话，「cancel 之后、
+     * 标志还是 false」那个窗口里的调用会**没有任何响应**。
+     * ⚠️ 语义收窄（**如实记录，不假装消除**）：那个窗口极窄但**存在** ——
+     * 窗口内到达的请求从「立刻回 `runtimeStoppedError`」变为「无响应 ⇒ 超时」。
+     * 本仓库对这种窗口的既往处置是「记录并承认」。
      *
      * ## ⚠️ 为什么必须停（不是「可选的清理」）
      *
-     * 热更新换代时旧代际的池若继续活着，会与新代际的池**并存**并抢 system_server
-     * 资源 —— 那是需求明写的硬要求。
+     * 热更新换代时旧代际的 scope 若继续活着，会与新代际的**并存**并抢
+     * system_server 资源 —— 那是需求明写的硬要求。
      *
-     * ## ⚠️ 已知限制：`shutdownNow()` 的 interrupt 对**不可中断的 handler 无效**
+     * ⚠️ 停的是 **scope 的 context**（`CoroutineContext.cancel()` 扩展）——
+     * 它只会取消**本 scope 派生的协程**，不会去动 `Dispatchers.Default` 那些共享的
+     * 线程池（那本来就不该动：别的组件也在用）。
      *
-     * 对 `Thread.sleep` / IO 有效（会抛 `InterruptedException`），
-     * 对纯循环的处理器无效 —— 那些线程会一直跑到自己结束。它们是 daemon，
-     * 所以至少不会阻止进程退出。见类注释的「本限制必须被承认」。
+     * ## ⚠️ 已知限制：对**不可中断的 handler 无效**
+     *
+     * 协程取消只在**挂起点**生效。handler 若是一个纯阻塞调用
+     *（`Thread.sleep` / 卡住的 IO），它跑完才返回 —— 见类注释的「本限制必须被承认」。
      *
      * ⚠️ **幂等**：热更新与通道关闭可能都调。
      */
     fun stop() {
         stopped = true
         try {
-            pool.shutdownNow()
+            scopes.values.forEach { it.cancel() }
         } catch (t: Throwable) {
-            HookLog.e("$TAG  shutdownNow 异常：${t.javaClass.simpleName} ${t.message}")
+            HookLog.e("$TAG  cancel 异常：${t.javaClass.simpleName} ${t.message}")
+        }
+        // ⚠️ `ui` 线程**只丢引用、不 `quitSafely`** —— 见 [UiDispatcherHolder.resetForStop]。
+        try {
+            UiDispatcherHolder.resetForStop()
+        } catch (t: Throwable) {
+            HookLog.e("$TAG  UI 执行器重置异常：${t.javaClass.simpleName} ${t.message}")
         }
     }
 
@@ -661,11 +755,157 @@ class HookCapabilityRuntime(
         }
     }
 
-    /** 仅供测试：当前在跑的任务数（断言「池满后会回落」用）。 */
-    internal fun activeWorkerCount(): Int = pool.activeCount
+    /** 仅供测试：`ui` 档当前待执行数（安全阀断言用）。 */
+    internal fun uiPendingForTest(): Int = uiPending.get()
 
-    /** 仅供测试：池是否已停止。 */
+    /** 仅供测试：是否已停止。 */
     internal fun isStoppedForTest(): Boolean = stopped
+
+    /**
+     * 仅供测试：以**受控的 [arrivedAtMs]** 直接执行一次工作线程体（**不经 scope**）。
+     *
+     * ## ⚠️⚠️ 存在的唯一理由：那一格经真实投递路径**物理不可达**
+     *
+     * task-10 引入它时，池是 `ThreadPoolExecutor(core = max = 2, SynchronousQueue)`
+     * —— 队列**容量 0** ⇒ 第 3 个并发提交在 [onInvoke] 就被拒，**进不了 [runOnWorker]**。
+     *
+     * ⚠️ **2026-10-03 更新**：三档执行器之后，`default`/`io` 档**真的会排队**了
+     * （`Dispatchers.IO` 的 64 并发信号量）⇒ 真机与端到端**理论上已可达**
+     *（App 侧 5s 超时 + 排队 ⇒ 出队时已过期）。
+     * ⚠️ **但本接缝保留** —— 经真实路径造那个状态需要「精确控制排队时长」，
+     * 那是 sleep + latch 的 flaky 写法；接缝直接喂一个**过去的时刻**是**确定性**的。
+     * 两条路各覆盖一半：接缝锁**判据语义**，源码扫描锁**接线**。
+     *
+     * ⚠️ 形态照本类既有的 [isStoppedForTest]（`internal` + `ForTest` 后缀）。
+     * ⚠️ 它**不改变任何生产行为** —— 只是把已有的 private 方法以受控入参暴露给测试。
+     */
+    internal fun runOnWorkerForTest(
+        request: CapabilityRequest,
+        handler: CapabilityHandler,
+        arrivedAtMs: Long,
+    ) = runOnWorker(request, handler, arrivedAtMs)
+
+    /**
+     * 仅供测试：**经对应档的 scope** 投递一次（即 [onInvoke] 的投递那一步，
+     * 但**不做** `stopped` 前置闸）。
+     *
+     * ## ⚠️⚠️ 为什么需要它（上面那个接缝证不了这件事）
+     *
+     * `stop()` 之后「不再落档」这条语义由**两道**闸共同保证：
+     * ① `stopped` 标志（[onInvoke] 里显式的 `if (stopped) → runtimeStoppedError`）；
+     * ② `scope.cancel()` 让后续 `launch` **静默 no-op**。
+     *
+     * ⇒ 只经 [onInvoke] 测的话，**闸 ① 会把所有情况都兜住** —— 就算有人把
+     * `scope.cancel()` 删掉，测试照样绿。本接缝**绕过闸 ①**，于是唯一能拦住它的
+     * 就是闸 ②，那条语义才真正被测到。
+     *
+     * ⚠️ 形态与理由同 [runOnWorkerForTest]：`internal` + `ForTest` 后缀，
+     * 不改任何生产行为（它复用生产路径的 `scopes` 表与 `launch` 写法）。
+     */
+    internal fun launchOnTierForTest(
+        request: CapabilityRequest,
+        handler: CapabilityHandler,
+        arrivedAtMs: Long,
+        mode: String,
+    ) {
+        val scope = scopes[mode] ?: scopes.getValue(ThreadModes.DEFAULT)
+        scope.launch { runOnWorker(request, handler, arrivedAtMs) }
+    }
+}
+
+/**
+ * `ui` 档的 dispatcher 持有者：**自建 `HandlerThread`** + `Handler.asCoroutineDispatcher()`。
+ *
+ * ## ⚠️ 为什么用自建 `HandlerThread` 而不是 `Dispatchers.Main`
+ *
+ * 协程**没有**「Looper」这个原语 —— 三档里 `ui` 这一档必须自己造。
+ * `Dispatchers.Main` 在 system_server 里指的是**系统的主线程**，
+ * 往那里投脚本是另一类危险（会阻塞系统启动/交互）。ShortX 同样用专线程
+ *（`HandlerThread("SX-ShortXJS")`，`G00.java:3016`），不用主线程。
+ *
+ * ## ⚠️⚠️ 扩展的**接收者是 `Handler`，不是 `HandlerThread`**
+ *
+ * `asCoroutineDispatcher` 定义在 `HandlerDispatcherKt` 上，签名是
+ * `from(android.os.Handler, java.lang.String)`（JVM 名 `from`）。
+ * 而 `HandlerThread` **不继承 `Handler`、也不声明 `getHandler()`**
+ *（`javap -p android/os/HandlerThread.class` 只列出
+ * `getLooper / getThreadId / onLooperPrepared / quit / quitSafely / run`）。
+ * ⇒ **`ht.asCoroutineDispatcher("…")` 编译不过**，必须显式造一个 `Handler`：
+ * `Handler(ht.looper)`（`getLooper()` 在 Looper 就绪前会阻塞等待，正是我们要的）。
+ *
+ * ## ⚠️⚠️ 懒启动：**构造那张表时不得碰 `HandlerThread`**
+ *
+ * 照 ShortX 的做法：没有脚本用 `ui` 档时**不建**那个线程。
+ * ⚠️ 这一条不是优化，是**两条硬约束**的结果：
+ *
+ * 1. **`defaultDispatchers()` 的值是急切求值的** —— 若它直接调
+ *    「创建 HandlerThread 的函数」，那么**构造运行时**就会起线程，
+ *    「懒启动」根本无从谈起。
+ * 2. **纯 JVM 单测里 `HandlerThread.getLooper()` 抛 `Method … not mocked`**
+ *    （本项目无 Robolectric）⇒ 急切创建的版本会让**整个单测类**在 `@Before`
+ *    就崩掉（实测：27 个用例全红，报错全是 `getLooper not mocked`）。
+ *
+ * ⇒ 对外暴露的是 [LazyUiDispatcher] 这个**委托壳**：它**不持有**真 dispatcher，
+ * 只有第一次 `dispatch` 时才去建 `HandlerThread`。构造那张表时一次都不碰 Android。
+ */
+private object UiDispatcherHolder {
+
+    /** 单例委托壳。⚠️ 它**始终是同一个实例** ⇒ `===` 判等（`onInvoke` 里判 `isUi`）成立。 */
+    private val lazy = LazyUiDispatcher()
+
+    @Volatile
+    private var thread: HandlerThread? = null
+
+    /** 真正落到 `Looper` 的那个 dispatcher（`Handler(ht.looper).asCoroutineDispatcher(...)`）。 */
+    @Volatile
+    private var delegate: CoroutineDispatcher? = null
+
+    /** 返回**委托壳**（不是真 dispatcher）—— 见类注释的懒启动说明。 */
+    fun dispatcher(): CoroutineDispatcher = lazy
+
+    /** 第一次真的要投递时才建线程（`synchronized` 保证只建一次）。 */
+    internal fun realDispatcher(): CoroutineDispatcher = delegate ?: synchronized(this) {
+        delegate ?: run {
+            val ht = HandlerThread("VFlowHook-ui")   // ⚠️ 单参构造，优先级即默认
+            ht.start()
+            thread = ht
+            Handler(ht.looper).asCoroutineDispatcher("VFlowHook-ui").also { delegate = it }
+        }
+    }
+
+    /**
+     * ⚠️⚠️ **不 `exitLooper`、也不 `quitSafely`** —— 只丢引用。
+     *
+     * `HandlerContext` 把在队的续体登记在 `Looper` 的 message 上，
+     * 一处 `quitSafely()` 与另一处的 `scope.cancel()` 并发时会撞
+     * `IllegalStateException`。而 `HandlerThread` 是**守护线程**，
+     * 进程退出时自然终止，**业务语义上不依赖它退出**。
+     *
+     * ⚠️ 代价（**如实记录**）：本对象每次 `stop()` 后重置为 null，
+     * 若之后再次 `start`（同一 classloader 内）会新建一个线程，旧线程**不会自己退出**。
+     * 但生产路径上不存在这条时序（`onHotReloading → stop → 不再是同一代际`），
+     * 真机项负责观测**跨代际线程数不增长**。
+     */
+    fun resetForStop() {
+        synchronized(this) {
+            delegate = null
+            thread = null
+        }
+    }
+
+    /**
+     * 委托壳：`dispatch` 时才解析真 dispatcher。
+     *
+     * ⚠️ **必须转发 `isDispatchNeeded`** —— 协程库会用它判断「当前是否已在本 dispatcher
+     * 的线程上」，不转发会让「已在此线程时跳过重投递」的优化失效（对本档无害但语义错）。
+     */
+    private class LazyUiDispatcher : CoroutineDispatcher() {
+        override fun dispatch(context: CoroutineContext, block: Runnable) =
+            UiDispatcherHolder.realDispatcher().dispatch(context, block)
+
+        override fun isDispatchNeeded(context: CoroutineContext): Boolean =
+            UiDispatcherHolder.realDispatcher().isDispatchNeeded(context)
+    }
 }
 
 /**

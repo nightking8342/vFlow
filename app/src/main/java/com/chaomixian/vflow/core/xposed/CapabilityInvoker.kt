@@ -135,11 +135,19 @@ object CapabilityInvoker {
      * @param params 参数。⚠️ 会被序列化成请求信封里的 `params` 串（见 [buildRequestJson]）
      * @param timeoutMs 超时。`null` ⇒ 用 `Capability.timeoutMs`；再 `null` ⇒
      *   [CapabilityInvocationCodec.DEFAULT_TIMEOUT_MS]（5000）
+     * @param threadMode 执行模式（`default` / `io` / `ui`，见
+     *   [com.chaomixian.vflow.xposed.wire.ThreadModes]）。`null` ⇒ **不写这个键 = 未指定**
+     *   ⇒ hook 侧回落 `default`。
+     *   ⚠️ **本层不做归一**（未知值原样发出去）：归一有两个执行环境各自的落点
+     *   （App 侧 `normalizeThreadMode` / hook 侧 `InvokePolicy.threadModeOf`），
+     *   在这里多做一次会让「发出去的值」与「调用方给的值」不等，round-trip 断言失去意义。
+     *   ⚠️ 传未知值的后果**只是资源画像不准**（hook 侧降级到默认池），**不会让调用失败**。
      */
     suspend fun invoke(
         capability: String,
         params: Map<String, Any?> = emptyMap(),
         timeoutMs: Long? = null,
+        threadMode: String? = null,
     ): CapabilityInvokeOutcome {
         // ── 步骤 0：查表（§3.2/§4.3「未知 capability 必须显式报错」）──
         //
@@ -304,6 +312,10 @@ object CapabilityInvoker {
             // 而写 0 会被理解为「立刻超时」（见 `InvokePolicy.effectiveTimeoutMs` 的注释）。
             timeoutMs = effectiveTimeout,
             requestId = requestId,
+            // ⚠️ **原样透传，不在这一层归一** —— 「未知值回落 default」是两个执行环境
+            // 各自的职责（App 侧 `normalizeThreadMode` / hook 侧 `InvokePolicy.threadModeOf`）。
+            // 在这里归一会让发出去的值与调用方给的值不等，round-trip 失去意义。
+            threadMode = threadMode,
             token = token,
         )
 
@@ -394,8 +406,9 @@ object CapabilityInvoker {
         capability: String,
         params: Map<String, Any?> = emptyMap(),
         timeoutMs: Long? = null,
+        threadMode: String? = null,
     ): CapabilityInvokeOutcome {
-        val outcome = invoke(capability, params, timeoutMs)
+        val outcome = invoke(capability, params, timeoutMs, threadMode)
         if (outcome is CapabilityInvokeOutcome.Success) return outcome
 
         // 到这里 outcome 必是 Failed（invoke 只会返回 Success 或 Failed）
@@ -475,6 +488,7 @@ object CapabilityInvoker {
         timeoutMs: Long?,
         requestId: String,
         cursor: String? = null,
+        threadMode: String? = null,
         token: String,
     ): String = CapabilityInvocationCodec.encodeRequest(
         requestId = requestId,
@@ -487,6 +501,8 @@ object CapabilityInvoker {
         // 是安全的降级方向：旧端按 5000 处理，不会永久挂起）。
         timeoutMs = timeoutMs,
         cursor = cursor,
+        // ⚠️ 同 `timeoutMs`：原样透传。业务含义由 hook 侧解释，信封层只搬运。
+        threadMode = threadMode,
         token = token,
     )
 

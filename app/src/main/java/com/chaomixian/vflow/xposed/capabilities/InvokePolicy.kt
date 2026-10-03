@@ -2,7 +2,9 @@ package com.chaomixian.vflow.xposed.capabilities
 
 import com.chaomixian.vflow.xposed.wire.CapabilityError
 import com.chaomixian.vflow.xposed.wire.CapabilityErrorCode
+import com.chaomixian.vflow.xposed.wire.CapabilityRequest
 import com.chaomixian.vflow.xposed.wire.ResultBudget
+import com.chaomixian.vflow.xposed.wire.ThreadModes
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -301,6 +303,29 @@ object InvokePolicy {
         ResultBudget.byteSizeOf(JSONObject(item).toString())
 
     /**
+     * 请求里的执行模式 → 三档之一（`default` / `io` / `ui`）。
+     * **未知 / `null` 一律回落 [ThreadModes.DEFAULT]，绝不抛。**
+     *
+     * ## ⚠️ 为什么是这个签名（收 `CapabilityRequest` 而不是 `String?`）
+     *
+     * 调用点在 [HookCapabilityRuntime] 的 `onInvoke`，那里手上只有 `CapabilityRequest`
+     * —— 直接把「信封字段 → 执行器选择」这一步收进策略层，
+     * 运行时那一侧就只需 `when (InvokePolicy.threadModeOf(request)) { … }`，
+     * 不必自己知道 `null` 该怎么解释。
+     *
+     * ## ⚠️ 本函数**不**引用 App 侧的 `normalizeThreadMode`
+     *
+     * `xposed/` 包禁止引用 `com.chaomixian.vflow.core.*`
+     *（`WireLayerPurityTest.FORBIDDEN_APP_PACKAGES`，本文件会被 hook 层加载）。
+     * 两侧共用的是 [ThreadModes]，**不是彼此** —— 故归一逻辑只有一份实现。
+     *
+     * ⚠️ **静默降级是硬约束，不是偷懒**：新 App 发 `io`、旧 hook 层不认识时报错
+     * 会让它变成一次**调用失败**；降级只损失「资源画像准确度」。完整论证见
+     * [ThreadModes.normalize]。
+     */
+    fun threadModeOf(request: CapabilityRequest): String = ThreadModes.normalize(request.threadMode)
+
+    /**
      * 把收下的元素序列化成 **`resultJson`** —— `{"items":[…]}`。
      *
      * ## ⚠️⚠️ **分页两键不在这里**（它们走**信封顶层**）
@@ -367,6 +392,19 @@ object InvokePolicy {
      * | **池满**（本函数） | **立刻就知道做不了** | 看具体能力（是不是并发打满了） |
      *
      * ⚠️ `detail` 仍**只给人看、绝不参与判断**（它会被三语本地化）。
+     *
+     * ## ⚠️⚠️ 2026-10-03 补记：三档执行器下**无生产调用点**
+     *
+     * 执行器换成 `Dispatchers.Default` / `Dispatchers.IO` / 自建 `HandlerThread` 之后，
+     * 「自建的有界池」这个容器**没有了** ⇒ 它原先的触发点
+     * （`HookCapabilityRuntime.onInvoke` 的 `catch (RejectedExecutionException)`）
+     * **整块删除**。这一格「满了」的语义由 [uiQueueOverflowError] 继续承载。
+     *
+     * ⚠️ **但本函数保留、不删** —— `InvokePolicyTest` 有三处断言它，删掉会连带删测试。
+     * 这是 `docs/fork/xposed-thread-modes-design.md` §9-2 那条旧债的落地方式
+     *（「要么改成历史/防御并注明何时会复活，要么删」——这里选前者）。
+     *
+     * ⚠️ **它会在将来复活**：若某天选回有界队列/有界池，这一格就是它的错误构造。
      */
     fun poolExhaustedError(poolSize: Int): CapabilityError = sanitize(
         CapabilityError(
@@ -408,6 +446,49 @@ object InvokePolicy {
     )
 
     /**
+     * **出队时**已超预算（**从未执行过**）→ `timeout`。
+     *
+     * 由 [HookCapabilityRuntime.runOnWorker] 在**出队后第一件事**判定：
+     * 请求在队列里等待的时间已经吃满了预算 ⇒ 直接回失败，**绝不调用 handler**。
+     *
+     * ## ⚠️⚠️ 没有这个判据会发生什么（本函数存在的全部理由）
+     *
+     * ```
+     * T+0     App 提交，App 侧超时开始计时
+     * T+0s    入队（前面还有别的请求在跑）
+     * T+5s    App 侧超时 → 工作流按错误策略继续/终止（用户看到「失败」）
+     *         而那个任务【还在队列里】
+     * T+30s   出队、执行 → 脚本真的跑了（改系统状态 / 开广播 / 开窗口）
+     * T+30s+  结果回来 → App 侧无配对 waiter → 丢弃
+     * ```
+     *
+     * ⇒ **用户看到「超时失败」，副作用却已经发生。** 对 `risk = HIGH` 的
+     * `vflow.xposed.js` 不可接受。
+     *
+     * ## ⚠️ 为什么不复用 [timeoutError]
+     *
+     * 两者 `code` 相同（都是 `TIMEOUT`），但**文案必须不同**：
+     *
+     * | | 文案 | 问题 |
+     * |---|---|---|
+     * | [timeoutError] | 「耗时 Nms 超过预算」 | 本情形**耗时是 0、脚本根本没跑** ⇒ 会把排查引向「脚本为什么这么慢」 |
+     * | **本函数** | 「等待 Nms…**因此未执行**」 | 直接告诉用户**没有发生副作用**（这正是本判据要给的信息） |
+     *
+     * ⚠️ **不新增错误码** —— `CapabilityErrorCode` 是五值枚举，有「每个码可映射到
+     * 一个用户动作」的硬约束（见 `CapabilityErrorCode`）。这边 `timeout` 语义本就正确：
+     * 用户侧被告知的就是「超时」。
+     *
+     * @param queuedMs 出队时刻减到达时刻 = 在队列里等了多久
+     * @param budgetMs 有效预算（由 [effectiveTimeoutMs] 算出，调用点已确保非 null）
+     */
+    fun queuedExpiredError(queuedMs: Long, budgetMs: Long): CapabilityError = sanitize(
+        CapabilityError(
+            code = CapabilityErrorCode.TIMEOUT,
+            detail = "执行超时：请求在队列中等待 ${queuedMs}ms，已超过预算 ${budgetMs}ms，因此未执行。",
+        ),
+    )
+
+    /**
      * 载荷超上限 → `payload_too_large`。
      *
      * ⚠️ **不是用户能处理的失败** —— 正常路径下**不该出现这个码**
@@ -427,6 +508,64 @@ object InvokePolicy {
             code = CapabilityErrorCode.PAYLOAD_TOO_LARGE,
             detail = "结果超出上限：实际 $actualParcelBytes 字节 > 上限 $maxParcelBytes 字节。" +
                 "这通常是实现缺陷，请报告问题。",
+        ),
+    )
+
+    /**
+     * `ui` 档的**有界保护**上限。
+     *
+     * ⚠️ 为什么需要它：`Handler.post` **永不拒绝**（设计 §1.4 末表：「无界排队」），
+     * 而 UI 档只有 1 个线程 —— 一个卡死的脚本会让队列无限堆积直到 OOM。
+     * 而本进程是 **system_server**，OOM 的后果是**整机**。
+     *
+     * ## ⚠️⚠️ 这个数字的来源：**没有依据，就是拍的 —— 必须真机压测复评**
+     *
+     * **如实记录**（不粉饰）：
+     *
+     * | 问题 | 回答 |
+     * |---|---|
+     * | 256 是怎么来的？ | **拍板给出的**（父会话裁决「加，取 256」）。**不是**由任何实测、压测或公式推算得到 |
+     * | 有依据吗？ | ❌ **没有**。既没有量过「真实工作流的最大并发 `ui` 调用数」，也没有量过「256 个待执行协程占多少内存」 |
+     * | 那为什么不用别的数？ | 没有理由 —— 它选的是「明显大过任何真实并发」这个**方向**，具体数值是任意取的 |
+     *
+     * ⚠️ 本仓库对「拍数字」有**明确教训**：旧执行器的 `DEFAULT_POOL_SIZE = 2`
+     * 就是拍出来的，曾长期挂在 `xposed-architecture-v2.md` §10 **#21** 复评未决
+     * （2026-10-03 换成三档执行器后该常量已删除，容量由协程库与 `Looper` 决定）。
+     * ⇒ **不要**把这个 256 当成经过论证的容量，它只是一个**暂定的安全阀**。
+     *
+     * ## 复评要求（与真机项对应）
+     *
+     * 必须真机压测后回来改这个注释与数值。至少要知道两件事：
+     * 1. **真实并发**：正常使用下 `ui` 档同时在队的请求数上限是多少？
+     *    （若远小于 256 ⇒ 说明选大了，但无碍；若接近/超过 ⇒ 必须调整）
+     * 2. **卡死脚本的代价**：一个 `while(true)` 的 UI 脚本会让队列涨多快？排水速度是多少？
+     *
+     * ⚠️ **在压测之前，这个数字不得被引用为「已论证的容量」** ——
+     * 也不能用它去反推别的档的容量。
+     */
+    const val MAX_UI_QUEUE = 256
+
+    /**
+     * `ui` 档待执行数超上限 → `handler_error`（与超时是**两个不同的排查方向**）。
+     *
+     * ## ⚠️⚠️ 为什么归 `handler_error` 而不是 `timeout`
+     *
+     * 口径见 `CapabilityErrorCode.kt`：`handler_error` 是「**立刻就知道做不了**」，
+     * `timeout` 是「等了预算仍无结果」。本情形是前者 —— 请求**从未被投递执行**。
+     * **不新增第六个码。**
+     *
+     * ⚠️ 它与 [poolExhaustedError] 是**同一格**（都归 `handler_error`、都是「满了」）
+     * 的两个**形态**：那个是「自建有界池满了」，本函数是「UI 档无界排队到了安全阀」。
+     * 三档执行器下前者**无生产调用点**（见其 KDoc），「满了归 `HANDLER_ERROR`」
+     * 这条口径由本函数继续承载。
+     *
+     * @param queued 触发时的待执行数（含刚提交的这一个）
+     */
+    fun uiQueueOverflowError(queued: Int): CapabilityError = sanitize(
+        CapabilityError(
+            code = CapabilityErrorCode.HANDLER_ERROR,
+            detail = "UI 执行档待处理请求过多（$queued 个）。请稍后重试 —— " +
+                "通常是某个脚本占住 UI 线程过久。",
         ),
     )
 

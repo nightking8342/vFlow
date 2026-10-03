@@ -66,10 +66,11 @@ import org.mozilla.javascript.ContextFactory
  * 实测（方案 §1 的 E7）：预算 600ms 的脚本调 `Thread.sleep(3000)`
  * 会**跑满 3040ms** 才返回，然后才被第 ② 层（框架的事后判定）判为超时。
  *
- * 后果：**该工作线程被占满整个阻塞时长**。池只有 2 个线程
- *（[com.chaomixian.vflow.xposed.capabilities.HookCapabilityRuntime.DEFAULT_POOL_SIZE]）
- * ⇒ 两次这样的脚本会让后续调用立刻收到 `handler_error`（池满）。
- * 这是「池有界 + 总时长上限」的设计**主动接受**的代价，**不是缺陷**。
+ * 后果：**该执行线程被占满整个阻塞时长**。
+ * ⚠️ 2026-10-03 起执行器是**三档**（`default` / `io` / `ui`，见
+ * [com.chaomixian.vflow.xposed.capabilities.HookCapabilityRuntime]）——
+ * 阻塞型脚本选 `io` 档（`Dispatchers.IO`，最多 64 并发）比选 `ui` 档（单线程）安全得多。
+ * 这是「总时长上限」的设计**主动接受**的代价，**不是缺陷**。
  *
  * ## ⚠️ 实测结论 E1：本类**不会**污染 system_server 的进程级全局工厂
  *

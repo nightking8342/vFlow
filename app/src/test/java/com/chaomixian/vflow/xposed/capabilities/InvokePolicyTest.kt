@@ -1,6 +1,7 @@
 package com.chaomixian.vflow.xposed.capabilities
 
 import com.chaomixian.vflow.xposed.wire.CapabilityErrorCode
+import com.chaomixian.vflow.xposed.wire.CapabilityRequest
 import com.chaomixian.vflow.xposed.wire.ResultBudget
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -196,6 +197,44 @@ class InvokePolicyTest {
     }
 
     @Test
+    fun `uiQueueOverflowErrorIsHandlerErrorAndDistinctFromTimeout`() {
+        // ⚠️ 口径：UI 档排队到安全阀归 HANDLER_ERROR（「立刻就知道做不了」），
+        // **不新增第六个码**，也**不得**报成 TIMEOUT —— 后者会让用户「等更久」，
+        // 而这里的正确处置是「稍后重试、看看是谁占住了 UI 线程」。
+        val e = InvokePolicy.uiQueueOverflowError(257)
+        assertEquals(CapabilityErrorCode.HANDLER_ERROR, e.code)
+        assertTrue("detail 必须说明是 UI 档待处理过多：${e.detail}", e.detail.contains("待处理请求过多"))
+        assertTrue("detail 应含触发时的排队数：${e.detail}", e.detail.contains("257"))
+        assertFalse(
+            "❌ 不得复用「工作线程池已满」的文案 —— 那是自建有界池的形态，两者排查方向不同",
+            e.detail.contains("工作线程池已满"),
+        )
+
+        // 与 runtimeStoppedError 同码不同因：都归 HANDLER_ERROR，但 detail 必须可区分
+        val stopped = InvokePolicy.runtimeStoppedError()
+        assertEquals(e.code, stopped.code)
+        assertFalse("排队过多**不得**说成已停止", e.detail.contains("已停止"))
+        assertFalse("已停止**不得**说成排队过多", stopped.detail.contains("待处理请求过多"))
+    }
+
+    @Test
+    fun `maxUiQueueIsAProvisionalSafetyValve`() {
+        // ⚠️⚠️ **反向断言**：这个数**是拍的、没有依据**（见 MAX_UI_QUEUE 的 KDoc）。
+        // 本条不锁它的「正确性」（没有任何东西能定义它正确），只锁两条**结构性**事实：
+        //  ① 它必须是个正数且大得足以容纳任何真实并发（太小会让正常用例也被拒）；
+        //  ② 它必须**有限**（否则「有界保护」本身失效 —— 那正是本常量存在的全部意义）。
+        assertTrue("MAX_UI_QUEUE 必须 > 0", InvokePolicy.MAX_UI_QUEUE > 0)
+        assertTrue(
+            "安全阀必须有限：它防的是「UI 档无界排队 OOM 整机」",
+            InvokePolicy.MAX_UI_QUEUE < Int.MAX_VALUE,
+        )
+        assertTrue(
+            "太小会让正常并发被误拒（当前取 ${InvokePolicy.MAX_UI_QUEUE}）",
+            InvokePolicy.MAX_UI_QUEUE >= 64,
+        )
+    }
+
+    @Test
     fun `timeoutErrorIsTimeout`() {
         val e = InvokePolicy.timeoutError(1_250L, 1_000L)
         assertEquals(CapabilityErrorCode.TIMEOUT, e.code)
@@ -261,6 +300,23 @@ class InvokePolicyTest {
     }
 
     @Test
+    fun `queuedExpiredErrorIsTimeout`() {
+        // ⚠️⚠️ 出队判过期的失败必须归 `TIMEOUT`（**不新增第六个码**）——
+        // 用户侧被告知的本来就是「超时」，而枚举有「每码映射一个用户动作」的硬约束。
+        val e = InvokePolicy.queuedExpiredError(2_350L, 2_000L)
+        assertEquals(CapabilityErrorCode.TIMEOUT, e.code)
+
+        // 两个数字都要出现：用户据此判断「是排队排太久」而不是「脚本算得慢」
+        assertTrue("detail 应含排队时长：${e.detail}", e.detail.contains("2350"))
+        assertTrue("detail 应含预算：${e.detail}", e.detail.contains("2000"))
+
+        // ★★ 关键信息：告诉用户**没有发生副作用**。
+        // 这正是它不能复用 `timeoutError`（文案「耗时 Nms 超过预算」）的原因——
+        // 那种文案会让人以为脚本执行了很久，去查「脚本为什么这么慢」。
+        assertTrue("detail 必须点明未执行：${e.detail}", e.detail.contains("未执行"))
+    }
+
+    @Test
     fun `everyErrorConstructorReturnsDetailWithinTheLimit`() {
         // 体检：所有错误构造函数的 detail 都落在上限内（否则一条错误响应能撑爆 binder 缓冲）
         val errors = listOf(
@@ -268,6 +324,9 @@ class InvokePolicyTest {
             InvokePolicy.poolExhaustedError(2),
             InvokePolicy.runtimeStoppedError(),
             InvokePolicy.timeoutError(1, 2),
+            // ⚠️ 新构造必须进这份体检 —— 漏掉它会让「新增的错误构造超限」无人拦
+            InvokePolicy.queuedExpiredError(2_350L, 2_000L),
+            InvokePolicy.uiQueueOverflowError(257),
             InvokePolicy.payloadTooLargeError(1, 2),
             InvokePolicy.throwableToError(IllegalStateException("y".repeat(2_000))),
         )
@@ -278,4 +337,43 @@ class InvokePolicyTest {
             )
         }
     }
+
+    // ── threadModeOf：未知一律 default ─────────────────────
+    //
+    // ⚠️ 硬约束：新 App 发 `io`、旧 hook 层不认识时**必须静默降级**，不能报错 ——
+    // 报错会让它变成一次调用失败，而降级只损失「资源画像准确度」。
+
+    @Test
+    fun `threadModeOfDefaultsWhenAbsent`() {
+        assertEquals("default", InvokePolicy.threadModeOf(requestWithThreadMode(null)))
+    }
+
+    @Test
+    fun `threadModeOfFallsBackOnUnknown`() {
+        // ⚠️ 含大小写不信：协议值一律小写，`"IO"` 属未知值
+        for (bogus in listOf("xxx", "", "  ", "IO", "DEFAULT", "ui ")) {
+            assertEquals(
+                "未知值 <$bogus> 应回落 default（而不是抛异常）",
+                "default",
+                InvokePolicy.threadModeOf(requestWithThreadMode(bogus)),
+            )
+        }
+    }
+
+    @Test
+    fun `threadModeOfPassesThroughTheThreeModes`() {
+        assertEquals("default", InvokePolicy.threadModeOf(requestWithThreadMode("default")))
+        assertEquals("io", InvokePolicy.threadModeOf(requestWithThreadMode("io")))
+        assertEquals("ui", InvokePolicy.threadModeOf(requestWithThreadMode("ui")))
+    }
+
+    /** 构造请求夹具（照仓库既有风格用**命名参数**，新字段才不会挤坏位置参数）。 */
+    private fun requestWithThreadMode(mode: String?) = CapabilityRequest(
+        requestId = "r",
+        protocolVersion = 1,
+        capability = "c",
+        paramsJson = "{}",
+        threadMode = mode,
+        token = "t",
+    )
 }

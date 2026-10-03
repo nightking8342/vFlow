@@ -311,7 +311,7 @@ scope.launch { runOnWorker(request, handler) }
 | 项 | 判据 |
 |---|---|
 | 三档真的落不同线程 | hook 日志打 `Thread.currentThread().name` |
-| `ui` 档 `new Handler()` 可用 | 脚本里 `new java.lang.Handler()`（Java 互操作）不抛 |
+| `ui` 档 `new Handler()` 可用 | 脚本里 `importClass(android.os.Handler)` 后 `new Handler()` **不抛**（⚠️ Handler 在 `android.os`，写成 `java.lang.Handler` 会被 Rhino 当包名，报错与本项无关）|
 | 出队判过期 | 并发压满后，第 3 个请求的日志里出现「排队已超预算」且**没有**脚本执行痕迹 |
 | 池满（若选有界） | 与现在一致 |
 

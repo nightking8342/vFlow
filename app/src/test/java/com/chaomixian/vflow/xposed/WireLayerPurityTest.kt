@@ -92,6 +92,11 @@ class WireLayerPurityTest {
             "android.content.ServiceConnection",
             "android.util.Log",
             "android.os.Binder",   // IHookHost.Stub 的基类（AIDL 生成物需要）
+            // ⚠️ 三档执行器的 `ui` 档（2026-10-03）：自建 HandlerThread + `Handler.asCoroutineDispatcher()`。
+            // 两者都是**纯线程原语**（无 App Context 初始化），`Looper` 是 Android 线程模型本身，
+            // 与本通道「在 system_server 里跑脚本」的定位直接相关 —— 不是顺手引入的 UI 依赖。
+            "android.os.HandlerThread",
+            "android.os.Handler",
         )
 
         /** `xposed/` 包下**禁止**引用的 App 侧包（会扩大崩溃半径）。 */

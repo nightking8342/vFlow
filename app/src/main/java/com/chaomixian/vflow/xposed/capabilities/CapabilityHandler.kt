@@ -20,8 +20,9 @@ import com.chaomixian.vflow.xposed.wire.CapabilityRequest
  *
  * ## ⚠️ 实现约束
  *
- * - [handle] **跑在工作线程上**（不是 binder 线程）—— 可以阻塞，
- *   但**不得**做长耗时的 IPC/等待以外的操作（池只有 2 个线程）。
+ * - [handle] **跑在工作线程上**（不是 binder 线程）—— 可以阻塞。
+ *   ⚠️ 三档之后「可阻塞」的程度**按档而异**：`io` 档（`Dispatchers.IO`，最多 64 并发）
+ *   适合阻塞等待；`ui` 档是**单线程**且队列有上限，卡住会让后续 `ui` 调用排队甚至被拒。
  * - 实现**不必**自己包 `try/catch`：执行运行时的顶层会兜
  *   （异常转 `handler_error`）。**但那不是偷懒的理由** ——
  *   自己能判定的失败走 [CapabilityOutcome.Failure] 比抛异常好，
@@ -50,7 +51,19 @@ interface CapabilityHandler {
 
     /**
      * §5.2：本 capability 的超时。
-     * `null` ⇒ 用请求里的 `timeout_ms`（执行运行时会取两者的 **min**）。
+     * `null` ⇒ 用请求里的 `timeout_ms`（执行运行时会取两者的 **min**，
+     * 且**请求侧为 null 时不超时** —— 见 `InvokePolicy.effectiveTimeoutMs`）。
+     *
+     * ## ⚠️ 这一个值**同时**用于两处判定（别以为它只影响其一）
+     *
+     * | 判定 | 位置 | 量的是什么 |
+     * |---|---|---|
+     * | **出队期** | `HookCapabilityRuntime.runOnWorker` 首行 | 请求**在队列里等了多久** —— 超了则**不执行** |
+     * | **执行期** | 同上，`handler.handle` 返回后 | handler **跑了多久** —— 超了则结果作废、回 `timeout` |
+     *
+     * 两处都用 `InvokePolicy.effectiveTimeoutMs(request.timeoutMs, this)`，
+     * 且都是 `isTimedOut`（**严格大于**）。⇒ 声明一个值就等于给
+     * 「排队 + 执行」的**总时长**设了上限，不是只给执行。
      */
     val timeoutMs: Long? get() = null
 

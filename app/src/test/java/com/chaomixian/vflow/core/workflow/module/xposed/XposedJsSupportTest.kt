@@ -179,4 +179,31 @@ class XposedJsSupportTest {
             scriptInputsOf(emptyMap(), { false }, { null }).isEmpty(),
         )
     }
+
+    // ════════════════════ normalizeThreadMode ════════════════════
+    //
+    // ⚠️ 本段锁的是**硬约束**：未知值必须静默降级为 `default`，**绝不报错**
+    //（新 App 发 `io`、旧 hook 层不认识时，报错会让它变成一次调用失败，
+    //  而降级只损失「资源画像准确度」）。
+
+    @Test
+    fun `null means the default mode`() {
+        assertEquals("default", normalizeThreadMode(null))
+    }
+
+    @Test
+    fun `unknown values fall back to default without throwing`() {
+        // ⚠️ 含大小写不信：「协议值一律小写」是 KNOWN 里字面量定的，
+        // `"IO"` 属于未知值 ⇒ 同样回落 default（不静默 lowercase 抹平真实缺陷）
+        for (raw in listOf("xxx", "", "   ", "DEFAULT", "IO", "UI", "io ", "i o")) {
+            assertEquals("输入 <$raw> 应回落 default", "default", normalizeThreadMode(raw))
+        }
+    }
+
+    @Test
+    fun `the three known modes pass through unchanged`() {
+        assertEquals("default", normalizeThreadMode("default"))
+        assertEquals("io", normalizeThreadMode("io"))
+        assertEquals("ui", normalizeThreadMode("ui"))
+    }
 }
