@@ -457,6 +457,12 @@
             android:theme="@style/Theme.vFlow" />
 
         <activity
+            android:name=".ui.settings.WebDavConfigActivity"
+            android:exported="false"
+            android:label="@string/webdav_config_title"
+            android:theme="@style/Theme.vFlow" />
+
+        <activity
             android:name=".ui.settings.CoreManagementActivity"
             android:exported="false"
             android:label="Server 管理"

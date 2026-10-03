@@ -1685,4 +1685,35 @@ Then come back; the current state will be shown above.</string>
     <string name="backup_scope_chat">Chat and AI</string>
     <string name="backup_scope_modules">Module settings</string>
     <string name="backup_scope_tiles">Quick tiles</string>
+
+    <!-- WebDAV 配置页（T3 交付，集成期合入）-->
+    <string name="settings_webdav">WebDAV servers</string>
+    <string name="settings_webdav_desc">Manage WebDAV servers for backups and workflows</string>
+    <string name="webdav_config_title">WebDAV servers</string>
+    <string name="webdav_config_desc">Passwords are encrypted with the device key and stored locally</string>
+    <string name="webdav_config_empty">No servers yet. Tap the button above to add one.</string>
+    <string name="webdav_config_add">Add server</string>
+    <string name="webdav_config_edit">Edit</string>
+    <string name="webdav_config_delete">Delete</string>
+    <string name="webdav_config_delete_confirm_title">Delete server</string>
+    <string name="webdav_config_delete_confirm_message">Delete "%1$s"?</string>
+    <string name="webdav_config_name_label">Name</string>
+    <string name="webdav_config_url_label">Server URL</string>
+    <string name="webdav_config_username_label">Username</string>
+    <string name="webdav_config_password_label">Password (leave blank to keep)</string>
+    <string name="webdav_config_allow_insecure_tls">Allow insecure TLS</string>
+    <string name="webdav_config_timeout_label">Timeout (seconds)</string>
+    <string name="webdav_config_remote_path_label">Remote path (optional)</string>
+    <string name="webdav_config_invalid_name">Name cannot be empty</string>
+    <string name="webdav_config_invalid_url">The address must start with http:// or https://</string>
+    <string name="webdav_config_duplicate_name">Name already exists</string>
+    <string name="webdav_config_test">Test connection</string>
+    <string name="webdav_test_running">Testing…</string>
+    <string name="webdav_test_success">Connected</string>
+    <string name="webdav_test_auth_failed">Authentication failed — check the username and password</string>
+    <string name="webdav_test_not_found">Path not found (404)</string>
+    <string name="webdav_test_not_supported">The server does not support WebDAV (405/501)</string>
+    <string name="webdav_test_network_error">Network error — check the address and your connection</string>
+    <string name="webdav_test_key_unavailable">Device key is no longer valid — please re-enter the password</string>
+    <string name="webdav_test_invalid_config">The configuration is incomplete or the address is invalid</string>
 </resources>

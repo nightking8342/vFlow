@@ -184,6 +184,8 @@ object ModuleRegistry {
         register(FeishuSendMessageModule(), context)
         register(FeishuGetMessageHistoryModule(), context)
         register(FeishuMediaUploadModule(), context)
+        // fork 新增：WebDAV（集成期由父会话合入 T4 的注册，追加在网路段末、不重排既有注册）
+        register(WebDavModule(), context)
 
         // 应用与系统
         register(DelayModule(), context)

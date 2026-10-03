@@ -155,6 +155,10 @@ fun SettingsRoute(
             onOpenBackupRestore = {
                 context.startActivity(Intent(context, BackupRestoreActivity::class.java))
             },
+            // fork 新增：WebDAV 配置二级页（集成期由父会话合入 T3 的接线）
+            onOpenWebDavConfig = {
+                context.startActivity(Intent(context, WebDavConfigActivity::class.java))
+            },
             onSetAutoCheckUpdatesEnabled = { enabled ->
                 settingsViewModel.setAutoCheckUpdatesEnabled(context, enabled)
             },

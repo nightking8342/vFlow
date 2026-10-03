@@ -95,6 +95,8 @@ data class SettingsScreenActions(
     val onOpenModelConfig: () -> Unit,
     // fork 新增：备份/恢复二级页入口（只追加，不改既有字段顺序）
     val onOpenBackupRestore: () -> Unit,
+    // fork 新增：WebDAV 配置二级页入口（集成期由父会话合入 T3 的接线）
+    val onOpenWebDavConfig: () -> Unit,
     val onSetAutoCheckUpdatesEnabled: (Boolean) -> Unit,
     val onSetAllowShowOnLockScreen: (Boolean) -> Unit,
     val onSetApiEnabled: (Boolean) -> Unit,
@@ -189,6 +191,9 @@ fun SettingsScreen(
     // fork 新增：备份/恢复入口文案
     val backupRestoreTitle = stringResource(R.string.settings_backup_restore)
     val backupRestoreSubtitle = stringResource(R.string.settings_backup_restore_desc)
+    // fork 新增：WebDAV 配置入口文案
+    val webDavTitle = stringResource(R.string.settings_webdav)
+    val webDavSubtitle = stringResource(R.string.settings_webdav_desc)
     val autoCheckUpdatesTitle = stringResource(R.string.settings_switch_auto_check_updates)
     val autoCheckUpdatesSubtitle = stringResource(R.string.settings_switch_auto_check_updates_desc)
     val lockScreenTitle = stringResource(R.string.settings_switch_allow_show_on_lock_screen)
@@ -294,10 +299,15 @@ fun SettingsScreen(
     val showGeneralSection = listOf(
         generalSectionTitle,
         moduleConfigTitle, moduleConfigSubtitle,
+        // ⚠️ 这两项此前**漏在搜索清单外**（变量在 :187-188 取值、:464-465 渲染），
+        // 导致用户搜「全局变量」时整个「通用」分组消失 —— 与 :301-303 记录的是同一形态的缺陷。
+        // （集成期由父会话合入 T3 的既有缺陷修复；T3 有机器化断言锁住）
+        globalVariablesTitle, globalVariablesSubtitle,
         modelConfigTitle, modelConfigSubtitle,
         // ⚠️ 新入口的两个文案必须在此登记 —— 漏了会让用户搜「备份」时
         //    整个「通用设置」分组消失（showGeneralSection 全 false ⇒ 0 个 item）。
         backupRestoreTitle, backupRestoreSubtitle,
+        webDavTitle, webDavSubtitle,
         autoCheckUpdatesTitle, autoCheckUpdatesSubtitle,
         lockScreenTitle, lockScreenSubtitle,
         apiEnabledTitle, apiEnabledSubtitle,
@@ -478,6 +488,15 @@ fun SettingsScreen(
                     tone = cloudTone(),
                     position = SettingsGroupPosition.Middle,
                     onClick = actions.onOpenBackupRestore
+                )
+                // fork 新增：WebDAV 配置。同样插在 Middle ⇒ 既有各行 position 不用改。
+                NativeEntryRow(
+                    title = webDavTitle,
+                    subtitle = webDavSubtitle,
+                    icon = Icons.Default.Cloud,
+                    tone = cloudTone(),
+                    position = SettingsGroupPosition.Middle,
+                    onClick = actions.onOpenWebDavConfig
                 )
                 NativeSwitchRow(
                     title = autoCheckUpdatesTitle,

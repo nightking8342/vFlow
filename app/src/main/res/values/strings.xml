@@ -1690,4 +1690,35 @@
     <string name="backup_scope_chat">聊天与 AI</string>
     <string name="backup_scope_modules">模块配置</string>
     <string name="backup_scope_tiles">快捷磁贴</string>
+
+    <!-- WebDAV 配置页（T3 交付，集成期合入）-->
+    <string name="settings_webdav">WebDAV 配置</string>
+    <string name="settings_webdav_desc">管理 WebDAV 服务器，供备份与工作流使用</string>
+    <string name="webdav_config_title">WebDAV 配置</string>
+    <string name="webdav_config_desc">密码使用设备密钥加密后保存在本机</string>
+    <string name="webdav_config_empty">还没有配置，点上面的按钮添加</string>
+    <string name="webdav_config_add">新增配置</string>
+    <string name="webdav_config_edit">编辑</string>
+    <string name="webdav_config_delete">删除</string>
+    <string name="webdav_config_delete_confirm_title">删除配置</string>
+    <string name="webdav_config_delete_confirm_message">确定删除「%1$s」？</string>
+    <string name="webdav_config_name_label">名称</string>
+    <string name="webdav_config_url_label">服务器地址</string>
+    <string name="webdav_config_username_label">用户名</string>
+    <string name="webdav_config_password_label">密码（留空则不修改）</string>
+    <string name="webdav_config_allow_insecure_tls">允许不安全 TLS</string>
+    <string name="webdav_config_timeout_label">超时（秒）</string>
+    <string name="webdav_config_remote_path_label">远端路径（可选）</string>
+    <string name="webdav_config_invalid_name">名称不能为空</string>
+    <string name="webdav_config_invalid_url">地址不能为空，且需以 http:// 或 https:// 开头</string>
+    <string name="webdav_config_duplicate_name">名称已存在</string>
+    <string name="webdav_config_test">测试连接</string>
+    <string name="webdav_test_running">测试中…</string>
+    <string name="webdav_test_success">连接成功</string>
+    <string name="webdav_test_auth_failed">认证失败，请检查用户名与密码</string>
+    <string name="webdav_test_not_found">路径不存在（404）</string>
+    <string name="webdav_test_not_supported">服务器不支持 WebDAV（405/501）</string>
+    <string name="webdav_test_network_error">网络错误，请检查地址与网络</string>
+    <string name="webdav_test_key_unavailable">设备密钥已失效，请重新输入密码</string>
+    <string name="webdav_test_invalid_config">配置不完整或地址无效</string>
 </resources>
