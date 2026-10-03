@@ -675,10 +675,7 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 | `AndroidManifest.xml`（改） | **追加** `BackupRestoreActivity` / `WebDavConfigActivity` 两个声明（`exported="false"`） | **手动合并**（+11 行） |
 | 三语 `strings.xml` ×3 + `strings_module.xml` ×3 | 追加备份页 45 条 + WebDAV 页 29 条（`strings.xml`）、模块文案 20 条 + WebDAV 模块 64 条（`strings_module.xml`）。⚠️ 三语键名集合 diff 逐字一致、无重复键 | **手动合并**（追加条目） |
 | **集成记录（父会话）** | ⚠️ 本块由 **6 个子任务并行产出**，但 **T6 的分支只含 T1/T2/T5 全量 + T3/T4 的 `core/` 层**，**缺 T3 的 UI 接线与 T4 的模块**。父会话集成时补齐：`WebDavModule.kt` + `WebDavConfigActivity/Screen.kt` + `SettingsScreen/SettingsRoute` 的 WebDAV 入口 + `AndroidManifest` 声明 + 三语 `webdav_*`（29×3）与模块文案（64×3）+ `globalVariables` 搜索清单修复 + 5 个 `core/webdav` 测试 + 3 个模块/UI 测试。**全部纯追加，0 删除**；集成后 92 文件 / +19473 行 | **我方**（集成动作） |
-
-> ⚠️ **两份 WebDAV 重定向实现暂时并存**：`WebDavProbe.kt`（T3，测试连接）与 `WebDavClient.kt`（T4，模块客户端）各有一份重定向循环，
-> `WebDavProbe.trustAllTrustManager()` 是 `private` ⇒ 无法复用，T4 写了等价实现。
-> **收敛时先把它提为 `internal`**，然后把两份合并成一份。**已在设计文档 §8.2 登记为未完成项。**
+| `core/webdav/WebDavHttpSupport.kt`（新增，2026-10-03 收敛） | fork 独有：**`WebDavProbe` 与 `WebDavClient` 共用的 HTTP 装配**（`REDIRECT_CODES` 集合、`trustAllTrustManager()`、`SSLContext` + `sslSocketFactory` 装配）。⚠️ 收敛前这三样在两侧**各写一份**（`trustAllTrustManager` 两份逐字相同）—— 重复的代价不是「多几行」而是**改一处忘另一处**（表现是「测试连接能过、模块执行报错」）。⚠️⚠️ **刻意**没收敛 `followRedirects(false)` / `followSslRedirects(false)`：它们是**意图声明**，必须在各自的 `buildClient()` 里可见。⚠️ 有 **4 条源码扫描断言 + 3 条反证**锁住，其中一条是**安全不变量**：**任何一侧都不得出现 `hostnameVerifier`** —— 加它之后**没有任何行为测试会变红**（没有测试能覆盖「中间人」），「允许自签名」≠「允许任意中间人」 | 我方 |
 
 > ⚠️ **真机验证 0 项**（`adb devices` 为空）：设计文档 §8.2 列了完整清单，
 > 其中**最关键的是「导入后触发器恢复调度」**（`reloadTriggers` 的端到端 —— 只在**不重启 App** 的前提下触发才证明得了那条链路）。

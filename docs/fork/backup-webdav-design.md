@@ -6,6 +6,7 @@
 > **状态**：✅ 已实现（`core/backup/**` + `core/webdav/**` + 两个设置页二级页 + 两个工作流模块），
 > 2260 例单测通过（1 例既有失败`VObjectPropertyTest`，与本批无关），release 打包通过。
 > ⚠️ **真机验证 0 项**——本机 `adb devices` 为空，全部验收只到「单测 + release 打包」这一层。
+> ✅ 2026-10-03 集成期收敛了 `WebDavProbe` / `WebDavClient` 的重复 HTTP 装配（§3.7.1）。
 
 ---
 
@@ -297,6 +298,34 @@ WebDAV 密码在本机是**设备 Keystore 密文**（换机解不开）⇒ 导�
 - Basic Auth：`Authorization: Basic base64(user:pass)`，显式 `Charsets.UTF_8`（中文凭据）。
 - `allowInsecureTls` **默认关**；开启时**保留默认 HostnameVerifier**（只放宽信任链，不放行 hostname）。
 
+#### 3.7.1 两侧共享的 HTTP 装配（`WebDavHttpSupport`，2026-10-03 收敛）
+
+`WebDavProbe`（测试连接）与 `WebDavClient`（模块五动词）是**两条独立链路**，
+收敛前下列三样**各写了一份**（`trustAllTrustManager` 两份逐字相同）：
+
+| 项 | 重复的代价 |
+|---|---|
+| `REDIRECT_CODES = setOf(301, 302, 303, 307, 308)` | 两处各写一个集合 ⇒ **改一处忘另一处**，表现是「测试连接能过、模块执行报错」（或反过来），而两边看着都对 |
+| `trustAllTrustManager()` | 8 行匿名类；将来改一份（例如加证书过期日志）另一份不动 |
+| `SSLContext` + `sslSocketFactory` 装配 | 同上，且这段的正确形状（**只换 TrustManager、保留 HostnameVerifier**）是**安全相关**的 |
+
+⇒ 收敛进 `core/webdav/WebDavHttpSupport.kt`（`internal object`）。
+⚠️ **刻意没收敛**的两处：① `followRedirects(false)` / `followSslRedirects(false)` **留在各自的
+`buildClient()` 里** —— 它是**意图声明**，读代码的人应当在装配 OkHttp 的地方直接看见它；
+② `MAX_REDIRECTS` / `resolveLocation` / `sameHost` 仍留在 `WebDavProbe`（取值约束与纯函数各有独立断言）。
+
+**四条源码扫描断言**（`WebDavSettingsEntryTest`，含**三条反证**）：
+
+| 断言 | 反证（改坏 ⇒ 变红） |
+|---|---|
+| 集合字面量只在 `WebDavHttpSupport` 出现一次 | 在 `WebDavProbe` 里重写一份 ⇒ **1 条红** |
+| `trustAllTrustManager` 只定义一次 + 两侧都经 helper 装配 | 拆掉 `WebDavClient` 的 helper 调用 ⇒ **1 条红** |
+| **任何一侧都不得出现 `hostnameVerifier`** | 加 `builder.hostnameVerifier { _, _ -> true }` ⇒ **1 条红** |
+| `followRedirects(false)` 必须在**各自**的装配点可见 | （防「有人把它藏进 helper」） |
+
+⚠️ 第三条是**安全不变量**：加 `hostnameVerifier` 之后**没有任何行为测试会变红**（没有测试能覆盖「中间人」），
+是典型的静默劣化 —— 「允许自签名」与「允许任意中间人」是两件事。
+
 ### 3.8 导入顺序
 
 `BackupScopeRegistry.importOrder()` 按 `dependsOn` **拓扑排序**，`importOrder` 只在「依赖已就绪的候选」之间做 tie-break：
@@ -493,7 +522,7 @@ T1 3 条 / T2 12 条 / T3 6 条 / T4 6 条 / T5 11 条 / T6 6 条，共 **44 条
 | 项 | 说明 |
 |---|---|
 | **真机验证 0 项** | `adb devices` 为空。以下全部**只到「单测 + release 打包」这一层**：<br>· **导入后触发器恢复调度**（`reloadTriggers` 的端到端 —— 只在**不重启 App** 的前提下触发才证明得了这条链路）<br>· WebDAV **换机恢复**（转档的实际效果）<br>· `AndroidPrefs` 真实按类型读写 `vFlowPrefs`<br>· 四个新 scope 在设置页勾选界面的实际呈现<br>· `tiles` 的 MERGE 在真机磁贴上的表现<br>· `allowInsecureTls` 的自签名豁免（缺 `okhttp-tls` 依赖，无自动化手段）<br>· 各 WebDAV 服务端实测（Nextcloud / 坚果云）<br>· PBKDF2 210k 的派生耗时（真机量一次） |
-| **两份互操作层未收敛** | `WebDavProbe.kt`（T3 的测试连接）与 `WebDavClient.kt`（T4 的模块客户端）各自有一份重定向循环。<br>`WebDavProbe.trustAllTrustManager()` 是 `private` ⇒ 无法直接复用，T4 写了等价实现。<br>**收敛时先把它提为 `internal`**，然后把两份合并成一份 |
+| ~~**两份互操作层未收敛**~~ | ✅ **已于 2026-10-03 收敛**（见 §3.7.1）。<br>~~`WebDavProbe.kt`（T3 的测试连接）与 `WebDavClient.kt`（T4 的模块客户端）各自有一份重定向循环、各写一份 `REDIRECT_CODES` 与 `trustAllTrustManager`（后两者逐字相同）。~~ |
 | **两个 Android 实现类无直接单测** | `AndroidBackupEnvironment` 的两个嵌套私有类（`AndroidPrefs` / `AndroidWebDavBackup`）是 `android.*` 生产实现，纯 JVM 起不来。行为契约由 `InMemoryPrefs`/`FakeWebDavBackup` 的**契约测试**间接证明；「生产实现与假实现语义一致」**只有 `writeAll` 的 `upsert` 调用点**由源码扫描覆盖 |
 
 ### 8.3 `FORK.md` 登记项（集成时已登记）
@@ -508,7 +537,7 @@ T1 3 条 / T2 12 条 / T3 6 条 / T4 6 条 / T5 11 条 / T6 6 条，共 **44 条
 ## 9. 后续（P2+ 候选）
 
 1. **真机回归**（最高优先）—— §8.2 的清单
-2. **收敛两份 WebDAV 重定向实现**（§8.2）
+2. ~~收敛两份 WebDAV 重定向实现~~ ✅ **已完成（2026-10-03，§3.7.1）**
 3. **自动/定时备份**（决策 3 明确不做；若要做，走现有的触发器体系）
 4. **备份文件加密的迭代次数自适应**（当前固定 210k）
 5. **`settings` scope 的粒度细化**（当前是「全有或全无」，未来可按子组勾选）

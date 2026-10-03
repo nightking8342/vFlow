@@ -36,6 +36,8 @@ class WebDavSettingsEntryTest {
         const val SETTINGS_ROUTE = "src/main/java/com/chaomixian/vflow/ui/settings/SettingsRoute.kt"
         const val MANIFEST = "src/main/AndroidManifest.xml"
         const val PROBE = "src/main/java/com/chaomixian/vflow/core/webdav/WebDavProbe.kt"
+        const val CLIENT = "src/main/java/com/chaomixian/vflow/core/webdav/WebDavClient.kt"
+        const val HTTP_SUPPORT = "src/main/java/com/chaomixian/vflow/core/webdav/WebDavHttpSupport.kt"
         const val STRINGS_ZH = "src/main/res/values/strings.xml"
         const val STRINGS_EN = "src/main/res/values-en/strings.xml"
         const val STRINGS_JA = "src/main/res/values-ja/strings.xml"
@@ -284,5 +286,97 @@ class WebDavSettingsEntryTest {
                 "且 ≤ 10（设太大 ⇒ 一个填错的地址会挂住工作流线程很久）。实际：$value",
             value in 2..10
         )
+    }
+
+    // ── 11. 重定向与 TLS 装配的**收敛**（2026-10-03 集成期去重）────────────
+
+    /**
+     * ⚠️ 本组存在理由：收敛前 `REDIRECT_CODES` 与 `trustAllTrustManager()` 在
+     * `WebDavProbe` 与 `WebDavClient` **各写一份**（后者两份逐字相同）。
+     * 重复的代价不是「多几行」而是**改一处忘另一处** —— 表现是「测试连接能过、
+     * 模块执行报错」（或反过来），而两边各自都看着对。
+     */
+    @Test
+    fun bothClientsShareOneRedirectCodeSet() {
+        val probe = codeOnly(source(PROBE))
+        val client = codeOnly(source(CLIENT))
+        val support = codeOnly(source(HTTP_SUPPORT))
+
+        assertTrue(
+            "🔴 REDIRECT_CODES 的字面量集合必须只在 WebDavHttpSupport 里出现一次",
+            support.contains("setOf(301, 302, 303, 307, 308)")
+        )
+        assertTrue(
+            "🔴 WebDavProbe 必须引用共享件，不得自己重写集合",
+            probe.contains("WebDavHttpSupport.REDIRECT_CODES")
+        )
+        assertTrue(
+            "🔴 WebDavClient 同上",
+            client.contains("WebDavHttpSupport.REDIRECT_CODES")
+        )
+        assertTrue(
+            "🔴 WebDavProbe 不得残留自己的 setOf(301, ...)",
+            !probe.contains("setOf(301, 302, 303, 307, 308)")
+        )
+        assertTrue(
+            "🔴 WebDavClient 不得残留自己的 setOf(301, ...)",
+            !client.contains("setOf(301, 302, 303, 307, 308)")
+        )
+    }
+
+    @Test
+    fun bothClientsShareOneTrustAllManager() {
+        val probe = codeOnly(source(PROBE))
+        val client = codeOnly(source(CLIENT))
+        val support = codeOnly(source(HTTP_SUPPORT))
+
+        assertTrue(
+            "🔴 trustAllTrustManager 的定义必须只在 WebDavHttpSupport 里",
+            support.contains("fun trustAllTrustManager()")
+        )
+        assertTrue("🔴 WebDavProbe 不得再定义一份", !probe.contains("fun trustAllTrustManager()"))
+        assertTrue("🔴 WebDavClient 不得再定义一份", !client.contains("fun trustAllTrustManager()"))
+        assertTrue(
+            "🔴 两侧都必须经 WebDavHttpSupport.applyInsecureTlsIfNeeded 装配",
+            probe.contains("WebDavHttpSupport.applyInsecureTlsIfNeeded") &&
+                client.contains("WebDavHttpSupport.applyInsecureTlsIfNeeded")
+        )
+    }
+
+    /**
+     * ⚠️⚠️ **安全不变量**：`allowInsecureTls` 只放宽**证书信任**，**绝不放宽 hostname 校验**。
+     *
+     * 这条必须是源码扫描 —— 加 `hostnameVerifier { _, _ -> true }` 之后
+     * **没有任何行为测试会变红**（没有测试能覆盖「中间人」），是典型的静默劣化。
+     */
+    @Test
+    fun insecureTlsNeverDisablesHostnameVerification() {
+        val support = codeOnly(source(HTTP_SUPPORT))
+        val probe = codeOnly(source(PROBE))
+        val client = codeOnly(source(CLIENT))
+
+        listOf("WebDavHttpSupport" to support, "WebDavProbe" to probe, "WebDavClient" to client)
+            .forEach { (name, body) ->
+                assertTrue(
+                    "🔴 $name 不得出现 hostnameVerifier —— 「允许自签名」≠「允许任意中间人」",
+                    !body.contains("hostnameVerifier")
+                )
+            }
+        // 防空转：确认这三个文件确实都读到了（剥注释后仍有内容）
+        listOf(support, probe, client).forEach {
+            assertTrue("🔴 剥注释后源码不应为空（防空转）", it.length > 500)
+        }
+    }
+
+    /** ⚠️ 收敛**不得**把 `followRedirects(false)` 藏进 helper —— 它是意图声明，必须在装配点可见。 */
+    @Test
+    fun redirectSwitchesStayVisibleAtEachAssemblySite() {
+        val probe = codeOnly(source(PROBE))
+        val client = codeOnly(source(CLIENT))
+
+        listOf("WebDavProbe" to probe, "WebDavClient" to client).forEach { (name, body) ->
+            assertTrue("🔴 $name 必须自己写 followRedirects(false)", body.contains("followRedirects(false)"))
+            assertTrue("🔴 $name 必须自己写 followSslRedirects(false)", body.contains("followSslRedirects(false)"))
+        }
     }
 }

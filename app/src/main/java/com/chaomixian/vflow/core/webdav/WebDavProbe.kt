@@ -8,12 +8,8 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
 import java.net.UnknownHostException
-import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
-import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLException
-import javax.net.ssl.TrustManager
-import javax.net.ssl.X509TrustManager
 
 /**
  * 一次 PROPFIND 探测的结论。
@@ -108,6 +104,7 @@ data class WebDavProbeResult(
  *    `SSLContext` + 自定义 `X509TrustManager`，**只在** `allowInsecureTls` 时启用；
  *    且**不做** hostname 通配（保留默认 `HostnameVerifier`）—— 关掉 hostname 校验等于把
  *    「允许自签名」升级成「允许任意中间人」。
+ *    装配细节见 [WebDavHttpSupport.applyInsecureTlsIfNeeded]（与 [WebDavClient] 共用一份）。
  */
 object WebDavProbe {
 
@@ -226,7 +223,8 @@ object WebDavProbe {
         else -> WebDavProbeOutcome.NETWORK_ERROR
     }
 
-    private val REDIRECT_CODES = setOf(301, 302, 303, 307, 308)
+    // ⚠️ 与 WebDavClient 共用一份（收敛前是两份，改一处忘另一处 ⇒ 测试连接与模块行为不一致）
+    private val REDIRECT_CODES get() = WebDavHttpSupport.REDIRECT_CODES
 
     private fun buildRequest(
         url: String,
@@ -258,24 +256,11 @@ object WebDavProbe {
             .followRedirects(false)
             .followSslRedirects(false)
 
-        if (allowInsecureTls) {
-            // ⚠️ 只替换 TrustManager（允许自签名/过期证书），
-            // **保留**默认 HostnameVerifier —— 关掉 hostname 校验等于把
-            // 「允许自签名」升级成「允许任意中间人」。
-            val trustManager = trustAllTrustManager()
-            val sslContext = SSLContext.getInstance("TLS").apply {
-                init(null, arrayOf<TrustManager>(trustManager), java.security.SecureRandom())
-            }
-            builder.sslSocketFactory(sslContext.socketFactory, trustManager)
-        }
+        // ⚠️ 只替换 TrustManager（允许自签名/过期证书），**保留**默认 HostnameVerifier。
+        // 装配细节与 WebDavClient 共用一份（WebDavHttpSupport）。
+        WebDavHttpSupport.applyInsecureTlsIfNeeded(builder, allowInsecureTls)
 
         return builder.build()
-    }
-
-    private fun trustAllTrustManager(): X509TrustManager = object : X509TrustManager {
-        override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
-        override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
-        override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
     }
 
     /** 把相对 `Location` 解析成绝对 URL。解析失败返回 null。 */

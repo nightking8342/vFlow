@@ -11,12 +11,8 @@ import okhttp3.Response
 import java.io.IOException
 import java.net.Proxy
 import java.net.UnknownHostException
-import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
-import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLException
-import javax.net.ssl.TrustManager
-import javax.net.ssl.X509TrustManager
 
 /**
  * 一次 WebDAV 请求的结论。
@@ -80,18 +76,18 @@ sealed interface WebDavResult {
  * ⇒ 自己转发时**显式**保留方法与 body（`Request.Builder().method(methodName, body)`，
  * **不要** `.get()`），**跨 host 时丢弃 `Authorization`**，上限 [WebDavProbe.MAX_REDIRECTS] 跳。
  *
- * ## ⚠️ 复用 T3 的三处符号，不另写一套
+ * ## ⚠️ 与 [WebDavProbe] 共用符号，不另写一套
  *
- * | 符号 | 为什么复用 |
- * |---|---|
- * | [WebDavProbe.MAX_REDIRECTS] | 两处各写一个 5 就是**静默不一致**（改一处忘另一处） |
- * | [WebDavProbe.resolveLocation] | 相对 `Location` → 绝对 URL |
- * | [WebDavProbe.sameHost] | 判定跨 host（跨 host 丢凭据） |
+ * | 符号 | 位置 | 为什么共用 |
+ * |---|---|---|
+ * | [WebDavProbe.MAX_REDIRECTS] | `WebDavProbe` | 两处各写一个 5 就是**静默不一致**（改一处忘另一处） |
+ * | [WebDavProbe.resolveLocation] | `WebDavProbe` | 相对 `Location` → 绝对 URL |
+ * | [WebDavProbe.sameHost] | `WebDavProbe` | 判定跨 host（跨 host 丢凭据） |
+ * | `REDIRECT_CODES` / `trustAllTrustManager` / TLS 装配 | **[WebDavHttpSupport]** | 收敛前这三样在本类与 `WebDavProbe` 各写一份（`trustAllTrustManager` 两份逐字相同） |
  *
- * ⚠️ 但 [WebDavProbe] 的 `trustAllTrustManager()` 是 `private`，**无法复用** ⇒
- * 本类写了一份**等价**的 private 实现（见 [trustAllTrustManager]），并在此注明：
- * 若将来要合并，先把那个提为 `internal`（列为集成期交接项，见 `plan-18.md` §6-D1）。
- *
+ * ⚠️ **`followRedirects(false)` / `followSslRedirects(false)` 刻意留在本类与 `WebDavProbe` 各自的
+ * `buildClient()` 里**（不收敛进 `WebDavHttpSupport`）：它是一个**意图声明**，
+ * 读代码的人应当在装配 OkHttp 的地方直接看见它。
  * ## ⚠️ 线程模型
  *
  * [OkHttpClient] **必须复用**（内部有连接池与线程池，每次 new 一个会漏线程）。
@@ -266,34 +262,16 @@ class WebDavClient(
             .followSslRedirects(false)
             .apply {
                 if (proxy != null) proxy(proxy)
-                if (allowInsecureTls) {
-                    // ⚠️ 只替换 TrustManager（允许自签名 / 过期证书），
-                    // **保留**默认 HostnameVerifier —— 关掉 hostname 校验等于把
-                    //「允许自签名」升级成「允许任意中间人」。
-                    val trustManager = trustAllTrustManager()
-                    val sslContext = SSLContext.getInstance("TLS").apply {
-                        init(null, arrayOf<TrustManager>(trustManager), java.security.SecureRandom())
-                    }
-                    sslSocketFactory(sslContext.socketFactory, trustManager)
-                }
+                // ⚠️ 只替换 TrustManager（允许自签名 / 过期证书），**保留**默认 HostnameVerifier。
+                // 装配细节与 WebDavProbe 共用一份（WebDavHttpSupport）。
+                WebDavHttpSupport.applyInsecureTlsIfNeeded(this, allowInsecureTls)
             }
             .build()
     }
 
-    /**
-     * 信任一切证书。
-     *
-     * ⚠️ **与 `WebDavProbe.trustAllTrustManager()` 等价**（那份是 `private`，无法复用）。
-     * 若将来要合并成一份，先把 `WebDavProbe` 里的那个提为 `internal` —— 见类注释。
-     */
-    private fun trustAllTrustManager(): X509TrustManager = object : X509TrustManager {
-        override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
-        override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
-        override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
-    }
-
     companion object {
-        private val REDIRECT_CODES = setOf(301, 302, 303, 307, 308)
+        // ⚠️ 与 WebDavProbe 共用一份（WebDavHttpSupport）。
+        private val REDIRECT_CODES get() = WebDavHttpSupport.REDIRECT_CODES
         private const val ERROR_BODY_LIMIT = 200
 
         private val PROPFIND_MEDIA_TYPE: MediaType = "application/xml; charset=utf-8".toMediaType()
