@@ -64,11 +64,23 @@ object KeystoreGcmEngine : AliasGcmEngine {
             // ⚠️⚠️ 下面两个 catch 必须排在「其余 GeneralSecurityException」之前 ——
             // Java/Kotlin 的 catch 顺序即优先级，两者都是 GeneralSecurityException 的子类，
             // 排在后面会被通用分支吞掉，上层的「重输密码」提示永远出不来（R2）。
-            // 触发场景：用户改了锁屏凭据 / 清过凭据。
-            throw CryptoKeyUnavailableException("密钥已永久失效（设备凭据变更）", e)
+            //
+            // ⚠️⚠️ **本分支在本项目里实际到不了**（保留它只为把「语义上确实失效」与
+            // 「密文对不上」分开，别让读者以为它等价于 AEADBadTagException）：
+            // 官方对该异常的界定是「**只**发生在被授权为『需用户认证』的密钥上」
+            // （`KeyPermanentlyInvalidatedException` 类文档逐字：*This only occurs for keys
+            // which are authorized to be used only if the user has been authenticated*）——
+            // 而本引擎**刻意没有** `setUserAuthenticationRequired(true)`（见 `getOrCreateKey`，
+            // 加它会因后台场景无人解锁而静默失效），也**不是** `setUnlockedDeviceRequired`。
+            // ⇒ 改了锁屏密码 / 设了生物识别 / 清了凭据，**都不会**让本密钥失效；
+            // 本 catch 只是为了以后有人给别名加上认证要求时不会静默走错分支。
+            throw CryptoKeyUnavailableException("密钥已永久失效（该密钥声明了用户认证要求）", e)
         } catch (e: AEADBadTagException) {
-            // 密钥变了或密文损坏（AEADBadTagException 是 BadPaddingException 的子类）。
-            throw CryptoKeyUnavailableException("密文认证失败（密钥变更或数据损坏）", e)
+            // ⚠️ 本引擎的密钥**不随锁屏凭据变化**（见上一条），所以走到这里最可能的原因是
+            // **密文本身对不上**：Keystore 条目被删后由 `getOrCreateKey` 重新生成了一把
+            // 同名新密钥（App 数据被清但 prefs 有备份/迁移残留、Keystore 数据库异常等），
+            // 或 prefs 里的密文被改坏。**不是**「用户改了锁屏」。
+            throw CryptoKeyUnavailableException("密文认证失败（密钥不匹配或数据损坏）", e)
         } catch (e: UnrecoverableKeyException) {
             throw CryptoKeyUnavailableException("Keystore 中没有可用的密钥", e)
         } catch (e: CryptoKeyUnavailableException) {

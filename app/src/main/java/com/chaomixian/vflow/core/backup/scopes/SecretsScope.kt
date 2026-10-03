@@ -85,7 +85,8 @@ class SecretsScope : BackupScope {
             val array = JsonArray()
             for (entry in webdavStore.readAll()) {
                 if (entry.password == null) {
-                    // ⚠️ Keystore 密钥失效（改锁屏 / 清凭据）⇒ 这条密码解不开。
+                    // ⚠️ 这条密码解不开（密钥不匹配 / Keystore 条目没了，**不是**改锁屏所致
+                    //    —— 见 `KeystoreGcmEngine` 的 `AEADBadTagException` 分支）。
                     //    不整体失败：保留该条配置（地址/用户名仍有用），但**不带密码**，
                     //    并把位置记进 scrubbedFields —— 用户能看到「这条没带密码」，
                     //    否则他会以为备了，换机后发现连不上还去查服务器。
