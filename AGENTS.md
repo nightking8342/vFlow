@@ -191,6 +191,39 @@ App 与 Core 通过本地 Socket 通信（支持 TCP 和 Unix Domain Socket）�
 > **装真机前先确认签名**。若构建日志出现 `⚠️ Release 签名文件未找到`，说明产物**没有用 fork 的签名**，
 > 装到已装过正式版的设备上会因签名不一致而失败。处理方式见「常用命令」的 worktree 说明。
 
+### ⛔ 破坏性操作：禁止对「日常使用的设备」执行
+
+> ⚠️⚠️ **这一节是事故后补的（2026-10-03）：曾因此清空过用户设备上的全部工作流与会话记录。**
+> 直接原因是 `connectedAndroidTest` 跑完后 AGP 默认会卸载被测包，而
+> **工作流与会话都存在 `SharedPreferences` 里**（`WorkflowManager.kt:66` 的 `vflow_workflows`、
+> `ChatPresetRepository` 的 `chat_session_prefs`）——**卸载 = 数据全灭，不可恢复**。
+> 设备上现在装的是哪个包、谁装的、什么时候，事后**无法从设备侧判断**，只能靠仓库规矩拦。
+
+| ⛔ 禁止 | 为什么 |
+|---|---|
+| `./gradlew connectedAndroidTest` / `:app:connectedDebugAndroidTest` | AGP 以 `-Dandroid-test.uninstall-after-tests=true` 运行 ⇒ **测试后卸载 `com.chaomixian.vflow`**（实测 `firstInstallTime` 被重置、`/data/data` 被删）。跑一次 = 抹掉全部工作流/会话/设置 |
+| `./gradlew installDebug` / `installRelease` | 装的是 **debug** 变体（本项目 debug 复用 release 签名 ⇒ 会**覆盖**正式版），且打断用户正在用的版本 |
+| `adb uninstall com.chaomixian.vflow` / `adb shell pm clear …` | 同上，直接抹数据 |
+| 任何会**改动设备组件状态**的操作（`pm disable/enable`） | 会让 App 静默失效（`TriggerService` 依赖组件启用态） |
+
+**要跑 instrumented 测试时**：用**模拟器**或**专门的测试机**，或先确认该设备上没有你不想丢的数据。
+
+**装真机验证**（本项目正常流程）只用这一条，它是**更新、不卸载**：
+
+```bash
+adb -s <serial> install -r app/build/outputs/apk/release/app-arm64-v8a-release.apk
+```
+
+> ⚠️ **`-r` 是保留数据的关键**。签名不符时它会**直接拒绝**（`INSTALL_FAILED_UPDATE_INCOMPATIBLE`），
+> **不会**清数据 —— 这是安全的失败方式。装完可用下面这条确认数据没丢（`firstInstallTime` 应**保持不变**）：
+>
+> ```bash
+> adb -s <serial> shell dumpsys package com.chaomixian.vflow | grep -E 'firstInstallTime|lastUpdateTime'
+> ```
+
+⚠️ **这条规矩适用于所有 agent 与所有任务，包括被编排的子任务** ——
+不要把「要不要碰设备」交给子任务自行判断：破坏性操作的判断依据往往在任务书之外
+（本例中子任务正确地想到了「装 debug 会覆盖 release」，但**没想到 AGP 会先卸后装**）。
 
 ---
 
