@@ -229,7 +229,7 @@ CASES = {
     # 12d：**未知档**必须回落 default（不报错）—— 硬约束。
     "12d": dict(file="12_thread_mode.js", timeout=5000, settle=6,
                 thread_mode="not-a-real-mode", out="t4_out_12d.txt"),
-    # 13：阳性对照 —— `ui` 档里 `new java.lang.Handler()` **不抛**。
+    # 13：阳性对照 —— `ui` 档里 `importClass(android.os.Handler)` + `new Handler()` **不抛**。
     #     这是「ui 档真的给了 Looper」在真机上的直接证据。
     "13": dict(file="13_handler_ui.js", timeout=5000, settle=6,
                thread_mode="ui", out="t4_out_13.txt"),

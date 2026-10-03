@@ -615,15 +615,18 @@ do_judge() {
   # ── 第 13 项（新增）：ui 档真有 Looper（阴阳对照）──
   #
   # ⚠️⚠️ 这一对是**整个三档改造的核心断言**：
-  #   13（ui 档）   `new java.lang.Handler()` 必须**不抛** ⇒ ok=true
+  #   13（ui 档）   `importClass(android.os.Handler)` + `new Handler()` 必须**不抛** ⇒ ok=true
   #   14（default）同样代码必须**抛**       ⇒ ok=false 且 err 含 Looper
   # 只有**两者同时成立**才能证明「ui 档给了 Looper」是真的区别。
   local v13=unknown v13_why="" v13_pos=0 v13_neg=0
   if [ -f "$OUT/cases/13.out.txt" ]; then
-    if grep -q "ok: true" "$OUT/cases/13.out.txt"; then v13_pos=1; else v13_pos=0; fi
+    # ⚠️ 产物是**合法 JSON**（`{"ok": "true", ...}`）—— 判据必须按 JSON 的形状匹配。
+    # 初版写 `grep -q "ok: true"`（带空格、无引号）⇒ 永远匹配不到 ⇒ 阳性恒判 fail
+    #（2026-10-03 实际踩到：产物明明是 ok=true，判定却说「仍抛」）。
+    if grep -qE '"ok"[[:space:]]*:[[:space:]]*"true"' "$OUT/cases/13.out.txt"; then v13_pos=1; else v13_pos=0; fi
   fi
   if [ -f "$OUT/cases/14.out.txt" ]; then
-    if grep -q "ok: false" "$OUT/cases/14.out.txt" && grep -qi "looper" "$OUT/cases/14.out.txt"; then
+    if grep -qE '"ok"[[:space:]]*:[[:space:]]*"false"' "$OUT/cases/14.out.txt" && grep -qi "looper" "$OUT/cases/14.out.txt"; then
       v13_neg=1
     else
       v13_neg=0

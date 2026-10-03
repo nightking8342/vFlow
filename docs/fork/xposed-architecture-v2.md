@@ -930,7 +930,7 @@ Rhino 的指令级中断是靠**抛异常**打断的。这个异常必须在 hoo
 |---|---|---|---|
 | `default` | `Dispatchers.Default` | **弹性建线程**（不排队） | 我是**算**的（CPU 密集） |
 | `io` | `Dispatchers.IO` | **排队**（64 并发上限） | 我是**等**的（阻塞调用） |
-| `ui` | 自建 `HandlerThread("VFlowHook-ui")`（容量 1） | **无界排队** ⇒ 本类加安全阀 | 我**需要 Looper**（`new java.lang.Handler()` 等） |
+| `ui` | 自建 `HandlerThread("VFlowHook-ui")`（容量 1） | **无界排队** ⇒ 本类加安全阀 | 我**需要 Looper**（`importClass(android.os.Handler)` + `new Handler()` 等） |
 
 ⚠️⚠️ **三档的「满」行为【不同】，这是有意的** —— 它们的容量来自库与 `Looper` 的物理常量，
 **不是取舍**（`shortx-script-capability` 的对照：ShortX 三个选项同样如此，且它也不自建线程池）。

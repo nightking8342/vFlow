@@ -110,7 +110,7 @@ class XposedJsModule : BaseModule() {
                 // ── 执行模式（三档）──
                 append("⚠️ 执行模式（thread_mode）决定脚本跑在哪种线程上：")
                 append("`default`=CPU 密集（弹性线程池）；`io`=阻塞等待（最多 64 并发，超了排队）；")
-                append("`ui`=**需要 Looper**（单线程，脚本里可 `new java.lang.Handler()`）。")
+                append("`ui`=**需要 Looper**（单线程，脚本里可 `importClass(android.os.Handler)` 后 `new Handler()`）。")
                 append("⚠️ 只在真正需要 Looper 时才选 `ui`：它是**单线程**且有界排队，")
                 append("一个卡住的脚本会让后续 `ui` 调用排队甚至被拒。")
             },
@@ -119,7 +119,7 @@ class XposedJsModule : BaseModule() {
             "timeout_ms" to "脚本执行上限（毫秒）。不填则不超时。" +
                 "⚠️ 配得过长会长时间占住执行线程；阻塞型脚本建议配 `io` 档。",
             "thread_mode" to "脚本的执行模式（三档）：`default`（CPU 密集）/ `io`（阻塞等待）" +
-                "/ `ui`（需要 Looper，如脚本里要用 `new java.lang.Handler()`、`Looper` 相关 API）。" +
+                "/ `ui`（需要 Looper，如脚本里要用 `importClass(android.os.Handler)` + `new Handler()`、`Looper` 相关 API）。" +
                 "⚠️ `ui` 档是**单线程**且队列有上限；在 system_server 里它意味着可以往整块屏幕贴窗口，" +
                 "且没有应用权限兜底 —— 只在确实需要 Looper 时才选它。" +
                 "未知值一律按 `default` 处理（不报错）。",
