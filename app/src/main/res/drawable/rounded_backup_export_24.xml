@@ -1,0 +1,6 @@
+<!-- 「导出备份」模块图标（fork 新增）。
+     ⚠️ 与设置页入口 rounded_backup_24 **刻意不同**（多一个向下落盘的箭头），
+     否则用户在模块搜索里分不清「设置页的备份入口」与「工作流里的导出备份模块」。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:height="24dp" android:tint="#000000" android:viewportHeight="960" android:viewportWidth="960" android:width="24dp">
+    <path android:fillColor="@android:color/white" android:pathData="M260,840Q203,840 161.5,798.5Q120,757 120,700L120,260Q120,203 161.5,161.5Q203,120 260,120L700,120Q757,120 798.5,161.5Q840,203 840,260L840,700Q840,757 798.5,798.5Q757,840 700,840L260,840ZM260,760L700,760Q725,760 742.5,742.5Q760,725 760,700L760,260Q760,235 742.5,217.5Q725,200 700,200L260,200Q235,200 217.5,217.5Q200,235 200,260L200,700Q200,725 217.5,742.5Q235,760 260,760ZM480,660L340,520L396,464L440,508L440,300L520,300L520,508L564,464L620,520L480,660Z"/>
+</vector>

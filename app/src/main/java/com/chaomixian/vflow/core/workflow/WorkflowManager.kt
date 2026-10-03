@@ -207,6 +207,27 @@ class WorkflowManager(val context: Context) {
         prefs.edit().putString("workflow_list", gson.toJson(mergedWorkflows)).apply()
     }
 
+    /**
+     * **覆盖式**写入：写完后不在这份列表里的工作流会**永久消失**。
+     *
+     * ⚠️⚠️ **这是破坏性操作**。本项目的工作流只存在 `SharedPreferences`，
+     * **没有版本历史、没有撤销**。调用方（备份恢复的 REPLACE 模式）必须先向用户二次确认。
+     *
+     * ⚠️ 刻意**不用** `clearAllWorkflows() + saveAllWorkflows()`：那是**两次写**，
+     * 中途崩溃 = 工作流全灭且不可恢复。
+     *
+     * ⚠️ 刻意**不复用** [saveAllWorkflows]：那是**合并**语义（按 id 覆盖、本地独有保留、
+     * 且既有条目的 `folderId` 会反向覆盖新值）⇒ 恢复备份时旧工作流会残留、归属也恢复不了。
+     *
+     * ⚠️ 不做 `aggregateFunctionSignature`（那是编辑器保存路径的职责）：
+     * 备份里的 `functionSignature` 已经是聚合过的结果，重算反而可能改变数据。
+     * 只做与既有读取路径对称的 [normalizeWorkflow]。
+     */
+    fun replaceAllWorkflows(list: List<Workflow>) {
+        val normalized = list.map(::normalizeWorkflow)
+        prefs.edit().putString("workflow_list", gson.toJson(normalized)).apply()
+    }
+
     private fun normalizeWorkflow(workflow: Workflow): Workflow {
         val normalizedContent = WorkflowNormalizer.normalize(
             triggers = workflow.triggers,

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 备份/恢复 · 「导出范围」多选编辑器（fork 新增）。
+     ⚠️ ChipGroup 必须 singleSelection="false"（默认值就是 false，但显式写出来
+     是为了防止有人「顺手改成 true」——那会让多选静默退化成单选）。 -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/param_vflow_data_export_backup_scopes_name"
+        android:textAppearance="?attr/textAppearanceLabelLarge" />
+
+    <com.google.android.material.chip.ChipGroup
+        android:id="@+id/cg_backup_scopes"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        app:singleSelection="false" />
+
+    <TextView
+        android:id="@+id/text_backup_scopes_empty"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="@string/backup_scope_empty_hint"
+        android:textAppearance="?attr/textAppearanceBodySmall"
+        android:visibility="gone" />
+
+</LinearLayout>

@@ -3123,4 +3123,24 @@
     <string name="error_vflow_xposed_js_script_empty_desc">JavaScript スクリプトの内容は空にできません。</string>
     <string name="msg_vflow_xposed_js_executing">システムプロセスで JavaScript を実行中…</string>
     <string name="category_xposed">Xposed</string>
+    <!-- vflow.data.export_backup（fork 追加：バックアップをワークフローから使えるように） -->
+    <string name="module_vflow_data_export_backup_name">バックアップを書き出す</string>
+    <string name="module_vflow_data_export_backup_desc">選択したデータをバックアップファイルとして書き出します（/sdcard/vFlow/backups に保存し、パスを出力）</string>
+    <string name="param_vflow_data_export_backup_scopes_name">書き出す範囲</string>
+    <string name="param_vflow_data_export_backup_include_secrets_name">シークレットを含める</string>
+    <string name="param_vflow_data_export_backup_password_name">バックアップのパスフレーズ（「シークレットを含める」選択時は必須）</string>
+    <string name="param_vflow_data_export_backup_password_hint">直接入力せずグローバル変数を参照することを推奨します</string>
+    <string name="param_vflow_data_export_backup_file_name_name">ファイル名（空なら自動命名）</string>
+    <string name="output_vflow_data_export_backup_file_path_name">ファイルパス</string>
+    <string name="output_vflow_data_export_backup_file_name_name">ファイル名</string>
+    <string name="output_vflow_data_export_backup_scope_count_name">範囲の数</string>
+    <string name="output_vflow_data_export_backup_scrubbed_count_name">消去したフィールド数</string>
+    <string name="progress_vflow_data_export_backup_exporting">バックアップを書き出しています&#8230;</string>
+    <string name="progress_vflow_data_export_backup_done">バックアップを書き出しました：%1$s</string>
+    <string name="error_vflow_data_export_backup_execution_error">バックアップの書き出しに失敗しました</string>
+    <string name="error_vflow_data_export_backup_step_missing">現在のステップを取得できません</string>
+    <string name="error_vflow_data_export_backup_no_scope">書き出す範囲を 1 つ以上選んでください</string>
+    <string name="error_vflow_data_export_backup_password_required">「シークレットを含める」が有効ですがパスフレーズがありません。入力するか、オプションをオフにしてください。</string>
+    <string name="error_vflow_data_export_backup_failed">バックアップの書き出しに失敗しました</string>
+    <string name="error_vflow_data_export_backup_unknown">不明なエラー</string>
 </resources>

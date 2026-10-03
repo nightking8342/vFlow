@@ -162,6 +162,8 @@ object ModuleRegistry {
         register(ParseXmlModule(), context)
         register(CommentModule(), context)
         register(FileOperationModule(), context)
+        // 导出备份（fork 新增：把 T1/T2 的备份能力接到编排面）
+        register(BackupExportModule(), context)
 
         // 文件
         register(ImportImageModule(), context)

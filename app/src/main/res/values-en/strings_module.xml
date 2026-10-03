@@ -3502,4 +3502,24 @@
     <string name="error_vflow_xposed_js_script_empty_desc">JavaScript script content cannot be empty.</string>
     <string name="msg_vflow_xposed_js_executing">Executing JavaScript in the system process…</string>
     <string name="category_xposed">Xposed</string>
+    <!-- vflow.data.export_backup (fork: expose backup to the workflow editor) -->
+    <string name="module_vflow_data_export_backup_name">Export backup</string>
+    <string name="module_vflow_data_export_backup_desc">Export the selected data as a backup file (written to /sdcard/vFlow/backups, path is returned)</string>
+    <string name="param_vflow_data_export_backup_scopes_name">Scopes to export</string>
+    <string name="param_vflow_data_export_backup_include_secrets_name">Include secrets</string>
+    <string name="param_vflow_data_export_backup_password_name">Backup passphrase (required when "Include secrets" is on)</string>
+    <string name="param_vflow_data_export_backup_password_hint">Prefer referencing a global variable over typing it here</string>
+    <string name="param_vflow_data_export_backup_file_name_name">File name (auto-generated when empty)</string>
+    <string name="output_vflow_data_export_backup_file_path_name">File path</string>
+    <string name="output_vflow_data_export_backup_file_name_name">File name</string>
+    <string name="output_vflow_data_export_backup_scope_count_name">Scope count</string>
+    <string name="output_vflow_data_export_backup_scrubbed_count_name">Scrubbed field count</string>
+    <string name="progress_vflow_data_export_backup_exporting">Exporting backup&#8230;</string>
+    <string name="progress_vflow_data_export_backup_done">Backup written to: %1$s</string>
+    <string name="error_vflow_data_export_backup_execution_error">Backup export failed</string>
+    <string name="error_vflow_data_export_backup_step_missing">Could not resolve the current step</string>
+    <string name="error_vflow_data_export_backup_no_scope">Select at least one scope to export</string>
+    <string name="error_vflow_data_export_backup_password_required">"Include secrets" is on but no passphrase was given. Enter a passphrase or turn the option off.</string>
+    <string name="error_vflow_data_export_backup_failed">Backup export failed</string>
+    <string name="error_vflow_data_export_backup_unknown">Unknown error</string>
 </resources>

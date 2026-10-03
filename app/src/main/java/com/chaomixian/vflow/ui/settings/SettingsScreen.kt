@@ -24,6 +24,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Dataset
 import androidx.compose.material.icons.filled.AccessibilityNew
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.BedtimeOff
 import androidx.compose.material.icons.filled.BlurOn
 import androidx.compose.material.icons.filled.BugReport
@@ -92,6 +93,8 @@ data class SettingsScreenActions(
     val onOpenModuleConfig: () -> Unit,
     val onOpenGlobalVariables: () -> Unit,
     val onOpenModelConfig: () -> Unit,
+    // fork 新增：备份/恢复二级页入口（只追加，不改既有字段顺序）
+    val onOpenBackupRestore: () -> Unit,
     val onSetAutoCheckUpdatesEnabled: (Boolean) -> Unit,
     val onSetAllowShowOnLockScreen: (Boolean) -> Unit,
     val onSetApiEnabled: (Boolean) -> Unit,
@@ -183,6 +186,9 @@ fun SettingsScreen(
     val globalVariablesSubtitle = stringResource(R.string.settings_global_variables_desc)
     val modelConfigTitle = stringResource(R.string.settings_model_config)
     val modelConfigSubtitle = stringResource(R.string.settings_model_config_desc)
+    // fork 新增：备份/恢复入口文案
+    val backupRestoreTitle = stringResource(R.string.settings_backup_restore)
+    val backupRestoreSubtitle = stringResource(R.string.settings_backup_restore_desc)
     val autoCheckUpdatesTitle = stringResource(R.string.settings_switch_auto_check_updates)
     val autoCheckUpdatesSubtitle = stringResource(R.string.settings_switch_auto_check_updates_desc)
     val lockScreenTitle = stringResource(R.string.settings_switch_allow_show_on_lock_screen)
@@ -289,6 +295,9 @@ fun SettingsScreen(
         generalSectionTitle,
         moduleConfigTitle, moduleConfigSubtitle,
         modelConfigTitle, modelConfigSubtitle,
+        // ⚠️ 新入口的两个文案必须在此登记 —— 漏了会让用户搜「备份」时
+        //    整个「通用设置」分组消失（showGeneralSection 全 false ⇒ 0 个 item）。
+        backupRestoreTitle, backupRestoreSubtitle,
         autoCheckUpdatesTitle, autoCheckUpdatesSubtitle,
         lockScreenTitle, lockScreenSubtitle,
         apiEnabledTitle, apiEnabledSubtitle,
@@ -460,6 +469,15 @@ fun SettingsScreen(
                     tone = paletteTone(),
                     position = SettingsGroupPosition.Middle,
                     onClick = actions.onOpenModelConfig
+                )
+                // fork 新增：备份/恢复。插在此处取 Middle ⇒ 既有各行的 position 一个都不用改。
+                NativeEntryRow(
+                    title = backupRestoreTitle,
+                    subtitle = backupRestoreSubtitle,
+                    icon = Icons.Default.Backup,
+                    tone = cloudTone(),
+                    position = SettingsGroupPosition.Middle,
+                    onClick = actions.onOpenBackupRestore
                 )
                 NativeSwitchRow(
                     title = autoCheckUpdatesTitle,

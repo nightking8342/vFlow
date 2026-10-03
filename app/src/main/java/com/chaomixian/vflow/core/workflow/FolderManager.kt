@@ -69,4 +69,17 @@ class FolderManager(val context: Context) {
     fun getWorkflowCountInFolder(folderId: String, workflowManager: WorkflowManager): Int {
         return workflowManager.getAllWorkflows().count { it.folderId == folderId }
     }
+
+    /**
+     * **覆盖式**写入所有文件夹：写完后不在这份列表里的文件夹会消失。
+     *
+     * 委托既有的 private [saveAllFolders]（它已是单次 `putString(...).apply()`），
+     * **不新增写路径**，也就不会产生第二份序列化格式。
+     *
+     * ⚠️ 恢复备份时**必须保 id**：备份里的 `Workflow.folderId` 指向这些 id，
+     * 重生成 id 会让所有工作流的归属全部悬空。见 `core/backup/scopes/FolderScope.kt`。
+     */
+    fun replaceAllFolders(folders: List<WorkflowFolder>) {
+        saveAllFolders(folders)
+    }
 }

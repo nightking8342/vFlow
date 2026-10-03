@@ -3505,4 +3505,24 @@
     <string name="error_vflow_xposed_js_script_empty_desc">JavaScript 脚本内容不能为空。</string>
     <string name="msg_vflow_xposed_js_executing">正在系统进程中执行 JavaScript…</string>
     <string name="category_xposed">Xposed</string>
+    <!-- vflow.data.export_backup（fork 新增：把备份能力接到工作流编排面） -->
+    <string name="module_vflow_data_export_backup_name">导出备份</string>
+    <string name="module_vflow_data_export_backup_desc">将所选数据导出为备份文件（写入 /sdcard/vFlow/backups 并输出路径）</string>
+    <string name="param_vflow_data_export_backup_scopes_name">导出范围</string>
+    <string name="param_vflow_data_export_backup_include_secrets_name">包含密钥</string>
+    <string name="param_vflow_data_export_backup_password_name">备份口令（勾选「包含密钥」时必填）</string>
+    <string name="param_vflow_data_export_backup_password_hint">建议引用全局变量而不是直接填写</string>
+    <string name="param_vflow_data_export_backup_file_name_name">文件名（留空则自动命名）</string>
+    <string name="output_vflow_data_export_backup_file_path_name">文件路径</string>
+    <string name="output_vflow_data_export_backup_file_name_name">文件名</string>
+    <string name="output_vflow_data_export_backup_scope_count_name">范围数量</string>
+    <string name="output_vflow_data_export_backup_scrubbed_count_name">被清洗字段数</string>
+    <string name="progress_vflow_data_export_backup_exporting">正在导出备份…</string>
+    <string name="progress_vflow_data_export_backup_done">备份已写入：%1$s</string>
+    <string name="error_vflow_data_export_backup_execution_error">导出备份失败</string>
+    <string name="error_vflow_data_export_backup_step_missing">无法获取当前步骤</string>
+    <string name="error_vflow_data_export_backup_no_scope">至少要选择一个导出范围</string>
+    <string name="error_vflow_data_export_backup_password_required">勾选了「包含密钥」但没有填写口令；请填入口令，或取消勾选「包含密钥」</string>
+    <string name="error_vflow_data_export_backup_failed">导出备份失败</string>
+    <string name="error_vflow_data_export_backup_unknown">未知错误</string>
 </resources>

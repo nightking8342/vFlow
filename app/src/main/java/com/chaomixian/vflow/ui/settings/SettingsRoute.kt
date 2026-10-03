@@ -151,6 +151,10 @@ fun SettingsRoute(
             onOpenModelConfig = {
                 context.startActivity(ModelConfigActivity.createIntent(context))
             },
+            // fork 新增：备份/恢复二级页
+            onOpenBackupRestore = {
+                context.startActivity(Intent(context, BackupRestoreActivity::class.java))
+            },
             onSetAutoCheckUpdatesEnabled = { enabled ->
                 settingsViewModel.setAutoCheckUpdatesEnabled(context, enabled)
             },
