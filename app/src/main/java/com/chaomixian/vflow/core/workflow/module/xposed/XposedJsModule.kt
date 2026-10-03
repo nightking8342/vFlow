@@ -121,7 +121,8 @@ class XposedJsModule : BaseModule() {
             "thread_mode" to "脚本的执行模式（三档）：`default`（CPU 密集）/ `io`（阻塞等待）" +
                 "/ `ui`（需要 Looper，如脚本里要用 `new java.lang.Handler()`、`Looper` 相关 API）。" +
                 "⚠️ `ui` 档是**单线程**且队列有上限；在 system_server 里它意味着可以往整块屏幕贴窗口，" +
-                "且没有应用权限兜底 —— 只在确实需要 Looper 时才选它。",
+                "且没有应用权限兜底 —— 只在确实需要 Looper 时才选它。" +
+                "未知值一律按 `default` 处理（不报错）。",
         ),
         requiredInputIds = setOf("script"),
     )
@@ -207,8 +208,13 @@ class XposedJsModule : BaseModule() {
         ),
         InputDefinition(
             id = "thread_mode",
-            // ⚠️ 约束写进标签（照 `timeout_ms` 的教训：自动表单里 hint 只是**输入框占位符**，
-            // 而本字段**有默认值** ⇒ 占位符永远不显示）。标签是**必然被渲染**的那处。
+            // ⚠️ 标签保持**简洁**（「执行模式」）—— 用户已定：CHIP_GROUP + 短标签。
+            // ⚠️⚠️ 那 `ui` 档的风险提示放哪？**放选项文案**（`option_..._ui`）：
+            // 本字段**有默认值** ⇒ 自动表单里 `hint` 只是**输入框占位符**、且被默认值顶掉
+            // **永远不显示**，故一律不写 `hintStringRes`。
+            // 设计文档 §2.1 硬性要求「文案里写明」那条风险（关不掉的全屏窗口），
+            // 而三处候选里只有选项文案**必然被渲染**：标签（已定简洁）、hint（不显示）、
+            // `inputHints`（只给 LLM 看、用户看不到）。⇒ 唯一落点是选项文案。
             name = "执行模式",
             staticType = ParameterType.ENUM,
             // ⚠️ 存**稳定常量**（`default`/`io`/`ui`），不存本地化文案 ——
@@ -225,7 +231,8 @@ class XposedJsModule : BaseModule() {
             acceptsMagicVariable = false,
             acceptsNamedVariable = false,
             nameStringRes = R.string.param_vflow_xposed_js_thread_mode_name,
-            hintStringRes = R.string.param_vflow_xposed_js_thread_mode_hint,
+            // ⚠️ **不设** `hintStringRes`：约束已进选项文案，hint 是占位符、不显示，加了冗余。
+            // ⚠️ **不设** `legacyValueMap`：全新参数、无历史值。
         ),
     )
 
