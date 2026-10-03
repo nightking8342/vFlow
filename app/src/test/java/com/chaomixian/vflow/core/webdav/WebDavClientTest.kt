@@ -383,4 +383,66 @@ class WebDavClientTest {
             </D:multistatus>
         """.trimIndent()
     }
+
+    // ── HttpError.url：409/404 的排查全靠它（真机缺陷回归）──────────
+
+    /**
+     * ⚠️⚠️ **真机回归锁**。起因：坚果云上传回 409 `AncestorsNotFound`，
+     * 而当时错误串只有「上传失败 - HTTP 409: <服务器 XML>」——
+     * 用户无法判断是**路径拼错**还是**那个集合不存在**（处置完全不同）。
+     *
+     * `HttpError.url` 必须带上**实际请求到的完整 URL**（含跟随重定向后的最终地址）。
+     */
+    @Test
+    fun `http error carries the actual request url`() {
+        server.enqueue(MockResponse().setResponseCode(409).setBody("<d:error/>"))
+
+        val result = client().put("", "自动备份.json", ByteArray(0).toRequestBody(null))
+
+        assertTrue("期望 HttpError，实际 $result", result is WebDavResult.HttpError)
+        result as WebDavResult.HttpError
+        assertEquals(409, result.code)
+        // ⚠️ 断言**百分号编码后的**形式 —— `HttpUrl` 对非 ASCII 段做编码，这是**对的**
+        //    （它才是真正发出去的 URL，可直接粘进浏览器/curl）。
+        //    给人看的可读形式由 `WebDavUrlBuilder.readableHttpUrl` 负责（有独立单测）。
+        assertTrue(
+            "🔴 HttpError 必须带 url —— 否则用户看到 409 无从下手（真机踩过）。实际：${result.url}",
+            result.url != null && result.url!!.endsWith("/dav/%E8%87%AA%E5%8A%A8%E5%A4%87%E4%BB%BD.json"),
+        )
+    }
+
+    /**
+     * ⚠️ URL 必须是**跟随完重定向后的最终地址**，不是最初的。
+     * 否则重定向到别的路径后，报错里的 URL 指向一个根本没被请求的地方。
+     */
+    @Test
+    fun `http error url reflects the final hop after redirects`() {
+        server.enqueue(MockResponse().setResponseCode(307).setHeader("Location", server.url("/dav/moved/x.json").toString()))
+        server.enqueue(MockResponse().setResponseCode(403).setBody("forbidden"))
+
+        val result = client().put("", "x.json", ByteArray(0).toRequestBody(null))
+
+        result as WebDavResult.HttpError
+        assertEquals(403, result.code)
+        assertTrue(
+            "URL 应是重定向后的最终地址，实际：${result.url}",
+            result.url!!.endsWith("/dav/moved/x.json"),
+        )
+    }
+
+    /**
+     * ⚠️ URL 里**不得含凭据** —— Basic Auth 走 header，不拼进 URL。
+     * 这条保证了诊断串可以安全地进工作流日志与用户看得到的错误提示。
+     */
+    @Test
+    fun `http error url never contains credentials`() {
+        server.enqueue(MockResponse().setResponseCode(403).setBody("forbidden"))
+
+        val result = client(username = "u", password = "p").propfind("", "", true)
+
+        result as WebDavResult.HttpError
+        val url = result.url.orEmpty()
+        assertFalse("URL 不得含 user:pass", url.contains("u:p"))
+        assertFalse("URL 不得含 userinfo 段", url.contains("@"))
+    }
 }

@@ -677,6 +677,23 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 | **集成记录（父会话）** | ⚠️ 本块由 **6 个子任务并行产出**，但 **T6 的分支只含 T1/T2/T5 全量 + T3/T4 的 `core/` 层**，**缺 T3 的 UI 接线与 T4 的模块**。父会话集成时补齐：`WebDavModule.kt` + `WebDavConfigActivity/Screen.kt` + `SettingsScreen/SettingsRoute` 的 WebDAV 入口 + `AndroidManifest` 声明 + 三语 `webdav_*`（29×3）与模块文案（64×3）+ `globalVariables` 搜索清单修复 + 5 个 `core/webdav` 测试 + 3 个模块/UI 测试。**全部纯追加，0 删除**；集成后 92 文件 / +19473 行 | **我方**（集成动作） |
 | `core/webdav/WebDavHttpSupport.kt`（新增，2026-10-03 收敛） | fork 独有：**`WebDavProbe` 与 `WebDavClient` 共用的 HTTP 装配**（`REDIRECT_CODES` 集合、`trustAllTrustManager()`、`SSLContext` + `sslSocketFactory` 装配）。⚠️ 收敛前这三样在两侧**各写一份**（`trustAllTrustManager` 两份逐字相同）—— 重复的代价不是「多几行」而是**改一处忘另一处**（表现是「测试连接能过、模块执行报错」）。⚠️⚠️ **刻意**没收敛 `followRedirects(false)` / `followSslRedirects(false)`：它们是**意图声明**，必须在各自的 `buildClient()` 里可见。⚠️ 有 **4 条源码扫描断言 + 3 条反证**锁住，其中一条是**安全不变量**：**任何一侧都不得出现 `hostnameVerifier`** —— 加它之后**没有任何行为测试会变红**（没有测试能覆盖「中间人」），「允许自签名」≠「允许任意中间人」 | 我方 |
 
+### 备份/WebDAV 真机缺陷修复（2026-10-03）
+
+> 文档：`docs/fork/backup-webdav-truth-digging.md`。起因是用户按文档配的「自动备份」工作流两次执行都失败。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `core/workflow/module/data/BackupExportModule.kt`（改） | **`file_name` 参数补模板解析**（真机缺陷）。原实现把它直接交给 `sanitizeBackupFileName`，**没过 `VariableResolver`** ⇒ 填 `自动备份_{{now.time}}test.json` 时模板**原样落盘**；而输出 `file_path` 是已解析的（读 `file.absolutePath`）⇒ 下游步骤引用时两边不一致，报「本地文件不存在：…/自动备份_22:47:11test.json」。⚠️ **顺序不能反**（解析在前、sanitize 在后）：解析结果可能含 `/`（如 `{{vars.dir}}/x.json`），那正是 sanitize 要剥的。⚠️ **不加「解析失败就报错」** —— `VariableResolver` 对解析不掉的模板**原样返回**是仓库全局语义（`FileOperationModule` 等一样），本模块单独拦会成异类（有断言锁「已知行为」）。改动集中在 `execute()` 的 5 行 | **手动合并**（fork 新增文件内完善） |
+| `core/webdav/WebDavClient.kt`（改） | **`HttpError` 增加 `url` 字段**（真机缺陷，带默认值 `null` ⇒ 向后兼容）。起因：坚果云上传 409 `AncestorsNotFound`，而错误串只有「HTTP 409 + 服务器 XML」，用户无法判断是路径拼错还是集合不存在（**两种处置完全不同**）。主循环构造时带上**跟随过重定向后的最终 URL**（不是最初的 —— 否则重定向后报错指向一个没被请求的地方） | **手动合并**（1 个字段 + 1 处构造） |
+| `core/webdav/WebDavUrlBuilder.kt`（改） | **新增 `readableHttpUrl(url)`**：把 `HttpUrl.toString()` 的百分号编码段解回可读文本。⚠️ 因为备份文件名**默认带中文**，直接给用户看 `%E8%87%AA...` 等于没给。⚠️⚠️ **只用于展示，绝不用于请求** —— 解码后的串不再合法（空格/`#`/`?` 会变语义），有断言把「请求形式 ≠ 展示形式」锁住 | **手动合并**（新增 1 函数） |
+| `core/workflow/module/network/WebDavModule.kt`（改） | 5 处 `HttpError` 分支统一走新增的 `httpErrorDetail(result)`，输出形如 `HTTP 409: <XML>（目标：https://…/自动备份_test.json）`。⚠️ 展示前经 `readableHttpUrl` 解码。⚠️ URL **不含凭据**（Basic Auth 走 header）⇒ 可安全进工作流日志 | **手动合并**（新增 1 函数 + 5 处替换） |
+| `core/execution/WorkflowExecutor.kt`（改） | **通知状态修复**（⚠️ **上游既有形态**，fork 首次修）：`Completed("执行完毕")` 原先**无条件**执行（只判 `isTimeout`），而 `executeWorkflowInternal` 失败时是 `return null`（**不抛异常**）⇒ 失败路径照样执行 ⇒ 通知先被写成「失败: …」、65ms 后被覆盖成「执行完毕」，而终态通知是 `setOngoing(true)` 的（**用户划不掉**）。真机日志三次执行逐次复现。修法：`val failed = failedExecutions[executionInstanceId] == true` + `if (!isTimeout && !failed)`。⚠️⚠️ **读标记，绝不能 `remove`** —— 那会把 `finally` 里 `wasFailureHandled` 的判据吃掉 ⇒ **再广播一次 `Finished`**，把失败状态在 `ExecutionStateBus` 上盖掉（比通知更难发现）。改动 2 行 + 注释 | **手动合并**（2 行，在 `execute()` 的主流程返回处） |
+| `test/.../ExecutionNotificationFinalStateWiringTest.kt`（新增，2 例） | fork 独有：**源码扫描型接线锚定 = 不能靠行为测（执行器纯 JVM 起不来）+ 失败形态静默**。两条断言各有一条反证（拆守卫 ⇒ 红；读改 remove ⇒ 红）。⚠️ **写它时踩到并记下的坑**：`SourceScan.functionBody` 的签名片段**只能用单行** —— `WorkflowExecutor.kt` 是 **CRLF 行尾**，带 `
+` 的多行片段**匹配不到**（拿到 `null`）。是那条「防空转断言」把这次失败暴露出来的 | 我方 |
+| `test/.../BackupExportModuleTest.kt`（改，+4 例）、`test/.../WebDavClientTest.kt`（改，+3 例）、`test/.../WebDavUrlBuilderTest.kt`（改，+4 例） | 新增 11 例。⚠️ 其中 `execute resolves the file name template before sanitizing` 是**源码扫描型接线锚定** —— 实测证明：把它删掉，那 3 条**纯函数**用例对「生产代码有没有真的调 `VariableResolver`」**完全无感**（改坏后失败数 = 0） | 我方（新增用例） |
+| `docs/fork/backup-webdav-truth-digging.md`（新增） | fork 独有：本次排查的完整记录（三处缺陷 + 一处「刻意不改」的观察） | 我方 |
+
+> ⚠️ **真机验证 0 项**（`adb devices` 为空）：设计文档 §8.2 列了完整清单，
 > ⚠️ **真机验证 0 项**（`adb devices` 为空）：设计文档 §8.2 列了完整清单，
 > 其中**最关键的是「导入后触发器恢复调度」**（`reloadTriggers` 的端到端 —— 只在**不重启 App** 的前提下触发才证明得了那条链路）。
 

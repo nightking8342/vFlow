@@ -46,8 +46,16 @@ sealed interface WebDavResult {
         override fun hashCode(): Int = 31 * (31 * code + hops) + bytes.contentHashCode()
     }
 
-    /** 服务器给了明确答复，但不是 2xx（401/403/404/405/409/412/507…）。 */
-    data class HttpError(val code: Int, val detail: String?) : WebDavResult
+    /**
+     * 服务器给了明确答复，但不是 2xx（401/403/404/405/409/412/507…）。
+     *
+     * ⚠️ [url] 是**实际请求到的完整 URL**，不是配置里的 baseUrl。
+     * 加它的起因是一次真机 409（坚果云 `AncestorsNotFound`）：报错只有「上传失败 - HTTP 409: …」，
+     * 用户无法判断到底是路径拼错了、还是那个集合压根不存在 —— 而这两种的处置完全不同。
+     * 有了它，用户能直接看出 `dav.jianguoyun.com/dav/自动备份.json` 少了一段（真实可写的只有
+     * `/dav/<用户名>/`）。
+     */
+    data class HttpError(val code: Int, val detail: String?, val url: String? = null) : WebDavResult
 
     /** IO / TLS / 超时 / 无法解析地址 / 重定向超限。 */
     data class Failure(val kind: Kind, val detail: String?) : WebDavResult {
@@ -213,7 +221,9 @@ class WebDavClient(
                     return if (code in 200..299) {
                         WebDavResult.Success(code, bytes, hop)
                     } else {
-                        WebDavResult.HttpError(code, describe(code, bytes))
+                        // ⚠️ 把 `url`（**跟随过重定向后的最终地址**）一并带出去 ——
+                        // 见 `HttpError.url` 的 KDoc：409/404 的排查全靠它。
+                        WebDavResult.HttpError(code, describe(code, bytes), url)
                     }
                 }
             }

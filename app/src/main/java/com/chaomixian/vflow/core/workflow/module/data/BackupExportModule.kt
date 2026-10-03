@@ -248,7 +248,26 @@ class BackupExportModule : BaseModule() {
             )
         }
 
-        val fileName = sanitizeBackupFileName(step.parameters[PARAM_FILE_NAME] as? String)
+        // ⚠️⚠️ **必须先解析再 sanitize，顺序不能反**。
+        //
+        // 原先直接 `sanitizeBackupFileName(step.parameters[...])` ⇒ 模板原样落盘成
+        // `自动备份_{{now.time}}test.json`（用户实测），而**下游步骤引用本步骤的输出时
+        // 拿到的是已解析的路径**（`file_path` 在下面由 `file.absolutePath` 构造）——
+        // 两边不一致 ⇒ WebDAV 上传报「本地文件不存在：…/自动备份_22:47:11test.json」，
+        // 而磁盘上的文件名里是 `{{now.time}}` 字面量。
+        //
+        // 反过来 sanitize **不能**提到解析之前：解析结果可能含 `/`（例如用户填
+        // `{{vars.dir}}/x.json`），那正是 sanitize 要剥掉的目录成分。
+        //
+        // ⚠️ `sanitizeBackupFileName` 只做「剥目录 + 防空」，不做模板识别 ——
+        // 解析失败（变量不存在）时它拿到的仍是 `{{...}}` 字面量，会被当作合法文件名
+        // 直接落盘。这与仓库里其它模块对 STRING 参数的处理一致（`VariableResolver`
+        // 解析不了就原样返回），**不额外加校验**：那是「模板里写了不存在的变量」的
+        // 既有全局语义，本模块单独拦会让它成为异类。
+        val rawFileName = (step.parameters[PARAM_FILE_NAME] as? String).orEmpty()
+        val fileName = sanitizeBackupFileName(
+            if (rawFileName.isBlank()) rawFileName else VariableResolver.resolve(rawFileName, context)
+        )
 
         onProgress(ProgressUpdate(appContext.getString(R.string.progress_vflow_data_export_backup_exporting)))
 

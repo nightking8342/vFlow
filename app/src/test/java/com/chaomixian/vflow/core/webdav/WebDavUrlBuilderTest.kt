@@ -2,6 +2,7 @@ package com.chaomixian.vflow.core.webdav
 
 import okhttp3.HttpUrl
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -175,5 +176,46 @@ class WebDavUrlBuilderTest {
             "https://example.com/dav/x?token=abc",
             url("x", baseUrl = "https://example.com/dav?token=abc")
         )
+    }
+
+    // ── readableHttpUrl：给人看的诊断串 ───────────────────────────
+
+    /**
+     * ⚠️ 起因：409 报错里的「目标：…」若用 `HttpUrl.toString()`，中文路径会变成
+     * `%E8%87%AA%E5%8A%A8...` —— 而备份文件名**默认就带中文**，等于没给用户任何信息。
+     */
+    @Test
+    fun `readable url decodes percent-encoded non ascii segments`() {
+        val encoded = "https://dav.jianguoyun.com/dav/%E8%87%AA%E5%8A%A8%E5%A4%87%E4%BB%BD.json"
+        assertEquals(
+            "https://dav.jianguoyun.com/dav/自动备份.json",
+            WebDavUrlBuilder.readableHttpUrl(encoded),
+        )
+    }
+
+    @Test
+    fun `readable url leaves ascii urls untouched`() {
+        val ascii = "https://example.com/dav/backup.json"
+        assertEquals(ascii, WebDavUrlBuilder.readableHttpUrl(ascii))
+    }
+
+    /** ⚠️ 畸形百分号序列**不抛** —— 它只是给人看的辅助信息，不该盖掉真正的错误。 */
+    @Test
+    fun `readable url returns the input unchanged on malformed escapes`() {
+        val broken = "https://h/dav/%E8%ZZ.json"
+        assertEquals(broken, WebDavUrlBuilder.readableHttpUrl(broken))
+    }
+
+    /**
+     * ⚠️⚠️ **只用于展示，不用于请求** —— 解码后的串不再合法（空格/`#`/`?` 会变语义）。
+     * 本用例锁住「展示形式」与「请求形式」**不同**，防有人拿它去发请求。
+     */
+    @Test
+    fun `readable url is not a valid request form`() {
+        val space = WebDavUrlBuilder.resolve("https://h/dav", "", "a b.json", directory = false)!!.toString()
+        val readable = WebDavUrlBuilder.readableHttpUrl(space)
+        assertTrue("请求形式应当编码", space.contains("%20"))
+        assertTrue("展示形式应当解码", readable.contains(" "))
+        assertNotEquals("两者必须不同 —— 否则说明有人把展示形式拿去请求了", space, readable)
     }
 }

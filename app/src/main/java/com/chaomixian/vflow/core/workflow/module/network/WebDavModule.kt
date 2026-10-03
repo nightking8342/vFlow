@@ -556,7 +556,7 @@ class WebDavModule : BaseModule() {
                 }
             }
 
-            is WebDavResult.HttpError -> listFailure(result.code, result.detail)
+            is WebDavResult.HttpError -> listFailure(result.code, httpErrorDetail(result))
             is WebDavResult.Failure -> listFailure(null, describeFailure(result))
         }
     }
@@ -688,7 +688,7 @@ class WebDavModule : BaseModule() {
                 val message = if (result.code == 412) {
                     appContext.getString(R.string.error_vflow_network_webdav_remote_file_exists, remotePath)
                 } else {
-                    result.detail.orEmpty()
+                    httpErrorDetail(result)
                 }
                 ExecutionResult.Failure(
                     appContext.getString(R.string.error_vflow_network_webdav_upload_failed),
@@ -763,8 +763,8 @@ class WebDavModule : BaseModule() {
 
             is WebDavResult.HttpError -> ExecutionResult.Failure(
                 appContext.getString(R.string.error_vflow_network_webdav_download_failed),
-                result.detail.orEmpty(),
-                partialOutputsOf(OP_DOWNLOAD, success = false, error = result.detail.orEmpty(), statusCode = result.code),
+                httpErrorDetail(result),
+                partialOutputsOf(OP_DOWNLOAD, success = false, error = httpErrorDetail(result), statusCode = result.code),
             )
 
             is WebDavResult.Failure -> ExecutionResult.Failure(
@@ -839,8 +839,8 @@ class WebDavModule : BaseModule() {
             } else {
                 ExecutionResult.Failure(
                     appContext.getString(R.string.error_vflow_network_webdav_mkdir_failed),
-                    result.detail.orEmpty(),
-                    partialOutputsOf(OP_MKDIR, success = false, error = result.detail.orEmpty(), statusCode = result.code),
+                    httpErrorDetail(result),
+                    partialOutputsOf(OP_MKDIR, success = false, error = httpErrorDetail(result), statusCode = result.code),
                 )
             }
 
@@ -883,7 +883,7 @@ class WebDavModule : BaseModule() {
                 val message = if (result.code == 404) {
                     appContext.getString(R.string.error_vflow_network_webdav_remote_not_found, remotePath)
                 } else {
-                    result.detail.orEmpty()
+                    httpErrorDetail(result)
                 }
                 ExecutionResult.Failure(
                     appContext.getString(R.string.error_vflow_network_webdav_delete_failed),
@@ -956,6 +956,27 @@ class WebDavModule : BaseModule() {
             "status_code" to VNumber((statusCode ?: 0).toDouble()),
             "error" to VString(error),
         )
+    }
+
+    /**
+     * 把服务器答复拼成给用户看的诊断串，**带上实际请求到的 URL**。
+     *
+     * ⚠️ 带上 URL 的起因是一次真机 409（坚果云 `AncestorsNotFound`）：
+     * 只报「上传失败 - HTTP 409」时，用户无法判断是**路径拼错**还是**那个集合不存在** ——
+     * 这两种的处置完全不同（改路径 vs 先去服务器上建目录）。
+     * 有了 URL，用户能自己看出 `…/dav/自动备份.json` 少了一段
+     * （坚果云真实可写的只有 `/dav/<用户名>/`，`/dav/` 本身是虚拟根）。
+     *
+     * ⚠️ URL 里**不含凭据**（Basic Auth 走 header，不拼进 URL）⇒ 可以安全地进工作流日志。
+     *
+     * ⚠️ 展示前经 [WebDavUrlBuilder.readableHttpUrl] **解码** —— `HttpUrl.toString()` 会把
+     * 中文段编成 `%E8%87%AA...`，直接给用户看等于没给（备份文件名默认就带中文）。
+     */
+    private fun httpErrorDetail(result: WebDavResult.HttpError): String {
+        val base = result.detail.orEmpty()
+        val url = result.url
+        return if (url.isNullOrBlank()) base
+        else "$base（目标：${WebDavUrlBuilder.readableHttpUrl(url)}）"
     }
 
     private fun listFailure(code: Int?, detail: String?): ExecutionResult {

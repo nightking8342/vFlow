@@ -274,10 +274,106 @@ class BackupExportModuleTest {
         assertTrue(sanitizeBackupFileName(null, 0L).startsWith("vflow_backup_"))
     }
 
+    /**
+     * ⚠️⚠️ **真机回归锁**：`file_name` 必须**先解析模板再 sanitize**。
+     *
+     * 起因是用户实测报的缺陷：填 `自动备份_{{now.time}}test.json` 时，
+     * 磁盘上落成了含 `{{now.time}}` **字面量**的文件名，而 WebDAV 那一步
+     * 引用本步骤输出拿到的是**已解析**的路径 ⇒ 报「本地文件不存在」。
+     *
+     * ⚠️ 顺序不能反（解析在前、sanitize 在后）：
+     * 解析结果可能含 `/`（如 `{{vars.dir}}/x.json`），那正是 sanitize 要剥的。
+     *
+     * 本用例用纯函数复现同一条链路 —— 生产代码走的是同一个 `VariableResolver.resolve`
+     * 与同一个 `sanitizeBackupFileName`。
+     */
+    @Test
+    fun `a template in file_name is resolved before sanitizing`() {
+        // 模拟解析结果：{{now.time}} -> 22:47:11（真机日志里的实际值）
+        val raw = "自动备份_{{now.time}}test.json"
+        val resolved = raw.replace("{{now.time}}", "22:47:11")
+
+        val fileName = sanitizeBackupFileName(resolved)
+
+        assertEquals("自动备份_22:47:11test.json", fileName)
+        assertTrue(
+            "🔴 解析必须真的发生 —— 文件名里不得残留 {{ }}",
+            !fileName.contains("{{") && !fileName.contains("}}"),
+        )
+    }
+
+    /**
+     * ⚠️ 顺序反了会怎样：先 sanitize 再解析 ⇒ 模板原样落盘。
+     * 本用例锁住「**不能**把 sanitize 提到解析之前」这个约束的另一半 ——
+     * 它证明上面那条断言不是空转（两者对同一输入给出**不同**答案）。
+     */
+    @Test
+    fun `sanitizing before resolving would leak the template into the file name`() {
+        val raw = "自动备份_{{now.time}}test.json"
+
+        // 反序：先 sanitize（`{{...}}` 不含 `/` ⇒ 原样保留）再「解析」——
+        // 此时得到的仍是模板字面量，因为解析的目标已经是个文件名了。
+        val wrong = sanitizeBackupFileName(raw)
+
+        assertTrue(
+            "反序时模板会原样留在文件名里（这正是真机上发生的）",
+            wrong.contains("{{now.time}}"),
+        )
+        // 与正序的结果必须不同 —— 否则本族断言无意义
+        assertTrue("正序与反序必须给出不同结果", wrong != sanitizeBackupFileName(raw.replace("{{now.time}}", "22:47:11")))
+    }
+
+    /**
+     * ⚠️ `sanitize` **不识别模板**：解析不掉的 `{{...}}`（变量不存在）会被当作合法文件名。
+     * 这是刻意的 —— 与仓库里其它模块对 STRING 参数的既有语义一致
+     * （`VariableResolver` 解析不了就原样返回），**本模块不单独拦**。
+     * 本用例把这条「已知行为」写成断言，免得将来有人以为它是缺陷而随手加校验。
+     */
+    @Test
+    fun `sanitize does not validate template syntax`() {
+        val fileName = sanitizeBackupFileName("{{nonexistent.var}}.json")
+        assertEquals("{{nonexistent.var}}.json", fileName)
+    }
+
     @Test
     fun `default file name is stable for a fixed timestamp`() {
         // 同一时刻必产同名（否则「输出路径」这条契约就没法断言）
         assertEquals(defaultBackupFileName(0L), defaultBackupFileName(0L))
         assertTrue(defaultBackupFileName(0L).startsWith("vflow_backup_"))
+    }
+
+    /**
+     * ⚠️⚠️ **接线锚定**（源码扫描，形态照 `CoreDexFingerprintTest`）。
+     *
+     * 上面那三条 `sanitize` 用例测的是**纯函数语义**，它们对「生产代码有没有真的调
+     * `VariableResolver`」**完全无感** —— 我实测过：把 `execute()` 里的解析删掉
+     * （退回 `sanitizeBackupFileName(rawFileName)`），那三条**照样全绿**。
+     * 这正是本仓库反复踩的那类盲区（`CoreLauncher` 漏调 `recordLaunchedDexFingerprint`、
+     * `XposedDiagnostics.messageFor` 零调用点），只能靠源码扫描锁住调用点。
+     *
+     * ⚠️ 必须**剥注释后**再断言 —— 本文件的 KDoc 里到处是 `VariableResolver.resolve(` 字样，
+     * 只做 `contains` 的话「把那一行删掉、只留注释」照样绿。
+     */
+    @Test
+    fun `execute resolves the file name template before sanitizing`() {
+        val body = SourceScan.functionBody(
+            SourceScan.stripped("src/main/java/com/chaomixian/vflow/core/workflow/module/data/BackupExportModule.kt"),
+            "override suspend fun execute(",
+        )
+        assertTrue("🔴 取不到 execute 函数体（签名改了？）—— 防空转", body != null && body.length > 300)
+
+        assertTrue(
+            "🔴 execute 里必须调 VariableResolver.resolve 解析 file_name —— " +
+                "否则 `{{now.time}}` 会以字面量落进文件名，而下游步骤拿到的是已解析路径（真机缺陷）",
+            body!!.contains("VariableResolver.resolve(rawFileName"),
+        )
+        // ⚠️ 「顺序」不能靠 indexOf 比位置 —— `resolve` 是 `sanitizeBackupFileName(...)`
+        //    的**嵌套实参**，文本上它出现在 `sanitizeBackupFileName(` **之后**。
+        //    换成等价且更精确的判据：**传给 sanitize 的不得是原始模板**。
+        assertTrue(
+            "🔴 不得把原始模板直接交给 sanitize —— 那正是真机缺陷的形态" +
+                "（文件名里留 {{now.time}} 字面量）",
+            !body.contains("sanitizeBackupFileName(rawFileName)"),
+        )
     }
 }

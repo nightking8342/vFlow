@@ -282,7 +282,26 @@ object WorkflowExecutor {
                         )
                     }
 
-                    if (!isTimeout) {
+                    // ⚠️⚠️ **必须判「这次到底成没成」，不能只看「有没有超时」**（fork 修复，2026-10-03）。
+                    //
+                    // 原实现是无条件 `if (!isTimeout) → Completed`，而 `executeWorkflowInternal`
+                    // 在模块失败且策略为 STOP 时是 **`return null`**（不抛异常）⇒ 这条路径
+                    // **照样执行** ⇒ 通知的状态栏在 65ms 内先被写成「失败: …」、又被覆盖成
+                    // 「执行完毕」，而终态的 `Notification` 有 `setOngoing(true)`
+                    // （用户没法划掉，只能等系统超时或手动清）。
+                    // 真机日志（`vflow_log_20261003_224738.txt` 的三次执行）逐次复现。
+                    //
+                    // 判据用 `failedExecutions`：模块失败分支会**置位**它
+                    // （`failedExecutions[executionInstanceId] = true`），而
+                    // 成功 / 用户主动停止都不会置位 —— 这正好是「要不要冒称成功」的分界。
+                    //
+                    // ⚠️ 读它**不动它**：`failedExecutions.remove(...)` 在下面的 `finally`
+                    // （`withContext(NonCancellable)`）里执行，且已算出 `wasFailureHandled`。
+                    // 这里若用 `remove` 会把那个标记吃掉 ⇒ `finally` 里的
+                    // `if (!wasFailureHandled)` 变成真 ⇒ **再广播一次 `Finished`**，
+                    // 把失败状态在总线上也盖掉（比通知更难发现）。
+                    val failed = failedExecutions[executionInstanceId] == true
+                    if (!isTimeout && !failed) {
                         ExecutionNotificationManager.updateState(workflow, ExecutionNotificationState.Completed("执行完毕"))
                     }
 
