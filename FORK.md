@@ -646,6 +646,45 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 
 ---
 
+### 全局备份/恢复 + WebDAV（2026-10-03）—— fork 新增的一整块能力
+
+> 设计文档：`docs/fork/backup-webdav-design.md`（含逐键白名单、决策台账、16 条静默失效点核对）。
+> **本块全部为新增文件 + 上游文件的纯追加（`git diff --numstat` 实测 0 删除）**，冲突面天然较小。
+> ⚠️ 这一批由 6 个 mindfs 子任务并行产出后由父会话集成，**集成时补合了 T3/T4 的接线与模块**（见下「集成记录」条）。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `core/backup/**`（新增 24 个源文件 + 24 个测试） | fork 独有：备份体系骨架。**范围注册表**（`BackupScope` 接口 + `BackupScopeRegistry`）是核心机制 —— 设置页勾选、模块勾选、导入分发**三处全部从 `all()` 派生**，新增一类数据 = 加一个 scope 文件 + 一行 `register`。`export`/`import` 在**同一接口**里 ⇒ **结构上不可能「只注册导出没写导入」**。⚠️ **`export` 返回 `null` 仅表示「本次不适用（未勾选）」，空数据集必须返回 `count=0` 的 payload** —— 混同会让用户以为备了其实没备 | 我方 |
+| `core/backup/BackupCrypto.kt`、`SecretEnvelope.kt`、`core/security/AesGcmEngine.kt` | fork 独有：**备份口令加密**（PBKDF2WithHmacSHA256 / salt 16B / **iterations 210000** / 256bit + AES-256-GCM / IV 12B 前置 / tag 128bit）。⚠️⚠️ **「口令错」与「数据损坏」必须可区分**（二者都抛 `AEADBadTagException`）：信封存 `verifier`（用派生密钥加密的已知常量 `vflow.backup.verifier.v1`）**+ `verifierHash`**（verifier 密文的 SHA-256，不参与密钥派生）。**加 `verifierHash` 是为了区分「口令错」与「verifier 本身被篡改」** —— 只靠 GCM tag 时两者都表现为「verifier 解不开」。判定链四支：hash 不符 ⇒ CORRUPTED（不派生密钥）/ verifier 解不开 ⇒ WRONG_PASSPHRASE / 解得开但明文不符 ⇒ CORRUPTED / 通过 | 我方 |
+| `core/backup/SecretFieldScrubber.kt` | fork 独有：**跨切面密钥清洗**。密钥不只在 prefs 里，**也在工作流步骤参数里**（会随 `workflow_list` 明文导出）。规则是**三段式**：子串 `token`/`secret`/`password`/`device_key`/`api_key` **且**不在排除集 `page_token`/`key_code`/`key_encoding`/`key_action`/`auth_mode` 内，**或**精确等于 `key`。⚠️⚠️ **这条规则直接约束了「导出备份」模块的参数命名**：`passphrase` **不被清洗**（⇒ 用来加密别人口令的那个口令自己明文躺在同一份备份里），`backup_password` 才被清洗。有 3 条断言锁住，含一条**反向锁**「参数 id 不得叫 `passphrase`」 | 我方 |
+| `core/backup/scopes/*.kt`（8 个：folders / global_variables / workflows / modules / tiles / settings / chat / secrets） | fork 独有：各范围的**逐键白名单**。⚠️ **每个 scope 的 KDoc 都有一张「键 → 收/不收 → 原因」表**，这是本块最需要人工复核的部分。三条硬规则：① `vflow_api_tokens` **默认排除且不提供勾选**（可再生 + 安全敏感）；② 凡含凭证的键（`*token*`/`*secret*`/`*password*`/`api_key`/`device_key`）**一律不放进普通 scope**，归 `secrets` 管 —— 否则绕过「包含密钥」那个勾选；③ 与**设备能力/设备标识/首次运行状态**绑定的键排除（`is_first_run`/`disclaimer_accepted` 跨设备复制语义错误）。⚠️ `chat` **默认不勾**，理由与 `secrets` **不同**（`secrets` 是敏感、`chat` 是体积 + 隐私） | 我方 |
+| `core/backup/BackupEnvelope.kt` | fork 独有：信封读写。⚠️ `summary.scrubbedFields` **导出侧写、导入侧也读**（`scrubbedFieldsOf(text/root)` 两个只读访问器）—— **导入侧展示是硬要求**：用户**在导入那一刻**才体会数据缺失（REPLACE 导入一份未含密钥的备份后，工作流里的 `api_key` 是空的，而 summary 只说「导入 12 · 跳过 0」）。**导出侧展示、导入侧遗漏是不对称的**，已补齐；UI 在**选模式之前**也提示（那条更重要 —— REPLACE 不可逆） | 我方 |
+| `core/webdav/**`（6 个源文件 + 5 个测试） | fork 独有：**WebDAV 协议层**。三条硬约束：① XML **按 namespace URI 取元素，绝不按前缀字符串匹配**（服务器前缀有 `D:`/`d:`/`ns0:`/默认 ns）；② 路径用 `HttpUrl.addPathSegment` **逐段拼**（实测 `addPathSegment("..")` **静默上跳一级**、`"."` **静默丢弃**，两者都无报错 ⇒ 防穿越必须我方拦截）；③ **`followRedirects(false)`** + 自行处理 301/302/307/308、**保方法保 body**、跨 host 丢 `Authorization`、上限 5 跳 | 我方 |
+| ⚠️ **`docs/fork/backup-webdav-design.md` §1.5 —— 一处被推翻的断言** | 设计初稿写的「**OkHttp 默认把 301/302/303 的非 GET 降级为 GET ⇒ PROPFIND/PUT 静默降级**」**是错的**。实测（直调 `okhttp3.internal.http.HttpMethod`，okhttp 4.12.0）：**`PROPFIND` 恰是唯一被特判为不降级的方法**（`redirectsToGet=false` / `redirectsWithBody=true`），方向被写反了。**结论没变（仍要 `followRedirects(false)`）但理由完全不同** —— 不是防降级，而是**拿回跳数判断权**（自动跟随会吞掉重定向链）。教训：**写进任务书/文档的「某库会做 X」断言，先实跑一次再落笔** | 我方（已入册为方法论） |
+| `core/security/AliasGcmEngine.kt`（新增）+ `KeystoreGcmEngine.kt` / `KeystoreCryptoBox.kt`（改） | ⚠️ **一处必须解释的命名**：`core/security/` 下**曾有**两个同名 `AesGcmEngine` 接口 —— 备份侧的 `seal/open(key: ByteArray, …)`（key **字节**由 PBKDF2 派生）与 WebDAV 侧的 `encrypt/decrypt(alias: String, …)`（**别名**由 AndroidKeyStore 取密钥），**同包同名 interface 无法共存** ⇒ WebDAV 侧改名 `AliasGcmEngine`（名字反而更贴切）。`CryptoKeyUnavailableException` 原样保留（6 处生产引用）。⚠️ **不合并成一个接口**：方法面不同，合并要引入一层「alias → key」的间接，收益不抵风险 | **手动合并**（改名触及 3 处引用） |
+| `core/security/KeystoreGcmEngine.kt` 的 android import | ⚠️ `SecretLayerPurityTest` 有一条「`core/security/` 整子树零 `android.` 引用」的断言，而 AndroidKeyStore 实现**必然** import 三个 `android.security.keystore.*` ⇒ 取入即变红。处置：按 `BackupPurityTest.ANDROID_ENV_FILE` 的**同款单文件白名单范式**加 `KEYSTORE_ENGINE_FILE`，**并补一条防空转断言**（断言该文件确实存在且确实 import android —— 否则白名单指向一个不存在的文件时那条检查会静默空转）。⚠️ **不采用「搬目录」**：两条纯度测试都递归扫，换子目录没用 | **手动合并**（白名单 + 防空转） |
+| `core/workflow/module/network/WebDavModule.kt` + `core/workflow/module/data/BackupExportModule.kt`（均新增） | fork 独有：两个工作流模块。`vflow.network.webdav`（operation 五值 CHIP_GROUP：list/upload/download/mkdir/delete，条件参数用 `InputVisibility`，配置选择走 `getDynamicInputs` 动态 options）+ `vflow.data.export_backup`（写 `StorageManager.backupsDir` 固定目录并输出路径，**不弹 SAF** ⇒ 无人值守可跑）。⚠️ 两者 `usageScopes` **只给 `TEMPORARY_WORKFLOW`**（与 HTTP 模块一致，不给 DIRECT_TOOL）。⚠️ **`BackupExportModule.requiredPermissions = listOf(PermissionManager.STORAGE)`** —— 漏了在 Q+ 会**静默写入失败** | 我方 |
+| `WebDavModule.aiMetadata.riskLevel = HIGH`（统一，**不按 operation 分档**） | 设计初稿要求「list 用 READ_ONLY、其余 HIGH」，但 `ActionModule.aiMetadata` 是模块上的**静态 `val`**（`ActionModule.kt:33`，**签名里没有 `step`**；消费点 `ChatAgentToolRegistry.kt:1568` 按 moduleId 直读）⇒ **结构上做不到**。**否决**扩展上游 `ActionModule` 接口（动上游接口、波及所有模块与 AI 工具注册表、与「控制 diff 面积」冲突）。对照：`getDynamicInputs` / `getOutputs` **有** step 参数，`aiMetadata` **没有** | 我方（已在代码注释写明否决理由） |
+| `WebDavModule` 的配置选择**存配置名**（非 id）+ `validate()` 覆写 | ⚠️ 存 id 需 UIProvider 自绘下拉（上游 UI 改动，diff 面积不可控）⇒ 存 name。**失配做成显式失败**，三处都要有：`validate()` 返回无效（⚠️ `BaseModule` 的默认实现是 `ValidationResult(isValid = true)`，**不覆写等于不校验**）、`execute()` 报错含配置名、`getSummary()` 要能看出异常。⚠️ **刻意不把「当前选中项」硬塞进 `options`** —— 用户删掉配置后下拉里仍会有幽灵条目、看着像配置还在 | 我方 |
+| `ui/settings/{BackupRestoreActivity,BackupRestoreScreen,BackupScopeLabels,WebDavConfigActivity,WebDavConfigScreen}.kt`（均新增） | fork 独有：两个设置页二级页。⚠️ 备份页的 scope 勾选列表**从 `BackupScopeRegistry.all()` 派生**（源码扫描断言「该文件连单个 scope id 字面量都没有」）。⚠️ **导入侧展示 `scrubbedFields` 有三处**：选模式前（红字提示「将被清空」）、导入后（「已被清空」）、三条取消路径都要清 `pendingScrubbedFields`。两条文案**刻意不同**（将来时 vs 完成时）—— 混用会让用户在还没导入时就以为已经发生了。⚠️ `WebDavConfigScreen` 的「密钥不可用」必须**单独分支**（处置是「重新输入密码」，与「服务器挂了」是两件完全不同的事） | 我方 |
+| `core/workflow/WorkflowManager.kt`（改） | **追加** `replaceAllWorkflows(list)`（+21 行，**单次原子写**）。⚠️ 既有 `saveAllWorkflows` 是**合并**语义，误用于「覆盖」⇒ 旧工作流残留、用户以为已恢复。⚠️ **必须是单次 `prefs.edit().putString(...)`** —— `clear + save` 两步的话中途崩溃 = 工作流全灭（本项目**没有版本历史、没有撤销**） | **手动合并**（追加 1 方法） |
+| `core/workflow/FolderManager.kt`（改） | **追加** `replaceAllFolders(list)`（+13 行，委托既有 private `saveAllFolders`） | **手动合并**（追加 1 方法） |
+| `core/workflow/module/ModuleRegistry.kt`（改） | 网络段末**追加** `register(WebDavModule(), context)`、数据段末**追加** `register(BackupExportModule(), context)`（共 +2 行，**不重排既有注册**） | **手动合并**（追加两行） |
+| `ui/settings/SettingsScreen.kt`（改） | **追加** 两个 action（`onOpenBackupRestore` / `onOpenWebDavConfig`）+ 两行 `NativeEntryRow` + **四条文案进 `matchesSearch`**（⚠️ 漏加会让用户搜「备份」/「WebDAV」时**整个「通用设置」分组消失**）。⚠️ 两行均取 `SettingsGroupPosition.Middle` 插在既有行之间 ⇒ **既有各行的 position 一个都不用改**。⚠️ **同时修了一处既有缺陷**：`globalVariablesTitle/Subtitle` 此前漏在搜索清单外（与上一条同款形态），有机器化断言锁住 | **手动合并**（+22 行） |
+| `ui/settings/SettingsRoute.kt`（改） | **追加**两处 `startActivity` 接线 | **手动合并**（+8 行） |
+| `AndroidManifest.xml`（改） | **追加** `BackupRestoreActivity` / `WebDavConfigActivity` 两个声明（`exported="false"`） | **手动合并**（+11 行） |
+| 三语 `strings.xml` ×3 + `strings_module.xml` ×3 | 追加备份页 45 条 + WebDAV 页 29 条（`strings.xml`）、模块文案 20 条 + WebDAV 模块 64 条（`strings_module.xml`）。⚠️ 三语键名集合 diff 逐字一致、无重复键 | **手动合并**（追加条目） |
+| **集成记录（父会话）** | ⚠️ 本块由 **6 个子任务并行产出**，但 **T6 的分支只含 T1/T2/T5 全量 + T3/T4 的 `core/` 层**，**缺 T3 的 UI 接线与 T4 的模块**。父会话集成时补齐：`WebDavModule.kt` + `WebDavConfigActivity/Screen.kt` + `SettingsScreen/SettingsRoute` 的 WebDAV 入口 + `AndroidManifest` 声明 + 三语 `webdav_*`（29×3）与模块文案（64×3）+ `globalVariables` 搜索清单修复 + 5 个 `core/webdav` 测试 + 3 个模块/UI 测试。**全部纯追加，0 删除**；集成后 92 文件 / +19473 行 | **我方**（集成动作） |
+
+> ⚠️ **两份 WebDAV 重定向实现暂时并存**：`WebDavProbe.kt`（T3，测试连接）与 `WebDavClient.kt`（T4，模块客户端）各有一份重定向循环，
+> `WebDavProbe.trustAllTrustManager()` 是 `private` ⇒ 无法复用，T4 写了等价实现。
+> **收敛时先把它提为 `internal`**，然后把两份合并成一份。**已在设计文档 §8.2 登记为未完成项。**
+
+> ⚠️ **真机验证 0 项**（`adb devices` 为空）：设计文档 §8.2 列了完整清单，
+> 其中**最关键的是「导入后触发器恢复调度」**（`reloadTriggers` 的端到端 —— 只在**不重启 App** 的前提下触发才证明得了那条链路）。
+
+---
+
 ## 暂未分歧、但日后改动时须登记的敏感点
 
 以下是上游的核心区。目前 fork **尚未改动**它们；一旦改动（尤其是结构性改动），必须在上表登记，并评估合并成本：

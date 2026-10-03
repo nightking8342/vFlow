@@ -24,6 +24,7 @@ This file provides guidance to coding agents when working with code in this repo
 - `docs/fork/chat-float-window-ui.html` —— Chat 悬浮窗**可交互 UI 原型**（浏览器打开）：折叠/展开/审批/输入/状态一致性五组演示，配套上文的交互对齐稿。
 - **已实现**：`ui/chat/ChatFloat{WindowService,PanelContent,Summary,WindowLauncher,Geometry}.kt` + `ChatViewModelHolder.kt`（P1 折叠态已可用）。Caveat：`ChatFloatGeometry` 及其单测目前仍在使用（Service 的锚定计算），暂勿删除。
 - `docs/fork/function-workflow.md` —— 函数工作流功能的需求文档 + 实现状态/交接（含真机测试场景）。
+- `docs/fork/backup-webdav-design.md` —— **全局备份/恢复 + WebDAV 设计 + 实现状态**（**已实现；真机验证未做**）。八个备份范围（folders/global_variables/workflows/modules/tiles/settings/chat/secrets）由**范围注册表**驱动，设置页勾选、模块勾选、导入分发三处均从 `BackupScopeRegistry.all()` 派生；密钥走**用户口令加密**（PBKDF2 210k + AES-GCM，可跨设备解密）；WebDAV 配置转档进 `secrets`。含 **§1.4 三段式清洗规则**（决定「导出备份」模块参数 id 必须叫 `backup_password`）、**§1.5 一处被推翻的 OkHttp 断言**（PROPFIND 恰是唯一不降级的方法 —— **写进文档的库行为断言先实跑再落笔**）、§6 的 16 条静默失效点逐条核对、§7 的 22 项决策台账、§8.2 未做项清单。**改动备份/WebDAV 前先读这份。**
 - `docs/fork/fold-trigger-design.md` —— **折叠屏触发器设计 + 实现状态**（`vflow.trigger.fold`，**已实现并真机验证可用**）。核心决策：做「状态推断」而非事件监听；**以铰链角度为主力信号**（真机实测 `device_posture` 滞后 1–2 秒且半折值几乎不出现，不能作主力）；阈值经实测校准（折叠 <40° / 展开 >150° / 半折 40–150°）；输出 6 项魔法变量供下游引用。
   - **§9 = P0 真机验证结论**（小米 MIX Fold 3）：推翻了一处外部调研的悲观结论（铰链传感器实测双向完整上报，非「只在折叠方向」），并发现两个调研未提及的新问题。
   - **实现文件**：`FoldTriggerModule` / `FoldStateResolver`（纯函数状态机，可单测）/ `FoldTriggerHandler`。
