@@ -18,8 +18,9 @@ import java.util.concurrent.atomic.AtomicReference
  * ## ⚠️ 为什么它在 `core/xposed/` 而 `CapabilityPresence` 在 `xposed/capability/`
  *
  * `CapabilityPresence` 的类注释写着「本包只有枚举与纯函数，没有任何持有者」——
- * 一个可 `collect` 的持有者需要 `kotlinx.coroutines.flow`，而 `WireLayerPurityTest`
- * 对 `xposed/` 的 import 白名单**不含它**（那个包会被注入 system_server 加载）。
+ * 一个可 `collect` 的持有者需要 `kotlinx.coroutines.flow`，而 `CapabilityContractPurityTest`
+ * 对 `xposed/capability/` 的 import 白名单**刻意不含它**
+ * （那个包会被注入 system_server 加载）。
  *
  * ⇒ **纯逻辑在那边，可订阅的持有者在这边。** 本文件是那条分层要求的落实点。
  *

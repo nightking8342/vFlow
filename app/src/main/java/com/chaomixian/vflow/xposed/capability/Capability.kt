@@ -70,9 +70,11 @@ data class Capability(
  * 值域刻意与 `AiModuleRiskLevel` 对齐（`READ_ONLY` / `LOW` / `STANDARD` / `HIGH`），
  * 但**必须是两个类型**：
  *
- * 本包在 `xposed/` 下，受 `WireLayerPurityTest` 的「整个 `xposed/` 包不得引用 App 侧包」
- * 那条扫描管辖，而 `FORBIDDEN_APP_PACKAGES` **含 `com.chaomixian.vflow.core.`** ——
+ * 本包受 `CapabilityContractPurityTest` 的「`capability/` 不得引用 App 侧包」
+ * 那条扫描管辖（`FORBIDDEN_APP_PACKAGES`，**含 `com.chaomixian.vflow.core.`**）——
  * 引用 `AiModuleRiskLevel` 会**直接让测试变红**。
+ * ⚠️ **不要写成 `WireLayerPurityTest`**：那条管的是 `xposed/wire/` 与
+ * `xposed/capabilities/`（复数），与本包（单数）是**两条独立的防线**。
  *
  * 三条出路里选了这个：
  *

@@ -29,9 +29,20 @@ import java.util.UUID
  * ## 为什么它在 `core/xposed/` 而不在 `xposed/capability/`
  *
  * 那个包在 `xposed/` 下 ⇒ 会被注入 system_server 的代码加载 ⇒
- * 受 `WireLayerPurityTest` 的 import 白名单管辖（**不含 `kotlinx.coroutines.`**，
- * 见 `CapabilityPresence` 的类注释）。而本文件需要 `suspend` / `withTimeout`
- * ⇒ 必须落在 `xposed/` 之外。**结果类型**（纯数据）留在那边，与 `Capability` 同处。
+ * 受 `CapabilityContractPurityTest` 的 import 白名单管辖（该白名单**刻意不含
+ * `kotlinx.coroutines.`**，见 `CapabilityPresence` 的类注释）。而本文件需要
+ * `suspend` / `withTimeout` ⇒ 必须落在 `xposed/` 之外。
+ * **结果类型**（纯数据）留在那边，与 `Capability` 同处。
+ *
+ * ⚠️ **更正记录（2026-10-03）**：此处原写的是 `WireLayerPurityTest`，**引错了测试**。
+ * 两条白名单**各管不同目录、不要互相套用**（已由测试代码本身核实）：
+ *
+ * | 测试 | 管辖目录 |
+ * |---|---|
+ * | `CapabilityContractPurityTest` | `xposed/capability/`（**单数**）← 本处 |
+ * | `WireLayerPurityTest` | `xposed/wire/` 与 `xposed/capabilities/`（**复数**） |
+ *
+ * ⇒ **结论不变**（文件该放 `core/xposed/`），错的只是引用的测试名。
  *
  * ## 传输形态（§3.4 定案：「传输异步，业务等待同步」）
  *

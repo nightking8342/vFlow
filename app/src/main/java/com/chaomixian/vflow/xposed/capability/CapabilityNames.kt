@@ -15,7 +15,8 @@ package com.chaomixian.vflow.xposed.capability
  * 收敛成常量能让「拼错」在**编译期**就被发现（IDE 会提示未定义引用）。
  *
  * ⚠️ **本包在 `xposed/` 下，会被 hook 层引用** —— 因此只放**纯字符串常量**，
- * 不得引用任何 App 侧类（`WireLayerPurityTest` 管辖）。
+ * 不得引用任何 App 侧类（`CapabilityContractPurityTest` 管辖。⚠️ 不是
+ * `WireLayerPurityTest` —— 那条管 `xposed/wire/` 与 `xposed/capabilities/`）。
  *
  * ## 与 hook 侧注册表的关系
  *

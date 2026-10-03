@@ -29,8 +29,13 @@ package com.chaomixian.vflow.xposed.capability
  * ## ⚠️ 为什么本文件**只有枚举与纯函数**，没有任何持有者
  *
  * 一个可 `collect` 的持有者需要 `kotlinx.coroutines.flow`，
- * 而 `WireLayerPurityTest` 对 `xposed/` 的 import 白名单**不含它**
- * （见 [com.chaomixian.vflow.xposed.wire.ResultBudget] 类注释里的同一约束）。
+ * 而**本包**的 import 白名单（`CapabilityContractPurityTest > capability package only
+ * imports whitelisted packages`）**刻意不含它**。
+ *
+ * ⚠️ **两处「依赖白名单」由不同测试管辖，不要互相套用测试名**（2026-10-03 更正）：
+ * 本包（`xposed/capability/`，**单数**）归 `CapabilityContractPurityTest`；
+ * 而 [com.chaomixian.vflow.xposed.wire.ResultBudget] 在 `xposed/wire/` 内，
+ * 归 `WireLayerPurityTest`（见该文件的类注释）。
  *
  * 本包在 `xposed/` 下 ⇒ 这里只放**纯逻辑**。
  * 可订阅的持有者由 App 侧放在 `core/xposed/`（那里能引用 coroutines）。
