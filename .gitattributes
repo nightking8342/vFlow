@@ -28,3 +28,15 @@ scripts/probe/xposed-channel/shortcut-probe/resources/META-INF/xposed/java_init.
 #    这里只锁新增的这一个（不回溯改动既有文件，控制 diff 面积）。
 scripts/xposed-capability-hook-runtime-verify.sh text eol=lf
 scripts/xposed-shortcut-probe-verify.sh           text eol=lf
+
+# xposed-js 验证脚手架（同一条理由：CRLF 会让 shebang 失效 ⇒ 别处红、本地绿）。
+#
+# ⚠️ 2026-10-03 补：本批文件此前**未加保护**（`git check-attr` 实测无属性）。
+#    而本机 `core.autocrlf=true` ⇒ 一旦被编辑器改过行尾，
+#    提交进 git 的就是 CRLF；Git Bash 能容忍、Linux/CI 直接 `bad interpreter`。
+#    与 `8b8f5ede` 那次「脚本被整份清空成 0 字节」是同一类「本地绿、别处红」事故。
+scripts/xposed-js-verify.sh                    text eol=lf
+scripts/xposed-js-verify/t4_driver.py          text eol=lf
+scripts/xposed-js-verify/consistency_check.py  text eol=lf
+scripts/xposed-js-verify/core_exec.py          text eol=lf
+scripts/xposed-js-verify/cases/*.js            text eol=lf
