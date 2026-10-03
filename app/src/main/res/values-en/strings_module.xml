@@ -3588,4 +3588,6 @@
     <string name="msg_vflow_network_webdav_mkdir">Creating folder %1$s…</string>
     <string name="msg_vflow_network_webdav_deleting">Deleting %1$s…</string>
     <string name="error_vflow_network_webdav_local_file_unreadable">Cannot read the local file: %1$s</string>
+    <string name="msg_vflow_network_webdav_mkdir_ancestors">    Created the missing folder: %1$s</string>
+    <string name="error_vflow_network_webdav_mkdir_ancestors_failed">    Parent folder is missing and could not be created: %1$s</string>
 </resources>

@@ -674,7 +674,26 @@ class WebDavModule : BaseModule() {
 
         val overwrite = context.getVariableAsBoolean(OVERWRITE_ID) ?: true
 
-        return when (val result = client.put(config.remoteBasePath, remotePath, body, overwrite)) {
+        // ⚠️⚠️ **409 与 412 都要重传同一个 body** ⇒ body 必须可重发。
+        // 本函数上方两条构造路径都已保证：`file.asRequestBody`（每次 writeTo 重读文件）
+        // 与 `bytes.toRequestBody`（内存字节）。**不要**改成一次性流。
+        var result = client.put(config.remoteBasePath, remotePath, body, overwrite)
+
+        // ⚠️ 409 `AncestorsNotFound`（真机实测：坚果云）= 目标的**祖先目录不存在**。
+        // RFC 4918 允许 PUT 只创建最后一段。用户看到 409 无从下手（路径错了？目录没建？），
+        // 故这里**先补建缺失的祖先目录再重传一次**。
+        //
+        // ⚠️ 只在**第一次** 409 时补建；补建后仍 409 就不再重试（避免「建不出目录时反复重传」）。
+        // ⚠️ 只对 409 做 —— 404/403 等不该掩盖（它们的处置与「目录不存在」不同）。
+        if (result is WebDavResult.HttpError && result.code == 409) {
+            val built = client.ensureCollectionsFor(config.remoteBasePath, remotePath)
+            if (built) {
+                onProgress(ProgressUpdate(appContext.getString(R.string.msg_vflow_network_webdav_mkdir_ancestors)))
+                result = client.put(config.remoteBasePath, remotePath, body, overwrite)
+            }
+        }
+
+        return when (val result = result) {
             is WebDavResult.Success -> ExecutionResult.Success(
                 mapOf(
                     "success" to VBoolean(true),
@@ -815,7 +834,23 @@ class WebDavModule : BaseModule() {
         val remotePath = resolveRemotePath(context)
         onProgress(ProgressUpdate(appContext.getString(R.string.msg_vflow_network_webdav_mkdir, remotePath)))
 
-        return when (val result = client.mkcol(config.remoteBasePath, remotePath)) {
+        // ⚠️ 409 的处理与其它操作**不同**：这里 409 的语义是「**父目录**不存在」，
+        // 而 405 是「自己已存在」（幂等成功）。两者完全不是一回事。
+        // ⇒ 先在原地把父级补建出来，再重试一次 `mkcol`（**恰好一次**，防死循环）。
+        var result = client.mkcol(config.remoteBasePath, remotePath)
+        if (result is WebDavResult.HttpError && result.code == 409) {
+            if (!client.ensureCollectionsFor(config.remoteBasePath, remotePath)) {
+                return ExecutionResult.Failure(
+                    appContext.getString(R.string.error_vflow_network_webdav_mkdir_failed),
+                    appContext.getString(R.string.error_vflow_network_webdav_mkdir_ancestors_failed, remotePath),
+                    partialOutputsOf(OP_MKDIR, success = false, error = "父目录建不出来：$remotePath"),
+                )
+            }
+            onProgress(ProgressUpdate(appContext.getString(R.string.msg_vflow_network_webdav_mkdir_ancestors)))
+            result = client.mkcol(config.remoteBasePath, remotePath)
+        }
+
+        return when (result) {
             is WebDavResult.Success -> ExecutionResult.Success(
                 mapOf(
                     "success" to VBoolean(true),

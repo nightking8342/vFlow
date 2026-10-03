@@ -692,6 +692,10 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 ` 的多行片段**匹配不到**（拿到 `null`）。是那条「防空转断言」把这次失败暴露出来的 | 我方 |
 | `test/.../BackupExportModuleTest.kt`（改，+4 例）、`test/.../WebDavClientTest.kt`（改，+3 例）、`test/.../WebDavUrlBuilderTest.kt`（改，+4 例） | 新增 11 例。⚠️ 其中 `execute resolves the file name template before sanitizing` 是**源码扫描型接线锚定** —— 实测证明：把它删掉，那 3 条**纯函数**用例对「生产代码有没有真的调 `VariableResolver`」**完全无感**（改坏后失败数 = 0） | 我方（新增用例） |
 | `docs/fork/backup-webdav-truth-digging.md`（新增） | fork 独有：本次排查的完整记录（三处缺陷 + 一处「刻意不改」的观察） | 我方 |
+| `core/webdav/WebDavClient.kt`（改，409 补建祖先目录） | **新增 `ensureCollectionsFor(remoteBasePath, path)`**（用户指出后补做）。⚠️ **不逐级 PROPFIND 探测** —— 直接对**每一级**都 MKCOL，已存在的回 **405 即成功**（RFC 4918）⇒ 请求数 O(N) 且无需判断「哪一级缺」。⚠️ **只往上建到 `remoteBasePath` 之后**，段列表走 `WebDavUrlBuilder.splitSegmentsForAncestors`（与 `resolve` **共用同一套** `splitSegments`：滤空段 / 拦 `..` / 拦控制字符）⇒ 不穿越。⚠️ **不建最后一段**（那是文件本身，是 PUT 的活）。⚠️ 失败即停手（不继续往上建，避免半截目录树）。⚠️ 6 例测试 + **2 条反证**（不 `dropLast` ⇒ 4 条红；405 不算成功 ⇒ 2 条红） | **手动合并**（新增 1 方法） |
+| `core/webdav/WebDavUrlBuilder.kt`（改） | 新增 `internal fun splitSegmentsForAncestors(path)` —— ⚠️ **必须与 `resolve` 共用同一套切段规则**，另写一份会出现「能请求的路径建不出目录」这类静默不一致 | **手动合并**（新增 1 函数） |
+| `core/workflow/module/network/WebDavModule.kt`（改） | `upload` 遇 **409** 时补建祖先目录后**重传一次**（恰一次，防死循环；body 已保证可重发）；`mkdir` 遇 **409** 时补建父级后**重试一次**。⚠️ **只对 409 做** —— `overwrite=false` 走的是 **412**（不是 409），不会误触发；404/403 也不掩盖 | **手动合并**（两处分支） |
+| 三语 `strings_module.xml` | 追加 `msg_vflow_network_webdav_mkdir_ancestors` / `error_vflow_network_webdav_mkdir_ancestors_failed`（各 ×3 语言） | **手动合并**（追加条目） |
 
 > ⚠️ **真机验证 0 项**（`adb devices` 为空）：设计文档 §8.2 列了完整清单，
 > ⚠️ **真机验证 0 项**（`adb devices` 为空）：设计文档 §8.2 列了完整清单，

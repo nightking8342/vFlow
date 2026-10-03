@@ -3591,4 +3591,6 @@
     <string name="msg_vflow_network_webdav_mkdir">正在新建目录 %1$s…</string>
     <string name="msg_vflow_network_webdav_deleting">正在删除 %1$s…</string>
     <string name="error_vflow_network_webdav_local_file_unreadable">无法读取本地文件：%1$s</string>
+    <string name="msg_vflow_network_webdav_mkdir_ancestors">    自动创建了缺失的目录：%1$s</string>
+    <string name="error_vflow_network_webdav_mkdir_ancestors_failed">    父目录不存在，且无法自动创建：%1$s</string>
 </resources>

@@ -70,6 +70,20 @@ object WebDavUrlBuilder {
     }
 
     /**
+     * 取「**该路径的所有祖先目录**」用的段列表 —— 与 [resolve] 共用同一套切段与校验规则。
+     *
+     * ⚠️ 与 [resolve] 的差别只有一个：**本函数保留最后一段**。
+     * [resolve] 是给请求用的（要的就是完整路径），而补建目录要的是「它上面有哪些层级」
+     * （由调用方 `dropLast(1)` 自行决定要不要去掉文件名那一段）。
+     *
+     * ⚠️ 之所以**必须走同一个 `splitSegments`**：切段规则（滤空段、拦 `.`/`..`、拦控制字符）
+     * 若在这里另写一份，就会出现「能请求的路径建不出目录」这类静默不一致。
+     *
+     * @return null = 非法路径（含 `.` / `..` / 控制字符）；空列表 = 目标就是根（无需建任何目录）
+     */
+    internal fun splitSegmentsForAncestors(path: String): List<String>? = splitSegments(path)
+
+    /**
      * 把 `HttpUrl.toString()` 里的**百分号编码段解回可读文本**，供**给人看的诊断串**使用。
      *
      * ## 为什么需要它

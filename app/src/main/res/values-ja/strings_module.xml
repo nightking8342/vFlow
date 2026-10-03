@@ -3209,4 +3209,6 @@
     <string name="msg_vflow_network_webdav_mkdir">フォルダー %1$s を作成中…</string>
     <string name="msg_vflow_network_webdav_deleting">%1$s を削除中…</string>
     <string name="error_vflow_network_webdav_local_file_unreadable">ローカルファイルを読み取れません: %1$s</string>
+    <string name="msg_vflow_network_webdav_mkdir_ancestors">    不足していたフォルダーを作成しました：%1$s</string>
+    <string name="error_vflow_network_webdav_mkdir_ancestors_failed">    親フォルダーが存在せず、自動作成できませんでした：%1$s</string>
 </resources>

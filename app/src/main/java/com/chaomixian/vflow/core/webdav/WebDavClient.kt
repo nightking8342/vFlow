@@ -152,6 +152,61 @@ class WebDavClient(
     fun mkcol(remoteBasePath: String, path: String): WebDavResult =
         execute("MKCOL", remoteBasePath, path, directory = false) { it.method("MKCOL", EMPTY_BODY) }
 
+    // ── 上传前补建缺失的祖先目录 ──────────────────────────────────
+
+    /**
+     * 逐级补建 [remoteBasePath] + [path] 的**所有**缺失祖先目录，然后返回 `true`。
+     *
+     * ## 为什么需要它
+     *
+     * 真机实测（坚果云）：上传到 `backups/` 而该目录不存在时，PUT 回
+     * **409 `AncestorsNotFound`** —— 「目标的祖先不存在」。这是 RFC 4918 允许的服务器行为
+     * （PUT 只保证创建**最后一段**，不保证创建中间层级）。
+     *
+     * 用户看到 409 时无从下手：是路径拼错了，还是目录没建？
+     * ⇒ 上传分支在遇到 409 时**先试着把目录建出来**，再重传一次。
+     *
+     * ## 做法：从最浅的一级开始，逐级 MKCOL
+     *
+     * 客户端**无法在不发请求的前提下知道**服务器上哪些层级已存在（PROPFIND 要逐级探测，
+     * 反而更多请求）。直接对**每一级**都 MKCOL 是最省的：
+     * 已存在的会回 405（RFC 4918：对已存在的集合做 MKCOL ⇒ 405），**那是成功**，继续下一级。
+     *
+     * ## 安全
+     *
+     * ⚠️ 只在 `remoteBasePath` **之后**逐级建 —— 即**绝不**尝试在服务器根的更上层建目录。
+     * 段列表由 [WebDavUrlBuilder.resolve] 的同一套 `splitSegments` 产出
+     * （已滤空段、已拦 `.` / `..` 与控制字符），故不存在穿越。
+     *
+     * ⚠️ 返回 `false` 时**已经发过若干请求**，但都是幂等的 MKCOL ⇒ 重试无害。
+     *
+     * @return true = 每一级都已存在或已建好（可以重传）；false = 有某级没建成（权限/配额/服务器拒绝）
+     */
+    fun ensureCollectionsFor(remoteBasePath: String, path: String): Boolean {
+        val base = remoteBasePath.trim().trim('/')
+        val full = if (base.isEmpty()) path else "$base/$path"
+
+        // ⚠️ 用**整段列表**而不是「剥掉最后一段」：`path` 可能是 `a/b/c.json`，
+        //    要建的是 `base/a/b` 三级，而不是只剥 `c.json` 那一级。
+        val allSegments = WebDavUrlBuilder.splitSegmentsForAncestors(full) ?: return false
+        if (allSegments.isEmpty()) return true
+
+        // 逐级（不含最后一段 —— 那是文件本身）
+        val ancestors = allSegments.dropLast(1)
+        if (ancestors.isEmpty()) return true
+
+        for (depth in 1..ancestors.size) {
+            val prefix = ancestors.take(depth).joinToString("/")
+            when (val result = mkcol("", prefix)) {
+                is WebDavResult.Success -> Unit
+                // ⚠️ 405 = 已存在（RFC 4918）。那正是我们想要的状态，继续。
+                is WebDavResult.HttpError -> if (result.code != 405) return false
+                is WebDavResult.Failure -> return false
+            }
+        }
+        return true
+    }
+
     // ── 主循环 ──────────────────────────────────────────────────
 
     private fun execute(

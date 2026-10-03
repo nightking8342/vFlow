@@ -445,4 +445,84 @@ class WebDavClientTest {
         assertFalse("URL 不得含 user:pass", url.contains("u:p"))
         assertFalse("URL 不得含 userinfo 段", url.contains("@"))
     }
+
+    // ── ensureCollectionsFor：上传前补建缺失的祖先目录（真机 409 回归）──────
+
+    /**
+     * ⚠️⚠️ **真机回归锁**：上传到不存在的目录时，坚果云回 409 `AncestorsNotFound`。
+     * `ensureCollectionsFor` 必须**逐级** MKCOL，且**已存在的层级回 405 也算成功**。
+     */
+    @Test
+    fun `ensure collections creates each missing ancestor level`() {
+        // 第一级已存在（405），第二级建成功（201）
+        server.enqueue(MockResponse().setResponseCode(405))
+        server.enqueue(MockResponse().setResponseCode(201))
+
+        val ok = client().ensureCollectionsFor("", "backups/2026/x.json")
+
+        assertTrue("已存在 + 可建 ⇒ 应返回 true", ok)
+        val first = takeRequest()
+        assertEquals("MKCOL", first.method)
+        assertEquals("/dav/backups", first.path)          // ⚠️ 无尾斜杠（见 WebDavUrlBuilder）
+        val second = takeRequest()
+        assertEquals("MKCOL", second.method)
+        assertEquals("/dav/backups/2026", second.path)
+    }
+
+    /** ⚠️ 文件本身那一段**不能**被 MKCOL —— 那是 PUT 的活。 */
+    @Test
+    fun `ensure collections never creates the file segment itself`() {
+        server.enqueue(MockResponse().setResponseCode(201))
+
+        client().ensureCollectionsFor("", "only/x.json")
+
+        assertEquals("/dav/only", takeRequest().path)
+        assertEquals("只应发一个 MKCOL（父级），实际多发了", 0, server.requestCount - 1)
+    }
+
+    /** ⚠️ 目标在根目录（没有祖先）⇒ **一个请求都不该发**。 */
+    @Test
+    fun `ensure collections is a no op at the root`() {
+        val ok = client().ensureCollectionsFor("", "x.json")
+
+        assertTrue(ok)
+        assertEquals("根目录没有祖先可建，不应发请求", 0, server.requestCount)
+    }
+
+    /**
+     * ⚠️ 有某一级**建不出来**（权限/配额）⇒ 返回 false，**不再继续往上建**。
+     * 继续建只会产生一串失败请求，并可能建出半截目录树。
+     */
+    @Test
+    fun `ensure collections stops at the first failure`() {
+        server.enqueue(MockResponse().setResponseCode(403))
+        server.enqueue(MockResponse().setResponseCode(201)) // 不该被消费
+
+        val ok = client().ensureCollectionsFor("", "a/b/c.json")
+
+        assertFalse("403 ⇒ 建不出来", ok)
+        assertEquals("失败后应立刻停手", 1, server.requestCount)
+    }
+
+    /** ⚠️ 非法路径（`..`）⇒ false，且**一个请求都不发**（防穿越）。 */
+    @Test
+    fun `ensure collections refuses traversal paths`() {
+        val ok = client().ensureCollectionsFor("", "../x.json")
+
+        assertFalse(ok)
+        assertEquals(0, server.requestCount)
+    }
+
+    /** ⚠️ `remoteBasePath` 里的层级也要建（它是配置里的公共前缀，同样可能不存在）。 */
+    @Test
+    fun `ensure collections includes the remote base path levels`() {
+        server.enqueue(MockResponse().setResponseCode(405))
+        server.enqueue(MockResponse().setResponseCode(201))
+
+        val ok = client().ensureCollectionsFor("dav-root", "sub/x.json")
+
+        assertTrue(ok)
+        assertEquals("/dav/dav-root", takeRequest().path)
+        assertEquals("/dav/dav-root/sub", takeRequest().path)
+    }
 }
