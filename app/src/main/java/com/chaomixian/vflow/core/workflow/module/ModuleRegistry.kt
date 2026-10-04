@@ -161,6 +161,8 @@ object ModuleRegistry {
         register(ParseJsonModule(), context)
         register(ParseXmlModule(), context)
         register(CommentModule(), context)
+        // 输出日志（fork 新增：把任意值打印到执行日志，供调试与 Agent 取数）
+        register(LogModule(), context)
         register(FileOperationModule(), context)
         // 导出备份（fork 新增：把 T1/T2 的备份能力接到编排面）
         register(BackupExportModule(), context)

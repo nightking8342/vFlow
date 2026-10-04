@@ -11,6 +11,7 @@ import com.chaomixian.vflow.core.workflow.model.FunctionSignature
 import com.chaomixian.vflow.core.workflow.model.FunctionSignatureHelper
 import com.chaomixian.vflow.core.workflow.model.ReturnKey
 import com.chaomixian.vflow.core.workflow.model.Workflow
+import com.chaomixian.vflow.core.workflow.model.WorkflowLogLevel
 import com.chaomixian.vflow.core.workflow.model.WorkflowReentryBehavior
 import com.chaomixian.vflow.core.workflow.module.triggers.AppStartTriggerModule
 import com.chaomixian.vflow.core.workflow.module.triggers.KeyEventTriggerModule
@@ -100,6 +101,9 @@ class WorkflowManager(val context: Context) {
             maxExecutionTime = normalizedVisualWorkflow.maxExecutionTime,
             reentryBehavior = normalizedVisualWorkflow.reentryBehavior,
             silentExecution = normalizedVisualWorkflow.silentExecution,
+            // ⚠️ 这一行**不能漏**：`copy(...)` 是显式白名单，漏一个字段就是
+            //    「用户在编辑器里改了、保存后却没生效」的静默失效。
+            logLevel = normalizedVisualWorkflow.logLevel,
             functionSignature = aggregateSignature
         )
 
@@ -278,6 +282,10 @@ class WorkflowManager(val context: Context) {
             reentryBehavior = WorkflowReentryBehavior.fromStoredValue(record.getString("reentryBehavior")),
             // 旧记录没有这个键 → 落回 false，即保持既有行为。不需要兼容映射。
             silentExecution = record.getBoolean("silentExecution") ?: false,
+            // 旧记录没有这个键 → 落回 VERBOSE（= 改动前行为，全量记日志）。
+            // ⚠️ 方向刻意是「不丢信息」而不是「更保守」：日志是排障的唯一依据，
+            //    多记几条的代价远小于「故障时没有线索」。
+            logLevel = WorkflowLogLevel.fromStoredValue(record.getString("logLevel")),
             functionSignature = parseFunctionSignature(record)
         )
     }

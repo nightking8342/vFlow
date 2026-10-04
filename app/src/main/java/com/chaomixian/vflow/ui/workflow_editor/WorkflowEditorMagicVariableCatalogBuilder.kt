@@ -33,6 +33,34 @@ internal class WorkflowEditorMagicVariableCatalogBuilder(
     private val workflowManager: WorkflowManager
 ) {
     private val gson = Gson()
+
+    /**
+     * 该输入是否提供「全部输出」这一项。
+     *
+     * ## ⚠️ 为什么只在日志模块上出现
+     *
+     * 裸写步骤 id（`{{cls}}`）能被展开成整表，是 `vflow.data.log` **自己实现的**
+     * （见 `LogModule.resolveBareStepIds`）—— **别的模块拿到它仍然是空值**。
+     *
+     * 若全局都列这一项，用户在别的模块里选了它只会得到一个空值，**比不给更糟**
+     * （他会以为「这个功能坏了」）。故按「提供方 → 消费者」精确配对。
+     */
+    private fun wantsWholeStepOutputItem(moduleId: String, targetInputId: String): Boolean =
+        moduleId == LOG_MODULE_ID && targetInputId == LOG_CONTENT_INPUT_ID
+
+    /**
+     * 「全部输出」项 —— 引用形如 `{{<步骤id>}}`（**裸写，不带输出名**）。
+     *
+     * `typeId` 取 DICTIONARY（展开后是一整表），`originDescription` 留空
+     * —— 它不是一个「类型」，而是「这一步的全部」。
+     */
+    private fun wholeStepOutputItem(step: ActionStep): MagicVariableItem = MagicVariableItem(
+        variableReference = "{{${step.id}}}",
+        variableName = context.getString(R.string.magic_variable_whole_step_output),
+        originDescription = "",
+        typeId = VTypeRegistry.DICTIONARY.id,
+    )
+
     fun buildNamedVariables(
         actionSteps: List<ActionStep>,
         upToPosition: Int
@@ -163,6 +191,7 @@ internal class WorkflowEditorMagicVariableCatalogBuilder(
         val editingActionIndex = (editingStepPosition - triggerStepCount).coerceAtLeast(0)
         val groupedStepOutputs = linkedMapOf<String, MutableList<MagicVariableItem>>()
         val emittedTriggerSchemas = mutableSetOf<String>()
+        val wantsWholeStepOutput = wantsWholeStepOutputItem(editingModule.id, targetInputId)
 
         for (i in (editingStepPosition - 1) downTo 0) {
             val step = allSteps[i]
@@ -188,7 +217,13 @@ internal class WorkflowEditorMagicVariableCatalogBuilder(
                     dictionaryKeys = outputDef.dictionaryKeys
                 )
             }
-            groupedStepOutputs.getOrPut(groupName) { mutableListOf() }.addAll(items)
+            val group = groupedStepOutputs.getOrPut(groupName) { mutableListOf() }
+            // ⚠️ 「全部输出」必须**插在该步的具体输出项之前**（用户先看到「全都要」这个选项）。
+            //    条件见 `wantsWholeStepOutput` 的注释 —— 只在日志模块的 content 上出现。
+            if (wantsWholeStepOutput) {
+                group.add(wholeStepOutputItem(step))
+            }
+            group.addAll(items)
         }
 
         appendLoopVariables(
@@ -349,5 +384,16 @@ internal class WorkflowEditorMagicVariableCatalogBuilder(
     private companion object {
         const val LOAD_VARIABLES_MODULE_ID = "vflow.variable.load"
         const val DEFINE_FUNCTION_MODULE_ID = "vflow.logic.define_function"
+
+        /**
+         * 唯一支持「全部输出」的消费者。
+         *
+         * ⚠️ 这是**跨文件的隐式契约**：`vflow.data.log` 的 `LogModule.resolveBareStepIds`
+         * 实现了「裸步骤 id ⇒ 整表」。两边必须同时改，否则**选择器给了用户一个
+         * 点了没用的选项**（裸 id 在别的模块里只会解析成空值）。
+         * 配对由 `WholeStepOutputContractTest` 的源码扫描锁住。
+         */
+        const val LOG_MODULE_ID = "vflow.data.log"
+        const val LOG_CONTENT_INPUT_ID = "content"
     }
 }

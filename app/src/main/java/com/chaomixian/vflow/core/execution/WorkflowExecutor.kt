@@ -25,6 +25,7 @@ import com.chaomixian.vflow.core.workflow.model.ActionStep
 import com.chaomixian.vflow.core.workflow.model.ActionStepExecutionSettings
 import com.chaomixian.vflow.core.workflow.model.FunctionSignatureDefaults
 import com.chaomixian.vflow.core.workflow.model.Workflow
+import com.chaomixian.vflow.core.workflow.model.WorkflowLogLevel
 import com.chaomixian.vflow.core.workflow.model.WorkflowReentryBehavior
 import com.chaomixian.vflow.core.workflow.module.logic.*
 import com.chaomixian.vflow.extension.ExternalModuleManager
@@ -60,6 +61,14 @@ object WorkflowExecutor {
     // 用于存储每个正在运行的工作流的详细日志
     private val executionLogs = ConcurrentHashMap<String, StringBuilder>()
 
+    /**
+     * 每个工作流的日志等级（用户在「更多选项」里选的过滤档位）。
+     *
+     * ⚠️ 与 [executionLogs] **同生命周期**（同一处登记、同一处清理）——
+     * 两者若不同步，会出现「日志缓冲区在、等级却读不到」的窗口。
+     */
+    private val logLevelsByWorkflow = ConcurrentHashMap<String, WorkflowLogLevel>()
+
     // 用于在协程间传递当前 Root Workflow ID 的 ThreadLocal
     private val currentRootWorkflowId = ThreadLocal<String>()
 
@@ -90,10 +99,34 @@ object WorkflowExecutor {
             appendToLog("E", tag, message, throwable)
         }
 
+        /**
+         * 按 [ExecutionLogLevel] 写日志 —— 供 `ExecutionContext.logSink` 用。
+         *
+         * ⚠️ 存在的理由是「模块拿不到本对象」（它是 `private object`）。
+         * 模块侧只认 [ExecutionLogLevel]，不认识本类里的 `"D"` / `"I"` 字符。
+         */
+        fun log(level: ExecutionLogLevel, tag: String, message: String, throwable: Throwable? = null) {
+            when (level) {
+                ExecutionLogLevel.ERROR -> e(tag, message, throwable)
+                ExecutionLogLevel.WARN -> w(tag, message, throwable)
+                ExecutionLogLevel.INFO -> i(tag, message, throwable)
+                ExecutionLogLevel.DEBUG -> d(tag, message, throwable)
+            }
+        }
+
         private fun appendToLog(level: String, tag: String, message: String, throwable: Throwable?) {
             // 从 ThreadLocal 中获取当前上下文的工作流 ID
             val workflowId = currentRootWorkflowId.get() ?: return
             val sb = executionLogs[workflowId] ?: return
+
+            // ⚠️ 等级过滤**只在这里**，不在 d/i/w/e 里：
+            //    那四个方法上面已经调过 GlobalDebugLogger（logcat + 崩溃缓冲），
+            //    在那一层过滤会把 logcat 与崩溃上报一起吃掉 —— 那是另一条链路，
+            //    本开关（用户的「日志等级」）不该管它。
+            //
+            // ⚠️ 表里查不到 ⇒ VERBOSE（放行全部）。宁可多记，不可漏记。
+            val logLevel = logLevelsByWorkflow[workflowId] ?: WorkflowLogLevel.VERBOSE
+            if (!logLevel.allows(ExecutionLogLevel.fromChar(level))) return
 
             val time = dateFormat.format(Date())
             sb.append("[$time] $level/$tag: $message\n")
@@ -101,6 +134,16 @@ object WorkflowExecutor {
                 sb.append(throwable.stackTraceToString()).append("\n")
             }
         }
+    }
+
+    /**
+     * 供模块（`ExecutionContext.logSink`）使用的日志写入入口。
+     *
+     * ⚠️ 内部那个 `DebugLogger` 是 `private object`，模块够不到；
+     * 这个顶层函数是**唯一**的对外口子。
+     */
+    internal fun appendModuleLog(level: ExecutionLogLevel, tag: String, message: String) {
+        DebugLogger.log(level, tag, message)
     }
 
     /**
@@ -177,7 +220,12 @@ object WorkflowExecutor {
         if (!isRunning(workflow.id)) {
             stoppedWorkflows.remove(workflow.id)
             executionLogs.remove(workflow.id)
+            logLevelsByWorkflow.remove(workflow.id)
         }
+
+        // ⚠️ 与 logBuffer 一起登记：过滤要在第一条日志之前就位，
+        //    否则开头的「开始执行」等行会绕过用户的等级设置。
+        logLevelsByWorkflow[workflow.id] = workflow.logLevel
 
         val logBuffer = executionLogs.getOrPut(workflow.id) { StringBuilder() }
         synchronized(logBuffer) {
@@ -237,7 +285,14 @@ object WorkflowExecutor {
                             FunctionSignatureDefaults.seedNamedVariables(workflow.functionSignature)
                         ),
                         workflowStack = Stack<String>().apply { push(workflow.id) },
-                        workDir = workDir
+                        workDir = workDir,
+                        // 给模块一条写执行日志的通路（`vflow.data.log` 用）。
+                        // ⚠️ 只此一处：每个步骤的 `executionContext` 是 `initialContext.copy(...)`，
+                        //    copy 会带上它，不必重复写。
+                        //
+                        // ⚠️ 不能回指 `this@WorkflowExecutor`（object 的私有内部类拿不到），
+                        //    故走下面那个 `internal fun appendModuleLog` 顶层口子。
+                        logSink = { level, tag, message -> appendModuleLog(level, tag, message) }
                     )
 
                     // 超时限制
@@ -343,6 +398,7 @@ object WorkflowExecutor {
 
                         if (!hasActiveExecutions) {
                             executionLogs.remove(workflow.id)
+                            logLevelsByWorkflow.remove(workflow.id)
                         }
 
                         if (!wasFailureHandled) {
@@ -771,6 +827,7 @@ object WorkflowExecutor {
                         stoppedWorkflows.remove(executionInstanceId)
                         if (!hasActiveExecutions) {
                             executionLogs.remove(workflow.id)
+                            logLevelsByWorkflow.remove(workflow.id)
                         }
                         ExecutionStateBus.postState(
                             ExecutionState.Failure(

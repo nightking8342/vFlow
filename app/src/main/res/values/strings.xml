@@ -871,6 +871,7 @@
     <string name="text_placeholder_dash">-</string>
     <string name="default_workflow_version">1.0.0</string>
     <string name="magic_variable_use_self">使用 %1$s 本身</string>
+    <string name="magic_variable_whole_step_output">全部输出</string>
     <string name="magic_variable_property_name">%1$s 的 %2$s</string>
     <string name="magic_variable_property_separator">的</string>
     <string name="magic_variable_select_dictionary_value">选择指定键的值...</string>
@@ -1467,6 +1468,12 @@
     <string name="workflow_chip_function">函数</string>
     <string name="workflow_silent_execution_enabled">静默执行</string>
     <string name="workflow_silent_execution_desc">执行时不显示进度通知与启动提示。「需要你输入或选择」的提示仍会显示，失败也会通知。</string>
+    <string name="workflow_log_level_title">日志等级</string>
+    <string name="workflow_log_level_desc">只影响本次执行的日志。超级岛与执行通知的实时状态、崩溃报告、系统日志不受影响。</string>
+    <string name="workflow_log_level_verbose">详细</string>
+    <string name="workflow_log_level_normal">精简</string>
+    <string name="workflow_log_level_warning">仅警告与错误</string>
+    <string name="workflow_log_level_error">仅错误</string>
     <string name="workflow_chip_permissions_count">%d 项权限</string>
     <string name="workflow_id_copied">工作流ID已复制</string>
 

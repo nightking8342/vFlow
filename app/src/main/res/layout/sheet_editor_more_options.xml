@@ -550,6 +550,35 @@
                     android:textAppearance="?attr/textAppearanceBodySmall"
                     android:textColor="?attr/colorOnSurfaceVariant" />
 
+                <com.google.android.material.divider.MaterialDivider
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginVertical="12dp" />
+
+                <!-- 日志等级（执行日志的详细度）。用 Compose 的 ToggleButton 组，
+                     与上面的「重入行为」同一形态：四个具名档位，下拉表达不了被跳过的档。 -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/workflow_log_level_title"
+                    android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+                <androidx.compose.ui.platform.ComposeView
+                    android:id="@+id/compose_log_level"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp" />
+
+                <!-- 说明文案：必须写清「管不到什么」，否则用户会以为「我把日志关了」
+                     然后疑惑 logcat / 崩溃上报里为什么还有 -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="@string/workflow_log_level_desc"
+                    android:textAppearance="?attr/textAppearanceBodySmall"
+                    android:textColor="?attr/colorOnSurfaceVariant" />
+
             </LinearLayout>
 
         </com.google.android.material.card.MaterialCardView>

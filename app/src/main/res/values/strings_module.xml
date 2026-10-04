@@ -1322,6 +1322,20 @@
     <string name="module_vflow_data_comment_desc">添加注释说明，用于记录工作流的设计思路和目的。执行时会被跳过。</string>
     <string name="param_vflow_data_comment_content_name">注释内容</string>
 
+    <!-- vflow.data.log -->
+    <string name="module_vflow_data_log_name">输出日志</string>
+    <string name="module_vflow_data_log_desc">把一个值打印到执行日志，用于调试与运行追踪。受工作流「日志等级」过滤。</string>
+    <string name="param_vflow_data_log_content_name">内容</string>
+    <string name="param_vflow_data_log_content_hint">要打印的值。填 {{步骤id}} 可打印该步的全部输出</string>
+    <string name="param_vflow_data_log_label_name">标签</string>
+    <string name="param_vflow_data_log_label_hint">用于区分同一工作流中的多处日志</string>
+    <string name="param_vflow_data_log_level_name">级别</string>
+    <string name="option_vflow_data_log_level_info">信息</string>
+    <string name="option_vflow_data_log_level_warn">警告</string>
+    <string name="option_vflow_data_log_level_error">错误</string>
+    <string name="output_vflow_data_log_success_name">是否成功</string>
+    <string name="output_vflow_data_log_text_name">实际输出</string>
+
     <!-- vflow.network.http_request -->
     <string name="module_vflow_network_http_request_name">HTTP 请求</string>
     <string name="module_vflow_network_http_request_desc">发送 HTTP 请求并获取响应</string>

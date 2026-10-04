@@ -706,8 +706,48 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 | 三语 `strings_module.xml` | 追加 `msg_vflow_network_webdav_mkdir_ancestors` / `error_vflow_network_webdav_mkdir_ancestors_failed`（各 ×3 语言） | **手动合并**（追加条目） |
 
 > ⚠️ **真机验证 0 项**（`adb devices` 为空）：设计文档 §8.2 列了完整清单，
-> ⚠️ **真机验证 0 项**（`adb devices` 为空）：设计文档 §8.2 列了完整清单，
 > 其中**最关键的是「导入后触发器恢复调度」**（`reloadTriggers` 的端到端 —— 只在**不重启 App** 的前提下触发才证明得了那条链路）。
+
+---
+
+### 工作流日志能力（`vflow.data.log` 模块 + 工作流日志等级，2026-10-04）
+
+> 设计文档：`docs/fork/log-module-design.md`（日志模块）、
+> `docs/fork/workflow-log-level-design.md`（日志等级）。
+> **本块全部为「新增文件 + 上游文件的纯追加」**：`git diff --numstat` 对每个上游文件都是 0 删除。
+> ⚠️ 本批**唯一的行为变更**是 `WorkflowExecutor.appendToLog` 里多了一道等级过滤 ——
+> 但默认档 `VERBOSE` 逐字节等价于改动前，故存量工作流**零感知**。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `core/execution/ExecutionLogLevel.kt`（新增） | fork 独有：日志**级别**枚举（`DEBUG`/`INFO`/`WARN`/`ERROR`）+ `fromChar("D"/"I"/"W"/"E")`。存在的理由是「模块侧需要一个不依赖执行器内部字符约定的类型」——`WorkflowExecutor` 内部那四个方法用的是 `"D"`/`"I"`/`"W"`/`"E"` 字面量 | 我方 |
+| `core/workflow/model/WorkflowLogLevel.kt`（新增） | fork 独有：**工作流日志等级**四档（`VERBOSE`/`NORMAL`/`WARNING`/`ERROR`）+ `allows(level)` + `fromStoredValue()`。⚠️⚠️ **`storageValue` 落盘，改动即存量工作流失配**（回落 `VERBOSE`，用户看到「我设的仅错误没生效」）；⚠️ **未知值回落 `VERBOSE` 而不是更保守的档** —— 方向刻意选「不丢信息」：日志是排障的唯一依据，多记几条的代价远小于「故障时没有线索」 | 我方 |
+| `core/execution/ExecutionContext.kt`（改） | 末尾追加一个带默认值的字段 `logSink: ((ExecutionLogLevel, String, String) -> Unit)? = null`（+23 行、**0 删除**）。⚠️ **默认 `null` = 不写日志**，与不接之前**行为完全一致**。⚠️ 存在的理由：`WorkflowExecutor` 内部写日志的对象是 **`private object DebugLogger`**，且靠 `private val currentRootWorkflowId`（ThreadLocal）找当前工作流 —— **模块在别的类里够不到这两者中的任何一个**，于是「工作流内主动打日志」这个需求没有上行通路 | **手动合并**（data class 追加 1 个带默认值字段） |
+| `core/execution/WorkflowExecutor.kt`（改） | ① `logLevelsByWorkflow` 等级表（与 `executionLogs` **同生命周期**：同一处登记、三处清理）；② `DebugLogger.log(level, ...)` 分发到 d/i/w/e；③ **`appendToLog` 里加过滤**（`allows(...)` 不通过则 `return`）；④ `internal fun appendModuleLog(...)` —— ⚠️ 模块够不到 `private object DebugLogger`，这是**唯一**的对外口子；⑤ `initialContext` 注入 `logSink`。⚠️⚠️ **过滤点必须在 `appendToLog`、且必须在四个 d/i/w/e 方法调用 `GlobalDebugLogger` 之后** —— 挪进那四个方法会**把 logcat 与崩溃上报的 `recentLogs` 一起吃掉**，而那是另一条链路、本开关不该管（有源码扫描测试锁住顺序）。⚠️ 表里查不到 ⇒ `VERBOSE`（宁可多记、不可漏记）。<br/>⚠️⚠️ **本档同时过滤「执行器自己打的固有日志」**（不只是日志模块的输出）—— 两者最终都汇进 `executionLogs`（执行器的经内部 `DebugLogger`、模块的经 `logSink`），过滤点在共同下游 `appendToLog`。「精简」档去掉的正是 `[#3] -> 执行: xxx` 与 `[进度] xxx`（`:700/723`，均 `D` 级）。⚠️ 但有三类**过滤不到**，都是有意的：① 模块**直接**调全局 `DebugLogger` 的行（`JsConsole` 的 `console.log`、interaction 下约 34 处 `D`）**从来不进 `detailedLog`**，是 logcat 专属；② `WorkflowExecutor` 自己那批只写 `GlobalDebugLogger` 的行（`:254/313/395` 等）；③ **设置页「导出调试日志」**（`SettingsRoute.kt:72` → `DebugLogger.getLogs()` = 设备信息 + `logBuffer` + shell 日志）—— 刻意保留全量，否则「嫌吵关掉了 ⇒ 故障现场也没了」。**代价是一处不一致**：「仅错误」档下首页日志没有 `D` 上下文、导出文件里有，**别当成过滤失效**（前提：`logBuffer` 只在设置里打开「调试日志」开关时才累加）。改动集中在 `appendToLog` + 登记/清理 4 处 + `initialContext` 1 处 | **手动合并**（新增私有表 + 过滤 3 行 + 1 个 internal 函数 + 注入 1 处） |
+| `core/workflow/model/Workflow.kt`（改） | 追加 `var logLevel: WorkflowLogLevel = WorkflowLogLevel.VERBOSE`（+7 行、0 删除）。⚠️ 内置默认值 ⇒ 老记录反序列化出来就是 `VERBOSE`，**不需要 `legacyValueMap` 之类兼容逻辑** | **手动合并**（追加 1 个带默认值字段） |
+| `core/workflow/WorkflowManager.kt`（改） | ⚠️ `saveWorkflow` 的 `copy(...)` 是**显式白名单** —— 补 `logLevel = normalizedVisualWorkflow.logLevel`（**漏这一行 = 用户在编辑器里改了、保存后却没生效**的静默失效）；`loadWorkflow` 补 `WorkflowLogLevel.fromStoredValue(record.getString("logLevel"))` | **手动合并**（追加 2 行） |
+| `core/workflow/WorkflowJsonImportParser.kt`（改） | 补 `logLevel = WorkflowLogLevel.fromStoredValue(data.getString("logLevel"))`（旧导出文件缺该键 → `VERBOSE`） | **手动合并**（追加 1 行） |
+| `core/backup/scopes/WorkflowScope.kt`（改） | **仅注释**：类 KDoc 的字段数由 24 改 25、遗漏清单补 `logLevel`，并写明**刻意不去改** `WorkflowListRoute.createWorkflowExportData` 那份 20 键 map（那是**单文件导出**路径的既有行为，含 `silentExecution` 等早于本 fork 的遗漏；改它属于行为变更，而 `WorkflowJsonImportParser` 对所有缺失键都有回落）。**备份/恢复**走的是本 scope（全字段），不受影响 | **手动合并**（注释） |
+| `core/workflow/module/data/LogModule.kt`（新增） | fork 独有：**日志模块**（`vflow.data.log`）。三个输入（`content` ANY / `label` STRING / `level` ENUM info·warn·error）+ 两个输出（`success` / `text`）。⚠️⚠️ **`content` 支持「裸写步骤 id ⇒ 展开该步全部输出」（`{{cls}}`）** —— 见下条；⚠️ `riskLevel = LOW`（**必须**：`riskLevelForSavedWorkflow` 取步骤 max，声明 HIGH 会让任何含本模块的工作流被抬到 high 并触发人工审批，而用户审的是「打印一行字」）；⚠️ `usageScopes` **只给 `TEMPORARY_WORKFLOW`、不给 `DIRECT_TOOL`**（直调没有工作流上下文、日志也没人看，且 v2.0 的方向是精简直调工具数） | 我方 |
+| `LogModule` 的**裸步骤 id 分派** | ⚠️⚠️ **本模块专有语义，刻意不写进 `VariableResolver`**：裸写 `{{cls}}`（`path.size == 1` 且该 id 在 `stepOutputs` 里）⇒ 展开该步全部输出。**不能**把它挪进全局解析器 —— 会**全局**改变语义（所有模块的静态输入跑同一个解析器），既有工作流里裸写 id 的地方会从「空值」变成「一整表」，且**不可回滚**。⚠️ 实现走**哨兵替换**（`\u0000vflow-whole-step\u0000`）后交回 `VariableResolver.resolve` 处理其余段落，再按 `split` 把整表填回 —— ⚠️ **索引方向是 `parts[i]` ↔ 哨兵之后**（哨兵夹在 `parts[i]` 与 `parts[i+1]` 之间），写成「按 part 配 stepId」会把前缀文本吃掉（实现期实际踩到，有反向锁）。⚠️ **常规路径刻意不自己再跑一遍 `VariableResolver.resolve`** —— 那会让解析不掉的引用被 `VariableResolver.kt:133` 的回退包成 `{{{…}}}` 再递归重试，用户打错一个 id 就在日志里看到几十个括号的噪声 | 我方 |
+| `core/workflow/module/data/VObjectLogSerializer.kt`（新增） | fork 独有：`VObject` → **一行文本**的渲染层（纯函数，可纯 JVM 单测）。三条硬规则：① **不截断**（使用者显式打了一条日志，就是要看到值的全部；**不做深度上限** —— `VObjectFactory.from` 对 Collection/Map 无条件递归，循环引用图在**构造时**就爆栈了，到不了这里）；② **图片/文件只取元数据、绝不读 `base64`/`content`**（一张 1080p PNG 的 base64 约 2–5 MB，单条日志就能撑爆 `SharedPreferences`）；③ **转义**（`"` `\` 换行 ⇒ 保证一条日志一行，否则执行器的行级解析会错乱）。⚠️ **不复用 `VDictionary.asString()`** —— 它把所有值都包引号且**完全不转义**（`VDictionary.kt:26`）。⚠️ 中心点算法抽成纯函数 `centerOfBounds`：**`android.graphics.Rect` 在纯 JVM 单测里字段恒为 0**（mockable jar 不执行构造函数体），从外面断言「中心算得对不对」**观察不到** | 我方 |
+| `core/workflow/module/ModuleRegistry.kt`（改） | 数据段 `register(CommentModule(), context)` 之后**追加一行** `register(LogModule(), context)`（不重排既有注册） | **手动合并**（追加一行） |
+| `ui/chat/ChatAgentModuleExecutor.kt`（改） | **直调路径**也注入 `logSink`（按级别分发到 `DebugLogger.d/i/w/e`）。⚠️ 不接的话，Agent 直调 `vflow.data.log` 会静默什么都没输出（`logSink == null` 时模块不报错、`success` 也只回 false） | **手动合并**（新增 1 处参数） |
+| `ui/workflow_editor/EditorMoreOptionsSheet.kt`（改） | 新增日志等级选择器（4 个 `ToggleButton` 的 connected group）。⚠️ 用按钮组而不是下拉：四档是**有序**的，排成一行能直接看出「越往右越安静」 | **手动合并**（新增 2 个方法 + 状态 + 绑定/保存各 1 行） |
+| `res/layout/sheet_editor_more_options.xml`（改） | 静默执行 desc 之后追加 divider + 标题 + `<ComposeView android:id="@+id/compose_log_level" />` + desc | **手动合并**（追加块） |
+| `ui/workflow_editor/WorkflowEditorMagicVariableCatalogBuilder.kt`（改） | 新增 `wantsWholeStepOutputItem(moduleId, targetInputId)` + `wholeStepOutputItem(step)` —— **只对 `vflow.data.log` 的 `content`** 多列一项「全部输出」（`variableReference = "{{<step.id>}}"`，**裸写**）。⚠️ 若全局都列这一项，用户在别的模块里选了只会得到一个空值，**比不给更糟**（他会以为功能坏了）。⚠️ 「全部输出」插在该步具体输出项**之前** | **手动合并**（新增 2 方法 + 1 处插入） |
+| `res/drawable/rounded_log_24.xml`（新增） | fork 独有：日志模块图标（文档 + 三行线造型，24dp / viewport 960 / `?attr/colorControlNormal`） | 我方 |
+| 三语 `strings.xml` ×3 | 追加日志等级文案 6 条（`workflow_log_level_title` / `_desc` / 4 个档位名）+ `magic_variable_whole_step_output`。⚠️ 档位名**只写档位本身**（详细/精简/仅警告与错误/仅错误），**不带括号说明** —— 四个按钮挤一排，括号会把每个撑成两行且互相截断，反而看不出区别；含义由 `_desc` 统一交代（用户 2026-10-04 定）。⚠️ 英文里**不能用 `\'`** ——aapt2 按 Java `Properties` 读，`\uXXXX` 是唯一合法的 hex 转义（写 `\'` 会 `Invalid unicode escape sequence`，已实际踩到），改写措辞绕过撇号 | **手动合并**（追加条目） |
+| 三语 `strings_module.xml` ×3 | 追加日志模块文案 12 条（模块名/描述、3 个参数名 + 2 个 hint、3 个选项名、2 个输出名） | **手动合并**（追加条目） |
+| `test/.../workflow/model/WorkflowLogLevelTest.kt`（新增，11 例） | fork 独有：4×4 组合逐一验（防「边界差一」）、**报错永不丢失**（W/E 在任何档位下）、档位单调性（越往右越安静）、未知值回落 `VERBOSE`、**`storageValue` 稳定性**（它落盘） | 我方 |
+| `test/.../module/data/VObjectLogSerializerTest.kt`（新增，17 例） | fork 独有。重点是三类「改错了不报错、只静默变差」：**图片/文件绝不打印内容**（造真实 64 KB 临时文件 + 反向断言）、**不截断**（5 000 字符串 / 50 项列表 / 6 层嵌套各自反向锁）、**转义**（用 `JSONObject` 解回来必须等于原文 —— 光是「没有换行」不够，转义可能转错）。⚠️ **`Rect` 中心点的断言方式见上**（`centerOfBounds` 纯函数 + 一条注明前提的 `0,0` 断言） | 我方 |
+| `test/.../module/data/LogModuleTest.kt`（新增，24 例） | fork 独有：声明体检（形态照 `ActivityChangedTriggerModuleTest`）+ 裸步骤 id 行为 + `logSink` 接线 + **源码扫描型接线锚定**。⚠️ 三条反向锁直接对应实现期踩到的坑：**前缀文本不得被哨兵替换吃掉**、**两个整表引用按顺序展开**（一个哨兵时错的实现也能碰巧对）、**解析不掉的引用原样输出、不得撑大括号**。⚠️ 另有两条**如实记录「不可达分支」**的用例（`renderStepOutputs` 的空输出分支、`a missing step`），**刻意不写恒红断言** —— 恒红的断言会被下一个实现者直接删掉 | 我方 |
+| `test/.../workflow_editor/WholeStepOutputContractTest.kt`（新增，5 例） | fork 独有：**跨文件契约的源码扫描锚定**。⚠️ 这条功能由**两个互不知情的文件各写一半**（选择器列出 `{{<id>}}` ↔ `LogModule` 展开整表），脱节的后果**双向且静默**：只改前者 ⇒ 用户选了没反应；只改后者 ⇒ 功能存在但**用户发现不了**（步骤 id 是 UUID，编辑器里根本不显示）。⚠️ 其中一例**直接比对选择器里的 `LOG_MODULE_ID` 字面量与 `LogModule().id`**（唯一能机器化核对的连接点）。⚠️ **反证已实际做过**：把 `wantsWholeStepOutputItem` 改成恒 `true` ⇒ 1 条变红 | 我方 |
+
+> ⚠️ **真机验证未做**（`adb devices` 为空）：release APK 已产出，
+> 待验清单见 `docs/fork/log-module-design.md` §6 —— 最需要证的端到端是
+> **「日志模块的 `[日志]` 行出现在首页「最近日志」里」** 与
+> **「把工作流设成『仅错误』后该行消失、失败行仍在」**。
 
 ---
 

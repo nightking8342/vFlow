@@ -19,11 +19,18 @@ import com.google.gson.JsonArray
  *
  * ## 完整字段
  *
- * 直接对**整个 `Workflow` 对象**做 Gson 序列化（24 个字段），
+ * 直接对**整个 `Workflow` 对象**做 Gson 序列化（25 个字段），
  * **不是** `WorkflowListRoute.createWorkflowExportData` 的 20 键 map ——
- * 那份漏掉了 `maxExecutionTime` / `reentryBehavior` / `silentExecution` / `functionSignature`。
+ * 那份漏掉了 `maxExecutionTime` / `reentryBehavior` / `silentExecution` /
+ * `logLevel` / `functionSignature`。
  * 漏 `functionSignature` 的后果最重：函数工作流会**静默退化**成普通工作流
  * （`Workflow.isFunction` 由 `functionSignature != null` 派生）。
+ *
+ * ⚠️ 上面那份 map 的遗漏是**单文件导出**路径的既有行为（含 `silentExecution` 等，
+ * 均早于本 fork 的 `logLevel`），本 fork 只做如实记录、**不改那份 map** ——
+ * 改它属于行为变更，且 `WorkflowJsonImportParser` 对所有缺失键都有回落
+ * （`logLevel` 缺 → `VERBOSE`，即改动前行为）。**备份/恢复**路径走的是本 scope，
+ * 那份是全字段的，不受影响。
  *
  * ⚠️ 序列化用的 Gson 由 `BackupEnvironment.json` 提供，生产实现必须与
  * `WorkflowManager` 用同一套构造方式（含 `VObjectGsonAdapter`），否则同一份数据

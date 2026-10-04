@@ -869,6 +869,7 @@
     <string name="text_placeholder_dash">-</string>
     <string name="default_workflow_version">1.0.0</string>
     <string name="magic_variable_use_self">Use %1$s itself</string>
+    <string name="magic_variable_whole_step_output">Every output</string>
     <string name="magic_variable_property_name">%1$s\'s %2$s</string>
     <string name="magic_variable_property_separator">&gt;</string>
     <string name="magic_variable_select_dictionary_value">Select a value for a specific key...</string>
@@ -1465,6 +1466,12 @@
     <string name="workflow_chip_function">Function</string>
     <string name="workflow_silent_execution_enabled">Silent execution</string>
     <string name="workflow_silent_execution_desc">Hides the progress notification and the start-up prompt while running. Prompts asking for your input or choice still appear, and failures are still reported.</string>
+    <string name="workflow_log_level_title">Log level</string>
+    <string name="workflow_log_level_desc">Affects only the execution log of this run. Live status on the island and the execution notification, crash reports and system logs are unaffected.</string>
+    <string name="workflow_log_level_verbose">Verbose</string>
+    <string name="workflow_log_level_normal">Normal</string>
+    <string name="workflow_log_level_warning">Warnings and errors</string>
+    <string name="workflow_log_level_error">Errors only</string>
     <string name="workflow_chip_permissions_count">%d permissions</string>
     <string name="workflow_id_copied">Workflow ID copied</string>
 

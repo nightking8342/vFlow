@@ -2,6 +2,7 @@ package com.chaomixian.vflow.ui.chat
 
 import android.content.Context
 import com.chaomixian.vflow.core.execution.ExecutionContext
+import com.chaomixian.vflow.core.execution.ExecutionLogLevel
 import com.chaomixian.vflow.core.execution.ExecutionState
 import com.chaomixian.vflow.core.execution.ExecutionStateBus
 import com.chaomixian.vflow.core.execution.ExecutionServices
@@ -2051,6 +2052,19 @@ internal class ChatAgentModuleExecutor(
             loopStack = Stack(),
             namedVariables = mutableMapOf(),
             workDir = workDir,
+            // 直调时没有工作流上下文 ⇒ 这份 `logSink` 写的是**全局** DebugLogger，
+            // 不进任何工作流的 detailedLog（那里根本没有）。
+            // 接它的理由：`vflow.data.log` 直调时也会执行，不接就是空指针式的静默失败。
+            // ⚠️ 它**不受**工作流的「日志等级」过滤 —— 那一层过滤按 workflowId 查表，
+            //    而直调本就没有 workflowId。这是可接受的：直调一次只有一条日志。
+            logSink = { level, tag, message ->
+                when (level) {
+                    ExecutionLogLevel.ERROR -> DebugLogger.e(tag, message)
+                    ExecutionLogLevel.WARN -> DebugLogger.w(tag, message)
+                    ExecutionLogLevel.INFO -> DebugLogger.i(tag, message)
+                    ExecutionLogLevel.DEBUG -> DebugLogger.d(tag, message)
+                }
+            },
         )
 
         return try {

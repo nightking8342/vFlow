@@ -813,6 +813,7 @@
     <string name="text_placeholder_dash">-</string>
     <string name="default_workflow_version">1.0.0</string>
     <string name="magic_variable_use_self">Use %1$s itself</string>
+    <string name="magic_variable_whole_step_output">すべての出力</string>
     <string name="magic_variable_property_name">%1$s of %2$s</string>
     <string name="magic_variable_property_separator">の</string>
     <string name="magic_variable_select_dictionary_value">指定されたキーの値を選択してください...</string>
@@ -1389,6 +1390,12 @@
     <string name="workflow_chip_function">関数</string>
     <string name="workflow_silent_execution_enabled">サイレント実行</string>
     <string name="workflow_silent_execution_desc">実行中は進行状況の通知と開始時のメッセージを表示しません。入力や選択を求めるプロンプトは引き続き表示され、失敗時も通知されます。</string>
+    <string name="workflow_log_level_title">ログレベル</string>
+    <string name="workflow_log_level_desc">この実行のログにのみ影響します。スーパーアイランドと実行通知のリアルタイム状態、クラッシュレポート、システムログには影響しません。</string>
+    <string name="workflow_log_level_verbose">詳細</string>
+    <string name="workflow_log_level_normal">簡潔</string>
+    <string name="workflow_log_level_warning">警告とエラーのみ</string>
+    <string name="workflow_log_level_error">エラーのみ</string>
     <string name="workflow_chip_permissions_count">%d 権限</string>
     <string name="workflow_id_copied">ワークフローIDがコピーされました</string>
     <string name="key_tester_title">ボタンテスター</string>

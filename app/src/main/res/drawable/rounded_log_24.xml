@@ -1,0 +1,31 @@
+<!--
+  输出日志模块的图标：文档 + 三条横线（日志/清单造型）。
+
+  ⚠️ **刻意不复用 `rounded_add_comment_24`**：注释模块与输出日志都是「无副作用的
+  信息类步骤」，图标一样会让用户在编辑器里分不清谁是谁。
+
+  造型取自 Material Symbols 的「receipt_long」思路，按 960 viewport 手写。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="960"
+    android:viewportHeight="960"
+    android:tint="?attr/colorControlNormal">
+
+    <!-- 页面上缘的折角（文档感）：从左上到右上，右侧留出折角缺口 -->
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M800,80L160,80Q127,80 103.5,103.5Q80,127 80,160L80,800Q80,833 103.5,856.5Q127,880 160,880L800,880Q833,880 856.5,856.5Q880,833 880,800L880,160Q880,127 856.5,103.5Q833,80 800,80ZM800,800L160,800L160,160L800,160L800,800Z" />
+
+    <!-- 三条横线（正文行） -->
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M280,320L680,320Q697,320 708.5,308.5Q720,297 720,280Q720,263 708.5,251.5Q697,240 680,240L280,240Q263,240 251.5,251.5Q240,263 240,280Q240,297 251.5,308.5Q263,320 280,320Z" />
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M280,520L680,520Q697,520 708.5,508.5Q720,497 720,480Q720,463 708.5,451.5Q697,440 680,440L280,440Q263,440 251.5,451.5Q240,463 240,480Q240,497 251.5,508.5Q263,520 280,520Z" />
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M280,720L560,720Q577,720 588.5,708.5Q600,697 600,680Q600,663 588.5,651.5Q577,640 560,640L280,640Q263,640 251.5,651.5Q240,663 240,680Q240,697 251.5,708.5Q263,720 280,720Z" />
+</vector>

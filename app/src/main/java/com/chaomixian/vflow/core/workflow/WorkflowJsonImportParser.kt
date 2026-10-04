@@ -2,6 +2,7 @@ package com.chaomixian.vflow.core.workflow
 
 import com.chaomixian.vflow.core.workflow.model.Workflow
 import com.chaomixian.vflow.core.workflow.model.WorkflowFolder
+import com.chaomixian.vflow.core.workflow.model.WorkflowLogLevel
 import com.chaomixian.vflow.core.workflow.model.WorkflowReentryBehavior
 import com.google.gson.Gson
 import com.google.gson.JsonElement
@@ -125,7 +126,9 @@ class WorkflowJsonImportParser(
             maxExecutionTime = data.getInt("maxExecutionTime"),
             reentryBehavior = WorkflowReentryBehavior.fromStoredValue(data.getString("reentryBehavior")),
             // 旧导出文件没有这个键 → false（保持既有行为）。
-            silentExecution = data.getBoolean("silentExecution") ?: false
+            silentExecution = data.getBoolean("silentExecution") ?: false,
+            // 旧导出文件没有这个键 → VERBOSE（= 改动前行为，全量记日志）。
+            logLevel = WorkflowLogLevel.fromStoredValue(data.getString("logLevel"))
         )
         return sanitizeWorkflow(workflow)
     }

@@ -1303,6 +1303,20 @@
     <string name="module_vflow_data_comment_desc">Add comments to document your workflow design. Will be skipped during execution.</string>
     <string name="param_vflow_data_comment_content_name">Comment Content</string>
 
+    <!-- vflow.data.log -->
+    <string name="module_vflow_data_log_name">Log output</string>
+    <string name="module_vflow_data_log_desc">Print a value into the execution log for debugging and run tracing. Filtered by the log level of the workflow.</string>
+    <string name="param_vflow_data_log_content_name">Content</string>
+    <string name="param_vflow_data_log_content_hint">Value to print. Write {{stepId}} to dump every output of that step</string>
+    <string name="param_vflow_data_log_label_name">Label</string>
+    <string name="param_vflow_data_log_label_hint">Tells apart several log calls in the same workflow</string>
+    <string name="param_vflow_data_log_level_name">Level</string>
+    <string name="option_vflow_data_log_level_info">Info</string>
+    <string name="option_vflow_data_log_level_warn">Warning</string>
+    <string name="option_vflow_data_log_level_error">Error</string>
+    <string name="output_vflow_data_log_success_name">Succeeded</string>
+    <string name="output_vflow_data_log_text_name">Printed text</string>
+
     <!-- vflow.network.http_request -->
     <string name="module_vflow_network_http_request_name">HTTP Request</string>
     <string name="module_vflow_network_http_request_desc">Send HTTP request and get response</string>

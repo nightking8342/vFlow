@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.ToggleButton
 import androidx.compose.runtime.Composable
@@ -38,6 +39,7 @@ import com.chaomixian.vflow.R
 import com.chaomixian.vflow.core.types.VTypeRegistry
 import com.chaomixian.vflow.core.workflow.WorkflowVisuals
 import com.chaomixian.vflow.core.workflow.model.Workflow
+import com.chaomixian.vflow.core.workflow.model.WorkflowLogLevel
 import com.chaomixian.vflow.core.workflow.model.WorkflowReentryBehavior
 import com.chaomixian.vflow.ui.common.VFlowTheme
 import com.chaomixian.vflow.ui.common.ThemeUtils
@@ -48,6 +50,7 @@ import com.google.android.material.card.MaterialCardView
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.ceil
 
 class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
 
@@ -86,6 +89,7 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
     private lateinit var textMaxExecutionTimeValue: TextView
     private lateinit var sliderMaxExecutionTime: com.google.android.material.slider.Slider
     private lateinit var reentryBehaviorComposeView: ComposeView
+    private lateinit var logLevelComposeView: ComposeView
     private lateinit var layoutWorkflowVisuals: LinearLayout
     private lateinit var textColorfulWorkflowCardsDisabled: TextView
     private lateinit var cardVisualPreview: MaterialCardView
@@ -100,6 +104,7 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
     private var selectedIconRes: String = WorkflowVisuals.defaultIconResName()
     private var selectedThemeColor: String = WorkflowVisuals.defaultThemeColorHex()
     private var selectedReentryBehavior by mutableStateOf(WorkflowReentryBehavior.BLOCK_NEW)
+    private var selectedLogLevel by mutableStateOf(WorkflowLogLevel.VERBOSE)
 
     private var isMoreMetadataExpanded = false
     private var metadataCommittedByAction = false
@@ -162,6 +167,7 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
         textMaxExecutionTimeValue = view.findViewById(R.id.text_max_execution_time_value)
         sliderMaxExecutionTime = view.findViewById(R.id.slider_max_execution_time)
         reentryBehaviorComposeView = view.findViewById(R.id.compose_reentry_behavior)
+        logLevelComposeView = view.findViewById(R.id.compose_log_level)
         layoutWorkflowVisuals = view.findViewById(R.id.layout_workflow_visuals)
         textColorfulWorkflowCardsDisabled = view.findViewById(R.id.text_colorful_workflow_cards_disabled)
         cardVisualPreview = view.findViewById(R.id.card_visual_preview)
@@ -172,6 +178,7 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
         textSelectedThemeColor = view.findViewById(R.id.text_selected_theme_color)
 
         setupReentryBehaviorSelector()
+        setupLogLevelSelector()
         setupVisualPickers(view)
         val colorfulCardsEnabled = ThemeUtils.isColorfulWorkflowCardsEnabled(requireContext())
         layoutWorkflowVisuals.visibility = if (colorfulCardsEnabled) View.VISIBLE else View.GONE
@@ -204,6 +211,7 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
             selectedIconRes = WorkflowVisuals.normalizeIconResName(wf.cardIconRes)
             selectedThemeColor = WorkflowVisuals.normalizeThemeColorHex(wf.cardThemeColor)
             selectedReentryBehavior = wf.reentryBehavior
+            selectedLogLevel = wf.logLevel
             switchSilentExecution.isChecked = wf.silentExecution
             iconPickerAdapter.setSelectedIcon(selectedIconRes)
             themeColorAdapter.setSelectedColor(selectedThemeColor)
@@ -213,6 +221,16 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
             wf.maxExecutionTime?.let { maxTime ->
                 switchMaxExecutionTime.isChecked = true
                 layoutMaxExecutionTimeSlider.visibility = View.VISIBLE
+                // ⚠️ 布局写死 `valueTo="120"`，而 AI（save_workflow）/ 远程 API / JSON 导入
+                // 都不受这个上限约束（AI 侧允许到 3600）。直接把 300 赋给 value 会命中
+                // BaseSlider 的取值范围校验并抛 IllegalStateException —— 且那个校验在
+                // onSizeChanged/onDraw 里才触发，即**绑定之后才崩**。
+                // 故超范围时按实际值抬高上界，未超范围时原样返回基准值（行为与改动前一致）。
+                sliderMaxExecutionTime.valueTo = maxExecutionTimeSliderUpperBound(
+                    valueSeconds = maxTime,
+                    baseUpperBound = sliderMaxExecutionTime.valueTo,
+                    stepSize = sliderMaxExecutionTime.stepSize,
+                )
                 sliderMaxExecutionTime.value = maxTime.toFloat()
                 updateMaxExecutionTimeValue(maxTime)
             } ?: run {
@@ -234,6 +252,7 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
             selectedIconRes = WorkflowVisuals.defaultIconResName()
             selectedThemeColor = WorkflowVisuals.defaultThemeColorHex()
             selectedReentryBehavior = WorkflowReentryBehavior.BLOCK_NEW
+            selectedLogLevel = WorkflowLogLevel.VERBOSE
             switchSilentExecution.isChecked = false
             iconPickerAdapter.setSelectedIcon(selectedIconRes)
             themeColorAdapter.setSelectedColor(selectedThemeColor)
@@ -342,6 +361,80 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
         return getString(stringRes)
     }
 
+    /**
+     * 日志等级选择器。
+     *
+     * ⚠️ 用 ToggleButton 组而不是下拉：四个档位是**有序**的（详细 → 精简 → 仅警告 → 仅错误），
+     * 排成一排能直接看出「越往右越安静」；下拉只看得到当前值。
+     */
+    private fun setupLogLevelSelector() {
+        logLevelComposeView.setViewCompositionStrategy(
+            ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed
+        )
+        logLevelComposeView.setContent {
+            VFlowTheme {
+                LogLevelButtonGroup(
+                    selectedLevel = selectedLogLevel,
+                    labelFor = ::getLogLevelLabel,
+                    onLevelSelected = { selectedLogLevel = it }
+                )
+            }
+        }
+    }
+
+    private fun getLogLevelLabel(level: WorkflowLogLevel): String {
+        val stringRes = when (level) {
+            WorkflowLogLevel.VERBOSE -> R.string.workflow_log_level_verbose
+            WorkflowLogLevel.NORMAL -> R.string.workflow_log_level_normal
+            WorkflowLogLevel.WARNING -> R.string.workflow_log_level_warning
+            WorkflowLogLevel.ERROR -> R.string.workflow_log_level_error
+        }
+        return getString(stringRes)
+    }
+
+    @OptIn(ExperimentalMaterial3ExpressiveApi::class)
+    @Composable
+    private fun LogLevelButtonGroup(
+        selectedLevel: WorkflowLogLevel,
+        labelFor: (WorkflowLogLevel) -> String,
+        onLevelSelected: (WorkflowLogLevel) -> Unit
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)
+        ) {
+            WorkflowLogLevel.entries.forEachIndexed { index, level ->
+                ToggleButton(
+                    checked = selectedLevel == level,
+                    onCheckedChange = { checked ->
+                        if (checked && selectedLevel != level) {
+                            onLevelSelected(level)
+                        }
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .semantics { role = Role.RadioButton },
+                    shapes = when (index) {
+                        0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
+                        WorkflowLogLevel.entries.lastIndex ->
+                            ButtonGroupDefaults.connectedTrailingButtonShapes()
+                        else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
+                    }
+                ) {
+                    // ⚠️ 文案刻意**只写档位名、不带括号说明**（用户 2026-10-04 定）：
+                    //    四个按钮挤一排，括号说明会把每个都撑成两行且互相截断，
+                    //    反而看不出区别。档位名的含义由标题下方的 `_desc` 统一交代。
+                    //    `maxLines = 2` 只是兜底（「仅警告与错误」在窄屏/大字号下仍需换行）。
+                    Text(
+                        text = labelFor(level),
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 2
+                    )
+                }
+            }
+        }
+    }
+
     private fun setupVisualPickers(view: View) {
         val iconRecyclerView = view.findViewById<RecyclerView>(R.id.recycler_workflow_icons)
         iconPickerAdapter = WorkflowIconPickerAdapter { iconRes ->
@@ -424,6 +517,7 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
             tags = tags,
             maxExecutionTime = maxExecutionTime,
             reentryBehavior = selectedReentryBehavior,
+            logLevel = selectedLogLevel,
             silentExecution = switchSilentExecution.isChecked,
             cardIconRes = selectedIconRes,
             cardThemeColor = selectedThemeColor
@@ -476,4 +570,53 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
             }
         }
     }
+}
+
+/**
+ * 由「实际要显示的秒数」推出滑动条的 `valueTo`。
+ *
+ * ## 为什么需要它
+ *
+ * `sheet_editor_more_options.xml` 把滑块写死成 `valueFrom=0 / valueTo=120 / stepSize=5`，
+ * 但 `Workflow.maxExecutionTime` 的值域**不受它约束**：
+ *
+ * | 写入方 | 允许范围 | 依据 |
+ * |---|---|---|
+ * | AI（`save_workflow` / `update_workflow`） | 1–3600 | `ChatAgentModuleExecutor.MAX_SAVED_WORKFLOW_MAX_SECONDS` |
+ * | 远程 API | 无上限校验 | `api/handler/WorkflowHandler.kt` |
+ * | JSON 导入 | 无上限校验 | `WorkflowJsonImportParser` |
+ *
+ * 于是打开「更多选项」时把 300 赋给 `value` 会命中 Material `BaseSlider.validateValues`
+ * 的检查并抛 `IllegalStateException`。⚠️ **崩溃点是延迟的**：`setValue` 只置
+ * `dirtyConfig = true`，真正的校验在 `onSizeChanged` / `onDraw` 里——
+ * 即「面板绑定完成、首次绘制时才崩」，看栈上看不到本文件。
+ *
+ * ## 规则
+ *
+ * - **[valueSeconds] 未超过 [baseUpperBound]**：原样返回 [baseUpperBound]。
+ *   这是**必须**的——无谓地抬高上界会让普通工作流的滑块刻度变粗（120 秒范围被压成
+ *   轨道上的一小段），等于改掉了既有产品的行为。
+ * - **超过**：抬到不小于 [valueSeconds] 的最近一个 [stepSize] 整数倍。
+ *   `valueTo` 必须让 `120` 与 `valueSeconds` 都落在刻度上，否则
+ *   `validateStepSize`（`valueLandsOnTick`）会以同样的方式抛异常。
+ *
+ * ⚠️ 抬高上界**只影响这一次面板会话**：它是视图属性，不改 `Workflow`，
+ * 也不落盘。用户不点「保存元数据」则磁盘上的值原样不变。
+ *
+ * @param baseUpperBound 当前滑动条的上界（取自视图而非硬编码，避免与布局脱节）
+ * @param stepSize 当前滑动条的步长（同上）
+ */
+internal fun maxExecutionTimeSliderUpperBound(
+    valueSeconds: Int,
+    baseUpperBound: Float,
+    stepSize: Float,
+): Float {
+    if (baseUpperBound <= 0f) return baseUpperBound
+    if (valueSeconds <= baseUpperBound) return baseUpperBound
+    if (stepSize <= 0f) return valueSeconds.toFloat()
+
+    // ⚠️ 必须**向上**取整：截断会让上界落在实际值之下（302 → 300），
+    // 于是刚修好的越界异常原样复发，只是换了个值域。
+    val steps = ceil(valueSeconds.toDouble() / stepSize.toDouble()).toInt()
+    return stepSize * steps
 }

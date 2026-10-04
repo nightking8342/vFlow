@@ -1176,6 +1176,19 @@
     <string name="module_vflow_data_comment_name">コメント</string>
     <string name="module_vflow_data_comment_desc">コメントを追加して、ワークフローの設計意図や目的を記録します。実行時はスキップされます。</string>
     <string name="param_vflow_data_comment_content_name">コメント内容</string>
+    <!-- vflow.data.log -->
+    <string name="module_vflow_data_log_name">ログ出力</string>
+    <string name="module_vflow_data_log_desc">値を実行ログに出力します。デバッグと動作の追跡用。ワークフローの「ログレベル」で絞り込まれます。</string>
+    <string name="param_vflow_data_log_content_name">内容</string>
+    <string name="param_vflow_data_log_content_hint">出力する値。{{ステップID}} でそのステップの全出力を出力</string>
+    <string name="param_vflow_data_log_label_name">ラベル</string>
+    <string name="param_vflow_data_log_label_hint">同じワークフロー内の複数のログを区別する</string>
+    <string name="param_vflow_data_log_level_name">レベル</string>
+    <string name="option_vflow_data_log_level_info">情報</string>
+    <string name="option_vflow_data_log_level_warn">警告</string>
+    <string name="option_vflow_data_log_level_error">エラー</string>
+    <string name="output_vflow_data_log_success_name">成功したか</string>
+    <string name="output_vflow_data_log_text_name">実際の出力</string>
     <string name="module_vflow_network_http_request_name">HTTP リクエスト</string>
     <string name="module_vflow_network_http_request_desc">HTTP リクエストを送信してレスポンスを取得します</string>
     <string name="param_vflow_network_http_request_url_name">URL</string>

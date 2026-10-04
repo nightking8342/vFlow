@@ -39,6 +39,14 @@ data class Workflow(
      * 失败通知**豁免**本开关——静默的语义是「别播报过程」，不是「炸了也别告诉我」。
      */
     var silentExecution: Boolean = false,
+    /**
+     * 执行日志的详细度。默认 [WorkflowLogLevel.VERBOSE] = **与改动前逐字节一致**。
+     *
+     * ⚠️ 只影响本次执行的 `detailedLog`（首页「最近日志」/ Agent 拿到的日志）。
+     * 不影响：超级岛与执行通知的实时状态、`adb logcat`、崩溃上报的 `recentLogs`。
+     * 详见 [WorkflowLogLevel] 的类注释。
+     */
+    var logLevel: WorkflowLogLevel = WorkflowLogLevel.VERBOSE,
     // 新增：函数工作流的签名声明。null = 普通工作流（非函数）。
     var functionSignature: FunctionSignature? = null
 ) : Parcelable {

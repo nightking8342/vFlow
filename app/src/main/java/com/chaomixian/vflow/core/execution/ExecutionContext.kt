@@ -52,6 +52,7 @@ sealed class LoopState {
  * @param namedVariables 存储在整个工作流执行期间有效的命名变量（VObject）。
  * @param workflowStack 用于跟踪工作流调用栈，防止无限递归。
  * @param workDir 工作流执行时的工作文件夹。
+ * @param logSink 执行日志写入回调（见下）。
  */
 data class ExecutionContext(
     val applicationContext: Context,
@@ -65,7 +66,30 @@ data class ExecutionContext(
     val triggerData: Parcelable? = null,
     val namedVariables: MutableMap<String, VObject>,
     val workflowStack: Stack<String> = Stack(),
-    val workDir: File
+    val workDir: File,
+    /**
+     * 写入**本次执行的日志**（即首页「最近日志」/ Agent 拿到的 `detailedLog`）。
+     *
+     * ## 为什么需要它
+     *
+     * `WorkflowExecutor` 内部那个写日志的对象是 **`private object`**，且靠
+     * `private val currentRootWorkflowId`（ThreadLocal）找当前工作流 ——
+     * 模块在别的类里**够不到这两者中的任何一个**。
+     * 于是「工作流内主动打日志」这个需求（`vflow.data.log` 模块）没有上行通路。
+     *
+     * ## 契约
+     *
+     * - ⚠️ **默认 `null` = 不写日志**，与不接之前行为完全一致。
+     *   只有 `WorkflowExecutor`（主执行路径）与 `ChatAgentModuleExecutor`（直调路径）注入它。
+     * - ⚠️ **实现方不得阻塞** —— 它会被模块在执行线程上**同步**调用。
+     * - ⚠️ 写入的日志**同样受工作流的日志等级过滤**（见 `WorkflowLogLevel`）——
+     *   过滤发生在实现方，本回调只管转发。
+     *
+     * @param level 日志级别，取 `ExecutionLogLevel`。
+     * @param tag   日志 TAG（调用方自己定，便于按 TAG 过滤）。
+     * @param message 日志正文（**单行**；实现方逐条落盘）。
+     */
+    val logSink: ((level: ExecutionLogLevel, tag: String, message: String) -> Unit)? = null
 ) {
     /**
      * 获取变量值，自动递归解析变量引用。
