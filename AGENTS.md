@@ -71,6 +71,21 @@ vFlow 是一款 Android 端可视化自动化工具。核心价值：把手机�
 > cp <主仓库路径>/local.properties .
 > ```
 >
+> ⚠️ **`git worktree add` 会把 HEAD 置为 detached**（不挂任何分支），
+> 于是提交完成后 `git push` 不知道往哪推。两条正路（**都要显式指定分支名**）：
+>
+> ```bash
+> # 甲：临时挂一个分支（推荐 —— worktree 里 `git status` 也会显示 ahead/behind）
+> git switch -c feature/<名字>
+> # 乙：完全不建分支，直接在 detached HEAD 上推
+> git push origin HEAD:refs/heads/<目标分支>
+> ```
+>
+> ⚠️ **别用 `git push origin dev`** —— 在当前仓库里它会被解析成 refspec，
+> 推的是**本地那个 `dev` 分支**，而不是你刚提交的 worktree HEAD。表现是
+> 「push 说成功，但远端内容没变」（已实际踩过：`git push origin dev` 报
+> `Everything up-to-date`，而 worktree 里的新提交一个都没上去）。
+>
 > 注意：`git checkout dev -- vFlow.jks` 之类的做法**不行** —— 文件未被跟踪，git 里没有这个对象。
 > 必须从文件系统复制。取到后用下面的命令确认签名者是否为 `CN=vFlow Fork, O=nightking8342`。
 >
