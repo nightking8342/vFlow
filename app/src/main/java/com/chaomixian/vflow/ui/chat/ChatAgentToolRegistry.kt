@@ -10,6 +10,7 @@ import com.chaomixian.vflow.core.module.ModuleRegistry
 import com.chaomixian.vflow.core.module.ParameterType
 import com.chaomixian.vflow.core.types.VTypeRegistry
 import com.chaomixian.vflow.core.workflow.model.ActionStep
+import com.chaomixian.vflow.core.workflow.model.TriggerLabel
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -614,6 +615,7 @@ internal class ChatAgentToolRegistry(context: Context) {
                 append("The output is text. Fields that no tool can change are listed under `read-only fields`. ")
                 append("A step whose `target_step_index` is a runtime variable is annotated as such — ")
                 append("its jump target cannot be recalculated statically, so do not try. ")
+                append("A trigger's label, if any, is shown verbatim as `${TriggerLabel.KEY}` in its parameters. ")
                 append("This is a local lookup with no side effects.")
             },
             moduleId = CHAT_GET_WORKFLOW_MODULE_ID,
@@ -765,7 +767,9 @@ internal class ChatAgentToolRegistry(context: Context) {
                 "description",
                 "Trigger changes. Trigger order has no meaning, so there is no `move`. " +
                     "⚠️ Keep the existing `step_id` when modifying a trigger: trigger outputs are keyed by " +
-                    "trigger id, so changing an id breaks every `{{triggerId.outputId}}` reference in the steps."
+                    "trigger id, so changing an id breaks every `{{triggerId.outputId}}` reference in the steps. " +
+                    "A trigger may carry a string label in `parameters.${TriggerLabel.KEY}`; pass `null` to clear it. " +
+                    "The fired trigger's label is readable at runtime as the named variable `[[${TriggerLabel.VARIABLE_NAME}]]`."
             )
             put(
                 "properties",
@@ -1156,7 +1160,7 @@ internal class ChatAgentToolRegistry(context: Context) {
                                         buildJsonObject {
                                             put("type", "array")
                                             put("maxItems", 12)
-                                            put("description", "Optional trigger ActionStep objects. Use only vflow.trigger.* modules here. Omit for a manual trigger.")
+                                            put("description", "Optional trigger ActionStep objects. Use only vflow.trigger.* modules here. Omit for a manual trigger. A trigger may carry a string label in `parameters.${TriggerLabel.KEY}`; the fired trigger's label is readable at runtime as the named variable `[[${TriggerLabel.VARIABLE_NAME}]]`.")
                                             put("items", buildWorkflowStepItemSchema(moduleIds, "Trigger or manual step ID. Other steps may reference this step's outputs via {{this_id.output_name}}."))
                                         }
                                     )
@@ -1488,6 +1492,7 @@ internal class ChatAgentToolRegistry(context: Context) {
     private fun buildVariablePassingGuide(): String {
         return """
 To pass data from one step to another, give each step a meaningful `id` and use magic variable syntax in parameters: {{STEP_ID.OUTPUT_ID}}.
+- Trigger label: each trigger ActionStep can carry a string label in its `parameters.${TriggerLabel.KEY}`. At runtime the label of the trigger that fired is available as the **named variable** `[[${TriggerLabel.VARIABLE_NAME}]]` — note this uses `[[ ]]`, NOT `{{ }}` magic variable syntax. Its value is always a string; when the workflow was not started by a labelled trigger it is an **empty string** (never missing, so an `If` comparison never silently fails). Typical use: `If [[${TriggerLabel.VARIABLE_NAME}]] equals "morning_routine"`.
 - References must point to earlier steps only. Do not reference future steps or output ids that are not listed for that module.
 - Property access: {{STEP_ID.OUTPUT_ID.PROPERTY}}.
 - Available properties by output type: Image(.width,.height,.path,.size,.name,.uri,.base64), File(.path,.uri,.name,.extension,.mimeType,.size,.base64), ScreenElement(.text,.content_description,.all_texts,.x,.y,.width,.height,.center,.region,.id,.class), Coordinate(.x,.y), List(.count,.first,.last,.random,.isempty), String(.length,.uppercase,.lowercase,.trim,.removeSpaces), Number(.int,.round,.abs,.length), Dictionary(.count,.keys,.values).

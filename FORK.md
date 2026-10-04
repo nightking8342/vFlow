@@ -766,6 +766,36 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 > 为空），故**没有逐项取证文件**。本行记的是**用户的验证结论**，不是自动化产物 ——
 > 将来若这些路径被改动，按「无自动化覆盖」对待，需重跑 §8.1–§8.3 的单测 + 真机。
 
+### 触发器标签（trigger label，2026-10-05）
+
+> 设计文档：`docs/fork/trigger-label-design.md`（v1.0，**不在本分支内** —— 见下方说明）。
+> 一句话：一个工作流可挂多个触发器，此前**无法在工作流内分辨是谁触发的**。本批给每个触发器
+> 一个标签，执行期把命中那个触发器的标签注入 `namedVariables`，工作流内以
+> **命名变量** `[[__trigger_label]]` 读取，从而 `If` 分支执行。
+> ⚠️ 命名定案（用户拍板）：存储键 / 工作流内引用 / AI 读写**三处同名** `__trigger_label`
+> （双下划线对齐既有保留参数 `__error_policy` / `__retry_count`）。
+> ⚠️ 本批**几乎全是纯追加**（`git diff --numstat` 实测删除 10 行，全在两处缺陷修复处），
+> 但含**两处必须一并修的既有缺陷**（不修则功能不成立）。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `core/workflow/model/TriggerLabel.kt`（新增） | fork 独有：触发器标签的**纯函数层**（常量 `KEY` / `VARIABLE_NAME` / `VARIABLE_REFERENCE` + `labelOf` / `withLabel` / `labelFor`）。三处同名 `__trigger_label`，**只有这一份字面量**（AI 侧文案全部走常量插值，有测试锁）。`withLabel` 对空白**删键**（不写空串 —— 写空串会让卡片回显成一行空白、`get_workflow` 输出与「没标签」不可区分）；`labelOf` 对**非 String** 返回空串（手工改 JSON 塞数字不给出「看起来有标签」的假象）。无 Android 依赖，可纯 JVM 单测 | 我方 |
+| `core/execution/WorkflowExecutor.kt`（改） | `execute()` 构造 `initialContext` 时把命中触发器的标签注入 `namedVariables[TriggerLabel.VARIABLE_NAME]`。⚠️⚠️ **恒注入（未设置 / 未命中时是空串，不是缺键）**：缺键或注入 `VNull` 都会让 `[[__trigger_label]]` 落到 `VariableResolver.kt:133` 的 `{...}` 字面量兜底分支 ⇒ `If` 比较恒 false 且**无任何报错**。改动集中在 `namedVariables` 初始化处（约 8 行），不改签名、不改 `namedVariables` 类型 | **手动合并** |
+| `ui/workflow_editor/WorkflowEditorActivity.kt`（改，**修既有缺陷**） | ⚠️⚠️ `showTriggerEditor` 的 `onSave` 在 `focusedInputId == null` 分支原为**整表替换 `parameters`**（`copy(parameters = newStepData.parameters)`）⇒ `newStepData.parameters` 只含模块声明的输入，于是**不在模块声明里的保留参数被吃掉** —— 除本任务新增的 `__trigger_label` 外，**存量就有 `__error_policy` / `__retry_count`**。表现：用户设好标签、再点开改一次触发条件，标签就**静默消失**（无任何报错）。改为「以旧参数为基、合并新参数」，与 `focusedInputId != null` 分支（现状本就是合并）对齐 —— 此前的不对称是既有缺陷。⚠️ 另新增 `showTriggerLabelSheet(position)`（`pushUndoSnapshot()` 在改动**之前**）。⚠️ **同构的 `showActionEditor`（动作编辑器）刻意未改** —— 动作步骤上不存在标签，改它需单独评估 `__error_policy` 的存量影响且会扩大 diff 面积；有**保护性断言**防「顺手一起改」 | **手动合并** |
+| `ui/chat/ChatAgentModuleExecutor.kt`（改，**修既有缺陷**） | `resolveModuleInputDefinitions` 对 `vflow.trigger.*` 统一注入 `TriggerLabel.KEY` 的 `InputDefinition`（`ParameterType.STRING`、`isHidden = false`、`acceptsMagicVariable = false`）。⚠️⚠️ **只此一处** —— **不改 `module.getInputs()`**、**不给 28 个触发器模块各加一行**：编辑器通用表单由 `getDynamicInputs` 驱动，塞进模块定义会把标签推进**参数 sheet**，与用户拍板的「标签不放参数 sheet」冲突（且**不会有任何报错**）；有源码扫描断言把 `module.getInputs()` 的调用数钉在 1。不修则 AI 写不进标签，且 `update_workflow` 会**整份补丁不落地**（`executeUpdateWorkflow` 见 `validationErrors` 非空就不写库）。⚠️ 新增的 `TRIGGER_MODULE_PREFIX` 常量与 `triggerLabelInputDefinition()` **都必须是文件顶层 private**（调用方 `resolveModuleInputDefinitions` 是顶层 `internal fun`，够不到类私有成员；同文件的 `resolveInputDefinitions` 是类成员，形态相反易照抄错）。新增 `import com.chaomixian.vflow.R`（该文件此前没有） | **手动合并** |
+| `ui/workflow_editor/{TriggerLabelSheet.kt（新增）, ActionStepAdapter.kt（改）}`、`res/layout/{sheet_trigger_label.xml（新增）, item_action_step.xml（改）}`、`res/drawable/rounded_new_label_24.xml`（新增） | fork 独有/追加：**触发器卡片上的标签按钮 + 回显行 + 标签输入 bottom sheet**。按钮显隐判据用既有的 `isActionStep = prefixText != null`（不新造标志位），普通步骤恒 `GONE`；回显行在 `content_container` 末尾动态创建，**不走 `module.getSummary()`**（那是模块自己的摘要），且**空标签不回显**。⚠️⚠️ **同时放宽触发器卡操作区的 gating**：`bindEmbeddedStepCard` 的 else 分支原为 `actionContainer.visibility = … else if (isDeletable) VISIBLE else GONE`，而触发器卡的 `isDeletable = triggerSteps.size > 1` ⇒ **只有一个触发器时整个操作区（含新标签按钮）隐藏**（单触发器是最常见形态，含 Agent 保存的工作流），且是**纯视觉、无任何报错**的失效。改为对触发器卡恒 `VISIBLE`（`selectionModeEnabled` 时仍 `GONE`）。**视觉结果不变**：删除按钮的显隐由另一行按 `isDeletable` 独立控制。⚠️ 图标**自绘**（父会话裁决）：**禁止复用 `rounded_rule_24`**（「规则」语义会让用户误解为别的功能），落盘 pathData 由父会话给定、逐字照抄 | 我方（`ActionStepAdapter` / 布局 / `WorkflowEditorActivity` 为手动合并） |
+| `ui/workflow_editor/WorkflowEditorMagicVariableCatalogBuilder.kt`（改） | `buildPickerModel` / `buildNamedVariables` 追加**带默认值**参数 `hasAutoTriggers`，并在 `namedVariables` 里追加固定分组「触发器标签」→ `[[__trigger_label]]`（与既有 `buildFunctionParamsGroup` 同构）。⚠️ 放 `namedVariables` 而非 `stepVariables`（后者按 `#N` 排序，把它当某一步的输出是错的）。调用点 `WorkflowEditorActivity.showMagicVariablePicker` 传 `getCurrentWorkflowState().hasAutoTriggers()` | **手动合并** |
+| `ui/chat/ChatAgentToolRegistry.kt`、`ui/chat/ChatAgentSkillRouter.kt`（改） | AI 侧文案四处 + system prompt 一行：`get_workflow` description、`save_workflow` 的 `triggers` description、`update_workflow` 的 `buildTriggerPatchSchema` description、`buildVariablePassingGuide()`，以及 `ChatAgentSkillRouter.buildSystemPrompt` 的一行英文说明。**全部走常量插值**（`TriggerLabel.KEY` / `TriggerLabel.VARIABLE_NAME`），不新增第二份字面量。措辞含三点：① 是**命名变量**不是魔法变量（`[[ ]]` 不是 `{{ }}`）；② 值是**字符串**、未命中时是**空串**；③ 典型用法 `If [[__trigger_label]] equals "xxx"`。**不做**友好字段名渲染（`describeStepLine` 原样输出，用户明确要求） | **手动合并** |
+| 三语 `res/values{,-en,-ja}/strings.xml`（改） | 追加触发器标签文案 **8 条 ×3 语言**：`trigger_label_button_desc` / `_sheet_title` / `_sheet_hint` / `_sheet_clear` / `_display_prefix`（`🏷 %1$s`）/ `editor_group_trigger_label` / `trigger_label_variable_name` / `trigger_label_input_name` | **手动合并**（追加条目） |
+| `test/.../core/workflow/model/TriggerLabelTest.kt`（新增，19 例）、`test/.../ui/workflow_editor/TriggerLabelWiringTest.kt`（新增，12 例）、`test/.../ui/chat/TriggerLabelAgentInjectionTest.kt`（新增，11 例） | fork 独有：**纯函数语义 + 源码扫描型接线锚定 + 全仓反向断言**。⚠️ 重点锁「改错了不报错、只静默变差」的地方：`withLabel` 空白**删键**、`labelOf` 非 String 返回空串、`VARIABLE_NAME == KEY`、**`[[ ]]` 引用真的走命名变量解析分支**（喂真实字符串给真实 `TemplateParser` + 真实 `VariableResolver`，不构造 `mapOf`）、空标签解析成空串而**非** `{...}` 字面量。源码扫描锁定：缺陷① 已修（且不含整表替换文本）、`showActionEditor` **保持原样**（保护性断言）、注入落在 `execute()` 的 `initialContext` 上（结构锚定，**不用字符窗口** —— 剥注释保留长度会让阈值无声翻转）、操作区不再按 `isDeletable` 门控、标签按钮显隐由 `isActionStep` 驱动、`pushUndoSnapshot()` 在改动之前、选择器分组与调用点、三语键齐全。全仓反向断言：**不得出现单下划线 `"trigger_label"` 字面量**。⚠️ **反证 5/5 全部实际执行并变红**；另有一条**第一版断言写错、反证不变红、当场改掉**的记录（见交付说明） | 我方 |
+
+> ⚠️ **`docs/fork/trigger-label-design.md` 不在本分支内** —— 父会话裁决（2026-10-05）：
+> 本 worktree **不创建、不修改、不复制**该文件（会与主仓库那份形成 add/add 冲突），
+> 需要读时走主仓库绝对路径；其「实现状态」段由父会话在集成时并入。**故不在本表重复登记。**
+> ⚠️ **真机验证 0 项**（本任务禁止触碰真机）：卡片按钮位置与点击、回显行样式、sheet 交互、
+> `[[__trigger_label]]` 在 `If` 里的实际分支效果、多触发器各自读到自己标签、
+> 未命中时 `is_empty` 的行为 —— 均**只有编译与单测支撑**，待人工上机确认。
+
 ---
 
 ## 暂未分歧、但日后改动时须登记的敏感点

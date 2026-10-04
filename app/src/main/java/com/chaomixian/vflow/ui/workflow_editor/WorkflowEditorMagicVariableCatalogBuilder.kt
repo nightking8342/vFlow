@@ -13,6 +13,7 @@ import com.chaomixian.vflow.core.workflow.GlobalVariableStore
 import com.chaomixian.vflow.core.workflow.WorkflowManager
 import com.chaomixian.vflow.core.workflow.model.ActionStep
 import com.chaomixian.vflow.core.workflow.model.FunctionParam
+import com.chaomixian.vflow.core.workflow.model.TriggerLabel
 import com.chaomixian.vflow.core.workflow.module.data.CreateVariableModule
 import com.chaomixian.vflow.core.workflow.module.logic.ForEachModule
 import com.chaomixian.vflow.core.workflow.module.logic.LoopModule
@@ -61,9 +62,23 @@ internal class WorkflowEditorMagicVariableCatalogBuilder(
         typeId = VTypeRegistry.DICTIONARY.id,
     )
 
+    /**
+     * 触发器标签条目（fork）。
+     *
+     * 引用形式是 `[[__trigger_label]]`（**命名变量**，不是 `{{ }}` 魔法变量）——
+     * 值与函数参数同走 `VariableResolver` 的 `isNamedVariable` 分支。
+     */
+    private fun triggerLabelItem(): MagicVariableItem = MagicVariableItem(
+        variableReference = TriggerLabel.VARIABLE_REFERENCE,
+        variableName = context.getString(R.string.trigger_label_variable_name),
+        originDescription = typeDescription(VTypeRegistry.STRING.id),
+        typeId = VTypeRegistry.STRING.id,
+    )
+
     fun buildNamedVariables(
         actionSteps: List<ActionStep>,
-        upToPosition: Int
+        upToPosition: Int,
+        hasAutoTriggers: Boolean = false
     ): Map<String, List<MagicVariableItem>> {
         val availableNamedVariables = linkedMapOf<String, MagicVariableItem>()
 
@@ -122,6 +137,11 @@ internal class WorkflowEditorMagicVariableCatalogBuilder(
                 if (functionParams.isNotEmpty()) {
                     put(context.getString(R.string.editor_group_function_params), functionParams)
                 }
+                // 触发器标签（fork）：固定分组，与「函数参数」同构 —— 都是**命名变量**来源，
+                // 与「命名变量」分组（用户自建的变量）平级。
+                if (hasAutoTriggers) {
+                    put(context.getString(R.string.editor_group_trigger_label), listOf(triggerLabelItem()))
+                }
                 if (availableNamedVariables.isNotEmpty()) {
                     put(
                         context.getString(R.string.editor_group_named_variables),
@@ -135,6 +155,9 @@ internal class WorkflowEditorMagicVariableCatalogBuilder(
         return buildMap {
             if (functionParams.isNotEmpty()) {
                 put(context.getString(R.string.editor_group_function_params), functionParams)
+            }
+            if (hasAutoTriggers) {
+                put(context.getString(R.string.editor_group_trigger_label), listOf(triggerLabelItem()))
             }
             if (availableNamedVariables.isNotEmpty()) {
                 put(context.getString(R.string.editor_group_named_variables), availableNamedVariables.values.toList())
@@ -181,6 +204,7 @@ internal class WorkflowEditorMagicVariableCatalogBuilder(
         triggerStepCount: Int,
         actionSteps: List<ActionStep>,
         enableTypeFilter: Boolean,
+        hasAutoTriggers: Boolean = false,
         findEnclosingLoopStartStep: (position: Int, pairingId: String) -> ActionStep?,
         loopPairingId: String,
         forEachPairingId: String,
@@ -249,7 +273,7 @@ internal class WorkflowEditorMagicVariableCatalogBuilder(
 
         return MagicVariablePickerModel(
             stepVariables = groupedStepOutputs,
-            namedVariables = buildNamedVariables(actionSteps, editingActionIndex),
+            namedVariables = buildNamedVariables(actionSteps, editingActionIndex, hasAutoTriggers = hasAutoTriggers),
             acceptsMagicVariable = targetInputDef.acceptsMagicVariable,
             acceptsNamedVariable = targetInputDef.acceptsNamedVariable,
             acceptedMagicVariableTypes = targetInputDef.acceptedMagicVariableTypes,

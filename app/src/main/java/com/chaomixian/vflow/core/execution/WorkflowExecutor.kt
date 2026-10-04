@@ -24,6 +24,7 @@ import com.chaomixian.vflow.core.utils.StorageManager
 import com.chaomixian.vflow.core.workflow.model.ActionStep
 import com.chaomixian.vflow.core.workflow.model.ActionStepExecutionSettings
 import com.chaomixian.vflow.core.workflow.model.FunctionSignatureDefaults
+import com.chaomixian.vflow.core.workflow.model.TriggerLabel
 import com.chaomixian.vflow.core.workflow.model.Workflow
 import com.chaomixian.vflow.core.workflow.model.WorkflowLogLevel
 import com.chaomixian.vflow.core.workflow.model.WorkflowReentryBehavior
@@ -283,7 +284,15 @@ object WorkflowExecutor {
                         // 普通工作流的签名是 null，这里得到空表，行为与改动前完全一致。
                         namedVariables = ConcurrentHashMap<String, VObject>(
                             FunctionSignatureDefaults.seedNamedVariables(workflow.functionSignature)
-                        ),
+                        ).apply {
+                            // 触发器标签（fork）：命中那个触发器的标签作为命名变量，
+                            // 工作流内以 `[[__trigger_label]]` 读到它，从而分支执行。
+                            //
+                            // ⚠️ 恒注入（未设置 / 未命中时是**空串**，而不是缺键）：
+                            //    缺键会让 `[[__trigger_label]]` 解析成字面量 "{[[__trigger_label]]}"，
+                            //    If 比较恒 false 且用户看不出任何异常（无报错）。
+                            put(TriggerLabel.VARIABLE_NAME, VString(TriggerLabel.labelFor(workflow, triggerStepId)))
+                        },
                         workflowStack = Stack<String>().apply { push(workflow.id) },
                         workDir = workDir,
                         // 给模块一条写执行日志的通路（`vflow.data.log` 用）。

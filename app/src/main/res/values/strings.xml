@@ -556,6 +556,14 @@
     <string name="editor_toast_module_insert_failed">插入模块失败</string>
     <string name="editor_group_named_variables">命名变量</string>
     <string name="editor_group_function_params">函数参数</string>
+    <string name="editor_group_trigger_label">触发器标签</string>
+    <string name="trigger_label_variable_name">触发标签</string>
+    <string name="trigger_label_button_desc">设置触发器标签</string>
+    <string name="trigger_label_sheet_title">触发器标签</string>
+    <string name="trigger_label_sheet_hint">标签（同一工作流内可用 [[__trigger_label]] 读取）</string>
+    <string name="trigger_label_sheet_clear">清空</string>
+    <string name="trigger_label_display_prefix">🏷 %1$s</string>
+    <string name="trigger_label_input_name">触发器标签</string>
     <string name="editor_more_options_function_signature_title">函数签名</string>
     <string name="editor_more_options_function_params_prefix">函数参数</string>
     <string name="editor_more_options_function_return_prefix">返回值</string>

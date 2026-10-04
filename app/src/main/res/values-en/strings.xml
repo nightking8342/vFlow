@@ -554,6 +554,14 @@
     <string name="editor_toast_module_insert_failed">Failed to insert module</string>
     <string name="editor_group_named_variables">Named Variables</string>
     <string name="editor_group_function_params">Function Parameters</string>
+    <string name="editor_group_trigger_label">Trigger Label</string>
+    <string name="trigger_label_variable_name">Trigger Label</string>
+    <string name="trigger_label_button_desc">Set trigger label</string>
+    <string name="trigger_label_sheet_title">Trigger label</string>
+    <string name="trigger_label_sheet_hint">Label (read it inside the workflow with [[__trigger_label]])</string>
+    <string name="trigger_label_sheet_clear">Clear</string>
+    <string name="trigger_label_display_prefix">🏷 %1$s</string>
+    <string name="trigger_label_input_name">Trigger label</string>
     <string name="editor_more_options_function_signature_title">Function Signature</string>
     <string name="editor_more_options_function_params_prefix">Parameters</string>
     <string name="editor_more_options_function_return_prefix">Return</string>

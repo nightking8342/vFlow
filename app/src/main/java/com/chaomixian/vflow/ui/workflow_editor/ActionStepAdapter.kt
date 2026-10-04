@@ -31,6 +31,7 @@ import com.chaomixian.vflow.R
 import com.chaomixian.vflow.core.module.BlockType
 import com.chaomixian.vflow.core.module.ModuleRegistry
 import com.chaomixian.vflow.core.workflow.model.ActionStep
+import com.chaomixian.vflow.core.workflow.model.TriggerLabel
 import com.chaomixian.vflow.ui.workflow_editor.pill.ParameterPillSpan
 import com.chaomixian.vflow.ui.workflow_editor.pill.PillTheme
 import com.google.android.material.color.MaterialColors
@@ -55,6 +56,7 @@ class ActionStepAdapter(
     private val onRestoreBlockClick: (position: Int) -> Unit,
     private val onInsertBelowClick: (position: Int) -> Unit,
     private val onTriggerParameterPillClick: (position: Int, parameterId: String) -> Unit = { _, _ -> },
+    private val onTriggerLabelClick: (position: Int) -> Unit = { _ -> },
     private val onParameterPillClick: (position: Int, parameterId: String) -> Unit,
     private val onStartActivityForResult: (position: Int, Intent, (resultCode: Int, data: Intent?) -> Unit) -> Unit
 ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
@@ -147,7 +149,8 @@ class ActionStepAdapter(
         onParameterPillClick: (parameterId: String) -> Unit,
         onClick: () -> Unit,
         onDelete: (() -> Unit)? = null,
-        onLongPress: (() -> Unit)? = null
+        onLongPress: (() -> Unit)? = null,
+        onTriggerLabelClick: (() -> Unit)? = null
     ) {
         val context = cardView.context
         val module = ModuleRegistry.getModule(step.moduleId) ?: return
@@ -159,6 +162,7 @@ class ActionStepAdapter(
         val actionContainer: LinearLayout = cardView.findViewById(R.id.layout_step_actions)
         val deleteButton: ImageButton = cardView.findViewById(R.id.button_delete_action)
         val moreButton: ImageButton = cardView.findViewById(R.id.button_more_action)
+        val labelButton: ImageButton = cardView.findViewById(R.id.button_trigger_label)
 
         indentSpace.layoutParams.width = (indentLevel * 24 * context.resources.displayMetrics.density).toInt()
         val categoryColor = ContextCompat.getColor(context, PillTheme.getCategoryColor(module.metadata.getResolvedCategoryId()))
@@ -255,12 +259,43 @@ class ActionStepAdapter(
         deleteButton.visibility = if (selectionModeEnabled) View.GONE else if (isActionStep && isDeletable) View.GONE else if (isDeletable) View.VISIBLE else View.GONE
         deleteButton.setOnClickListener { onDelete?.invoke() }
 
+        // 触发器标签按钮（fork）：只在触发器卡片上出现，且仅当有回调时。
+        // 判据用既有的 `isActionStep = prefixText != null`，不新造标志位。
+        labelButton.visibility = if (!isActionStep && onTriggerLabelClick != null) View.VISIBLE else View.GONE
+        labelButton.setOnClickListener { onTriggerLabelClick?.invoke() }
+
+        // 卡片回显标签（fork）。⚠️ 不回显空标签（没有就是没有）。
+        //    ⚠️ 回显**不走 module.getSummary()** —— 那是模块自己的摘要，标签不是模块参数。
+        val triggerLabel = if (isActionStep) "" else TriggerLabel.labelOf(step)
+        if (triggerLabel.isNotEmpty()) {
+            val labelRow = TextView(context).apply {
+                text = context.getString(R.string.trigger_label_display_prefix, triggerLabel)
+                setTextAppearance(com.google.android.material.R.style.TextAppearance_Material3_BodySmall)
+                setTextColor(
+                    MaterialColors.getColor(
+                        context,
+                        com.google.android.material.R.attr.colorOnSurfaceVariant,
+                        Color.GRAY
+                    )
+                )
+                includeFontPadding = false
+                setPadding(0, (6 * context.resources.displayMetrics.density).toInt(), 0, 0)
+            }
+            contentContainer.addView(labelRow)
+        }
+
         if (isActionStep) {
             actionContainer.visibility = if (selectionModeEnabled) View.GONE else View.VISIBLE
             moreButton.visibility = View.VISIBLE
             deleteButton.visibility = View.GONE
         } else {
-            actionContainer.visibility = if (selectionModeEnabled) View.GONE else if (isDeletable) View.VISIBLE else View.GONE
+            // ⚠️ fork：触发器卡片的操作区**不再由 isDeletable 门控**。
+            //    isDeletable = triggerSteps.size > 1 只在「能删」时有意义，
+            //    而标签按钮需要操作区常驻 —— 仍按 isDeletable 会让「只有一个触发器」
+            //    的工作流（最常见形态，含 Agent 保存的工作流）连标签按钮一起消失，
+            //    且这是**纯视觉、无任何报错**的失效。
+            //    视觉结果不变：删除按钮的显隐由上面那行按 isDeletable 独立控制。
+            actionContainer.visibility = if (selectionModeEnabled) View.GONE else View.VISIBLE
             moreButton.visibility = View.GONE
         }
 
@@ -370,7 +405,8 @@ class ActionStepAdapter(
                         onTriggerParameterPillClick(index, parameterId)
                     },
                     onClick = { onEditTriggerClick(index, null) },
-                    onDelete = { onDeleteTriggerClick(index) }
+                    onDelete = { onDeleteTriggerClick(index) },
+                    onTriggerLabelClick = { onTriggerLabelClick(index) }
                 )
                 triggerContainer.addView(embeddedCard)
             }
