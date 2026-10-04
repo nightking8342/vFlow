@@ -313,6 +313,9 @@ fun SettingsRoute(
                 DebugLogger.clearLogs()
                 context.toast(R.string.settings_toast_logs_cleared)
             },
+            onViewLogs = {
+                context.startActivity(Intent(context, DebugLogViewerActivity::class.java))
+            },
             onRunDiagnostic = {
                 runDiagnostic(context = context, scope = activity.lifecycleScope)
             },

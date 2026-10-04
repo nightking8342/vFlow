@@ -118,6 +118,7 @@ data class SettingsScreenActions(
     val onOpenCrashReports: () -> Unit,
     val onExportLogs: () -> Unit,
     val onClearLogs: () -> Unit,
+    val onViewLogs: () -> Unit,
     val onRunDiagnostic: () -> Unit,
     val onOpenKeyTester: () -> Unit,
     val onOpenLogcatViewer: () -> Unit,
@@ -264,6 +265,7 @@ fun SettingsScreen(
     val crashReportsSubtitle = stringResource(R.string.settings_button_crash_reports_desc)
     val exportLogsLabel = stringResource(R.string.settings_button_export_logs)
     val clearLogsLabel = stringResource(R.string.settings_button_clear_logs)
+    val viewLogsLabel = stringResource(R.string.settings_button_view_logs)
     val runDiagnosticLabel = stringResource(R.string.settings_button_run_diagnostic)
     val keyTesterLabel = stringResource(R.string.settings_button_key_tester)
     val logcatViewerTitle = stringResource(R.string.logcat_viewer_entry_title)
@@ -336,7 +338,7 @@ fun SettingsScreen(
         loggingTitle, loggingSubtitle, loggingInfo,
         telemetryTitle, telemetrySubtitle, telemetryInfo,
         crashReportsTitle, crashReportsSubtitle,
-        exportLogsLabel, clearLogsLabel,
+        exportLogsLabel, clearLogsLabel, viewLogsLabel,
         runDiagnosticLabel, keyTesterLabel,
         logcatViewerTitle, logcatViewerSubtitle,
         coreManagementLabel, uiInspectorLabel
@@ -711,30 +713,36 @@ fun SettingsScreen(
                     position = SettingsGroupPosition.Middle,
                     onClick = actions.onOpenCrashReports
                 )
-                SettingsButtonRow(
-                    primaryLabel = exportLogsLabel,
-                    onPrimaryClick = actions.onExportLogs,
-                    primaryEnabled = uiState.loggingEnabled,
-                    secondaryLabel = clearLogsLabel,
-                    onSecondaryClick = actions.onClearLogs,
-                    secondaryEnabled = uiState.loggingEnabled,
-                    position = SettingsGroupPosition.Middle
-                )
-                SettingsButtonRow(
-                    primaryLabel = runDiagnosticLabel,
-                    onPrimaryClick = actions.onRunDiagnostic,
-                    primaryEnabled = uiState.loggingEnabled,
-                    secondaryLabel = keyTesterLabel,
-                    onSecondaryClick = actions.onOpenKeyTester,
-                    position = SettingsGroupPosition.Middle
-                )
-                // logcat 调试器与「UI 检查器」同为调试工具，放进同一行按钮，
-                // 而不是单独占一行列表项——两者是并列的工具入口，不该一个用列表项
-                // 一个用按钮，那会让人以为它们不是一类东西
-                // 三个工具入口：核心管理 / UI 检查器 一行，
-                // logcat 调试器落单、独占下一行（见 SettingsButtonGrid）
+                // ⚠️ 这一整片是**连续的按钮网格**（`SettingsButtonGrid` 每行两个、
+                //    落单的独占整行）。日志相关的三项排在一起（导出/清空/查看），
+                //    后面的工具入口顺次下移 —— 加按钮时**只往这个列表里插**，
+                //    不要拆成多个网格，否则落单按钮的整行宽度会算错。
                 SettingsButtonGrid(
                     buttons = listOf(
+                        SettingsButton(
+                            exportLogsLabel,
+                            actions.onExportLogs,
+                            uiState.loggingEnabled
+                        ),
+                        SettingsButton(
+                            clearLogsLabel,
+                            actions.onClearLogs,
+                            uiState.loggingEnabled
+                        ),
+                        SettingsButton(
+                            viewLogsLabel,
+                            actions.onViewLogs,
+                            uiState.loggingEnabled
+                        ),
+                        SettingsButton(
+                            runDiagnosticLabel,
+                            actions.onRunDiagnostic,
+                            uiState.loggingEnabled
+                        ),
+                        SettingsButton(keyTesterLabel, actions.onOpenKeyTester),
+                        // logcat 调试器与「UI 检查器」同为调试工具，放进同一片按钮区，
+                        // 而不是单独占一行列表项——两者是并列的工具入口，不该一个用
+                        // 列表项一个用按钮，那会让人以为它们不是一类东西
                         SettingsButton(coreManagementLabel, actions.onOpenCoreManagement),
                         SettingsButton(uiInspectorLabel, actions.onStartUiInspector),
                         SettingsButton(logcatViewerTitle, actions.onOpenLogcatViewer),
@@ -1155,25 +1163,6 @@ private fun NativeListRow(
             }
         )
     }
-}
-
-@Composable
-private fun SettingsButtonRow(
-    primaryLabel: String,
-    onPrimaryClick: () -> Unit,
-    secondaryLabel: String,
-    onSecondaryClick: () -> Unit,
-    primaryEnabled: Boolean = true,
-    secondaryEnabled: Boolean = true,
-    position: SettingsGroupPosition,
-) {
-    SettingsButtonGrid(
-        buttons = listOf(
-            SettingsButton(primaryLabel, onPrimaryClick, primaryEnabled),
-            SettingsButton(secondaryLabel, onSecondaryClick, secondaryEnabled),
-        ),
-        position = position,
-    )
 }
 
 /**

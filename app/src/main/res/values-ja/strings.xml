@@ -253,6 +253,10 @@
     <string name="toast_telemetry_disabled_restart">テレメトリはオフになり、次回開始したときに有効になります。</string>
     <string name="settings_button_export_logs">ログをエクスポート</string>
     <string name="settings_button_export_logs_desc">現在メモリ内にあるデバッグ ログをファイルにエクスポートします。</string>
+    <string name="settings_button_view_logs">ログを表示</string>
+    <string name="settings_button_view_logs_desc">デバッグ ログの全文をその場で表示します。内容は「ログをエクスポート」と同じです。</string>
+    <string name="settings_view_logs_refresh">更新</string>
+    <string name="settings_view_logs_empty">表示できるデバッグ ログがありません。前の画面で「ログ記録を有効にする」をオンにしてください。</string>
     <string name="settings_button_clear_logs">ログをクリアする</string>
     <string name="settings_button_clear_logs_desc">現在の会話で記録されたデバッグ ログをクリアします。</string>
     <string name="settings_button_run_diagnostic_desc">Shell および権限環境診断を実行し、結果を表示します。</string>

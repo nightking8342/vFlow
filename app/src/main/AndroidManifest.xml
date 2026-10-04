@@ -433,6 +433,12 @@
             android:theme="@style/Theme.vFlow" />
 
         <activity
+            android:name=".ui.settings.DebugLogViewerActivity"
+            android:exported="false"
+            android:label="@string/settings_button_view_logs"
+            android:theme="@style/Theme.vFlow" />
+
+        <activity
             android:name=".ui.settings.CrashReportsActivity"
             android:exported="false"
             android:label="@string/crash_reports_title"
