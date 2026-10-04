@@ -163,38 +163,43 @@ class ChatTemporaryWorkflowResultTest {
     // ── 4. buildTemporaryWorkflowOutputText ───────────────────────
 
     @Test
-    fun `failure summary appears before the step list`() {
+    fun `failure summary appears before the log section`() {
         val text = buildTemporaryWorkflowOutputText(
             workflowName = "正则写法穷举",
-            stepDescriptions = listOf("Xposed JavaScript (vflow.xposed.js)"),
+            stepCount = 1,
             terminalState = failed(failureLine("出错", "原因")),
             detailedLog = failureLine("出错", "原因"),
         )
         val summaryIndex = text.indexOf("出错 - 原因")
-        val stepsIndex = text.indexOf("Steps:")
+        val logIndex = text.indexOf("Execution log:")
         assertTrue("摘要必须出现", summaryIndex >= 0)
-        assertTrue("摘要必须在步骤清单之前（卡片默认只显示前 6 行）", summaryIndex < stepsIndex)
+        assertTrue("摘要必须在日志段之前（卡片默认只显示前 6 行）", summaryIndex < logIndex)
     }
 
     @Test
-    fun `failure summary survives a log longer than the truncation limit`() {
-        // ⚠️ 核心回归：失败行写在执行【末尾】，而 truncateMultiline 取的是【开头】4000 字符。
-        // 若摘要是从截断后的文本里提取，这里会静默取不到。
+    fun `failure summary survives a very long log`() {
+        // ⚠️ 核心回归：失败行写在执行【末尾】。任何「从开头截断」的机制都会把它切掉，
+        // 故摘要**必须**从原始日志里先抽取。
         val padding = (1..400).joinToString("\n") {
-            logLine("D", "WorkflowExecutor", "填充行 $it —— 用于把失败行推到 4000 字符之后")
+            logLine("D", "WorkflowExecutor", "填充行 $it —— 用于把失败行推到很靠后的位置")
         }
         val log = padding + "\n" + failureLine("末尾的失败", "真原因")
 
-        assertTrue("前置条件：日志确实超过 4000 字符", log.length > 4_000)
+        assertTrue("前置条件：日志确实很长", log.length > 4_000)
         assertNotNull("摘要必须从【未截断】的日志里抽取", extractFailureSummary(log))
 
         val text = buildTemporaryWorkflowOutputText(
             workflowName = "长工作流",
-            stepDescriptions = listOf("A (m)"),
+            stepCount = 1,
             terminalState = failed(log),
             detailedLog = log,
         )
         assertTrue("长日志下摘要仍应出现在卡片正文里", text.contains("末尾的失败 - 真原因"))
+        // 日志段不再截断 ⇒ 末尾的失败行**在正文里也必须在**（不只是摘要那行）
+        assertTrue(
+            "日志末尾的那一行也必须出现在正文里（两道截断都已关闭）",
+            text.contains("填充行 400"),
+        )
     }
 
     @Test
@@ -202,7 +207,7 @@ class ChatTemporaryWorkflowResultTest {
         val log = listOf(failureLine("某模块", "出错"), skipLine).joinToString("\n")
         val text = buildTemporaryWorkflowOutputText(
             workflowName = "有跳过的流程",
-            stepDescriptions = listOf("某模块 (vflow.x)"),
+            stepCount = 1,
             terminalState = finished(log),
             detailedLog = log,
         )
@@ -216,7 +221,7 @@ class ChatTemporaryWorkflowResultTest {
     fun `a clean finished run is unchanged`() {
         val text = buildTemporaryWorkflowOutputText(
             workflowName = "一切正常",
-            stepDescriptions = listOf("A (m)"),
+            stepCount = 1,
             terminalState = finished(logLine("D", "WorkflowExecutor", "执行完毕")),
             detailedLog = logLine("D", "WorkflowExecutor", "执行完毕"),
         )
@@ -228,32 +233,68 @@ class ChatTemporaryWorkflowResultTest {
     fun `a failure without a parseable summary degrades without crashing`() {
         val text = buildTemporaryWorkflowOutputText(
             workflowName = "无摘要",
-            stepDescriptions = listOf("A (m)"),
+            stepCount = 1,
             terminalState = failed("没有可解析的失败行"),
             detailedLog = "没有可解析的失败行",
         )
         assertTrue(text.contains("failed at step 1"))
-        assertTrue("仍要有步骤清单", text.contains("Steps:"))
+        assertTrue("仍要有步骤条数", text.contains("Steps:"))
     }
 
     @Test
-    fun `step list is capped`() {
-        val steps = (1..35).map { "步骤 $it (vflow.x)" }
+    fun `steps section carries only the count, not the list`() {
+        // ⚠️ 清单的每一项（模块名 + moduleId）都是模型上一轮自己写进 tool 参数的，
+        //    回传它是零信息量，却要占掉约 870 字符、把日志段挤出预算。
         val text = buildTemporaryWorkflowOutputText(
             workflowName = "长清单",
-            stepDescriptions = steps,
+            stepCount = 35,
             terminalState = finished(""),
-            detailedLog = "",
-            maxSteps = 30,
+            detailedLog = logLine("D", "WorkflowExecutor", "执行完毕"),
         )
-        assertTrue("应截断并给出剩余数量", text.contains("... 5 more steps"))
+        assertTrue("必须给出条数", text.contains("Steps: 35"))
+        assertTrue("必须有日志段", text.contains("Execution log:"))
+        // 反向断言：不能退回「逐条列出」
+        assertFalse("不应逐条列步骤", text.contains("- 1. "))
+        assertFalse("不应出现 more steps 之类的分页文案", text.contains("more steps"))
+    }
+
+    @Test
+    fun `the log section is not truncated at all`() {
+        // ⚠️ 日志段**没有任何预算**了（两道截断都已去掉）。这条是那道闸的**反向锁**：
+        //    谁要把截断加回来，这里必须变红。
+        //
+        //    为什么两道都得去掉：日志里既有失败行（末尾）也有进度行（中段），
+        //    任何「从开头砍 N 字符」的机制都可能砍掉关键信息。
+        val longLog = (1..600).joinToString("\n") {
+            logLine("D", "WorkflowExecutor", "步骤行 $it —— 把日志撑得很长")
+        }
+        val text = buildTemporaryWorkflowOutputText(
+            workflowName = "长日志",
+            stepCount = 60,
+            terminalState = finished(longLog),
+            detailedLog = longLog,
+        )
+        val logSection = text.substringAfter("Execution log:")
+        assertTrue("前置条件：原始日志确实很长", longLog.length > 8_000)
+        // 日志段应当与原日志**等长**（只多一个结尾换行）
+        assertEquals(
+            "日志段必须全量输出，不得被截断",
+            longLog.trim().length,
+            logSection.trim().length,
+        )
+        assertTrue("最后一行必须在", logSection.contains("步骤行 600"))
+        assertFalse(
+            "不应有任何截断提示",
+            logSection.endsWith("...") || logSection.contains("\n..."),
+        )
+        assertTrue(text.contains("Steps: 60"))
     }
 
     @Test
     fun `blank log omits the log section`() {
         val text = buildTemporaryWorkflowOutputText(
             workflowName = "空日志",
-            stepDescriptions = listOf("A (m)"),
+            stepCount = 1,
             terminalState = finished(""),
             detailedLog = "",
         )

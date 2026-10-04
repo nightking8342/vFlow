@@ -34,9 +34,12 @@ data class ChatAgentToolDefinition(
      * 输出是否受 [CHAT_MAX_TOOL_RESULT_INPUT_CHARS] 截断。
      *
      * 该限制是为「机器 dump、结构重复、长尾无信息量」的输出兜底的（如观察无障碍节点树），
-     * 不是通用约束。两类工具必须显式声明 `false`：
+     * 不是通用约束。三类工具必须显式声明 `false`：
      * - 按需加载的人写知识（技能正文）——加载它就是为了拿到全部内容，截断等于让这次调用白做
      * - 结构化元数据（模块 schema 字段定义）——截断的可能正好是字段名，会让模型拿到残缺的说明书
+     * - **执行结果**（临时工作流）——截断砍的是**尾部**，而它的正文顺序是
+     *   「结论 → 失败摘要 → Steps 条数 → Execution log」⇒ 被砍掉的恰是含失败行的日志段，
+     *   模型只会看到「failed at step N」而无从自愈
      *
      * 默认 `true` 保证新工具默认安全，只有明确声明的才豁免。
      */
@@ -291,6 +294,17 @@ internal class ChatAgentToolRegistry(context: Context) {
             riskLevel = ChatAgentToolRiskLevel.STANDARD,
             usageScopes = setOf(ChatAgentToolUsageScope.TEMPORARY_WORKFLOW),
             backend = ChatAgentToolBackend.TEMPORARY_WORKFLOW,
+            // ⚠️ 不截断。默认的 1600 字符上限会**从尾部**砍——而本工具的输出
+            // 顺序是「结论 → 失败摘要 → Steps 条数 → Execution log」，被砍掉的
+            // 恰是日志段（含 `E/` 失败行与模块自报的进度，如「正在延迟 2500ms」）。
+            // 截断的后果不是「少看几行」，而是**失败原因整段消失**，
+            // 模型只看到「failed at step N」而无从自愈。
+            // ⚠️ 日志段**自身也按需去掉了截断**（见 `buildTemporaryWorkflowOutputText`）
+            // —— 即整条输出**没有任何上界**。这是刻意的：排错要看的失败行在末尾、
+            // 进度行在中段，砍哪一段都可能砍掉关键信息。
+            // 已知代价：单次普通执行约 3.2k 字符（可接受），但 **100 轮循环可达几万字**
+            // ⇒ 本工具适合「跑一遍看结果」，不适合套在大循环里。
+            truncatable = false,
         )
     }
 

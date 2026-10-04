@@ -2768,9 +2768,6 @@ internal class ChatAgentModuleExecutor(
         workflow: ChatPreparedToolItem.TemporaryWorkflow,
         terminalState: ExecutionState,
     ): ChatToolResult {
-        val stepDescriptions = workflow.preparedSteps.map { readyStep ->
-            "${readyStep.definition.title} (${readyStep.step.moduleId})"
-        }
         return ChatToolResult(
             callId = workflow.toolCall.id,
             name = workflow.toolCall.name,
@@ -2778,7 +2775,10 @@ internal class ChatAgentModuleExecutor(
             summary = workflow.definition.title,
             outputText = buildTemporaryWorkflowOutputText(
                 workflowName = workflow.workflow.name,
-                stepDescriptions = stepDescriptions,
+                // ⚠️ 只传**条数**，不传清单 —— 清单的每一项（模块名 + moduleId）
+                //    都是模型上一轮自己写进 tool 参数的，回传它是零信息量，
+                //    却要占掉约 870 字符、把日志段挤出预算（详见函数注释）。
+                stepCount = workflow.preparedSteps.size,
                 terminalState = terminalState,
                 detailedLog = terminalState.detailedLogOrEmpty(),
             ),

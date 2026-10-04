@@ -255,23 +255,6 @@ private const val SKIPPED_FAILURE_LINE_PREFIX = "W/WorkflowExecutor: 根据策�
 private val LOG_LINE_PATTERN = Regex("""^\[\d{2}:\d{2}:\d{2}\.\d{3}\] """)
 
 /**
- * 把多行文本截到 [maxLength] 字符，超出时追加 `...` 提示。
- *
- * ⚠️ 取的是**开头**——所以调用方必须**先抽取、后截断**：
- * 失败行写在执行末尾，先截断会让它落进被丢弃的部分（见 [buildTemporaryWorkflowOutputText]）。
- *
- * （原为 `ChatAgentModuleExecutor` 的私有方法，随失败可见性改造下移到本纯函数文件。）
- */
-internal fun truncateMultiline(text: String, maxLength: Int = 4_000): String {
-    val normalized = text.trim()
-    return if (normalized.length > maxLength) {
-        normalized.take(maxLength) + "\n..."
-    } else {
-        normalized
-    }
-}
-
-/**
  * 逐行找以 [prefix] 开头的日志行，返回**最后一条**的正文；没有则 null。
  *
  * ⚠️ **逐行扫描**，不要对整个文本做 `substringAfterLast` ——
@@ -328,20 +311,61 @@ internal fun temporaryWorkflowStatus(terminalState: ExecutionState): ChatToolRes
 /**
  * 拼装临时工作流卡片 / 工具结果的正文。
  *
+ * ## 结构
+ *
+ * ```
+ * <结论行>
+ * <失败摘要>            ← 有才打
+ *
+ * Steps: 12             ← ⚠️ 只有**条数**，不列清单
+ *
+ * Execution log:
+ * <日志，最多 8000 字符>
+ * ```
+ *
+ * ## ⚠️ 为什么 Steps 只给条数、不列清单
+ *
+ * 那份清单给模型的信息量是**零**：`"延迟 (vflow.device.delay)"` 完全由
+ * `moduleId` + 步骤 id 推得，而**这些正是模型上一轮自己写进 tool 参数的**。
+ * 它要判断「跑没跑起来、跑了几步」，需要的是**条数**；要排错，看的是
+ * `Execution log` 里逐步骤的执行行（`[#3] -> 执行: 延迟`）。
+ *
+ * 而代价是实打实的：30 条典型步骤约 870 字符，叠在 1600 字符的整体预算里
+ * 会**把 Execution log 整段挤出去**（`ChatToolResultInputFormatter` 砍的是尾部）。
+ * 省下这块之后，日志段才有预算可用。
+ *
+ * ## ⚠️ 两道截断**都关掉了**，日志**全量**输出
+ *
+ * | 截断点 | 作用对象 | 状态 |
+ * |---|---|---|
+ * | 日志段自身 | **只有日志**这一段 | **无上限** |
+ * | `CHAT_MAX_TOOL_RESULT_INPUT_CHARS` | 整条输出（外层兜底） | 1600 → **本工具已关闭** |
+ *
+ * ⚠️ 原来是「日志先截到 4000，再整条被外层砍到 1600」—— 那个 4000 **从未生效过**：
+ * 前两段 + 步骤清单就已经约 1100 字符，外层早把日志吃干净了。现在步骤清单缩成一行、
+ * 外层关闭，若再留一道 4000，就轮到**它**来砍日志了 —— 而排错需要的恰是整套日志
+ * （失败行在末尾、进度行在中段），故**两道都去掉**。
+ *
+ * ⚠️⚠️ **代价必须如实记录：日志现在没有任何上界。**
+ * 原来「不截断是安全的」这条论证依赖「日志已先被截到有界」，
+ * 那道闸去掉后论证不再成立 —— 本函数交给模型的是 `detailedLog.subString` **全长**。
+ * 已知量级：单次普通执行约 3.2k 字符（可接受）；**100 轮循环可达几万字**。
+ * 故本工具适合「跑一遍看结果」的调试用法，**不适合套在大循环里**。
+ * 若要重新加界，正确做法是**在写入侧**（`WorkflowExecutor` 的 `executionLogs`）
+ * 或按「整场字符数」而非把日志段单独砍半 —— 后者正是本次去掉的那一刀。
+ *
  * ⚠️ **返回值形状**：本函数与 [temporaryWorkflowStatus] 必须**成对**使用 ——
  * 状态与正文要一起产出。若只抽状态而把正文构造留在别处，本函数里
  * 「摘要提到最前」「`Execution log` 段保留」这些改动就会在重构中丢失，且**静默**
  * （卡片仍显示 ERROR，只是没有详情）—— 与本次改造目的相反。
  *
- * ⚠️ [detailedLog] 必须是**未截断**的原始日志：摘要先从这里抽，再交给
- * [truncateMultiline] 截断（先抽取、后截断）。
+ * ⚠️ [detailedLog] 必须传**原始日志**（不截断）：摘要从它里面抽，日志段也原样拼上。
  */
 internal fun buildTemporaryWorkflowOutputText(
     workflowName: String,
-    stepDescriptions: List<String>,
+    stepCount: Int,
     terminalState: ExecutionState,
     detailedLog: String,
-    maxSteps: Int = 30,
 ): String {
     // ⚠️ 用未截断的 detailedLog 提取，理由见函数注释
     val failureSummary = extractFailureSummary(detailedLog)
@@ -364,31 +388,22 @@ internal fun buildTemporaryWorkflowOutputText(
             }
         )
 
-        // 失败摘要提到步骤清单之前 —— 否则它会被埋在清单与日志之间，
-        // 而卡片默认只显示 6 行（`ToolMessageCard` 的 contentCollapsed 阈值）。
+        // 失败摘要提到日志之前 —— 否则它会被埋在日志里，而卡片默认只显示 6 行
+        //（`ToolMessageCard` 的 contentCollapsed 阈值）。
         if (failureSummary != null) {
             append("\n\n")
             append(failureSummary)
         }
 
-        append("\n\nSteps:\n")
-        stepDescriptions.take(maxSteps).forEachIndexed { index, description ->
-            append("- ")
-            append(index + 1)
-            append(". ")
-            append(description)
-            append("\n")
-        }
-        if (stepDescriptions.size > maxSteps) {
-            append("- ... ")
-            append(stepDescriptions.size - maxSteps)
-            append(" more steps\n")
-        }
+        append("\n\nSteps: ")
+        append(stepCount)
 
         val trimmedLog = detailedLog.trim()
         if (trimmedLog.isNotBlank()) {
             append("\nExecution log:\n")
-            append(truncateMultiline(trimmedLog))
+            // ⚠️ **不截断**。两道闸（本段自身的预算、以及外层的 1600）都已按需去掉，
+            //    理由见函数头注释的「两道截断都关掉了」一节。
+            append(trimmedLog)
             append("\n")
         }
     }.trim()

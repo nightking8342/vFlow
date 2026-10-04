@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  岛展开态的最小同形布局。
+
+  ⚠️ **只保留与 vFlow 一致的 view 类型**：ImageView / TextView。
+  真实布局里还有 Chronometer / ProgressBar / 若干 drawable 背景 —— 本探针
+  **刻意不含**它们，因为要测的是「反复写同一组 view 会不会让 parcel 变大」，
+  引入更多 view 类型只会把变量搅浑。若本布局下也观察到增长，那增长就与
+  具体的 view 类型无关（即 RemoteViews 层的行为，而非某个 widget 的）。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="8dp">
+
+    <ImageView
+        android:id="@+id/probe_icon"
+        android:layout_width="48dp"
+        android:layout_height="48dp" />
+
+    <TextView
+        android:id="@+id/probe_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:maxLines="1" />
+
+    <TextView
+        android:id="@+id/probe_chip"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content" />
+
+    <TextView
+        android:id="@+id/probe_progress"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content" />
+
+    <TextView
+        android:id="@+id/probe_step"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content" />
+
+    <TextView
+        android:id="@+id/probe_status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:maxLines="1" />
+
+    <TextView
+        android:id="@+id/probe_timer_label"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content" />
+</LinearLayout>

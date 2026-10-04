@@ -192,13 +192,15 @@ object ExecutionNotificationManager {
         }
 
         // 终态后基准与步骤名不再需要（下次执行会重新记）。
+        //
+        // ⚠️ 这里**不再**调 `IslandNotificationDispatcher.releaseViews` ——
+        // 那个方法随「RemoteViews 复用缓存」一起删掉了：复用的前提不成立
+        // （setter 是追加语义，复用会让通知体积随更新次数线性膨胀，
+        // 见 `IslandRemoteViews` 的类注释与 `scripts/probe/island-probe/` 的实测）。
+        // 现在每次派发都新建，本就没有缓存可释放。
         if (state !is ExecutionNotificationState.Running) {
             chronometerBase.remove(workflow.id)
             currentStepName.remove(workflow.id)
-            // 释放该工作流的 RemoteViews 实例缓存，避免长期运行累积。
-            // 注意：必须在 notify 之后释放——释放只影响我们的缓存，
-            // 已经交给 NotificationManager 的那份副本不受影响。
-            IslandNotificationDispatcher.releaseViews(workflow.id)
         }
     }
 

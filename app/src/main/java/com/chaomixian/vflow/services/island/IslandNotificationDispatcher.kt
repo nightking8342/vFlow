@@ -6,7 +6,6 @@ import android.content.Context
 import android.os.Parcelable
 import android.widget.RemoteViews
 import androidx.core.app.NotificationCompat
-import java.util.concurrent.ConcurrentHashMap
 import com.chaomixian.vflow.core.logging.DebugLogger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -70,28 +69,6 @@ internal object IslandNotificationDispatcher {
     private const val STOP_LABEL = "结束"
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-
-    /**
-     * 各工作流正在使用的 RemoteViews 实例组。
-     *
-     * **为什么要缓存**：一个工作流执行期间只有一条通知（ID 恒定），它被反复更新。
-     * 若每次都新建 RemoteViews，等于每次重新 inflate 布局 + 跨进程传整棵树，
-     * 比模板路径还贵。缓存后每次更新只传变化字段的差异——这才是用 RemoteViews 的意义。
-     *
-     * 键是 workflowId：并发执行的不同工作流各持一组，互不干扰。
-     * 由 [releaseViews] 在工作流结束时清理。
-     */
-    private val viewsByWorkflow = ConcurrentHashMap<String, IslandViews>()
-
-    /**
-     * 释放某工作流的 RemoteViews 缓存。应在工作流执行结束时调用。
-     *
-     * 不释放的后果：每个执行过的工作流都会常驻一组 RemoteViews（3 个实例，
-     * 各持有布局引用），长期运行会累积。
-     */
-    fun releaseViews(workflowId: String) {
-        viewsByWorkflow.remove(workflowId)
-    }
 
     /**
      * 初始化能力探测。应在 App 启动时调用。
@@ -189,12 +166,24 @@ internal object IslandNotificationDispatcher {
         //
         // **只写这三个**——与 mindfs 一致，不写 `rv.tiny`（那是小折叠机型的折叠态用）。
         //
-        // **实例复用**：一个工作流执行期间只有一条通知被反复更新。每次更新都重建
-        // RemoteViews 会重新 inflate + 重新传整棵树，比模板路径还贵，会把本改造的收益
-        // 抹掉。故按 workflowId 缓存实例，只在首次创建、之后复用同一组。
-        val views = viewsByWorkflow.getOrPut(spec.workflowId) {
-            IslandRemoteViews.newInstance(context)
-        }
+        // ⚠️⚠️ **必须每次新建，不能缓存复用**。
+        //
+        // 曾经这里按 workflowId 缓存、复用同一组实例，注释里写的理由是
+        //「复用后每次只传变化字段的差异，避免重新传整棵树」—— **那个理由不成立**：
+        // `RemoteViews` 的每个 setter 都是**追加动作**，从不替换；而 `notify()` 每次
+        // 都是**完整**事务（把增量应用到已有视图的入口是 `RemoteViews.reapply()`，
+        // 不是 notify）。复用 ⇒ 动作列表随更新次数单调增长 ⇒ 通知体积线性上升。
+        //
+        // 真机实测（`scripts/probe/island-probe/`，崩溃机型复现）：
+        //   复用：9,492 B → 200 轮后 217,252 B（每轮 +1,044 B，严格线性）
+        //   新建：9,492 B → 200 轮后   9,496 B（完全不涨）
+        // 按 vFlow 的真实节奏（约 20 setter × 3 实例 × 84 次更新）反推 0.6–0.7 MiB，
+        // 与崩溃实测的 1.01 MiB 同量级 —— 即 2026-09-29 那次
+        // `TransactionTooLargeException: data parcel size 1035216 bytes` 的直接原因。
+        //
+        // 代价可接受：新建只是本地构造对象；布局是 SystemUI 侧 inflate 的，
+        // 每次新建携带的正是**必要的**全量动作。
+        val views = IslandRemoteViews.newInstance(context)
         views.update(
             context = context,
             title = spec.title,

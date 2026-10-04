@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.vflow.islandprobe">
+
+    <!-- ⚠️ 必须声明 uses-sdk，否则小米会拦到 ReviewPermissionsActivity（既有探针踩过）。 -->
+    <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="36" />
+
+    <!-- 发通知。Android 13+ 需要运行时授权，但探针用 IMPORTANCE_LOW + 只测 binder 体积，
+         权限被拒时 notify 会静默失败 —— 故在脚本里先 grant 一次。 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application android:label="IslandProbe">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:excludeFromRecents="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

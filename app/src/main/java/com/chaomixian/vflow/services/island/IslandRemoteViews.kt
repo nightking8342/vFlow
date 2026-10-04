@@ -10,24 +10,33 @@ import com.chaomixian.vflow.R
 /**
  * 构建超级岛展开态的 RemoteViews。
  *
- * ## 为什么用 RemoteViews
+ * ## ⚠️⚠️ 为什么**每次更新都重建**实例（曾经的「复用」是错的）
  *
- * 一个工作流执行期间**只有一条通知**（ID 按 workflowId 派生、恒定），
- * 它被反复 `notify(id, ...)` 更新——每推进一步、模块每次自报进度都会更新一次。
+ * 本类最初的注释写着「复用同一个实例、只调 `setTextViewText` 改变化字段，
+ * 跨进程只传差异」—— 那个推理**是错的**，且导致了真机必现的崩溃：
+ * 工作流跑到一半 `android.os.TransactionTooLargeException: data parcel size 1035216 bytes`。
  *
- * RemoteViews 的收益来自**复用同一个实例、只调 `setTextViewText` 等改变化字段**：
- * 跨进程只传差异，而不是每次重新传整棵布局树 + 重新 inflate。
+ * 实测（`scripts/probe/island-probe/`，2026-09-29 崩溃机型复现）：
  *
- * 因此正确的用法是：
+ * | 用法 | 单次通知体积随 notify 次数的变化 |
+ * |---|---|
+ * | **复用**同一组 RemoteViews，每轮写 8 个字段 | 9,492 B →（200 轮后）217,252 B，**每轮 +1,044 B，严格线性** |
+ * | **每轮新建** RemoteViews，写同样的 8 个字段 | 9,492 B →（200 轮后）9,496 B，**完全不涨** |
+ * | 普通通知（无 RemoteViews） | 2,396 → 2,400 B，不涨 |
  *
- * ```kotlin
- * // 执行开始时一次
- * val views = IslandRemoteViews.newInstance(context)
- * // 之后每次更新
- * views.update(context, spec)
- * ```
+ * 根因：**`RemoteViews` 的每个 setter 都是「追加一条动作」，从不替换**。
+ * 复用同一个实例 ⇒ 动作列表随更新次数单调增长 ⇒ 每次 `notify` 都要把
+ * **整条历史**序列化过 binder ⇒ 体积线性上升。
  *
- * **不要**每次更新都调 [newInstance]——那比模板路径还贵。
+ * 「跨进程只传差异」的那个直觉来自**另一个** API —— `RemoteViews.reapply()`
+ * 才是把增量应用到已有视图的入口；`notify()` 每次都是**完整**事务。
+ *
+ * 按 vFlow 的真实节奏（`applyToCard` 约 20 个 setter × 3 个实例 × 每个执行
+ * 约 84 次更新）反推约 0.6–0.7 MiB，与崩溃实测的 1.01 MiB 同量级 —— 复现吻合。
+ *
+ * ⇒ **正确做法是每次 `update()` 都新建**。新建的开销只是本地构造对象
+ * （不像「重建布局树」那样昂贵 —— 布局是在 SystemUI 侧 inflate 的，
+ * 而每次新建的 RemoteViews 携带的正是**必要的**全量动作）。
  */
 internal object IslandRemoteViews {
 
@@ -35,9 +44,11 @@ internal object IslandRemoteViews {
     private val LAYOUT_LIGHT = R.layout.island_execution_expand_light
 
     /**
-     * 创建一组空的 RemoteViews 实例（不填数据）。
+     * 创建一组**空的** RemoteViews 实例（不填数据）。
      *
-     * 调用方持有返回值，之后反复调 [IslandViews.update]。
+     * ⚠️ **每次更新都要重新调用本方法** —— 不要缓存返回值复用。
+     * 复用的后果见类注释（动作列表只增不减 ⇒ 通知体积线性膨胀 ⇒ binder 超限崩溃）。
+     *
      * RemoteViews 需要包名来远端 inflate，故必须传 context。
      */
     fun newInstance(context: Context): IslandViews {
@@ -52,10 +63,11 @@ internal object IslandRemoteViews {
 }
 
 /**
- * 一次执行期间持有的一组 RemoteViews。
+ * 一组 RemoteViews（浅色 / 深色 / 岛展开），**寿命只有一次 `update()`**。
  *
- * **生命周期与执行实例相同**：由调用方在执行开始时创建一次、结束时丢弃，
- * 期间只调 [update]。三个实例共用一套操作代码——它们的布局 view id 完全一致。
+ * ⚠️ 不要长期持有：每次更新都要 `IslandRemoteViews.newInstance()` 造一组新的
+ * （理由见 `IslandRemoteViews` 的类注释）。三个实例共用一套操作代码 ——
+ * 它们的布局 view id 完全一致。
  */
 internal class IslandViews(
     /** 通知栏浅色模式。 */
@@ -67,9 +79,11 @@ internal class IslandViews(
 ) {
 
     /**
-     * 按状态刷新全部字段。
+     * 按状态写全部字段。
      *
-     * **只调改变化字段的 setter**，不要重建实例——这是 RemoteViews 的性能前提。
+     * ⚠️ 本方法**必须**作用在刚 `newInstance()` 出来的实例上。它对同一个实例
+     * 调了约 20 个 setter，而 setter 是**追加**语义 —— 在已更新过的实例上再调
+     * 一次，动作列表就多 20 条，通知体积随之膨胀（见 `IslandRemoteViews` 类注释）。
      */
     fun update(
         context: Context,
