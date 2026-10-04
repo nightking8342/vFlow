@@ -1,6 +1,7 @@
 package com.chaomixian.vflow.ui.chat
 
 import android.content.Context
+import com.chaomixian.vflow.R
 import com.chaomixian.vflow.core.execution.ExecutionContext
 import com.chaomixian.vflow.core.execution.ExecutionLogLevel
 import com.chaomixian.vflow.core.execution.ExecutionState
@@ -26,6 +27,7 @@ import com.chaomixian.vflow.core.types.complex.VScreenElement
 import com.chaomixian.vflow.core.workflow.model.ActionStep
 import com.chaomixian.vflow.core.workflow.model.Workflow
 import com.chaomixian.vflow.core.workflow.model.WorkflowReentryBehavior
+import com.chaomixian.vflow.core.workflow.model.TriggerLabel
 import com.chaomixian.vflow.core.workflow.FolderManager
 import com.chaomixian.vflow.core.workflow.GlobalVariableStore
 import com.chaomixian.vflow.core.workflow.WorkflowManager
@@ -2957,8 +2959,43 @@ internal fun resolveModuleInputDefinitions(
         module.getDynamicInputs(step, listOf(step))
     }.getOrDefault(emptyList())
     // 动态结果放后面：同 id 时它覆盖静态定义，保留算子相关的类型/选项改写。
-    return (staticInputs + dynamicInputs).distinctBy { it.id }
+    val base = (staticInputs + dynamicInputs).distinctBy { it.id }
+
+    // 触发器标签（fork）：任何 `vflow.trigger.*` 模块都可带一个保留参数 `__trigger_label`。
+    // 它**不由模块声明**（那样会把它推进编辑器的通用参数表单，与「标签不放参数 sheet」冲突），
+    // 故在这里统一补齐 —— 不补的话 buildParameters / applyParameterPatch 会把它判成
+    // unknown 并拒绝整个调用（update_workflow 甚至整份补丁不落地）。
+    return if (module.id.startsWith(TRIGGER_MODULE_PREFIX)) base + triggerLabelInputDefinition() else base
 }
+
+/**
+ * AI 侧判定「这是个触发器模块」的前缀。
+ *
+ * ⚠️ 与 `ChatAgentToolRegistry.TRIGGER_MODULE_PREFIX`（`private`）同值，但**刻意不跨文件复用**：
+ * 那是另一个类的私有成员，且「触发器」这条语义在本文件里也要自持
+ * （触发器标签的注入**只在这一处**发生）。
+ */
+private const val TRIGGER_MODULE_PREFIX = "vflow.trigger."
+
+/**
+ * 触发器标签的 [InputDefinition]（所有 `vflow.trigger.*` 共用同一份声明）。
+ *
+ * ⚠️ **必须是文件顶层** —— 调用方 [resolveModuleInputDefinitions] 是顶层 `internal fun`，
+ * 访问不到 `ChatAgentModuleExecutor` 的私有成员（同文件的 `resolveInputDefinitions`
+ * 是类成员，形态相反，别照抄）。
+ *
+ * `isHidden = false`：让 `query_module_schema` 能把它展示给模型（模型要能发现这个字段才谈得上写它）。
+ * `acceptsMagicVariable = false`：标签是**字面量**，不是变量引用 —— 允许它反而会让用户
+ * 写出「标签里再嵌变量」这种无人解析的形态。
+ */
+private fun triggerLabelInputDefinition(): InputDefinition = InputDefinition(
+    id = TriggerLabel.KEY,
+    name = "触发器标签",
+    staticType = ParameterType.STRING,
+    isHidden = false,
+    acceptsMagicVariable = false,
+    nameStringRes = R.string.trigger_label_input_name,
+)
 
 /**
  * [ChatAgentModuleExecutor.buildParameters] 的产物。

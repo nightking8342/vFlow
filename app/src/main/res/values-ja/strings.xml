@@ -529,6 +529,14 @@
     <string name="editor_toast_module_insert_failed">モジュールの挿入に失敗しました</string>
     <string name="editor_group_named_variables">名前付き変数</string>
     <string name="editor_group_function_params">関数パラメータ</string>
+    <string name="editor_group_trigger_label">トリガーラベル</string>
+    <string name="trigger_label_variable_name">トリガーラベル</string>
+    <string name="trigger_label_button_desc">トリガーラベルを設定</string>
+    <string name="trigger_label_sheet_title">トリガーラベル</string>
+    <string name="trigger_label_sheet_hint">ラベル（ワークフロー内で [[__trigger_label]] として参照できます）</string>
+    <string name="trigger_label_sheet_clear">クリア</string>
+    <string name="trigger_label_display_prefix">🏷 %1$s</string>
+    <string name="trigger_label_input_name">トリガーラベル</string>
     <string name="editor_more_options_function_signature_title">関数シグネチャ</string>
     <string name="editor_more_options_function_params_prefix">パラメータ</string>
     <string name="editor_more_options_function_return_prefix">戻り値</string>

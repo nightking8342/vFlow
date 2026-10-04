@@ -1,5 +1,7 @@
 package com.chaomixian.vflow.ui.chat
 
+import com.chaomixian.vflow.core.workflow.model.TriggerLabel
+
 /**
  * 一项技能的**定义**。
  *
@@ -84,6 +86,7 @@ internal object ChatAgentSkillRouter {
             appendLine("If one direct tool can complete a simple request such as dark mode, flashlight, wifi, brightness, clipboard, volume, or app launch, call that direct tool instead of navigating system UI or building a workflow.")
             appendLine("Use canonical module parameters and step IDs; never invent localized parameter keys.")
             appendLine("To pass data between steps, use references: `{{previousStepId.outputId}}` for an earlier step's output, and `{{vars.paramName}}` for a parameter declared by the `vflow.logic.define_function` step. The `vars.` prefix is required — a bare `{{paramName}}` does not resolve and silently produces an empty value.")
+            appendLine("A trigger ActionStep may carry a string label in `parameters.${TriggerLabel.KEY}`. The label of the trigger that fired the workflow is readable at runtime as the named variable `[[${TriggerLabel.VARIABLE_NAME}]]` — named-variable syntax, NOT `{{ }}`. Its value is always a string, and it is an empty string when the workflow was not started by a labelled trigger. Branch on it with e.g. `If [[${TriggerLabel.VARIABLE_NAME}]] equals \"xxx\"`.")
             appendLine("Ask one concise clarification only when a missing target, time, account, or condition would make the action ambiguous or risky.")
             appendLine("Never claim a tool succeeded until you receive the tool result.")
             appendLine("If a tool result includes artifact:// handles, preserve and reuse them in later tool arguments when needed.")

@@ -48,6 +48,7 @@ import com.chaomixian.vflow.core.workflow.WorkflowJumpReferenceUpdater
 import com.chaomixian.vflow.core.workflow.WorkflowManager
 import com.chaomixian.vflow.core.workflow.WorkflowVisuals
 import com.chaomixian.vflow.core.workflow.model.ActionStep
+import com.chaomixian.vflow.core.workflow.model.TriggerLabel
 import com.chaomixian.vflow.core.workflow.model.Workflow
 import com.chaomixian.vflow.core.workflow.module.data.CreateVariableModule
 import com.chaomixian.vflow.core.workflow.module.logic.FOREACH_PAIRING_ID
@@ -987,7 +988,16 @@ class WorkflowEditorActivity : BaseActivity() {
                     updatedParams.putAll(newStepData.parameters)
                     triggerSteps[position] = triggerSteps[position].copy(parameters = updatedParams)
                 } else {
-                    triggerSteps[position] = triggerSteps[position].copy(parameters = newStepData.parameters)
+                    // ⚠️ fork：原为 `copy(parameters = newStepData.parameters)`（整表替换）。
+                    //    newStepData.parameters 只含模块声明的输入，于是**不在模块声明里的
+                    //    保留参数会被吃掉** —— 除本任务新增的 `__trigger_label` 外，
+                    //    存量就有 `__error_policy` / `__retry_count`。表现是：用户设好标签、
+                    //    再点开改一次触发条件，标签就**静默消失**（无任何报错）。
+                    //    改为「以旧参数为基、合并新参数」，与上面 focusedInputId != null
+                    //    分支（现状本就是合并）对齐 —— 此前的不对称是既有缺陷。
+                    val updatedParams = triggerSteps[position].parameters.toMutableMap()
+                    updatedParams.putAll(newStepData.parameters)
+                    triggerSteps[position] = triggerSteps[position].copy(parameters = updatedParams)
                 }
             } else {
                 val stepsToAdd = module.createSteps()
@@ -1108,6 +1118,7 @@ class WorkflowEditorActivity : BaseActivity() {
             triggerStepCount = triggerSteps.size,
             actionSteps = actionSteps,
             enableTypeFilter = enableTypeFilter,
+            hasAutoTriggers = getCurrentWorkflowState().hasAutoTriggers(),
             findEnclosingLoopStartStep = ::findEnclosingLoopStartStep,
             loopPairingId = LOOP_PAIRING_ID,
             forEachPairingId = FOREACH_PAIRING_ID,
@@ -1259,6 +1270,9 @@ class WorkflowEditorActivity : BaseActivity() {
             },
             onTriggerParameterPillClick = { position, parameterId ->
                 handleTriggerParameterPillClick(position, parameterId)
+            },
+            onTriggerLabelClick = { position ->
+                showTriggerLabelSheet(position)
             },
             onParameterPillClick = { position, parameterId ->
                 handleParameterPillClick(position, parameterId)
@@ -1722,6 +1736,22 @@ class WorkflowEditorActivity : BaseActivity() {
     }
 
     private fun getTriggerSteps(): List<ActionStep> = triggerSteps.toList()
+
+    /**
+     * 编辑某个触发器的标签（fork）。
+     *
+     * ⚠️ `pushUndoSnapshot()` 必须在改动**之前**调用（与其它编辑入口一致）。
+     */
+    private fun showTriggerLabelSheet(position: Int) {
+        if (position !in triggerSteps.indices) return
+        val sheet = TriggerLabelSheet.newInstance(TriggerLabel.labelOf(triggerSteps[position]))
+        sheet.onSave = { label ->
+            pushUndoSnapshot()
+            triggerSteps[position] = TriggerLabel.withLabel(triggerSteps[position], label)
+            recalculateAndNotify()
+        }
+        sheet.show(supportFragmentManager, "TriggerLabel")
+    }
 
     private fun getTriggerInsertPosition(): Int = triggerSteps.size
 

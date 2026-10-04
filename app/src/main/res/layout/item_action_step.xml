@@ -76,6 +76,20 @@
                 android:paddingStart="4dp"
                 android:paddingEnd="0dp">
 
+                <!-- 触发器标签按钮（fork）：只在**触发器卡片**上可见（见 ActionStepAdapter.bindEmbeddedStepCard
+                     的 isActionStep 判据）；普通动作步骤恒 GONE。 -->
+                <ImageButton
+                    android:id="@+id/button_trigger_label"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:layout_marginStart="4dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/trigger_label_button_desc"
+                    android:src="@drawable/rounded_new_label_24"
+                    android:visibility="gone"
+                    app:tint="?attr/colorOnSurfaceVariant"
+                    tools:visibility="visible" />
+
                 <ImageButton
                     android:id="@+id/button_delete_action"
                     android:layout_width="40dp"
