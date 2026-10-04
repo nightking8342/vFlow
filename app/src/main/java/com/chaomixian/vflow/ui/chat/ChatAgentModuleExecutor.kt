@@ -32,6 +32,7 @@ import com.chaomixian.vflow.core.workflow.FolderManager
 import com.chaomixian.vflow.core.workflow.GlobalVariableStore
 import com.chaomixian.vflow.core.workflow.WorkflowManager
 import com.chaomixian.vflow.core.workflow.WorkflowPatch
+import com.chaomixian.vflow.core.workflow.WorkflowVisuals
 import com.chaomixian.vflow.core.workflow.StepInsertion
 import com.chaomixian.vflow.core.workflow.StepListPatch
 import com.chaomixian.vflow.core.workflow.StepMove
@@ -297,6 +298,10 @@ internal class ChatAgentModuleExecutor(
                 description = spec.description,
                 maxExecutionTime = spec.maxExecutionTime,
                 reentryBehavior = WorkflowReentryBehavior.STOP_CURRENT_AND_RUN_NEW,
+                // 与编辑器「新建工作流」一致：AI 存盘时也取一个随机主题色，
+                // 否则会是 Workflow 的默认色，所有 AI 建的工作流卡片长得一模一样。
+                cardIconRes = WorkflowVisuals.defaultIconResName(),
+                cardThemeColor = WorkflowVisuals.randomThemeColorHex(),
             )
         } catch (_: Throwable) {
             null
@@ -765,6 +770,9 @@ internal class ChatAgentModuleExecutor(
                 tags = spec.tags,
                 maxExecutionTime = spec.maxExecutionTime,
                 reentryBehavior = spec.reentryBehavior,
+                // AI 保存的工作流与手动新建取色口径一致（见 buildWorkflowForSave 同款注释）。
+                cardIconRes = WorkflowVisuals.defaultIconResName(),
+                cardThemeColor = WorkflowVisuals.randomThemeColorHex(),
             )
             val missingPermissions = PermissionManager.getMissingPermissions(appContext, workflow)
             ChatPreparedToolItem.SaveWorkflow(
