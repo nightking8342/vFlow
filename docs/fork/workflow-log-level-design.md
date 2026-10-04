@@ -271,6 +271,10 @@ private fun appendToLog(level: String, tag: String, message: String, throwable: 
 5. 未知 / 旧值解析 ⇒ `VERBOSE`（不静默丢日志）；
 6. 真机：把一个含日志模块的工作流设为「仅错误」，确认 `[日志]` 行消失、失败行仍在。
 
+> ✅ **2026-10-04 用户真机验证通过**（小米 MIX Fold 3 / Android 17）。
+> 手工在真机上切换档位并观察日志，**未走 adb 脚本**（写文档时本机 `adb devices`
+> 为空），故没有逐项取证文件。⚠️ 本行记的是**用户的验证结论**，不是自动化产物。
+
 ---
 
 ## 7. 交付物
