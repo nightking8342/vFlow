@@ -1647,4 +1647,7 @@
     <string name="webdav_test_network_error">ネットワークエラー。アドレスと接続を確認してください</string>
     <string name="webdav_test_key_unavailable">端末の鍵が無効になりました。パスワードを再入力してください</string>
     <string name="webdav_test_invalid_config">設定が不完全か、アドレスが無効です</string>
+    <!-- fork: 工作流列表 —— 文件夹 Tab 栏 -->
+    <string name="workflow_tab_all">すべて</string>
+    <string name="workflow_item_menu_favorite">お気に入り</string>
 </resources>

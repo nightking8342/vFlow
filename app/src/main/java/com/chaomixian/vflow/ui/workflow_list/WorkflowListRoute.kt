@@ -188,14 +188,9 @@ fun WorkflowListRoute(
 
             withContext(Dispatchers.Main) {
                 workflowListViewModel.setItems(items)
-                workflowListViewModel.uiState.value.openFolder?.let { openFolder ->
-                    workflowListViewModel.updateFolderWorkflows(
-                        workflows
-                            .filter { it.folderId == openFolder.id }
-                            .sortedBy { it.order }
-                    )
-                }
-
+                // fork：原先这里会把「当前打开的文件夹」的内容同步进 ViewModel
+                // （供底部弹窗用）。文件夹改成 Tab 栏后，内容由 `filterByFolderTab`
+                // 直接从 `items` 里筛，这条同步链路已经不存在。
                 if (showMigrationPrompt) {
                     maybePromptWorkflowEnumMigration(
                         context = context,
@@ -635,57 +630,22 @@ fun WorkflowListRoute(
                     loadData()
                 }
             },
-            onOpenFolder = { folderId ->
-                if (folderId.isBlank()) return@WorkflowListScreenActions
-                val folder = folderManager.getFolder(folderId) ?: return@WorkflowListScreenActions
-                val folderWorkflows = workflowManager.getAllWorkflows()
-                    .filter { it.folderId == folderId }
-                    .sortedBy { it.order }
-                workflowListViewModel.openFolder(folder, folderWorkflows)
-            },
-            onCloseFolder = {
-                workflowListViewModel.closeFolder()
-            },
-            onMoveWorkflowOutOfFolder = { workflow ->
-                workflowManager.saveWorkflow(workflow.copy(folderId = null))
-                Toast.makeText(
-                    context,
-                    context.getString(R.string.toast_workflow_moved_out_of_folder, workflow.name),
-                    Toast.LENGTH_SHORT
-                ).show()
-                workflowListViewModel.updateFolderWorkflows(
-                    workflowManager.getAllWorkflows()
-                        .filter { it.folderId == workflow.folderId }
-                        .sortedBy { it.order }
-                )
-                loadData()
-            },
             onRenameFolder = { folderId ->
                 showRenameFolderDialog(context, folderManager, folderId) { loadData() }
-            },
-            onDeleteFolder = { folderId ->
-                showDeleteFolderConfirmationDialog(context, folderManager, workflowManager, folderId) {
-                    loadData()
-                }
             },
             onExportFolder = { folderId ->
                 pendingExportFolderId = folderId
                 val folder = folderManager.getFolder(folderId)
                 exportFolderLauncher.launch("${folder?.name ?: "folder"}.json")
             },
+            onDeleteFolder = { folderId ->
+                showDeleteFolderConfirmationDialog(context, folderManager, workflowManager, folderId) {
+                    loadData()
+                }
+            },
             onPersistWorkflowOrder = { workflows ->
                 workflowManager.saveAllWorkflows(workflows)
                 ShortcutHelper.updateShortcuts(context)
-                loadData()
-            },
-            onMoveWorkflowToFolderByDrop = { workflow, folderId ->
-                val folder = folderManager.getFolder(folderId) ?: return@WorkflowListScreenActions
-                workflowManager.saveWorkflow(workflow.copy(folderId = folder.id))
-                Toast.makeText(
-                    context,
-                    context.getString(R.string.toast_workflow_moved_to_folder, workflow.name, folder.name),
-                    Toast.LENGTH_SHORT
-                ).show()
                 loadData()
             }
         )

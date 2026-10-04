@@ -52,12 +52,22 @@ object WorkflowVisuals {
         "#0EA5E9"
     )
 
+    /**
+     * 卡片配色。
+     *
+     * ⚠️ [cardBackground] 与 [cardBackgroundEnd] 是**同一张卡上下两端**的颜色，
+     * 供瀑布流卡片画竖直渐变（参考 ShortX：卡片不是纯色，顶部带一点主题色、
+     * 越往下越贴近 surface）。列表模式的卡片仍只用 [cardBackground]（单色）——
+     * 那是既有行为，本次未动。
+     */
     data class CardColors(
         val cardBackground: Int,
         val iconBackground: Int,
         val iconTint: Int,
         val accentBackground: Int,
-        val chipBackground: Int
+        val chipBackground: Int,
+        /** 渐变的底端颜色。默认等于 [cardBackground]（即不渐变），保证旧调用点行为不变。 */
+        val cardBackgroundEnd: Int = cardBackground,
     )
 
     fun defaultIconResName(): String = DEFAULT_ICON_RES_NAME
@@ -99,6 +109,10 @@ object WorkflowVisuals {
             surface
         )
         val cardBackground = ColorUtils.blendARGB(surface, baseColor, 0.18f)
+        // 渐变底端：比顶端更贴近 surface（即更「淡出」），使卡片有自上而下的层次。
+        // 0.18 → 0.06 的跨度是照 ShortX 截图目测调的：再大就会在深色主题下
+        // 变成明显色块，再小则完全看不出渐变。
+        val cardBackgroundEnd = ColorUtils.blendARGB(surface, baseColor, 0.06f)
         val iconBackground = ColorUtils.blendARGB(surface, baseColor, 0.82f)
         val accentBackground = ColorUtils.blendARGB(surface, baseColor, 0.72f)
         val chipBackground = ColorUtils.blendARGB(surfaceContainerHighest, baseColor, 0.30f)
@@ -112,7 +126,8 @@ object WorkflowVisuals {
             iconBackground = iconBackground,
             iconTint = iconTint,
             accentBackground = accentBackground,
-            chipBackground = chipBackground
+            chipBackground = chipBackground,
+            cardBackgroundEnd = cardBackgroundEnd,
         )
     }
 }

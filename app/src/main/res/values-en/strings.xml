@@ -1727,4 +1727,7 @@ Then come back; the current state will be shown above.</string>
     <string name="webdav_test_network_error">Network error — check the address and your connection</string>
     <string name="webdav_test_key_unavailable">Device key is no longer valid — please re-enter the password</string>
     <string name="webdav_test_invalid_config">The configuration is incomplete or the address is invalid</string>
+    <!-- fork: 工作流列表 —— 文件夹 Tab 栏 -->
+    <string name="workflow_tab_all">All</string>
+    <string name="workflow_item_menu_favorite">Favorite</string>
 </resources>

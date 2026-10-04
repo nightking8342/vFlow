@@ -1732,4 +1732,7 @@
     <string name="webdav_test_network_error">网络错误，请检查地址与网络</string>
     <string name="webdav_test_key_unavailable">设备密钥已失效，请重新输入密码</string>
     <string name="webdav_test_invalid_config">配置不完整或地址无效</string>
+    <!-- fork: 工作流列表 —— 文件夹 Tab 栏 -->
+    <string name="workflow_tab_all">全部</string>
+    <string name="workflow_item_menu_favorite">收藏</string>
 </resources>
