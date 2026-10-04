@@ -19,11 +19,13 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.WrapText
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconToggleButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -111,6 +113,12 @@ private fun DebugLogViewerScreen(
     //    刷新走右上角那个按钮，**显式**重取 —— 用户看得见「我刚刷过」。
     var logs by remember { mutableStateOf(DebugLogger.getLogs()) }
 
+    // ⚠️ **默认开**（与 logcat 查看器相反，那个默认关）：
+    //    本页展示的是**应用日志** —— 它里面有模块进度、JSON、脚本输出这类长行，
+    //    不换行时会普遍横拖；而 logcat 那边逐行比对时间戳/级别更多，默认不换行更合适。
+    //    两边默认值不同是有意的，别「统一」。
+    var wrapLines by remember { mutableStateOf(true) }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -124,6 +132,21 @@ private fun DebugLogViewerScreen(
                     }
                 },
                 actions = {
+                    // ⚠️ 用 IconToggleButton 而不是普通 IconButton：换行是个**开关**，
+                    //    需要「当前是开还是关」的视觉反馈。用普通按钮的话，
+                    //    用户点完只能靠内容排版变化去猜，而长行短行混排时看不出来。
+                    IconToggleButton(
+                        checked = wrapLines,
+                        onCheckedChange = { wrapLines = it }
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.WrapText,
+                            contentDescription = stringResource(
+                                if (wrapLines) R.string.logcat_wrap_on
+                                else R.string.logcat_wrap_off
+                            )
+                        )
+                    }
                     IconButton(onClick = { logs = DebugLogger.getLogs() }) {
                         Icon(
                             imageVector = Icons.Rounded.Refresh,
@@ -162,13 +185,21 @@ private fun DebugLogViewerScreen(
                     )
                 }
             } else {
+                // ⚠️ 两个模式的取舍（与 logcat 查看器同一套，见那里的注释）：
+                // - **换行**：长行完整可见，代价是行与行的视觉对应变弱。
+                // - **不换行 + 横向滚动**：保证「一行就是一行」，比对时间戳时更清楚，
+                //   但长消息要横拖。
+                // 没有哪个绝对更好 ⇒ 做成开关。⚠️ **横向滚动只能在不换行时加** ——
+                // 两者同时开着时，`Text` 会按无穷宽测量（横滚给的约束），
+                // 于是 `softWrap` 永远不触发，开关看起来点了没反应。
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
-                        // ⚠️ 两个方向都要能滚：日志行普遍很长（含堆栈），
-                        //    只给纵向滚动会被自动换行撑成极窄的一列。
                         .verticalScroll(rememberScrollState())
-                        .horizontalScroll(rememberScrollState())
+                        .then(
+                            if (wrapLines) Modifier
+                            else Modifier.horizontalScroll(rememberScrollState())
+                        )
                         .padding(12.dp)
                 ) {
                     SelectionContainer {
@@ -176,6 +207,7 @@ private fun DebugLogViewerScreen(
                             text = logs,
                             style = MaterialTheme.typography.bodySmall,
                             fontFamily = FontFamily.Monospace,
+                            softWrap = wrapLines,
                             // ⚠️ **不设 maxLines / 不截断** —— 与「导出日志」一致地给全量。
                             //    这里加任何截断都会让本页与导出文件对不上，
                             //    而两者互相核对正是本页存在的理由。

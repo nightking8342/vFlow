@@ -67,6 +67,29 @@ class DebugLogViewerWiringTest {
     }
 
     @Test
+    fun `wrap toggle drives both softWrap and horizontal scrolling`() {
+        val viewer = SourceScan.stripped(viewerPath)
+        // ⚠️⚠️ **两处必须同时被 `wrapLines` 驱动**，缺一个都是「点了没反应」：
+        //    - 只切 `softWrap` 而横向滚动常开 ⇒ `Text` 按无穷宽测量，
+        //      `softWrap` 永远不触发，换行开关看起来完全无效（静默）。
+        //    - 只切横向滚动而 `softWrap` 常真 ⇒ 不换行模式下文字被压成一列，
+        //      区别只剩「能不能横拖」，用户看不出这是个排版开关。
+        assertTrue("换行开关没接到 softWrap 上", viewer.contains("softWrap = wrapLines"))
+        assertTrue(
+            "横向滚动必须由 wrapLines 反相关地控制（只在「不换行」时开）",
+            viewer.contains("if (wrapLines) Modifier") && viewer.contains("horizontalScroll("),
+        )
+        assertTrue(
+            "换行开关默认必须开着（应用日志里长行是常态，不换行会普遍横拖）",
+            viewer.contains("mutableStateOf(true)"),
+        )
+        assertTrue(
+            "开关必须能看出当前状态（IconToggleButton，不是普通 IconButton）",
+            viewer.contains("IconToggleButton"),
+        )
+    }
+
+    @Test
     fun `the log buttons live in one contiguous grid`() {
         val screen = SourceScan.file(screenPath).readText()
         // ⚠️ 存在理由：`SettingsButtonGrid` 的「落单按钮独占整行」依赖**这一次调用里**
