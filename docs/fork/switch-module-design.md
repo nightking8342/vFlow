@@ -489,29 +489,64 @@ ConditionEvaluator.evaluateCondition(input1 = value, operator = OP_EQUALS, value
 
 ## 8. 实现状态（2026-10-05）
 
-**core 层已实现并验收通过**（mindfs task #28，`feature/switch-module`）：
-`SwitchModule.kt`（755 行，4 个模块类 + `SwitchBlockSupport`，**另加 3 个函数**：
-`readBranchesFromSteps` / `syncMatchFromStep` / `findOwningSwitchPosition` —— 后两个补的是
-「卡片上改 `match` 必须写回 `branches`」的闭环，不补则 §5 第 10 条静默失效）+
-`rounded_switch_24.xml` + 两组测试（**67 例，0 failed**）。
+**core 层 + UI 层均已实现、独立验收通过。**
 
-**验收独立复核的关键一项**：把 `reconcileBranches` 的「按 caseId 收体」临时改成
-「按位置收体」（= 只挪卡片的病态语义）⇒ **恰好只有 ★1 那条变红**（`reordering branches keeps
-each body attached to its own caseId FAILED`，其余 34 例全绿），随后还原、复跑 0 failed。
-⇒ 该用例精确锁定了本设计最核心的语义。
-
-**UI 层（管理 sheet + 编辑器接线 + 资源 + 登记）尚未实现**，由 mindfs task #29 进行。
-
-### 8.1 core 层留下的两处「已知临时代价」（**不是缺陷，不要返工**）
-
-| # | 代价 | 消除方式 |
+| 层 | 交付 | 提交 |
 |---|---|---|
-| ① | 接 sheet 前点 Switch 卡片会看到一张**空参数卡片**（占位 `uiProvider`） | 下游换成 `SwitchEditorSheet` ⇒ 自动消除 |
-| ② | 新建 Switch 默认带一条**空匹配值** Case，接 sheet 前保存会被 `validate` 拦 | 下游接上 sheet 填了值即通过 ⇒ 自动消除。⚠️ **不要**为「让新建能直接保存」放宽 `validate` —— 那等于把 §5 第 1 条（空值 Case 匹配一切）重新放出去 |
-| ③ | `value` 在 sheet 接线前**改不了**（`getHandledInputIds` 收走了它，而占位 provider 的自定义区是空的） | 与 ① 同源，接上 sheet 后自动消除 |
+| core | `SwitchModule.kt`（755 行，4 个模块类 + `SwitchBlockSupport`，**另加 3 个函数**：`readBranchesFromSteps` / `syncMatchFromStep` / `findOwningSwitchPosition`）+ `rounded_switch_24.xml` + 67 例单测 | `205278f3` |
+| UI | `SwitchEditorSheet.kt`（管理 sheet）+ 两个布局 + `ModuleRegistry` 4 行注册 + `WorkflowEditorActivity` 接线 + `ActionStepAdapter` 可选回调 + 三语 23 键 + 9 例源码扫描型接线测试 + `FORK.md` 登记 | `6ce3c820` + 返工 `03f2f397` |
 
-### 8.2 已知未接线项
+**两次独立复核的 ★ 反证**（均由验收方亲手改、跑、还原，不采信交付说明）：
 
-`SwitchBlockSupport.syncMatchFromStep` **零生产调用点** —— 它要由「卡片编辑 Sheet 的回写」调用，
-而那属于 task #29。⚠️ **刻意不为它写「必须有生产调用点」的断言**：接线前该断言**恒红**，
-而恒红的断言会被下一个实现者直接删掉（本仓库记过这条教训）。
+1. **core**：把 `reconcileBranches` 的「按 caseId 收体」临时改成「按位置收体」（= 只挪卡片的病态语义）
+   ⇒ **恰好只有 ★1 那条变红**（`reordering branches keeps each body attached to its own caseId`，
+   其余 34 例全绿），还原后 0 failed。⇒ 该用例精确锁定了本设计最核心的语义。
+2. **UI**：四条接线断言逐条反证（删 `reconcileBranches` 调用 / 调换 `pushUndoSnapshot` 顺序 /
+   去掉 Adapter 分流 / 在取消按钮里塞 `onSave`），各自**恰好一条变红**。
+
+**UI 层验收抓出并修掉的一处真实缺陷（返工点 1，`03f2f397`）**：
+「在下方插入」新建 Switch 块时**落点错误** —— `showSwitchEditorSheetForNew(insertPosition)` 收下了位置参数
+但 `onSave` 里走的是 `addStepsWithDefineFunctionRule(...)`，而那个函数的语义是**无条件
+`addAll(actionSteps.size, …)`**（它存在的理由是决策 16：含「定义函数」的批次必须强制首位）。
+**Switch 骨架不可能含 `DEFINE_FUNCTION_MODULE_ID`** ⇒ 走它等于整块**静默追加到末尾**。
+⚠️ **只有「在下方插入」这条路能暴露** —— FAB「加到末尾」传的恰好就是 `actionSteps.size`，掩盖了它。
+已改为 `actionSteps.addAll(insertPosition, configured)` + `actualStart = insertPosition`，
+补了一条**剥注释后**的源码扫描断言（源码里那段解释「为什么不用它」的注释会让不剥注释的断言**空转恒红**），
+反证已做（改回去 ⇒ 变红）。
+
+> ⚠️ **未做真机验证（0 项）**：卡片形态 / sheet 实际交互 / 拖拽后分支体归属 / 删除带体 /
+> 两条编辑路径同步 / 嵌套 Switch / 撤销 —— 均**只有编译与单测支撑**，**不得声称可用**。
+> 打包与签名已核（`assembleRelease` 成功、`CN=vFlow Fork, O=nightking8342`、
+> `rounded_switch_24` 与 17 条 `sheet_switch_*` 均在 release 资源表内）。
+
+### 8.1 实施期留下的三处「已知临时代价」（**前两条已随 UI 层落地自动消除**）
+
+| # | 代价 | 状态 |
+|---|---|---|
+| ① | 接 sheet 前点 Switch 卡片会看到一张**空参数卡片**（占位 `uiProvider`） | ✅ **已消除**（`showActionEditor` 入口已分流到管理 sheet） |
+| ② | 新建 Switch 默认带一条**空匹配值** Case，接 sheet 前保存会被 `validate` 拦 | ✅ **已消除**（sheet 里可填值）。⚠️ **不要**为「让新建能直接保存」放宽 `validate` —— 那等于把 §5 第 1 条（空值 Case 匹配一切）重新放出去 |
+| ③ | `value` 在 sheet 接线前**改不了**（`getHandledInputIds` 收走了它，而占位 provider 的自定义区是空的） | ✅ **已消除**（sheet 上段就是 `value` 输入 + 🪄） |
+
+### 8.2 两处**已知能力缺口**（刻意接受，非缺陷，**不要顺手补**）
+
+| # | 缺口 | 为什么不补 |
+|---|---|---|
+| ① | Switch 起始卡片分流进管理 sheet 后，`异常处理策略 / 重试次数 / 重试间隔`（`ActionEditorSheet.buildErrorHandlingUi` 那套 UI）**在 Switch 块上失去编辑入口** ⇒ 该块只能用工作流级策略 | 补它要么给 sheet 再加一套表单（面积大），要么把分流改回条件式（那时序问题又回来）。需单独评估 |
+| ② | `SwitchCaseModule` 未 override `validate`（`BaseModule` 默认恒 true）⇒ 在 Case 卡片上把匹配值**清空并保存**当场**不拦**，要到保存整个工作流时才被 `SwitchModule.validate` 拦下、且提示不指向是哪张卡 | **拦是真的会拦**（不构成静默失效）；补它会让「在卡片上编辑」这条路径变成另一种行为 |
+
+### 8.3 已接线项（原「未接线项」已闭合）
+
+`SwitchBlockSupport.syncMatchFromStep` 的生产调用点已接上（`WorkflowEditorActivity.syncDynamicBlockAfterSave`
+的 `SWITCH_CASE_ID | SWITCH_DEFAULT_ID` 分支）—— 它保证「在 Case 卡片上改的 `match` 写回 `branches`」，
+不接则 §5 第 10 条静默失效（下次 `reconcileBranches` 用旧 `branches` 把新值抹掉）。
+
+⚠️ 同处还有一条**在现有接线形态下不可达**的防线：`SWITCH_START_ID` 分支 + `switchJustSavedPosition`
+一次性跳过。所有 `SWITCH_START_ID` 编辑入口都已在 `showActionEditor` / `showActionEditorAtPosition` 被分流，
+不会再以该 moduleId 调 `ActionEditorSheet.onSave`，故该分支永不命中、守卫恒真。
+⇒ **它是防线不是死代码**（若将来有人加一条未分流的 Switch 编辑路径，这道守卫就是唯一的保护），
+且接线锚定测试锁着它。**不要删**。
+
+### 8.4 原型第 12 项不在实现范围内
+
+`switch-module-ui.html` 里「空值 Case 的 pill 显示 `（空 · 会匹配一切）`」是**卡片摘要渲染**
+（core 层 `getSummary`）的行为，本批只保证 `validateBranches` 硬拦。
