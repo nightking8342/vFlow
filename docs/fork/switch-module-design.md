@@ -77,16 +77,16 @@
 │ 🔀 Switch  {{status}}                 │  ← 起始卡片：用 pill 显示被匹配的值
 └──────────────────────────────────────┘
   ┌────────────────────────────────────┐
-  │ Case  "ok"                    [🗑][⋮] │  ← 分支卡片：显示该分支的匹配值
+  │ Case  "ok"                        [⋮] │  ← 分支卡片：显示该分支的匹配值
   └────────────────────────────────────┘
       #3  显示通知
       #4  播放音效
   ┌────────────────────────────────────┐
-  │ Case  "error"                 [🗑][⋮] │
+  │ Case  "error"                     [⋮] │
   └────────────────────────────────────┘
       #5  发送日志
   ┌────────────────────────────────────┐
-  │ Default                       [🗑][⋮] │  ← 默认分支：无匹配值
+  │ Default                           [⋮] │  ← 默认分支：无匹配值
   └────────────────────────────────────┘
       #6  重试
 ┌──────────────────────────────────────┐
@@ -251,7 +251,8 @@ branches.forEach { b ->
 | 位置 | 按钮 | 说明 |
 |---|---|---|
 | Case / Default 卡片 | `⋮` | **既有，一行不改**。「在下方插入」用它——那是「往分支体里加执行步骤」的唯一路径（§2.4.5） |
-| Case / Default 卡片 | `🗑` | **既有**。删的语义 = 「删这一条分支」；走既有的 `onDeleteClick` → 需要让它对 Case 生效（见下） |
+| Case / Default 卡片 | `⋮` 菜单里的 `🗑` | **既有**。删的语义 = 「删这一条分支」；走既有的 `onDeleteClick` → 需要让它对 Case 生效（见下）。<br/>⚠️ **它存在的前提是 `isIndividuallyDeletable = true`**（§3.1）—— 那是 `ActionStepAdapter.kt:440` 的 `canDelete` 判据的唯一输入 |
+| Case / Default 卡片 | ~~操作区直接 `[🗑]`~~ | **不加**。那是更早一版的设想；fork 已把 `bindEmbeddedStepCard` 里操作区的直接删除按钮改成恒 `GONE`，分支的删除走 `⋮` 菜单（见上一行） |
 | Case / Default 卡片 | ~~`[＋]`~~ | **不加**。加分支改在 sheet 里 |
 
 ⚠️ **卡片上的 `🗑` 与 sheet 里的 `🗑` 要做成同一件事**（都删「分支 + 它的体」），
@@ -304,8 +305,17 @@ branches.forEach { b ->
 | 类 | moduleId | `blockBehavior` | 参数 |
 |---|---|---|---|
 | `SwitchModule` | `vflow.logic.switch.start` | `BLOCK_START`, pairing `"switch"` | `value`（`ANY`）+ **`branches`**（`ANY`，`[{id, match}]`） |
-| `SwitchCaseModule` | `vflow.logic.switch.case` | `BLOCK_MIDDLE`, pairing `"switch"`, `isIndividuallyDeletable = false` | `match`（`ANY`）+ `caseId`（`STRING`，隐藏） |
-| `SwitchDefaultModule` | `vflow.logic.switch.default` | `BLOCK_MIDDLE`, pairing `"switch"`, `isIndividuallyDeletable = false` | 无（`getInputs() = emptyList()`） |
+| `SwitchCaseModule` | `vflow.logic.switch.case` | `BLOCK_MIDDLE`, pairing `"switch"`, **`isIndividuallyDeletable = true`** | `match`（`ANY`）+ `caseId`（`STRING`，隐藏） |
+| `SwitchDefaultModule` | `vflow.logic.switch.default` | `BLOCK_MIDDLE`, pairing `"switch"`, **`isIndividuallyDeletable = true`** | 无（`getInputs() = emptyList()`） |
+
+> ⚠️ **`isIndividuallyDeletable` 取 `true`（用户 2026-10-05 拍板，推翻了本文档早期版本）**。
+> 本文档 §3.1 早期写的是 `false`，写下时 §2.4.4 的「卡片按钮收敛」尚未定案。
+> 定案后情况变了：**卡片操作区那个直接 `🗑` 已被 fork 改成恒 `GONE`**
+> （见 `ActionStepAdapter.bindEmbeddedStepCard`），而 `isIndividuallyDeletable` 的**唯一作用**
+> 是让 `⋮` 菜单里的删除按钮出现（`ActionStepAdapter.kt:440` 的 `canDelete` 判据）。
+> ⇒ 取 `false` 会让 Case / Default 卡片**完全没有删除入口**，用户只能靠 sheet 里的 `🗑` 删分支。
+> 取 `true` 则多出卡片上的一个删除入口，且它走的仍是同一份 `deleteBranch`（§2.4.4）。
+> **以本条为准，不要因为本文档别处残留的 `false` 而改回去。**
 | `EndSwitchModule` | `vflow.logic.switch.end` | `BLOCK_END`, pairing `"switch"` | 无 |
 
 **为什么不继承 `BaseBlockModule`**：它把 `createSteps()` 与 `onStepDeleted()` 都设成 `final`，
@@ -429,7 +439,7 @@ ConditionEvaluator.evaluateCondition(input1 = value, operator = OP_EQUALS, value
 | 文件 | 改动 | 面积 |
 |---|---|---|
 | `core/workflow/module/ModuleRegistry.kt` | 逻辑段**追加 4 行** `register(...)`（不重排既有注册） | 4 行 |
-| `ui/workflow_editor/WorkflowEditorActivity.kt` | ① `syncDynamicBlockAfterSave` **追加一个分支**（`SWITCH_START_ID`）；② Switch 卡片的点击改为**打开管理 sheet**（与 `showActionEditor` 分流）；③ 卡片 `🗑` 对 Case 走 `deleteBranch` | 3 处，约 25 行 |
+| `ui/workflow_editor/WorkflowEditorActivity.kt` | ① `syncDynamicBlockAfterSave` **追加一个分支**（`SWITCH_START_ID`）；② Switch 卡片的点击改为**打开管理 sheet**（与 `showActionEditor` 分流）；③ **`⋮` 菜单的删除**对 Case/Default 走 `SwitchBlockSupport.deleteBranch`（与 sheet 里的 🗑 共用一份逻辑） | 3 处，约 25 行 |
 | `ui/workflow_editor/ActionStepAdapter.kt` | Switch 卡片点击的**分流**（普通卡片走 `onEditClick`，Switch 走新回调）—— **加一个可选回调**（默认 `null` ⇒ 既有卡片一行不受影响） | **+8 / −1** |
 | `res/values{,-en,-ja}/strings_module.xml` | 追加模块名/描述/参数名/摘要前缀/分支行文案（**模块名等三语同为英文**，见 §1.3） | 追加条目 |
 | `res/values{,-en,-ja}/strings.xml` | 追加 sheet 文案（标题 / 分支段标题 / 两个添加按钮 / 拖拽无障碍描述） | 追加条目 |
@@ -474,3 +484,34 @@ ConditionEvaluator.evaluateCondition(input1 = value, operator = OP_EQUALS, value
 | 2 | Default 行能否拖动 | 倾向**锁定在末尾**（`ItemTouchHelper` 的 `onMove` 里拦截） |
 | 3 | `aiMetadata`（AI 侧） | 倾向 `usageScopes = { TEMPORARY_WORKFLOW }`（**不给 `DIRECT_TOOL`**，与 If/菜单一致）、`riskLevel = LOW`。AI 要能**按顺序**生成 `switch.start → case → ... → end` 四段，`workflowStepDescription` 需写清 `branches` / `caseId` 的配对关系 |
 | 4 | 真机验证清单 | 卡片形态 / sheet 交互 / **拖拽调序后分支体归属** / 删除带体 / 两条编辑路径同步 / 嵌套 Switch / 撤销 —— **均只有编译与单测支撑前，不得声称可用** |
+
+---
+
+## 8. 实现状态（2026-10-05）
+
+**core 层已实现并验收通过**（mindfs task #28，`feature/switch-module`）：
+`SwitchModule.kt`（755 行，4 个模块类 + `SwitchBlockSupport`，**另加 3 个函数**：
+`readBranchesFromSteps` / `syncMatchFromStep` / `findOwningSwitchPosition` —— 后两个补的是
+「卡片上改 `match` 必须写回 `branches`」的闭环，不补则 §5 第 10 条静默失效）+
+`rounded_switch_24.xml` + 两组测试（**67 例，0 failed**）。
+
+**验收独立复核的关键一项**：把 `reconcileBranches` 的「按 caseId 收体」临时改成
+「按位置收体」（= 只挪卡片的病态语义）⇒ **恰好只有 ★1 那条变红**（`reordering branches keeps
+each body attached to its own caseId FAILED`，其余 34 例全绿），随后还原、复跑 0 failed。
+⇒ 该用例精确锁定了本设计最核心的语义。
+
+**UI 层（管理 sheet + 编辑器接线 + 资源 + 登记）尚未实现**，由 mindfs task #29 进行。
+
+### 8.1 core 层留下的两处「已知临时代价」（**不是缺陷，不要返工**）
+
+| # | 代价 | 消除方式 |
+|---|---|---|
+| ① | 接 sheet 前点 Switch 卡片会看到一张**空参数卡片**（占位 `uiProvider`） | 下游换成 `SwitchEditorSheet` ⇒ 自动消除 |
+| ② | 新建 Switch 默认带一条**空匹配值** Case，接 sheet 前保存会被 `validate` 拦 | 下游接上 sheet 填了值即通过 ⇒ 自动消除。⚠️ **不要**为「让新建能直接保存」放宽 `validate` —— 那等于把 §5 第 1 条（空值 Case 匹配一切）重新放出去 |
+| ③ | `value` 在 sheet 接线前**改不了**（`getHandledInputIds` 收走了它，而占位 provider 的自定义区是空的） | 与 ① 同源，接上 sheet 后自动消除 |
+
+### 8.2 已知未接线项
+
+`SwitchBlockSupport.syncMatchFromStep` **零生产调用点** —— 它要由「卡片编辑 Sheet 的回写」调用，
+而那属于 task #29。⚠️ **刻意不为它写「必须有生产调用点」的断言**：接线前该断言**恒红**，
+而恒红的断言会被下一个实现者直接删掉（本仓库记过这条教训）。
