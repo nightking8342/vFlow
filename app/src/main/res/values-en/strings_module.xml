@@ -3604,4 +3604,31 @@
     <string name="error_vflow_network_webdav_local_file_unreadable">Cannot read the local file: %1$s</string>
     <string name="msg_vflow_network_webdav_mkdir_ancestors">    Created the missing folder: %1$s</string>
     <string name="error_vflow_network_webdav_mkdir_ancestors_failed">    Parent folder is missing and could not be created: %1$s</string>
+
+    <!-- ── Switch multi-way branch block (fork). Module names stay English in every locale. -->
+    <string name="module_vflow_logic_switch_start_name">Switch</string>
+    <string name="module_vflow_logic_switch_start_desc">Compare one value for equality and run exactly one of several branches</string>
+    <string name="module_vflow_logic_switch_case_name">Case</string>
+    <string name="module_vflow_logic_switch_case_desc">One matching branch inside a Switch block</string>
+    <string name="module_vflow_logic_switch_default_name">Default</string>
+    <string name="module_vflow_logic_switch_default_desc">The branch that runs when no Case matches</string>
+    <string name="module_vflow_logic_switch_end_name">End Switch</string>
+    <string name="module_vflow_logic_switch_end_desc">End of a Switch block</string>
+
+    <string name="param_vflow_logic_switch_start_value_name">Value</string>
+    <string name="param_vflow_logic_switch_start_branches_name">Branches</string>
+    <string name="param_vflow_logic_switch_case_match_name">Match value</string>
+
+    <string name="sheet_switch_title">Switch</string>
+    <string name="sheet_switch_hint">All branches are managed here. Row order is execution order; hold ⠿ to drag a row.</string>
+    <string name="sheet_switch_value_hint">Value (every Case is compared against this)</string>
+    <string name="sheet_switch_branch_header">Branches (%1$d)</string>
+    <string name="sheet_switch_branch_tag_case">Case</string>
+    <string name="sheet_switch_branch_tag_default">Default</string>
+    <string name="sheet_switch_add_case">＋ Add branch</string>
+    <string name="sheet_switch_add_default">＋ Add default branch</string>
+    <string name="sheet_switch_drag_desc">Drag to reorder</string>
+    <string name="sheet_switch_remove_desc">Delete this branch and its body</string>
+    <string name="sheet_switch_no_match_hint">(no match value)</string>
+    <string name="sheet_switch_case_hint">e.g. ok</string>
 </resources>

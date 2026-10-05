@@ -798,6 +798,37 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 > `[[__trigger_label]]` 在 `If` 里的实际分支效果、多触发器各自读到自己标签、
 > 未命中时 `is_empty` 的行为 —— 均**只有编译与单测支撑**，待人工上机确认。
 
+### Switch 多路分支块（`vflow.logic.switch.*`，2026-10-05）
+
+> 设计文档：`docs/fork/switch-module-design.md`（§2 交互设计 / §6 实现清单）。
+> UI 验收原型：`docs/fork/switch-module-ui.html`（**方案 C** —— 所有分支在 Switch 卡片的 sheet 里集中管理）。
+> 一句话：把一个值与若干候选值做**相等匹配**，命中哪条走哪条；**没有 `break`**（不穿透）、
+> 一个 Case 只带一个值、名字直接用英文 `Switch` / `Case` / `Default` / `End Switch`。
+> 本批 = **core 层（4 个模块 + `SwitchBlockSupport` 纯函数层）+ UI 层（管理 sheet + 编辑器接线 + 资源 + 登记）**，
+> 由两个任务分两批交付，此处合并登记。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `core/workflow/module/logic/SwitchModule.kt`（新增） | fork 独有：**Switch 多路分支块的 4 个模块 + `SwitchBlockSupport` 纯函数层**（`createBranches` / `toParameters` / `readBranches` / `reconcileBranches` / `findDirectBranchPositions` / `findBranchPosition` / `findOwningSwitchPosition` / `deleteBranch` / `validateBranches` / `readBranchesFromSteps` / `syncMatchFromStep`）。⚠️⚠️ **`reconcileBranches` 按 `caseId` 找回分支体**（分支体不是独立实体，它由「分支卡片的位置」隐式定义 ⇒ 只挪卡片会把两段体**整体互换**，不报错、极难发现）—— 这是「所有分支集中在一个 sheet 里管理」这个方案的核心成本与唯一正确解；⚠️ 完整性体检（空白 id / id 重复 / 条数对不上 / 卡片 `caseId` 缺失或重复）任一不过就**整体放弃并留日志**（宁可这次不同步，也不毁用户已有的分支体）；⚠️ `deleteBranch` **同时把该分支从 Switch 的 `branches` 里摘掉**（只删卡片/体而不动 `branches` 的话，下次 reconcile 会凭旧表把它**复活**）；⚠️ `validate` 硬拦空匹配值（`looseEquals("", 非数字串)` 恒真 ⇒ 空值 Case **匹配一切**、后面所有分支永不可达）与重复匹配值（归一化用 `trim + lowercase`）。⚠️ **不继承 `BaseBlockModule`**（它的 `createSteps` / `onStepDeleted` 是 `final`）。⚠️ 四个模块**刻意不设 `nameStringRes`**（模块名三语都写英文）；本批**补了** `descriptionStringRes` ×4 与 `InputDefinition.nameStringRes` ×3（上游交付时是硬编码中文 ⇒ en/ja 用户会看到中文） | 我方 |
+| `core/workflow/module/logic/SwitchEditorSheet.kt`（新增） | fork 独有：**Switch 分支管理 sheet**（方案 C）。上段 = Switch 自己的 `value` 输入 + 🪄；下段 = 分支列表（**行序 = 执行顺序**；每行 `⠿` 手柄 + `Case`/`Default` 标签 + 匹配值输入框 + 🪄 + 🗑）+ 两个添加按钮；底部 = 取消 / 保存。⚠️ **「取消」只丢 sheet 内的临时副本**（`workingBranches`），`actionSteps` 一概不碰 ⇒ **不产生任何副作用**；**「保存」= 一次原子操作**（由宿主 Activity 执行 `pushUndoSnapshot()` → 写 `branches`/`value` → `reconcileBranches` → `recalculateAndNotify()`），⚠️ `pushUndoSnapshot()` 在 reconcile **之前**。⚠️ **Default 锁定在末尾**：`getMovementFlags` 让 Default 行自己不可拖、`onMove` 拦住「拖到 Default 之后」—— 两个基准**必须每帧重算**（拖动中 `removeAt/add` 之后 `defaultIndex` 会漂，缓存一次的实现会「拖到 Default 之后仍然插进去」）；「添加分支」**必须插到 Default 之前**（不是追加到末尾）。⚠️⚠️ `newInstance` **刻意不走 `arguments` Bundle**（`SwitchBranch` 既非 `Parcelable` 也非 `Serializable`，照 `MagicVariablePickerSheet` 的 `putSerializable` 会崩），形态同 `DefineFunctionParamEditorSheet` 的「字段直赋」。⚠️ 保存前**必须 `commitPendingText()`**（用户可能输入后立刻点保存，`TextInputEditText` 仍是焦点、`doAfterTextChanged` 尚未跑完最后一拍）；映射按 **holder 归属**清理（`onViewRecycled` 里按 `boundCaseId` 移除）—— 按「items 里还有没有这个 id」清会让**复用后的输入框把文本写进已不在屏幕上的分支** | 我方 |
+| `res/layout/sheet_switch_editor.xml`、`res/layout/item_switch_branch.xml`（新增） | fork 独有：sheet 布局与分支行布局。⚠️ 根布局**刻意不用 `ScrollView` 包整个**（会让 RecyclerView 与 `ItemTouchHelper` 的拖拽手势打架）；⚠️ 匹配值输入框**不在 XML 里写死** `TextInputLayout`，而是容器 + 代码 `addView(StandardControlFactory.createTextInputLayout(...))`（否则无法按行数据重建 hint / 初始文本） | 我方 |
+| `core/workflow/module/ModuleRegistry.kt`（改） | 逻辑段 `ChooseFromListModule` 之后**追加 4 行** `register(SwitchModule/SwitchCaseModule/SwitchDefaultModule/EndSwitchModule)`（**不重排任何既有注册**） | **手动合并**（追加 4 行） |
+| `ui/workflow_editor/WorkflowEditorActivity.kt`（改） | ① `syncDynamicBlockAfterSave` **追加三条分支**（`SWITCH_START_ID` → `reconcileBranches`（带 `switchJustSavedPosition` 一次性跳过）/ `SWITCH_CASE_ID` \| `SWITCH_DEFAULT_ID` → `syncMatchFromStep`）—— **挂在既有这个方法上，不新造第二套挂钩机制**，形态与既有 `MENU_START_ID` 分支一致；② **入口分流**：`showActionEditor` 与 `showActionEditorAtPosition` 各自开头判 `SWITCH_START_ID` 走管理 sheet。⚠️⚠️ **分流必须做在 `showActionEditor` 的入口，不能只做在 Adapter 的单击链路上** —— 「点卡片」与「点卡片上的值 pill」是两条独立回调（pill 那条走 `handleParameterPillClick` → `showActionEditor`），只接 Adapter 的话点 pill 仍会打开旧的参数 sheet，而它的 `readFromEditor` 会用**打开时读到的旧 branches** 覆盖掉用户刚做的调序。⚠️ **新建路径有两条都要接**（`showActionEditor(position = -1)` 从 FAB「加到末尾」、`showActionEditorAtPosition` 从 `⋮`「在下方插入」）—— 只接后者的话，从 FAB 添加 Switch 仍弹旧 sheet；③ 新增 `showSwitchEditorSheet` / `showSwitchEditorSheetForNew`（新建走「骨架 id 对齐版」：把 `createSteps()` 骨架首卡的 `branches` 交给 sheet ⇒ sheet 里的 id 与保存时用的骨架 id 天然一致，`reconcileBranches` 的 `existingBodies` 能命中）。⚠️ **写回是合并式**（`parameters.toMutableMap().apply{...}`）**不是** `copy(parameters = mapOf(...))` —— 整表替换会吃掉不在模块声明里的保留参数（`__error_policy` / `__retry_count`，本 fork 在触发器上踩过完全同形的坑）；⚠️ **新建路径的整表 `mapOf(...)` 是故意的**（新块本来就没有保留参数），两处形态不同**不要「统一成一种」**；④ `setupRecyclerView` 补传 `onSwitchCardClick`。⚠️ **卡片 🗑 走既有的 `module.onStepDeleted` → `SwitchBlockSupport.deleteBranch`**，与 sheet 里的 🗑 **共用同一份逻辑**（都删「卡片 + 整段体 + `branches` 条目」）；⚠️ **`⋮` 一行不改**（`showFloatingActionMenu` 未动）—— 它仍是**「往分支体里加执行步骤」的唯一入口**（点该分支内的步骤 `⋮` →「在下方插入」，`idx + 1` 恰好落在「该分支体第一步」） | **手动合并**（1 处方法改写 + 2 处入口分流 + 2 个新方法 + 1 个回调接线） |
+| `ui/workflow_editor/ActionStepAdapter.kt`（改） | 构造参数追加**可选回调** `onSwitchCardClick: ((position: Int) -> Unit)? = null`（默认 `null` ⇒ 未接线的调用方行为与改动前**逐字节一致**）；卡片单击的 250ms 防抖回调里按 `step.moduleId == SWITCH_START_ID` 分流，回落仍是 `onEditClick`。⚠️ 回调**必须先捕获成本地 val** —— `onSwitchCardClick` 同时是本类构造参数（带 position 入参）与 `bindEmbeddedStepCard` 的局部，直接引用会解析到构造参数那个（编译不过） | **手动合并**（`+8 / −1`） |
+| 三语 `res/values{,-en,-ja}/strings_module.xml`（改） | 追加 **23 键 ×3 语言**：模块名 4 + 模块描述 4 + 参数名 3 + sheet/分支行 12（`sheet_switch_title` / `_hint` / `_value_hint` / `_branch_header`（带 `%1$d`）/ `_branch_tag_case` / `_branch_tag_default` / `_add_case` / `_add_default` / `_drag_desc` / `_remove_desc` / `_no_match_hint` / `_case_hint`）。⚠️ **全部进 `strings_module.xml`，`strings.xml` 一行未动** —— 仓库既有惯例是「属于某个模块的文案（含它自己的编辑 sheet 文案）一律放 `strings_module.xml`」（先例：`editor_define_function_param_title_edit` / `summary_vflow_logic_menu_prefix`），设计文档 §6.2 写的 `strings.xml` 与最近的先例不一致，**以实际为准**；⚠️ **模块名三语一律英文**（`Switch` / `Case` / `Default` / `End Switch`）—— 一个语言显示英文、另一个显示自造中文，会让三语用户看到的不是同一个东西；⚠️ 这 4 个模块名键**当前无代码引用**（只作登记）⇒ R8 + `shrinkResources` 会把它们从 release 包里剥掉，**这不是键写错了**，核对以源码为准 | **手动合并**（追加条目） |
+| `test/.../logic/SwitchBlockSupportTest.kt`、`SwitchModuleTest.kt`、`SwitchEditorSheetWiringTest.kt`（新增，共 75 例） | fork 独有：纯函数语义 + 声明体检 + **源码扫描型接线锚定**。⚠️ ★ 用例「调序后分支体跟着 id 走」锁的是本设计最核心的语义（评审已做反证：把 `reconcileBranches` 的「按 caseId 收体」临时改成「按位置收体」⇒ **恰好只有那一条变红**）；⚠️ `SwitchModuleTest.kt` 断言四个模块的 `nameStringRes == null` —— **本批不得改这条、也不得给模块名挂资源 ID**；⚠️ 接线测试锁：`ModuleRegistry` 真的有 4 个 register、`syncDynamicBlockAfterSave` 真的有 Switch 分支、`pushUndoSnapshot()` 在 `reconcileBranches` **之前**、Adapter 的可选回调默认值仍是 `null`、两个新建入口都分流、**取消路径不调 `onSave` / 不 reconcile / 不碰 `actionSteps`**、三语 23 键齐全 | 我方 |
+
+> ⚠️ **真机验证 0 项**（本批任务禁止触碰真机）：卡片形态 / sheet 交互 / 拖拽调序后分支体归属 /
+> 删除带体 / 两条编辑路径同步 / 嵌套 Switch / 撤销 —— 均**只有编译与单测支撑，不得声称可用**。
+> ⚠️ **两处已知能力缺口**（**刻意接受**，非缺陷）：
+> ① Switch 起始卡片分流进管理 sheet 后，`异常处理策略 / 重试次数 / 重试间隔`（`ActionEditorSheet.buildErrorHandlingUi`
+> 那套 UI）**在 Switch 块上失去编辑入口** ⇒ 该块只能用工作流级策略；
+> ② `SwitchCaseModule` 未 override `validate`（`BaseModule` 默认恒 true）⇒ 在 Case 卡片上把匹配值
+> **清空并保存**当场**不拦**，要到保存整个工作流时才被 `SwitchModule.validate` 拦下、且提示不指向是哪张卡
+> （**拦是真的会拦**，不构成静默失效）。
+> ⚠️ **原型第 12 项不在本批范围**：`switch-module-ui.html` 里「空值 Case 的 pill 显示 `（空 · 会匹配一切）`」
+> 是**卡片摘要渲染**（core 层 `getSummary`）的行为，本批只保证 `validateBranches` 硬拦。
+
 ---
 
 ## 暂未分歧、但日后改动时须登记的敏感点

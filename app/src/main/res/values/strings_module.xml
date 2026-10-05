@@ -3607,4 +3607,34 @@
     <string name="error_vflow_network_webdav_local_file_unreadable">无法读取本地文件：%1$s</string>
     <string name="msg_vflow_network_webdav_mkdir_ancestors">    自动创建了缺失的目录：%1$s</string>
     <string name="error_vflow_network_webdav_mkdir_ancestors_failed">    父目录不存在，且无法自动创建：%1$s</string>
+
+    <!-- ── Switch 多路分支块（fork 新增）──────────────────────────────
+         ⚠️ 模块名（`*_name`）三语**一律写英文**：Switch / Case / Default / End Switch。
+         一个语言显示英文、另一个语言显示自造中文，会让三语用户看到的不是同一个东西
+         （设计文档 §1.3）。故这 4 个键在三份 strings_module.xml 里逐字相同。 -->
+    <string name="module_vflow_logic_switch_start_name">Switch</string>
+    <string name="module_vflow_logic_switch_start_desc">按一个值的相等匹配，在多条分支中选一条执行</string>
+    <string name="module_vflow_logic_switch_case_name">Case</string>
+    <string name="module_vflow_logic_switch_case_desc">Switch 块中的一条匹配分支</string>
+    <string name="module_vflow_logic_switch_default_name">Default</string>
+    <string name="module_vflow_logic_switch_default_desc">所有 Case 都不匹配时执行的分支</string>
+    <string name="module_vflow_logic_switch_end_name">End Switch</string>
+    <string name="module_vflow_logic_switch_end_desc">Switch 块的结束点</string>
+
+    <string name="param_vflow_logic_switch_start_value_name">匹配值</string>
+    <string name="param_vflow_logic_switch_start_branches_name">分支</string>
+    <string name="param_vflow_logic_switch_case_match_name">匹配值</string>
+
+    <string name="sheet_switch_title">Switch</string>
+    <string name="sheet_switch_hint">所有分支在这里管理。行的顺序就是执行顺序，按住 ⠿ 可拖动调序。</string>
+    <string name="sheet_switch_value_hint">匹配值（所有 Case 都拿这个值去比）</string>
+    <string name="sheet_switch_branch_header">分支（%1$d 条）</string>
+    <string name="sheet_switch_branch_tag_case">Case</string>
+    <string name="sheet_switch_branch_tag_default">Default</string>
+    <string name="sheet_switch_add_case">＋ 添加分支</string>
+    <string name="sheet_switch_add_default">＋ 添加默认分支</string>
+    <string name="sheet_switch_drag_desc">拖动排序</string>
+    <string name="sheet_switch_remove_desc">删除该分支及其分支体</string>
+    <string name="sheet_switch_no_match_hint">（无匹配值）</string>
+    <string name="sheet_switch_case_hint">例如 ok</string>
 </resources>

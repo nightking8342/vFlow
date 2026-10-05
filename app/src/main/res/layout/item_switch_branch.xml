@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Switch 分支行（fork 新增）。
+     ⠿ 拖拽手柄 + Case/Default 标签 + 匹配值输入框容器（代码里 addView 一个
+     StandardControlFactory.createTextInputLayout，这样才能按行数据重建 hint / 初始文本）
+     + 🪄 魔法变量按钮 + 🗑 删除按钮。
+     ⚠️ Default 行没有输入框（`match == null`）⇒ 代码里把容器置 GONE，不是留一个空框。 -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingHorizontal="16dp"
+    android:paddingVertical="6dp">
+
+    <ImageView
+        android:id="@+id/branch_grip"
+        android:layout_width="24dp"
+        android:layout_height="24dp"
+        android:contentDescription="@string/sheet_switch_drag_desc"
+        android:src="@drawable/rounded_drag_indicator_24"
+        app:tint="?attr/colorOutline" />
+
+    <TextView
+        android:id="@+id/branch_tag"
+        android:layout_width="52dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="4dp"
+        android:includeFontPadding="false"
+        android:textAppearance="?attr/textAppearanceLabelLarge"
+        android:textColor="?attr/colorOnSurfaceVariant"
+        tools:text="Case" />
+
+    <LinearLayout
+        android:id="@+id/container_branch_match"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:orientation="vertical" />
+
+    <ImageButton
+        android:id="@+id/branch_magic"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:contentDescription="@string/desc_select_variable"
+        android:src="@drawable/rounded_dataset_24"
+        app:tint="?attr/colorPrimary" />
+
+    <ImageButton
+        android:id="@+id/branch_remove"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:contentDescription="@string/sheet_switch_remove_desc"
+        android:src="@drawable/rounded_delete_24"
+        app:tint="?attr/colorError" />
+
+</LinearLayout>

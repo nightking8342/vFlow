@@ -121,6 +121,11 @@ object ModuleRegistry {
         register(MenuItemModule(), context)
         register(EndMenuModule(), context)
         register(ChooseFromListModule(), context)
+        // 多路分支块（fork 新增，追加在逻辑段内、不重排既有注册）
+        register(SwitchModule(), context)
+        register(SwitchCaseModule(), context)
+        register(SwitchDefaultModule(), context)
+        register(EndSwitchModule(), context)
         register(LoopModule(), context)
         register(EndLoopModule(), context)
         register(ForEachModule(), context)

@@ -3224,4 +3224,31 @@
     <string name="error_vflow_network_webdav_local_file_unreadable">ローカルファイルを読み取れません: %1$s</string>
     <string name="msg_vflow_network_webdav_mkdir_ancestors">    不足していたフォルダーを作成しました：%1$s</string>
     <string name="error_vflow_network_webdav_mkdir_ancestors_failed">    親フォルダーが存在せず、自動作成できませんでした：%1$s</string>
+
+    <!-- ── Switch 多分岐ブロック（fork）。モジュール名は全言語で英語のまま。 -->
+    <string name="module_vflow_logic_switch_start_name">Switch</string>
+    <string name="module_vflow_logic_switch_start_desc">ひとつの値を等値比較し、複数の分岐からひとつだけ実行します</string>
+    <string name="module_vflow_logic_switch_case_name">Case</string>
+    <string name="module_vflow_logic_switch_case_desc">Switch ブロック内の一致する分岐</string>
+    <string name="module_vflow_logic_switch_default_name">Default</string>
+    <string name="module_vflow_logic_switch_default_desc">どの Case にも一致しないときに実行される分岐</string>
+    <string name="module_vflow_logic_switch_end_name">End Switch</string>
+    <string name="module_vflow_logic_switch_end_desc">Switch ブロックの終了点</string>
+
+    <string name="param_vflow_logic_switch_start_value_name">比較する値</string>
+    <string name="param_vflow_logic_switch_start_branches_name">分岐</string>
+    <string name="param_vflow_logic_switch_case_match_name">一致する値</string>
+
+    <string name="sheet_switch_title">Switch</string>
+    <string name="sheet_switch_hint">すべての分岐はここで管理します。行の順序が実行順序です。⠿ を長押しすると並べ替えできます。</string>
+    <string name="sheet_switch_value_hint">比較する値（すべての Case がこの値と比較されます）</string>
+    <string name="sheet_switch_branch_header">分岐（%1$d 件）</string>
+    <string name="sheet_switch_branch_tag_case">Case</string>
+    <string name="sheet_switch_branch_tag_default">Default</string>
+    <string name="sheet_switch_add_case">＋ 分岐を追加</string>
+    <string name="sheet_switch_add_default">＋ 既定の分岐を追加</string>
+    <string name="sheet_switch_drag_desc">ドラッグして並べ替え</string>
+    <string name="sheet_switch_remove_desc">この分岐とその本体を削除</string>
+    <string name="sheet_switch_no_match_hint">（一致する値なし）</string>
+    <string name="sheet_switch_case_hint">例：ok</string>
 </resources>

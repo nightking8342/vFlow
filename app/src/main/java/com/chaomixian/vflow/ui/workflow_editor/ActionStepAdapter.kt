@@ -32,6 +32,7 @@ import com.chaomixian.vflow.core.module.BlockType
 import com.chaomixian.vflow.core.module.ModuleRegistry
 import com.chaomixian.vflow.core.workflow.model.ActionStep
 import com.chaomixian.vflow.core.workflow.model.TriggerLabel
+import com.chaomixian.vflow.core.workflow.module.logic.SWITCH_START_ID
 import com.chaomixian.vflow.ui.workflow_editor.pill.ParameterPillSpan
 import com.chaomixian.vflow.ui.workflow_editor.pill.PillTheme
 import com.google.android.material.color.MaterialColors
@@ -57,6 +58,14 @@ class ActionStepAdapter(
     private val onInsertBelowClick: (position: Int) -> Unit,
     private val onTriggerParameterPillClick: (position: Int, parameterId: String) -> Unit = { _, _ -> },
     private val onTriggerLabelClick: (position: Int) -> Unit = { _ -> },
+    /**
+     * Switch 起始卡片的点击分流（fork）。
+     *
+     * ⚠️ 默认 `null` ⇒ 未接线的调用方行为与改动前**逐字节一致**。
+     * 值为非 null 时，点 `vflow.logic.switch.start` 卡片走这里（打开管理 sheet），
+     * 普通卡片仍走 `onEditClick`。
+     */
+    private val onSwitchCardClick: ((position: Int) -> Unit)? = null,
     private val onParameterPillClick: (position: Int, parameterId: String) -> Unit,
     private val onStartActivityForResult: (position: Int, Intent, (resultCode: Int, data: Intent?) -> Unit) -> Unit
 ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
@@ -445,6 +454,10 @@ class ActionStepAdapter(
             val rawSummary = module.getSummary(context, step)
             actionPopupWindow?.dismiss()
             actionPopupWindow = null
+            // ⚠️ 必须**先捕获成本地 val**：`onSwitchCardClick` 既是本类的构造参数
+            //    （带 position 入参）、又是 `bindEmbeddedStepCard` 的参数（无入参），
+            //    在 `onClick` lambda 里直接引用会解析到构造参数那个（入参对不上，编译不过）。
+            val switchCardCallback = onSwitchCardClick?.let { callback -> { callback(actualPosition) } }
 
             bindEmbeddedStepCard(
                 cardView = itemView,
@@ -468,7 +481,14 @@ class ActionStepAdapter(
                         if (clickCount == 1) {
                             handler.postDelayed({
                                 if (clickCount == 1 && adapterPosition != RecyclerView.NO_POSITION) {
-                                    onEditClick(actualPosition, null)
+                                    // Switch 起始卡片走管理 sheet（fork）。
+                                    // ⚠️ 回调为 null（未接线）时与改动前逐字节一致。
+                                    val switchClick = switchCardCallback
+                                    if (step.moduleId == SWITCH_START_ID && switchClick != null) {
+                                        switchClick()
+                                    } else {
+                                        onEditClick(actualPosition, null)
+                                    }
                                 }
                                 clickCount = 0
                             }, 250)

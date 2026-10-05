@@ -59,6 +59,14 @@ import com.chaomixian.vflow.core.workflow.module.logic.LOOP_START_ID
 import com.chaomixian.vflow.core.workflow.module.logic.LoopModule
 import com.chaomixian.vflow.core.workflow.module.logic.MENU_START_ID
 import com.chaomixian.vflow.core.workflow.module.logic.MenuBlockSupport
+import com.chaomixian.vflow.core.workflow.module.logic.SWITCH_BRANCHES_KEY
+import com.chaomixian.vflow.core.workflow.module.logic.SWITCH_CASE_ID
+import com.chaomixian.vflow.core.workflow.module.logic.SWITCH_DEFAULT_ID
+import com.chaomixian.vflow.core.workflow.module.logic.SWITCH_MATCH_KEY
+import com.chaomixian.vflow.core.workflow.module.logic.SWITCH_START_ID
+import com.chaomixian.vflow.core.workflow.module.logic.SWITCH_VALUE_KEY
+import com.chaomixian.vflow.core.workflow.module.logic.SwitchBlockSupport
+import com.chaomixian.vflow.core.workflow.module.logic.SwitchEditorSheet
 import com.chaomixian.vflow.permissions.PermissionActivity
 import com.chaomixian.vflow.permissions.PermissionManager
 import com.chaomixian.vflow.ui.app_picker.AppPickerMode
@@ -131,6 +139,15 @@ class WorkflowEditorActivity : BaseActivity() {
 
     // 用于变量重命名
     private var oldVariableName: String? = null
+
+    /**
+     * 刚由 Switch 管理 sheet 保存过的起始卡位置（fork，-1 = 无）。
+     *
+     * 用途见 `syncDynamicBlockAfterSave`：sheet 保存路径**自己已经 reconcile 过**，
+     * 若同一帧里 `syncDynamicBlockAfterSave` 再按被覆盖前的 `branches` 二次 reconcile，
+     * 用户刚做的调序会被静默冲掉。
+     */
+    private var switchJustSavedPosition: Int = -1
 
 
     private val permissionLauncher = registerForActivityResult(
@@ -876,6 +893,25 @@ class WorkflowEditorActivity : BaseActivity() {
 
     /** 提取一个辅助函数以分组形式获取所有可用的命名变量 */
     private fun showActionEditor(module: ActionModule, existingStep: ActionStep?, position: Int, focusedInputId: String?) {
+        // ⚠️⚠️ fork：Switch 起始卡片**分流到管理 sheet**。
+        //    分流必须做在这个入口上（而不是只做在 Adapter 的单击链路上）——
+        //    「点卡片」与「点卡片上的值 pill」是两条独立回调，而 pill 那条也走本方法。
+        //    只在 Adapter 分流的话，点 pill 仍会打开旧的 ActionEditorSheet，
+        //    而它的 `readFromEditor` 会用**打开时读到的旧 branches** 覆盖掉用户刚做的调序。
+        if (module.id == SWITCH_START_ID) {
+            if (position >= 0) {
+                showSwitchEditorSheet(position)
+            } else {
+                // ⚠️ 新建路径有两条，**两条都要接**：
+                //   ① 这里（`showActionPicker` 的「加到末尾」，传 `position = -1`）；
+                //   ② `showActionEditorAtPosition`（「在下方插入」，传显式 `insertPosition`）。
+                //   只接 ② 的话，从 FAB 添加 Switch 仍会打开旧的参数 sheet
+                //   ⇒「新建 Switch 弹管理 sheet」不成立。
+                showSwitchEditorSheetForNew(actionSteps.size)
+            }
+            return
+        }
+
         // 在打开编辑器前，保存旧的变量名
         if (existingStep != null && module.id == CreateVariableModule().id) {
             oldVariableName = existingStep.parameters["variableName"] as? String
@@ -951,9 +987,28 @@ class WorkflowEditorActivity : BaseActivity() {
         editor.show(supportFragmentManager, "ActionEditor")
     }
 
+    /**
+     * 块模块在保存参数后同步它的分支区。
+     *
+     * ⚠️ 本方法是**唯一的挂钩点** —— 新增块模块时必须追加分支，不要新造第二套挂钩机制
+     * （那是本仓库反复踩过的「双份实现」形态）。
+     */
     private fun syncDynamicBlockAfterSave(module: ActionModule, startPosition: Int) {
         if (module.id == MENU_START_ID) {
             MenuBlockSupport.reconcileBranches(actionSteps, startPosition)
+        }
+        if (module.id == SWITCH_START_ID) {
+            // 管理 sheet 的保存路径**自己已经 reconcile 过**（见 showSwitchEditorSheet）⇒
+            // 这里跳过，避免「先 reconcile 一次、再按被覆盖的 branches 二次 reconcile」
+            // 把用户的调序结果冲掉。
+            if (startPosition != switchJustSavedPosition) {
+                SwitchBlockSupport.reconcileBranches(actionSteps, startPosition)
+            }
+        }
+        if (module.id == SWITCH_CASE_ID || module.id == SWITCH_DEFAULT_ID) {
+            // 在卡片上改了匹配值 ⇒ 同步回所属 Switch 的 branches，
+            // 否则下次 reconcile 会被旧值**静默抹掉**（设计文档 §5 第 10 条）。
+            SwitchBlockSupport.syncMatchFromStep(actionSteps, startPosition)
         }
     }
 
@@ -1273,6 +1328,10 @@ class WorkflowEditorActivity : BaseActivity() {
             },
             onTriggerLabelClick = { position ->
                 showTriggerLabelSheet(position)
+            },
+            // Switch 起始卡片的分流（fork）：打开分支管理 sheet（方案 C）。
+            onSwitchCardClick = { position ->
+                showSwitchEditorSheet(position)
             },
             onParameterPillClick = { position, parameterId ->
                 handleParameterPillClick(position, parameterId)
@@ -1753,6 +1812,116 @@ class WorkflowEditorActivity : BaseActivity() {
         sheet.show(supportFragmentManager, "TriggerLabel")
     }
 
+    /**
+     * 打开 Switch 块的**分支管理 sheet**（fork，方案 C）。
+     *
+     * `position` 必须指向 `SWITCH_START_ID` 卡片。
+     *
+     * ⚠️ `branches` 的起点取**卡片侧真相**（`readBranchesFromSteps`）而不是 `parameters["branches"]` ——
+     * 后者可能落后于卡片（用户在 Case 卡片上改过 `match`）。只有结构损坏（读不出来）时才回落参数表。
+     */
+    private fun showSwitchEditorSheet(position: Int) {
+        val step = actionSteps.getOrNull(position) ?: return
+        if (step.moduleId != SWITCH_START_ID) return
+        val module = ModuleRegistry.getModule(SWITCH_START_ID) ?: return
+        val value = step.parameters[SWITCH_VALUE_KEY] as? String ?: ""
+        val branches = SwitchBlockSupport.readBranchesFromSteps(actionSteps, position)
+            .ifEmpty { SwitchBlockSupport.readBranches(step.parameters[SWITCH_BRANCHES_KEY]) }
+
+        val sheet = SwitchEditorSheet.newInstance(value, branches)
+        sheet.onMagicVariableRequested = { targetInputId, currentText, onPicked ->
+            // ⚠️ 必须走**带回调**的 `showVariablePillEditor` —— 默认分支会调
+            //    `currentEditorSheet?.updateInputWithVariable(...)`，对 sheet 直连的输入框无效。
+            // ⚠️ 「匹配值」声明在 `SwitchCaseModule` 上，不是 `SwitchModule` 上。
+            showVariablePillEditor(
+                editingStepPosition = triggerSteps.size + position,
+                targetInputId = if (targetInputId == SWITCH_VALUE_KEY) SWITCH_VALUE_KEY else SWITCH_MATCH_KEY,
+                editingModule = if (targetInputId == SWITCH_VALUE_KEY) {
+                    module
+                } else {
+                    ModuleRegistry.getModule(SWITCH_CASE_ID) ?: module
+                },
+                currentParams = actionSteps.getOrNull(position)?.parameters,
+                currentReference = currentText,
+                onUpdated = { onPicked(it) }
+            )
+        }
+        sheet.onSave = save@{ newValue, newBranches ->
+            pushUndoSnapshot() // ⚠️ 必须在改动**之前**（与其它编辑入口一致）
+            val start = actionSteps.getOrNull(position) ?: return@save
+            val startStepId = start.id
+            // ⚠️ 合并式写回，**不是** `copy(parameters = mapOf(...))` ——
+            //    整表替换会吃掉不在模块声明里的保留参数（`__error_policy` / `__retry_count`）。
+            actionSteps[position] = start.copy(
+                parameters = start.parameters.toMutableMap().apply {
+                    put(SWITCH_VALUE_KEY, newValue)
+                    put(SWITCH_BRANCHES_KEY, SwitchBlockSupport.toParameters(newBranches))
+                }
+            )
+            // 位置理论上稳定（`ActionStep.equals` 只看 id），但为稳妥重新按 id 定位一次。
+            val actualPosition = actionSteps.indexOfFirst { it.id == startStepId }.takeIf { it >= 0 } ?: position
+            switchJustSavedPosition = actualPosition
+            SwitchBlockSupport.reconcileBranches(actionSteps, actualPosition)
+            switchJustSavedPosition = -1
+            recalculateAndNotify()
+        }
+        sheet.show(supportFragmentManager, "SwitchEditor")
+    }
+
+    /**
+     * 新建 Switch 块：先造骨架、把**骨架里的 branches** 交给 sheet，再落盘（fork）。
+     *
+     * ⚠️ **id 对齐版**（唯一定案）：sheet 里的 id 与保存时用的骨架 id 天然一致
+     * ⇒ `reconcileBranches` 的 `existingBodies` 能命中，用户加的/删的分支才会正确成体。
+     *
+     * ⚠️ 这里的整表 `mapOf(...)` 是**可以接受**的：新块本来就没有 `__error_policy` 之类的保留参数
+     * （与编辑路径的合并式写法不同，是**故意的**，不要「统一成一种」）。
+     *
+     * ⚠️ 「取消」= 什么都不发生（不产生半成品块，也不入撤销栈）。
+     */
+    private fun showSwitchEditorSheetForNew(insertPosition: Int) {
+        val module = ModuleRegistry.getModule(SWITCH_START_ID) ?: return
+        val skeleton = module.createSteps()
+        val startParams = skeleton.firstOrNull()?.parameters ?: emptyMap()
+        val value = startParams[SWITCH_VALUE_KEY] as? String ?: ""
+        val branches = SwitchBlockSupport.readBranches(startParams[SWITCH_BRANCHES_KEY])
+
+        val sheet = SwitchEditorSheet.newInstance(value, branches)
+        sheet.onMagicVariableRequested = { targetInputId, currentText, onPicked ->
+            // 新建期还没有卡片 ⇒ 以一个「临时末尾位置」作为上下文（与既有做法一致）。
+            showVariablePillEditor(
+                editingStepPosition = triggerSteps.size + insertPosition,
+                targetInputId = if (targetInputId == SWITCH_VALUE_KEY) SWITCH_VALUE_KEY else SWITCH_MATCH_KEY,
+                editingModule = if (targetInputId == SWITCH_VALUE_KEY) {
+                    module
+                } else {
+                    ModuleRegistry.getModule(SWITCH_CASE_ID) ?: module
+                },
+                currentParams = startParams,
+                currentReference = currentText,
+                onUpdated = { onPicked(it) }
+            )
+        }
+        sheet.onSave = { newValue, newBranches ->
+            pushUndoSnapshot() // ⚠️ 在改动之前
+            val configured: List<ActionStep> = skeleton.toMutableList().also { steps ->
+                if (steps.isEmpty()) return@also
+                steps[0] = steps[0].copy(
+                    parameters = mapOf(
+                        SWITCH_VALUE_KEY to newValue,
+                        SWITCH_BRANCHES_KEY to SwitchBlockSupport.toParameters(newBranches),
+                    )
+                )
+            }
+            val actualStart = addStepsWithDefineFunctionRule(configured)
+            // 按 branches 重建分支区：能对上 id 的取回原体（骨架的体是空的）、对不上的建空卡
+            // ⇒ 最终结构 = 用户在 sheet 里编好的形状。
+            SwitchBlockSupport.reconcileBranches(actionSteps, actualStart)
+            recalculateAndNotify()
+        }
+        sheet.show(supportFragmentManager, "SwitchEditorNew")
+    }
+
     private fun getTriggerInsertPosition(): Int = triggerSteps.size
 
     private fun ensureAtLeastOneTrigger() {
@@ -1839,6 +2008,13 @@ class WorkflowEditorActivity : BaseActivity() {
      * 在指定位置显示参数编辑器，插入新模块
      */
     private fun showActionEditorAtPosition(module: ActionModule, insertPosition: Int) {
+        // ⚠️ fork：从选择器/「在下方插入」新建 Switch 块时，走管理 sheet 而不是参数 sheet。
+        //    取消 ⇒ 什么都没发生（不产生半成品块）。
+        if (module.id == SWITCH_START_ID) {
+            showSwitchEditorSheetForNew(insertPosition)
+            return
+        }
+
         val targetIndex = module.editorTargetStepIndex
         val editorModule = if (targetIndex > 0) {
             val targetModuleId = module.createSteps().getOrNull(targetIndex)?.moduleId

@@ -411,6 +411,7 @@ class SwitchModule : BaseModule() {
     override val metadata = ActionMetadata(
         name = "Switch",
         description = "按一个值的相等匹配，在多条分支中选一条执行",
+        descriptionStringRes = R.string.module_vflow_logic_switch_start_desc,
         iconRes = R.drawable.rounded_switch_24,
         category = "逻辑控制",
         categoryId = "logic"
@@ -441,7 +442,8 @@ class SwitchModule : BaseModule() {
             staticType = ParameterType.ANY,
             defaultValue = "",
             acceptsMagicVariable = true,
-            acceptsNamedVariable = true
+            acceptsNamedVariable = true,
+            nameStringRes = R.string.param_vflow_logic_switch_start_value_name
         ),
         InputDefinition(
             id = SWITCH_BRANCHES_KEY,
@@ -449,7 +451,8 @@ class SwitchModule : BaseModule() {
             staticType = ParameterType.ANY,
             defaultValue = emptyList<Map<String, Any?>>(),
             acceptsMagicVariable = false,
-            acceptsNamedVariable = false
+            acceptsNamedVariable = false,
+            nameStringRes = R.string.param_vflow_logic_switch_start_branches_name
         )
     )
 
@@ -549,6 +552,7 @@ class SwitchCaseModule : BaseModule() {
     override val metadata = ActionMetadata(
         name = "Case",
         description = "Switch 块中的一条匹配分支",
+        descriptionStringRes = R.string.module_vflow_logic_switch_case_desc,
         iconRes = R.drawable.rounded_switch_24,
         category = "逻辑控制",
         categoryId = "logic"
@@ -580,7 +584,8 @@ class SwitchCaseModule : BaseModule() {
             staticType = ParameterType.ANY,
             defaultValue = "",
             acceptsMagicVariable = true,
-            acceptsNamedVariable = true
+            acceptsNamedVariable = true,
+            nameStringRes = R.string.param_vflow_logic_switch_case_match_name
         ),
         InputDefinition(
             id = SWITCH_CASE_ID_KEY,
@@ -623,6 +628,7 @@ class SwitchDefaultModule : BaseModule() {
     override val metadata = ActionMetadata(
         name = "Default",
         description = "所有 Case 都不匹配时执行的分支",
+        descriptionStringRes = R.string.module_vflow_logic_switch_default_desc,
         iconRes = R.drawable.rounded_switch_24,
         category = "逻辑控制",
         categoryId = "logic"
@@ -668,6 +674,7 @@ class EndSwitchModule : BaseModule() {
     override val metadata = ActionMetadata(
         name = "End Switch",
         description = "Switch 块的结束点",
+        descriptionStringRes = R.string.module_vflow_logic_switch_end_desc,
         iconRes = R.drawable.rounded_switch_24,
         category = "逻辑控制",
         categoryId = "logic"
