@@ -1913,7 +1913,15 @@ class WorkflowEditorActivity : BaseActivity() {
                     )
                 )
             }
-            val actualStart = addStepsWithDefineFunctionRule(configured)
+            // ⚠️⚠️ **按 `insertPosition` 插入，刻意不走 `addStepsWithDefineFunctionRule`**。
+            //    那个函数存在的理由是「决策 16」：含「定义函数」的批次必须强制插到索引 0，
+            //    让函数签名永远是函数工作流的第一步。而 **Switch 骨架（Start/Case/Default/End）
+            //    不可能含 `DEFINE_FUNCTION_MODULE_ID`** ⇒ 那个分支对它是**死分支**，
+            //    走它等于把整块**无条件追加到末尾** ⇒ 「在下方插入」落点错误且不报错
+            //    （FAB「加到末尾」那条路径恰好传的就是 `actionSteps.size`，所以掩盖了这个缺陷）。
+            //    ⇒ 需要「首位强制」语义的模块（定义函数）不在本函数的分流范围内，勿「统一回去」。
+            actionSteps.addAll(insertPosition, configured)
+            val actualStart = insertPosition
             // 按 branches 重建分支区：能对上 id 的取回原体（骨架的体是空的）、对不上的建空卡
             // ⇒ 最终结构 = 用户在 sheet 里编好的形状。
             SwitchBlockSupport.reconcileBranches(actionSteps, actualStart)

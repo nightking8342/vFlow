@@ -126,6 +126,38 @@ class SwitchEditorSheetWiringTest {
         assertTrue("setupRecyclerView 必须把 onSwitchCardClick 传下去", source.contains("onSwitchCardClick = {"))
     }
 
+    // ---------- ③b 新建落点：必须用 insertPosition，不得走 addStepsWithDefineFunctionRule ----------
+
+    @Test
+    fun `new switch block is inserted at the requested position`() {
+        val source = SourceScan.stripped(editorActivity)
+        val body = SourceScan.functionBody(source, "private fun showSwitchEditorSheetForNew(")
+        assertNotNull("找不到 showSwitchEditorSheetForNew 函数体", body)
+        val text = requireNotNull(body)
+
+        // ① 必须真的按 insertPosition 插入 —— 走 `addStepsWithDefineFunctionRule` 的话
+        //    它的语义是「无条件 addAll(actionSteps.size, ...)」⇒ 整块落到工作流**末尾**
+        //    ⇒ 「在下方插入」落点错误，且**不报错**。FAB「加到末尾」那条路恰好传的就是
+        //    `actionSteps.size`，所以掩盖了这个缺陷（只有「在下方插入」能暴露）。
+        assertTrue(
+            "新建 Switch 块必须 `actionSteps.addAll(insertPosition, ...)`（否则会静默落到末尾）",
+            text.contains("actionSteps.addAll(insertPosition, configured)"),
+        )
+        assertTrue(
+            "actualStart 必须取 insertPosition（reconcile 要认到刚插进去的那张 Start 卡）",
+            text.contains("val actualStart = insertPosition"),
+        )
+        // ② ⚠️ 反向锁：不得走 addStepsWithDefineFunctionRule。
+        //    ⚠️⚠️ 必须先剥注释 —— 本文件在源码里写了一段解释「为什么不用它」的注释，
+        //    不剥的话这条 contains 会被注释里的字面量命中、断言在**空转中恒红**。
+        assertFalse(
+            "不得走 addStepsWithDefineFunctionRule —— 它是「定义函数必须首位」的决策 16 通道，" +
+                "而 Switch 骨架不可能含 DEFINE_FUNCTION_MODULE_ID，走它等于追加到末尾",
+            text.contains("addStepsWithDefineFunctionRule"),
+        )
+        assertTrue("函数体异常短，疑似扫描失败", text.lines().size > 20)
+    }
+
     // ---------- ④ ActionStepAdapter：可选回调 + 分流 ----------
 
     @Test
