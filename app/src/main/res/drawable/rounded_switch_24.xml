@@ -1,0 +1,49 @@
+<!--
+  Switch（多路分支）模块的图标：一个值分成两条路（主干在下、两支向上、各带箭头收口）。
+
+  ⚠️ **刻意不复用 `rounded_alt_route_24`**：那是 IfModule 的图标。
+  两个逻辑控制模块图标相同会让用户在编辑器/选择器里分不清谁是谁（设计文档 §2.6）。
+
+  ⚠️ **也不叫 `rounded_toggle_*` / 不用「开关」造型** —— 本模块是「多路分支」，
+  与系统开关（on/off）没有任何关系，图标一旦画成开关会让用户误解语义。
+
+  造型手写（960 viewport），五段独立 path：两支的箭头、两支的竖线、横梁、主干。
+  重叠区域会被填充两次，同色不透明 ⇒ 视觉上无差异（与既有 `rounded_log_24` 同款做法）。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="960"
+    android:viewportHeight="960"
+    android:tint="?attr/colorControlNormal">
+
+    <!-- 左支箭头（向上收口） -->
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M240,100L340,260L140,260Z" />
+
+    <!-- 右支箭头（向上收口） -->
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M720,100L820,260L620,260Z" />
+
+    <!-- 左支竖线 -->
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M200,260L280,260L280,600L200,600Z" />
+
+    <!-- 右支竖线 -->
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M680,260L760,260L760,600L680,600Z" />
+
+    <!-- 横梁：把两支与主干连起来（分叉点） -->
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M200,520L760,520L760,600L200,600Z" />
+
+    <!-- 主干（自下方来，底部圆角收口） -->
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M440,560L440,840Q440,880 480,880Q520,880 520,840L520,560Z" />
+</vector>
