@@ -177,6 +177,50 @@ App 与 Core 通过本地 Socket 通信（支持 TCP 和 Unix Domain Socket）�
 7. 若替换过历史上已发布的参数值，在定义层加兼容映射（如 `legacyValueMap`）；全新模块不要预先加无依据的兼容逻辑。
 8. 涉及解析、执行、类型或兼容行为变化时，在 `app/src/test/java` 补充单元测试。
 
+#### ⚠️⚠️ 文本参数必须用 `RichTextView`，否则魔法变量**不渲染成胶囊**
+
+**这是本仓库反复踩的坑（截至 2026-10-05 已发生至少三次，最近一次是 Switch 管理 sheet）。**
+症状是「用 🪄 选了变量，输入框里显示的还是 `{{step.output}}` 这种底层语法，
+而不是一个彩色胶囊」，**不报错、不崩溃**，所以只有真机肉眼能发现，测试全绿也拦不住。
+
+**机制** —— 编辑器里有两套文本输入控件，只有一套支持胶囊：
+
+| 工厂方法 | 产出 | 支持胶囊？ |
+|---|---|---|
+| `StandardControlFactory.createRichTextEditor(context, initialText, allSteps, tag, hint)` | `RichTextView`（`TextInputEditText` 子类） | ✅ |
+| `StandardControlFactory.createTextInputLayout(context, isNumber, currentValue, hint)` | 普通 `TextInputEditText` | ❌ **只显示纯文本** |
+
+自动表单（`createParameterInputRow`）**只在该 `InputDefinition` 声明了
+`supportsRichText = true` 时**才走富文本分支；没声明就走 `createViewForInput` → `createTextInputLayout`。
+**自绘 UI（`uiProvider` 的 `createEditor`、`BottomSheetDialogFragment` 等）则完全不受
+`supportsRichText` 约束** —— 那里选哪个工厂由你写，**没有任何东西会提醒你选错**。
+
+**新增/修改文本参数时逐条核对**：
+
+1. 参数是**文本**（`ParameterType.STRING` / `ANY`）且**接受变量**（`acceptsMagicVariable` 或
+   `acceptsNamedVariable` 为真）⇒ **`InputDefinition` 里必须写 `supportsRichText = true`**。
+   漏了这条，自动表单会退化成普通输入框，用户从 🪄 选的变量**看起来没生效**。
+2. **自绘编辑器里不要用 `createTextInputLayout`** 去做可填变量的文本框 ——
+   用 `createRichTextEditor(...)`（或自己组 `TextInputLayout` + `RichTextView`）。
+3. **必须把工作流步骤传给编辑器**（`allSteps`，通常是 `getAllEditableSteps()`）。
+   不传的话 `PillRenderer` 解析不出显示名 ⇒ 胶囊**退化成原始引用文本**，与没接胶囊长得一样。
+4. **读回值一律走 `RichTextView.getRawText()`**，**绝不能拿 `text` / `editText.text`** ——
+   那里面装的是**胶囊化的显示文本**（如「上一步 · 结果」），直接存会**静默写坏参数**
+   （存进去的不是引用语法，运行时解析不到）。
+5. 变量胶囊点一下应该能换/清（接 `onVariablePillEditRequested`），与其它编辑器保持一致。
+
+> ⚠️ `supportsRichText` **只影响自动表单的渲染与读回**（`findValueInViewTree` 里也按它选分支），
+> 不影响执行期解析 —— 所以漏了它**只有 UI 上看不出，工作流照样能跑**（如果参数本来就被别处填对的话）。
+> 这让它更难被发现。
+>
+> ⚠️ **这条规则目前没有全仓的机器化守卫，只能靠上面这份清单人工核对**。原因是它**不可廉价判定**：
+> 实测全仓有 **79 处** `STRING`/`ANY` 且接受变量、却没声明 `supportsRichText` 的 `InputDefinition`，
+> 其中大量是**合法例外**（`packageNames` 逗号分隔列表、`time`、`script` 用自绘编辑器、
+> 各种走 `pickerType` / 下拉的参数…）。写成「必须为 true」的断言会**当场全红**，
+> 而恒红的断言会被下一个实现者直接删掉（本仓库记过这条教训）。
+> ⇒ 唯一的**定点**守卫是 `test/.../logic/SwitchEditorSheetWiringTest.kt`（Switch 专用）。
+> **改任何文本参数时，请按上面 5 条自查。**
+
 ### 模块元数据（AI 相关）
 
 `AiModuleMetadata` 由模块声明（usageScopes / riskLevel / directToolDescription / workflowStepDescription / inputHints / allowSavedWorkflow）。新增模块若想被 AI 对话面板识别为工具，需设置 `usageScopes`（DIRECT_TOOL / TEMPORARY_WORKFLOW）。
