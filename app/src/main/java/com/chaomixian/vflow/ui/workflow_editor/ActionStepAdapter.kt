@@ -266,22 +266,10 @@ class ActionStepAdapter(
 
         // 卡片回显标签（fork）。⚠️ 不回显空标签（没有就是没有）。
         //    ⚠️ 回显**不走 module.getSummary()** —— 那是模块自己的摘要，标签不是模块参数。
+        //    渲染成**胶囊**（书签图标 + 文字），与魔法变量 pill 的视觉语言一致。
         val triggerLabel = if (isActionStep) "" else TriggerLabel.labelOf(step)
         if (triggerLabel.isNotEmpty()) {
-            val labelRow = TextView(context).apply {
-                text = context.getString(R.string.trigger_label_display_prefix, triggerLabel)
-                setTextAppearance(com.google.android.material.R.style.TextAppearance_Material3_BodySmall)
-                setTextColor(
-                    MaterialColors.getColor(
-                        context,
-                        com.google.android.material.R.attr.colorOnSurfaceVariant,
-                        Color.GRAY
-                    )
-                )
-                includeFontPadding = false
-                setPadding(0, (6 * context.resources.displayMetrics.density).toInt(), 0, 0)
-            }
-            contentContainer.addView(labelRow)
+            contentContainer.addView(createTriggerLabelChip(context, contentContainer, triggerLabel))
         }
 
         if (isActionStep) {
@@ -308,6 +296,32 @@ class ActionStepAdapter(
                 onLongPress != null
             }
         }
+    }
+
+    /**
+     * 触发器标签胶囊（fork）。
+     *
+     * 结构：圆角背景 + 书签图标 + 标签文字（见 `view_trigger_label_chip.xml`）。
+     * 走 `?attr/colorSecondaryContainer` 一系的 M3 容器色 ⇒ 深浅主题都成立。
+     *
+     * ⚠️ 与魔法变量 pill 的区别：pill **不是**可点击参数（标签不是模块参数），
+     * 故不挂 `ParameterPillSpan`、不参与 `onParameterPillClick`。
+     */
+    private fun createTriggerLabelChip(
+        context: Context,
+        parent: ViewGroup,
+        label: String
+    ): View {
+        val chip = LayoutInflater.from(context)
+            .inflate(R.layout.view_trigger_label_chip, parent, false)
+        chip.findViewById<TextView>(R.id.trigger_label_chip_text).text = label
+        val params = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        )
+        params.topMargin = (6 * context.resources.displayMetrics.density).toInt()
+        chip.layoutParams = params
+        return chip
     }
 
     private fun buildSummarySegments(

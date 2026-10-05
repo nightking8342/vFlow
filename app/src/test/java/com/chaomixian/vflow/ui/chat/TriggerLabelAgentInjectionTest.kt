@@ -207,9 +207,7 @@ class TriggerLabelAgentInjectionTest {
         val keys = listOf(
             "trigger_label_button_desc",
             "trigger_label_sheet_title",
-            "trigger_label_sheet_hint",
             "trigger_label_sheet_clear",
-            "trigger_label_display_prefix",
             "editor_group_trigger_label",
             "trigger_label_variable_name",
             "trigger_label_input_name",

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 触发器标签胶囊（fork 新增）：书签图标 + 标签文字。
+     照 magic_variable_pill.xml 的结构（wrap_content + 圆角背景 + 横向内边距）。 -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:background="@drawable/bg_trigger_label_chip"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingHorizontal="8dp"
+    android:paddingVertical="3dp">
+
+    <ImageView
+        android:id="@+id/trigger_label_chip_icon"
+        android:layout_width="14dp"
+        android:layout_height="14dp"
+        android:contentDescription="@null"
+        android:src="@drawable/rounded_bookmark_24"
+        app:tint="?attr/colorOnSecondaryContainer" />
+
+    <TextView
+        android:id="@+id/trigger_label_chip_text"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="4dp"
+        android:includeFontPadding="false"
+        android:textAppearance="?attr/textAppearanceLabelMedium"
+        android:textColor="?attr/colorOnSecondaryContainer"
+        tools:text="morning_alarm" />
+
+</LinearLayout>

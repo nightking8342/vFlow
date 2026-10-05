@@ -12,6 +12,7 @@ import com.chaomixian.vflow.core.module.ModuleRegistry
 import com.chaomixian.vflow.core.types.parser.VariablePathParser
 import com.chaomixian.vflow.core.workflow.GlobalVariableStore
 import com.chaomixian.vflow.core.workflow.model.ActionStep
+import com.chaomixian.vflow.core.workflow.model.TriggerLabel
 
 /**
  * Pill变量解析器（UI层）
@@ -79,6 +80,22 @@ object PillVariableResolver {
                 propertyPath = propertyPath
             )
         }
+
+        // 触发器标签（fork）：`[[__trigger_label]]` 是**运行时注入**的命名变量，
+        // 没有对应的「创建变量」步骤 ⇒ `VariableInfo.fromNamedVariable` 必然返回 null
+        // ⇒ 会一路回落到 `fallbackDisplayName`，把底层引用语法 `[[__trigger_label]]`
+        // 原样显示给用户。这里给它一个本地化的显示名。
+        //
+        // ⚠️ 只匹配**整条引用**（路径长度 1），不匹配 `[[__trigger_label.xxx]]` ——
+        //    标签是字符串，没有属性可访问，带属性的写法是错的，应当照旧回落成原文。
+        VariablePathParser.parseNamedVariablePath(variableReference)
+            ?.takeIf { it.size == 1 && it[0] == TriggerLabel.VARIABLE_NAME }
+            ?.let {
+                return ResolvedInfo(
+                    displayName = context.getString(R.string.trigger_label_variable_name),
+                    color = PillTheme.getColor(context, R.color.variable_pill_color)
+                )
+            }
 
         // 解析属性路径
         val propertyPath = resolvePropertyPath(variableReference)

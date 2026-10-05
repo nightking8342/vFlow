@@ -1,6 +1,6 @@
 # 触发器标签（trigger label）设计
 
-> 版本：v1.0（设计阶段，**未实现**）
+> 版本：v1.1（设计 + **已实现并合入 dev**，实现状态见 §11）
 > 目录归属：**fork 独有**（冲突归我方），上游无此文件
 > 用途：给「一个工作流的多个触发器」打标签，让工作流内部能判断**本次是哪个触发器触发了它**
 > 相关：`surveys/trigger-system-overview.md`（触发器体系现状）、`workflow-read-write-tools.md`（AI 读写工作流）、`log-module-design.md`（固定变量注入的同类先例）
@@ -291,4 +291,112 @@ return if (module.id.startsWith("vflow.trigger.")) base + triggerLabelInputDefin
 
 - 本文行号基于 2026-10-05 的 `dev` 分支实测，上游合并后会漂移，**引用前以代码为准**。
 - §2 为**已核查事实**（均有 file:line）；§3 之后为**设计决策**。
-- 本设计**未实现**。实现后须在本文件补「实现状态」段，并在 `FORK.md` 登记代码分歧。
+- 实现状态见 §11。实现的分歧登记在 `FORK.md` 的「触发器标签（trigger label，2026-10-05）」段。
+
+---
+
+## 11. 实现状态（2026-10-05，已合入 `dev`）
+
+> 实现分支 `feature/trigger-label`（worktree task-21），rebase 到 `90c35a76` 后以
+> `--no-ff` 合并入 `dev`（`7270c8fd`）。**本文档由父会话在集成时补写本节** ——
+> 实现分支刻意不创建/不修改/不复制本文件（会形成 add/add 冲突）。
+
+### 11.1 落地清单
+
+| 文件 | 性质 |
+|---|---|
+| `core/workflow/model/TriggerLabel.kt`（新增） | 纯函数层：`KEY` / `VARIABLE_NAME` / `VARIABLE_REFERENCE` + `labelOf` / `withLabel` / `labelFor`。**全文只有这一份 `"__trigger_label"` 字面量**（AI 侧文案全部走常量插值，有测试锁） |
+| `core/execution/WorkflowExecutor.kt`（改 ~8 行） | `execute()` 构造 `initialContext` 时注入 `namedVariables[VARIABLE_NAME]`，**恒注入**（未命中 ⇒ 空串） |
+| `ui/workflow_editor/WorkflowEditorActivity.kt`（改） | ① **修 §2.4① 的既有缺陷**（`onSave` else 分支改为合并，与 `focusedInputId != null` 分支对齐）；② 新增 `showTriggerLabelSheet(position)`（`pushUndoSnapshot()` 在改动之前）；③ 传 `hasAutoTriggers` |
+| `ui/workflow_editor/TriggerLabelSheet.kt` + `res/layout/sheet_trigger_label.xml`（新增） | 标签输入 bottom sheet（纯自由输入、无快捷选） |
+| `ui/workflow_editor/ActionStepAdapter.kt`（改）+ `res/layout/item_action_step.xml`（改）+ `res/drawable/rounded_new_label_24.xml`（新增） | 卡片标签按钮 + 回显行；**并放宽操作区 gating**（见 §11.3） |
+| `ui/workflow_editor/WorkflowEditorMagicVariableCatalogBuilder.kt`（改） | `namedVariables` 追加固定分组「触发器标签」→ `[[__trigger_label]]` |
+| `ui/chat/ChatAgentModuleExecutor.kt`（改） | **修 §2.4② 的既有缺陷**：`resolveModuleInputDefinitions` 对 `vflow.trigger.*` 注入该 key；新增的常量与函数**都在文件顶层**（调用方是顶层 `internal fun`） |
+| `ui/chat/ChatAgentToolRegistry.kt`、`ChatAgentSkillRouter.kt`（改） | AI 文案四处 + system prompt 一行，全部常量插值 |
+| 三语 `strings.xml`（改） | 追加 **6 条 ×3 语言**（§11.5 调整时删掉了 `trigger_label_display_prefix`；其后又删掉了 `trigger_label_sheet_hint`） |
+| 三个测试文件（新增，**42 例**） | `TriggerLabelTest` 19 / `TriggerLabelWiringTest` 12 / `TriggerLabelAgentInjectionTest` 11 |
+
+合计 19 文件、**+1216 / −10**（`git diff --numstat`：改动后 10 处删除全落在两处缺陷修复的两行）。
+
+> ⚠️ **§11.5 的交互调整**（同日、在合并入 dev 之后）另改了 4 处：新增
+> `res/drawable/{rounded_bookmark_24, bg_trigger_label_chip}.xml` 与 `res/layout/view_trigger_label_chip.xml`，
+> 删除 `res/drawable/rounded_new_label_24.xml`，并改 `ActionStepAdapter.kt`（胶囊渲染）与
+> `pill/PillVariableResolver.kt`（显示名）。那次调整**未跑单测全量，只跑了三个 TriggerLabel 测试类**
+> （42 例全绿）+ `assembleRelease`（成功、签名未降级），且**是在临时 worktree 里验证的** ——
+> 因为主工作区当时正被另一批（工作流列表液态玻璃）未完成的改动占着、`compileReleaseKotlin` 起不来。
+
+### 11.2 与设计的偏差
+
+| # | 设计文档写的 | 实际 | 原因 |
+|---|---|---|---|
+| 1 | §2-7「反查在 `execute()` 内」 | 反查在 `seedTriggerOutputs` 用的 `Workflow.getTrigger`（`:80`） | 文档表述不准；实现直接复用既有查找 |
+| 2 | §2-4「`applyParameterPatch` 导致补丁不落地」 | 「整个补丁不落地」由 `executeUpdateWorkflow` 保证（`validationErrors` 非空则不写库） | 文档把两个环节混为一谈 |
+| 3 | `resolveModuleInputDefinitions` 注释「动态覆盖静态」 | 实际 `distinctBy` 是**静态胜出**（保留首个） | 既有注释与实现相反，**本次不改**（改了会扩大影响面），已在 `FORK.md` 与实现注释中如实记录 |
+| 4 | 设计 §4.1「回显行加在 `content_container`」 | 同 | 一致 |
+| 5 | 设计未提 | **放宽触发器卡操作区的 gating** | 见 §11.3 |
+
+### 11.3 实施中暴露的问题（设计文档未预见）
+
+**触发器卡操作区被 `isDeletable` 门控**（`ActionStepAdapter.bindEmbeddedStepCard` 的 else 分支）。
+原判据 `actionContainer.visibility = … else if (isDeletable) VISIBLE else GONE`，而触发器卡的
+`isDeletable = triggerSteps.size > 1` ⇒ **只有一个触发器时整个操作区（含新标签按钮）隐藏**。
+单触发器是最常见形态（含 Agent 保存的工作流只带一个 `vflow.trigger.manual`），
+且这是**纯视觉、无任何报错**的失效。已改为对触发器卡恒 `VISIBLE`（`selectionModeEnabled` 时仍 `GONE`）；
+**视觉结果不变** —— 删除按钮的显隐由另一行按 `isDeletable` 独立控制。
+由 `TriggerLabelWiringTest` 的 `the trigger action area is no longer gated by isDeletable` 锁住。
+
+### 11.4 验证
+
+| 项 | 结果 |
+|---|---|
+| `./gradlew test` | **2401 例 / 1 失败 / 1 跳过**。唯一失败是既有 `VObjectPropertyTest > test VFile properties from absolute path`（`android.net.Uri.parse` 未 mock，纯 JVM 限制，AGENTS.md 已登记）。三个新测试类 **42 例全绿**（读 `build/test-results` XML 逐类确认） |
+| `./gradlew assembleRelease` | **BUILD SUCCESSFUL**；`apksigner verify --print-certs` 确认签名仍为 `CN=vFlow Fork, OU=Fork, O=nightking8342`（未降级） |
+| 反证（独立重做 4 项） | ① 编辑器合并分支改回整表替换 ⇒ `showTriggerEditor merges parameters instead of replacing them` **变红**；② 触发器卡恢复 `isDeletable` 门控 ⇒ `the trigger action area is no longer gated by isDeletable` **变红**；③（实现/验收阶段）删注入 ⇒ 5 条变红；④ 去 `put(VARIABLE_NAME…)` ⇒ 2 条变红。另有一项「插单下划线字面量 ⇒ 全仓反向断言变红」 |
+| 残留检查 | `grep REVERT-TEST` 无命中；反证改动已全部还原（`git status` 与反证前一致） |
+
+### 11.5 交互调整（2026-10-05，用户按 ShortX 截图提出，**已真机确认**）
+
+初版与调整后的对照：
+
+| 项 | 初版（§4.1 原文） | 调整后 |
+|---|---|---|
+| 标签按钮图标 | 自绘「吊牌 + 圆孔」（`rounded_new_label_24`） | **书签造型**（`rounded_bookmark_24`，照 ShortX 截图的图标） |
+| 卡片回显 | 单行 `TextView`，文本 `🏷 标签名` | **胶囊**：圆角底 + 书签小图标 + 标签文字（`view_trigger_label_chip.xml`） |
+| 工作流内引用 | 渲染成胶囊，但文字是**底层引用语法** `[[__trigger_label]]` | 胶囊内显示**本地化文案**「触发标签」 |
+
+**第三项是一个真实的显示缺陷**（用户在真机上直接看到 `[[__trigger_label]]` 才暴露）：
+`[[__trigger_label]]` 是**运行时注入**的命名变量，**没有对应的「创建变量」步骤** ⇒
+`VariableInfo.fromNamedVariable`（只认 `vflow.variable.create` / `vflow.variable.random`）
+必然返回 null ⇒ `PillVariableResolver` 一路回落到 `fallbackDisplayName`，
+把引用语法原样当显示名。修法是在 `PillVariableResolver.resolveVariable` 开头加一条前置分支，
+命中整条 `[[__trigger_label]]` 时返回本地化显示名。
+
+⚠️ **只匹配路径长度 1**：`[[__trigger_label.xxx]]` 仍回落到原文 ——
+标签是字符串、没有属性可访问，带属性的写法本就是错的，给它编个名字反而掩盖错误。
+
+**第二条调整（同日）**：标签输入框的 hint「标签（同一工作流内可用 `[[__trigger_label]]` 读取）」
+**已删除**（用户决定）。理由是**人工一律从魔法变量选择器点选**，不需要记引用语法；
+把语法写进输入框反而是在教用户走那条不该走的路。⇒ 三语文案由 7 条降为 6 条，
+布局里的 `android:hint` 一并去掉（空 hint 会让 `TextInputLayout` 多占一行高度）。
+
+⚠️ **AI 不依赖这条 hint**：`trigger_label_sheet_hint` 只在 `sheet_trigger_label.xml` 里被引用，
+**没有任何 Java/Kotlin 调用点**，AI 侧走的是另一组常量 —— `ChatAgentModuleExecutor:3005`
+用 `trigger_label_input_name`（`query_module_schema` 的字段名）与
+`trigger_label_variable_name`（选择器条目名）。删 hint 对 AI 零影响。
+
+### 11.6 真机验证待办（**0 项已做**）
+
+本批**只有编译、单测与反证支撑**，无任何真机证据。需人工上机确认：
+
+1. 触发器卡片上标签按钮的位置与点击响应（尤其**只有一个触发器**时按钮是否真的出现 —— §11.3 改动点）。
+2. 卡片回显行的样式与位置（`🏷 xxx`，在摘要下方）。
+3. 标签输入 sheet 的交互（输入 / 清空 / 确定）。
+4. 魔法变量选择器里「触发器标签」分组是否出现，且**仅在有自动触发器时**出现。
+5. `[[__trigger_label]]` 在 `If` 里的实际分支效果（多触发器各自读到自己标签）。
+6. 未命中 / 未打标签时 `is_empty` 的行为（应为 `true`）。
+6b. **§11.5 的胶囊渲染**：标签胶囊的圆角/配色在深浅主题下是否协调、长标签是否溢出；
+    以及工作流内引用处显示为「触发标签」而非 `[[__trigger_label]]`。
+7. **§5.1 修复的回归**：设好标签 → 再点开改一次触发条件 → 标签**仍在**（这是修复前必然失败的路径）。
+8. AI 侧：让 Agent 建一个带标签的触发器工作流，确认 `__trigger_label` 能写进、且 `update_workflow` 不整体失败。
+9. 备份 / 恢复后标签仍在（走 `WorkflowScope` 全字段 Gson，理论无影响，未实测）。
+10. 图标 `rounded_new_label_24.xml` 的视觉效果（自绘，仅经 aapt2 语法校验）。

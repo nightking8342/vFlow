@@ -85,7 +85,7 @@
                     android:layout_marginStart="4dp"
                     android:background="?attr/selectableItemBackgroundBorderless"
                     android:contentDescription="@string/trigger_label_button_desc"
-                    android:src="@drawable/rounded_new_label_24"
+                    android:src="@drawable/rounded_bookmark_24"
                     android:visibility="gone"
                     app:tint="?attr/colorOnSurfaceVariant"
                     tools:visibility="visible" />

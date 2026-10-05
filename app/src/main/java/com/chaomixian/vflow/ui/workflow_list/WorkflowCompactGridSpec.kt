@@ -175,3 +175,30 @@ internal fun filterByFolderTab(
     } else {
         workflows.filter { it.folderId == selectedFolderId }
     }
+
+/**
+ * 组装 Tab 列表：「全部」+ 各文件夹。
+ *
+ * ⚠️⚠️ **「全部」的计数必须单独传 [totalWorkflowCount]**，不能写成
+ * `folderTabs.sumOf { it.workflowCount }` —— 后者的口径是「**在文件夹里**的工作流数」，
+ * 未归类（`folderId == null`）的那些**根本没被算进去**。只有一个文件夹时，
+ * 那个数字恰好等于该文件夹的数量，看起来「像是对的」，于是很容易被长期忽略；
+ * 一旦有根工作流，「全部」就会**少报**。
+ *
+ * ## 为什么「全部」的数字与各文件夹之和对不上是对的
+ *
+ * 未归类的工作流只在「全部」里可见（本文件不设「未分类」档），所以
+ * `全部 ≥ Σ各文件夹` 是**正常现象**，不是 bug。改这条之前先读
+ * [filterByFolderTab] 的注释。
+ */
+internal fun folderTabItems(
+    folderTabs: List<WorkflowFolderTab>,
+    allTabLabel: String,
+    totalWorkflowCount: Int,
+): List<WorkflowFolderTab> = listOf(
+    WorkflowFolderTab(
+        folderId = WORKFLOW_TAB_ALL,
+        name = allTabLabel,
+        workflowCount = totalWorkflowCount,
+    )
+) + folderTabs

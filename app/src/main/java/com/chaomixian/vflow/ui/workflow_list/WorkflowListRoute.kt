@@ -91,6 +91,9 @@ fun WorkflowListRoute(
     workflowActionVersion: Int,
     extraBottomPadding: androidx.compose.ui.unit.Dp,
     isWideLayout: Boolean,
+    // 液态玻璃开关：内容区顶部的文件夹 Tab 栏是否走玻璃样式。
+    // 由 `MainComposeShell` 从 `MainActivity.liquidGlassNavBarEnabled` 传下来。
+    liquidGlassEnabled: Boolean = false,
     modifier: Modifier = Modifier,
     workflowListViewModel: WorkflowListViewModel = viewModel(),
 ) {
@@ -478,6 +481,7 @@ fun WorkflowListRoute(
         uiState = uiState,
         layoutMode = workflowLayoutMode,
         isWideLayout = isWideLayout,
+        liquidGlassEnabled = liquidGlassEnabled,
         extraBottomPadding = extraBottomPadding,
         modifier = modifier,
         actions = WorkflowListScreenActions(
@@ -637,6 +641,11 @@ fun WorkflowListRoute(
                 pendingExportFolderId = folderId
                 val folder = folderManager.getFolder(folderId)
                 exportFolderLauncher.launch("${folder?.name ?: "folder"}.json")
+            },
+            onDissolveFolder = { folderId ->
+                showDissolveFolderConfirmationDialog(context, folderManager, workflowManager, folderId) {
+                    loadData()
+                }
             },
             onDeleteFolder = { folderId ->
                 showDeleteFolderConfirmationDialog(context, folderManager, workflowManager, folderId) {
@@ -939,6 +948,54 @@ private fun showMoveToFolderDialog(
         .show()
 }
 
+/**
+ * 「解散文件夹」：删掉文件夹本身，**里面的工作流保留**（移到根目录）。
+ *
+ * ⚠️ 与 [showDeleteFolderConfirmationDialog] 是**两件完全不同的事**，
+ * 只是共用了「删文件夹」这个动作名。历史上只有这一个入口、语义就是「保留工作流」，
+ * 现在拆成两个（用户 2026-10-05 要求），文案必须把差别说清 ——
+ * 点错的那一个会直接删掉用户的工作流，而本项目**没有版本历史、没有撤销**。
+ */
+private fun showDissolveFolderConfirmationDialog(
+    context: Context,
+    folderManager: FolderManager,
+    workflowManager: WorkflowManager,
+    folderId: String,
+    onChanged: () -> Unit,
+) {
+    val folder = folderManager.getFolder(folderId) ?: return
+    val affectedCount = workflowManager.getAllWorkflows().count { it.folderId == folderId }
+    MaterialAlertDialogBuilder(context)
+        .setTitle(R.string.dialog_folder_dissolve_title)
+        .setMessage(
+            context.getString(
+                R.string.dialog_folder_dissolve_message,
+                folder.name,
+                affectedCount,
+            )
+        )
+        .setPositiveButton(R.string.folder_dissolve) { _, _ ->
+            workflowManager.getAllWorkflows()
+                .filter { it.folderId == folderId }
+                .forEach { workflow -> workflowManager.saveWorkflow(workflow.copy(folderId = null)) }
+            folderManager.deleteFolder(folderId)
+            Toast.makeText(context, context.getString(R.string.toast_folder_dissolved), Toast.LENGTH_SHORT).show()
+            onChanged()
+        }
+        .setNegativeButton(R.string.common_cancel, null)
+        .show()
+}
+
+/**
+ * 「删除文件夹」：文件夹**连同里面所有工作流**一起删掉。
+ *
+ * ⚠️ 走 [WorkflowManager.deleteWorkflow] 逐个删，而**不是**只把 `folderId` 置空 ——
+ * 后者是「解散」的语义。逐个删还能顺带触发它内部的
+ * `TriggerServiceProxy.notifyWorkflowRemoved`（更新快捷方式 / 撤销触发器调度），
+ * 少走任何一步都会留下「工作流没了但触发器还在调度」这类残影。
+ *
+ * ⚠️ 这是**不可逆**的（没有版本历史、没有撤销），故对话框里显式报出会被删掉的数量。
+ */
 private fun showDeleteFolderConfirmationDialog(
     context: Context,
     folderManager: FolderManager,
@@ -947,13 +1004,18 @@ private fun showDeleteFolderConfirmationDialog(
     onChanged: () -> Unit,
 ) {
     val folder = folderManager.getFolder(folderId) ?: return
+    val victims = workflowManager.getAllWorkflows().filter { it.folderId == folderId }
     MaterialAlertDialogBuilder(context)
         .setTitle(R.string.dialog_folder_delete_title)
-        .setMessage(context.getString(R.string.dialog_folder_delete_message, folder.name))
+        .setMessage(
+            context.getString(
+                R.string.dialog_folder_delete_message,
+                folder.name,
+                victims.size,
+            )
+        )
         .setPositiveButton(R.string.common_delete) { _, _ ->
-            workflowManager.getAllWorkflows()
-                .filter { it.folderId == folderId }
-                .forEach { workflow -> workflowManager.saveWorkflow(workflow.copy(folderId = null)) }
+            victims.forEach { workflow -> workflowManager.deleteWorkflow(workflow.id) }
             folderManager.deleteFolder(folderId)
             Toast.makeText(context, context.getString(R.string.toast_folder_deleted), Toast.LENGTH_SHORT).show()
             onChanged()

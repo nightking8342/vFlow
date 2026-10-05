@@ -1070,6 +1070,7 @@ private fun MainContentPager(
                     workflowActionVersion = workflowActionVersion,
                     extraBottomPadding = innerPadding.calculateBottomPadding(),
                     isWideLayout = useNavigationRail,
+                    liquidGlassEnabled = liquidGlassEnabled,
                     modifier = workflowContentModifier,
                 )
 

@@ -1,8 +1,10 @@
 package com.chaomixian.vflow.ui.workflow_list
 
 import androidx.compose.ui.unit.dp
+import com.chaomixian.vflow.core.backup.SourceScan
 import com.chaomixian.vflow.core.workflow.model.Workflow
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -176,5 +178,128 @@ class WorkflowCompactGridSpecTest {
         val list = listOf(orphan, workflow("b", "f1"))
         assertEquals(2, filterByFolderTab(list, WORKFLOW_TAB_ALL).size)
         assertTrue(filterByFolderTab(list, "f1").none { it.id == "orphan" })
+    }
+
+    // ────────────────────────────────────────────────
+    // Tab 列表组装：「全部」的计数
+    // ────────────────────────────────────────────────
+
+    private fun tab(id: String, count: Int) = WorkflowFolderTab(id, "文件夹 $id", count)
+
+    @Test
+    fun `all tab shows the total count not the sum of folders`() {
+        // ⚠️ 本用例锁的是一个**真实缺陷**（2026-10-05 用户报）：
+        //    原先「全部」的计数取各文件夹之和，而那只数了 `FolderItem` 里的工作流
+        //    ⇒ 根目录下未归类的工作流**根本没被算进去**。
+        //    只有一个文件夹时两数恰好相等（看起来对），一旦有根工作流就少报。
+        val folders = listOf(tab("f1", 3))
+        val items = folderTabItems(folders, allTabLabel = "全部", totalWorkflowCount = 5)
+        assertEquals("全部", items.first().name)
+        assertEquals(
+            "「全部」必须用总数（含未归类），不能是各文件夹之和",
+            5,
+            items.first().workflowCount,
+        )
+        assertEquals("文件夹本身的数量不受影响", 3, items[1].workflowCount)
+    }
+
+    @Test
+    fun `all tab still works when there are no folders`() {
+        // 无文件夹时 Tab 栏本就不显示，但纯函数不该因此崩或返回空。
+        val items = folderTabItems(emptyList(), allTabLabel = "全部", totalWorkflowCount = 2)
+        assertEquals(1, items.size)
+        assertEquals(WORKFLOW_TAB_ALL, items.first().folderId)
+        assertEquals(2, items.first().workflowCount)
+    }
+
+    @Test
+    fun `all tab is always the first entry`() {
+        // ⚠️ 顺序有意义：Tab 栏按下标算格宽与指示块位置，且界面上「全部」恒在最左。
+        val items = folderTabItems(
+            listOf(tab("f1", 1), tab("f2", 2)),
+            allTabLabel = "全部",
+            totalWorkflowCount = 4,
+        )
+        assertEquals(listOf(WORKFLOW_TAB_ALL, "f1", "f2"), items.map { it.folderId })
+    }
+
+    @Test
+    fun `all tab count may exceed the sum of folders`() {
+        // ⚠️ 反向锁：`全部 > Σ文件夹` 是**正常**的（未归类的工作流只在「全部」里可见），
+        //    不要为了「看起来整齐」把它改成相等。
+        val items = folderTabItems(
+            listOf(tab("f1", 2), tab("f2", 3)),
+            allTabLabel = "全部",
+            totalWorkflowCount = 9,
+        )
+        assertEquals(9, items.first().workflowCount)
+        assertEquals(2, items[1].workflowCount)
+        assertEquals(3, items[2].workflowCount)
+    }
+
+    @Test
+    fun `folder tab count is not derived from the total`() {
+        // ⚠️ 反向锁：改「全部」的算法时**不得**顺手改各文件夹的计数（它们来自
+        //    `FolderItem.workflowCount`，是 Route 层按 `folderId` 过滤出来的）。
+        val items = folderTabItems(
+            listOf(tab("f1", 7)),
+            allTabLabel = "全部",
+            totalWorkflowCount = 7,
+        )
+        assertEquals(7, items[1].workflowCount)
+    }
+
+    // ────────────────────────────────────────────────
+    // 源码扫描：「全部」的计数**从哪里算**
+    // ────────────────────────────────────────────────
+
+    @Test
+    fun `all workflow count is derived from uiState items not displayItems`() {
+        // ⚠️⚠️ 本用例锁一个**真实缺陷**（2026-10-05 用户报：「全部」后面的数字变成 0）。
+        //    根因不是算法，是 **`remember` 的 key**：`displayItems` 是
+        //    `SnapshotStateList`，拿它本身当 key 只认引用变化，而引用恒定不变
+        //    ⇒ 计数在首帧就算死，之后永远是 0（**不报错**，只是显示不对）。
+        //
+        //    ⚠️ 这个缺陷**纯函数测试完全测不出来**（`folderTabItems` 本身是对的），
+        //    只能扫源码锁住「取哪个源」。
+        val source = SourceScan.file(
+            "src/main/java/com/chaomixian/vflow/ui/workflow_list/WorkflowListScreen.kt"
+        ).readText()
+        val body = SourceScan.functionBody(source, "fun WorkflowListScreen(")
+        checkNotNull(body) { "没能截取 WorkflowListScreen 函数体（签名可能变了）" }
+
+        // ⚠️⚠️ 判据必须锚到**完整表达式**（`val allWorkflowCount = remember(...)`），
+        //    不能只测「函数体里出现过 `remember(uiState.items)`」—— 同函数体里
+        //    `folderTabs` 那行**也是**这个写法 ⇒ 那样写会**空转**、反证不变红
+        //    （已实际踩过：退回 `displayItems` 后测试照样绿）。
+        assertTrue(
+            "「全部」的计数必须以 uiState.items 为源（displayItems 的引用恒定，当 remember key 会恒为 0）",
+            body.contains("val allWorkflowCount = remember(uiState.items)"),
+        )
+        assertTrue(
+            "计数必须同时摊平 FolderItem.childWorkflows（文件夹里的工作流不在顶层）",
+            body.contains("FolderItem -> addAll(item.childWorkflows)"),
+        )
+        assertTrue(
+            "防空转：函数体必须真的被截到（不能是空串/极小片段）",
+            body.length > 500,
+        )
+    }
+
+    @Test
+    fun `all workflow count is not taken from filtered items`() {
+        // ⚠️ 反向锁：`filteredItems` 是**当前选中 Tab 过滤后**的结果，
+        //    用它当「全部」的计数会随切换 Tab 而变（在某个文件夹里时显示那个文件夹的数量）。
+        //    这正是最初那版缺陷的另一种写法。
+        val source = SourceScan.file(
+            "src/main/java/com/chaomixian/vflow/ui/workflow_list/WorkflowListScreen.kt"
+        ).readText()
+        val body = SourceScan.functionBody(source, "fun WorkflowListScreen(")
+        checkNotNull(body)
+
+        assertFalse(
+            "「全部」的计数不得取自 filteredItems",
+            body.contains("val allWorkflowCount = remember(filteredItems)"),
+        )
     }
 }

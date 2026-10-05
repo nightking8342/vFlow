@@ -133,12 +133,18 @@ data class WorkflowListScreenActions(
     /**
      * fork：文件夹 Tab 栏右侧的「新建文件夹」按钮（与顶栏菜单里的同名动作并存）。
      *
-     * ⚠️ 下面四个 `*Folder` 动作**原本挂在文件夹卡片的菜单上**。文件夹改成 Tab 栏后
-     * 卡片没了，若不搬过来，重命名/导出/删除这三个功能会**静默消失** ——
+     * ⚠️ 下面四个 `*Folder` 动作（重命名 / 导出 / 解散 / 删除）**原本挂在文件夹卡片的
+     * 菜单上**。文件夹改成 Tab 栏后卡片没了，若不搬过来，这几个功能会**静默消失** ——
      * 用户不会收到任何提示，只是找不到入口。
      */
     val onRenameFolder: (String) -> Unit,
     val onExportFolder: (String) -> Unit,
+    /**
+     * 删掉文件夹本身，**里面的工作流保留**（移到根目录）。
+     * 与 [onDeleteFolder] 的区别只有一条：工作流保不保留。
+     */
+    val onDissolveFolder: (String) -> Unit,
+    /** 删掉文件夹**连同里面所有工作流**。 */
     val onDeleteFolder: (String) -> Unit,
     val onPersistWorkflowOrder: (List<Workflow>) -> Unit,
 )
@@ -155,6 +161,9 @@ fun WorkflowListScreen(
     uiState: WorkflowListUiState,
     layoutMode: WorkflowLayoutMode,
     isWideLayout: Boolean = false,
+    // 液态玻璃开关（`AppearanceManager.isLiquidGlassNavBarEnabled`）。为 true 时
+    // 文件夹 Tab 栏换成 `WorkflowFolderGlassTabBar`；两种布局共用这一个开关。
+    liquidGlassEnabled: Boolean = false,
     actions: WorkflowListScreenActions,
     extraBottomPadding: Dp = 0.dp,
     modifier: Modifier = Modifier
@@ -178,14 +187,27 @@ fun WorkflowListScreen(
     }
     val knownFolderIds = remember(folderTabs) { folderTabs.map { it.folderId }.toSet() }
     val allTabLabel = stringResource(R.string.workflow_tab_all)
-    val tabItems = remember(folderTabs, allTabLabel) {
-        listOf(
-            WorkflowFolderTab(
-                folderId = WORKFLOW_TAB_ALL,
-                name = allTabLabel,
-                workflowCount = folderTabs.sumOf { it.workflowCount },
-            )
-        ) + folderTabs
+    // ⚠️「全部」的计数 = **所有**工作流（含根目录下未归类的），
+    //    不能取各文件夹之和（那只数了 `FolderItem` 里的），也不能拿 `filteredItems`
+    //    （那是**当前选中 Tab 过滤后**的结果）。
+    //
+    // ⚠️⚠️ **源必须是 `uiState.items`，不能是 `displayItems`**：后者是
+    //    `SnapshotStateList`，拿它**本身**当 `remember` 的 key 只认引用变化，
+    //    而它的引用恒定不变 ⇒ 计数在首帧（列表还是空的）就算死了，之后**永远是 0**
+    //    （且不报错，只是显示不对）。`uiState.items` 是 StateFlow 里的不可变 `List`，
+    //    每次发射都是新引用，key 才会真的失效重算。
+    val allWorkflowCount = remember(uiState.items) {
+        buildList {
+            uiState.items.forEach { item ->
+                when (item) {
+                    is WorkflowListItem.WorkflowItem -> add(item.workflow)
+                    is WorkflowListItem.FolderItem -> addAll(item.childWorkflows)
+                }
+            }
+        }.size
+    }
+    val tabItems = remember(folderTabs, allTabLabel, allWorkflowCount) {
+        folderTabItems(folderTabs, allTabLabel, allWorkflowCount)
     }
     // 搜索态不显示 Tab 栏（搜索结果是跨文件夹的平铺结果，显示筛选会误导）；
     // 一个文件夹都没有时也不显示（此时 Tab 栏只剩「全部 N」，纯占高度）。
@@ -358,11 +380,14 @@ fun WorkflowListScreen(
                 extraBottomPadding = extraBottomPadding,
                 spec = compactSpec,
                 folderTabs = folderTabs,
+                allWorkflowCount = allWorkflowCount,
                 showFolderTabBar = showFolderTabBar,
+                liquidGlassEnabled = liquidGlassEnabled,
                 selectedFolderTab = selectedFolderTab,
                 onSelectFolderTab = { selectedFolderTab = it },
                 onRenameFolder = actions.onRenameFolder,
                 onExportFolder = actions.onExportFolder,
+                onDissolveFolder = actions.onDissolveFolder,
                 onDeleteFolder = actions.onDeleteFolder,
                 lazyStaggeredGridState = lazyStaggeredGridState,
                 reorderableStaggeredGridState = reorderableStaggeredGridState,
@@ -402,12 +427,14 @@ fun WorkflowListScreen(
             //    所以这里插一项不会打乱拖拽映射。
             if (showFolderTabBar) {
                 item {
-                    WorkflowFolderTabBar(
+                    WorkflowFolderTabBarSwitch(
+                        liquidGlassEnabled = liquidGlassEnabled,
                         tabs = tabItems,
                         selectedFolderId = selectedFolderTab,
                         onSelect = { selectedFolderTab = it },
                         onRenameFolder = actions.onRenameFolder,
                         onExportFolder = actions.onExportFolder,
+                        onDissolveFolder = actions.onDissolveFolder,
                         onDeleteFolder = actions.onDeleteFolder,
                         modifier = Modifier.padding(horizontal = 16.dp),
                     )
@@ -1074,25 +1101,23 @@ private fun WorkflowCompactGridContent(
     extraBottomPadding: Dp,
     spec: WorkflowCompactGridSpec,
     folderTabs: List<WorkflowFolderTab>,
+    /** 「全部」Tab 上显示的数量（全部工作流，含未归类的）。 */
+    allWorkflowCount: Int,
     showFolderTabBar: Boolean,
+    liquidGlassEnabled: Boolean,
     selectedFolderTab: String,
     onSelectFolderTab: (String) -> Unit,
     onRenameFolder: (String) -> Unit,
     onExportFolder: (String) -> Unit,
+    onDissolveFolder: (String) -> Unit,
     onDeleteFolder: (String) -> Unit,
     lazyStaggeredGridState: LazyStaggeredGridState,
     reorderableStaggeredGridState: ReorderableLazyStaggeredGridState,
     onPersistOrder: () -> Unit,
 ) {
     val allTabLabel = stringResource(R.string.workflow_tab_all)
-    val tabItems = remember(folderTabs, allTabLabel) {
-        listOf(
-            WorkflowFolderTab(
-                folderId = WORKFLOW_TAB_ALL,
-                name = allTabLabel,
-                workflowCount = folderTabs.sumOf { it.workflowCount },
-            )
-        ) + folderTabs
+    val tabItems = remember(folderTabs, allTabLabel, allWorkflowCount) {
+        folderTabItems(folderTabs, allTabLabel, allWorkflowCount)
     }
 
     LazyVerticalStaggeredGrid(
@@ -1123,12 +1148,14 @@ private fun WorkflowCompactGridContent(
         //    必须一致，否则切一下布局就多/少一行，用户会以为界面错乱。
         if (showFolderTabBar) {
             item(span = StaggeredGridItemSpan.FullLine) {
-                WorkflowFolderTabBar(
+                WorkflowFolderTabBarSwitch(
+                    liquidGlassEnabled = liquidGlassEnabled,
                     tabs = tabItems,
                     selectedFolderId = selectedFolderTab,
                     onSelect = onSelectFolderTab,
                     onRenameFolder = onRenameFolder,
                     onExportFolder = onExportFolder,
+                    onDissolveFolder = onDissolveFolder,
                     onDeleteFolder = onDeleteFolder,
                 )
             }

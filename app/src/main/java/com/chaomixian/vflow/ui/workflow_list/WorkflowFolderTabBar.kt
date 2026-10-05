@@ -17,7 +17,8 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.FolderDelete
+import androidx.compose.material.icons.outlined.FolderOff
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.DriveFileRenameOutline
 import androidx.compose.material3.DropdownMenuGroup
@@ -34,9 +35,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEventTimeoutCancellationException
@@ -91,6 +94,7 @@ internal fun WorkflowFolderTabBar(
     onSelect: (String) -> Unit,
     onRenameFolder: (String) -> Unit,
     onExportFolder: (String) -> Unit,
+    onDissolveFolder: (String) -> Unit,
     onDeleteFolder: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -152,42 +156,15 @@ internal fun WorkflowFolderTabBar(
                 )
 
                 if (isRealFolder && menuTarget == tab.folderId) {
-                    DropdownMenuPopup(
+                    WorkflowFolderMenu(
                         expanded = menuExpanded,
-                        onDismissRequest = { menuExpanded = false },
-                    ) {
-                        DropdownMenuGroup(
-                            shapes = MenuDefaults.groupShape(index = 0, count = 1),
-                            modifier = Modifier
-                                .width(IntrinsicSize.Max)
-                                .widthIn(min = 156.dp, max = 236.dp),
-                            containerColor = MenuDefaults.groupStandardContainerColor,
-                        ) {
-                            Column(modifier = Modifier.padding(vertical = 6.dp)) {
-                                FolderMenuItem(
-                                    text = stringResource(R.string.folder_rename),
-                                    icon = Icons.Outlined.DriveFileRenameOutline,
-                                ) {
-                                    menuExpanded = false
-                                    onRenameFolder(tab.folderId)
-                                }
-                                FolderMenuItem(
-                                    text = stringResource(R.string.folder_export),
-                                    icon = Icons.Outlined.Download,
-                                ) {
-                                    menuExpanded = false
-                                    onExportFolder(tab.folderId)
-                                }
-                                FolderMenuItem(
-                                    text = stringResource(R.string.folder_delete),
-                                    icon = Icons.Outlined.DeleteOutline,
-                                ) {
-                                    menuExpanded = false
-                                    onDeleteFolder(tab.folderId)
-                                }
-                            }
-                        }
-                    }
+                        folderId = tab.folderId,
+                        onDismiss = { menuExpanded = false },
+                        onRenameFolder = onRenameFolder,
+                        onExportFolder = onExportFolder,
+                        onDissolveFolder = onDissolveFolder,
+                        onDeleteFolder = onDeleteFolder,
+                    )
                 }
             }
         }
@@ -203,8 +180,11 @@ internal fun WorkflowFolderTabBar(
  *
  * 这里用 `awaitEachGesture` 自己判：超时后仍在按压 ⇒ 算长按，否则**原样返回**
  * 让事件继续往下传。
+ *
+ * ⚠️ `internal` 而非 `private`：液态玻璃版 Tab 栏（`WorkflowFolderGlassTabBar.kt`）
+ * 要用**同一份**手势实现 —— 两处各写一份的话，「长按吃掉单击」那个坑会只在一边修好。
  */
-private fun Modifier.longPressForFolderMenu(
+internal fun Modifier.longPressForFolderMenu(
     enabled: Boolean,
     onLongPress: () -> Unit,
 ): Modifier = if (!enabled) {
@@ -223,6 +203,50 @@ private fun Modifier.longPressForFolderMenu(
             }
             if (longPress != null) {
                 onLongPress()
+            }
+        }
+    }
+}
+
+/**
+ * 非消费型「点按」检测，把**按下位置**交给回调。
+ *
+ * ⚠️⚠️ **为什么玻璃版不能用 `Modifier.clickable` 挂在单个 Tab 上**：
+ * 滑动指示块画在最上层、且正好盖住当前选中项，命中测试只走最上层 ⇒
+ * 那一格 Tab 的 `clickable` **永远收不到点击**（表现是「点当前 Tab 什么都不会发生」，
+ * 而点别的 Tab 正常 —— 极难从现象联想到是遮挡）。
+ *
+ * 挂在**整条栏**上、按 x 坐标反查就没有遮挡问题：整条栏是指示块的父节点，
+ * 父子都会收到同一条指针流。
+ *
+ * ⚠️ 必须**不消费**事件 —— 指示块的拖拽手势（`inspectDragGestures`）与之共用
+ * 同一条指针流，一旦这里 `consume()`，拖动就再也起不来。反过来，拖动时位移会
+ * 超过 `touchSlop`，这里的判据自然不成立，不会误触发点击。
+ * 两条手势通道因此互不相干：**按住拖 = 换 Tab，轻点 = 切换/弹菜单**。
+ *
+ * ⚠️⚠️ **必须走 `rememberUpdatedState`**：`pointerInput(Unit)` 的 block 只在
+ * 首次组合时跑一次，里面捕获的 lambda 是**那一刻**的实例 —— 而调用方的 lambda
+ * 每次都捕获了当次的 `selectedFolderId`。不更新的话判据永远拿**最初**的选中项：
+ * 表现是「点第一个 Tab 没反应（它恰好是初始选中项）+ 点其他 Tab 只切换、从不弹菜单」，
+ * 而这两条**都不报错**，极难从现象联想到是闭包过期。
+ */
+@Composable
+internal fun Modifier.folderTabTapAt(
+    onTap: (Offset) -> Unit,
+): Modifier {
+    val currentOnTap by rememberUpdatedState(onTap)
+    return this.pointerInput(Unit) {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            // ⚠️ 三条判据缺一不可，每条都对应一种误触/失灵：
+            //   ① 等到**抬起**才算点按（不要 `withTimeout` —— 玻璃版没有「长按」语义了，
+            //      按久一点再抬手仍应是点按）；
+            //   ② 位移必须小于 `touchSlop` —— 否则滑动指示块的拖拽会连带触发一次「点按」
+            //      （拖动结束时 `val` 已经变了，而这一格此时**正是**当前选中项）；
+            //   ③ **不能消费事件** —— 消费了指示块的拖拽就再也起不来。
+            val up = waitForUpOrCancellation() ?: return@awaitEachGesture
+            if ((up.position - down.position).getDistance() <= viewConfiguration.touchSlop) {
+                currentOnTap(down.position)
             }
         }
     }
@@ -248,6 +272,75 @@ private fun FolderMenuItem(
         ) {
             Icon(imageVector = icon, contentDescription = null)
             Text(text = text, style = MaterialTheme.typography.bodyLarge)
+        }
+    }
+}
+
+/**
+ * 「重命名 / 导出 / 删除」这个菜单本体。
+ *
+ * ⚠️ 由两个 Tab 栏共用（普通版 `WorkflowFolderTabBar` 与液态玻璃版
+ * `WorkflowFolderGlassTabBar`）—— 它挂在一个具体的 Tab 的 `Box` 里，
+ * `DropdownMenuPopup` 是独立 `Popup` 窗口、不受 `horizontalScroll` 裁剪影响。
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+internal fun WorkflowFolderMenu(
+    expanded: Boolean,
+    folderId: String,
+    onDismiss: () -> Unit,
+    onRenameFolder: (String) -> Unit,
+    onExportFolder: (String) -> Unit,
+    /** 删掉文件夹本身，**里面的工作流保留**（移到根目录）。 */
+    onDissolveFolder: (String) -> Unit,
+    /** 删掉文件夹**连同里面所有工作流**。 */
+    onDeleteFolder: (String) -> Unit,
+) {
+    DropdownMenuPopup(
+        expanded = expanded,
+        onDismissRequest = onDismiss,
+    ) {
+        DropdownMenuGroup(
+            shapes = MenuDefaults.groupShape(index = 0, count = 1),
+            modifier = Modifier
+                .width(IntrinsicSize.Max)
+                .widthIn(min = 156.dp, max = 236.dp),
+            containerColor = MenuDefaults.groupStandardContainerColor,
+        ) {
+            Column(modifier = Modifier.padding(vertical = 6.dp)) {
+                FolderMenuItem(
+                    text = stringResource(R.string.folder_rename),
+                    icon = Icons.Outlined.DriveFileRenameOutline,
+                ) {
+                    onDismiss()
+                    onRenameFolder(folderId)
+                }
+                FolderMenuItem(
+                    text = stringResource(R.string.folder_export),
+                    icon = Icons.Outlined.Download,
+                ) {
+                    onDismiss()
+                    onExportFolder(folderId)
+                }
+                // ⚠️ 「解散」与「删除」只差一件事：**里面的工作流保不保留**。
+                //    图标刻意用成套的一对（FolderOff = 只去掉文件夹本身，
+                //    FolderDelete = 连内容一起删），文案也点明差别 ——
+                //    否则两者在菜单里看起来一样，用户点错就是数据全没。
+                FolderMenuItem(
+                    text = stringResource(R.string.folder_dissolve),
+                    icon = Icons.Outlined.FolderOff,
+                ) {
+                    onDismiss()
+                    onDissolveFolder(folderId)
+                }
+                FolderMenuItem(
+                    text = stringResource(R.string.folder_delete),
+                    icon = Icons.Outlined.FolderDelete,
+                ) {
+                    onDismiss()
+                    onDeleteFolder(folderId)
+                }
+            }
         }
     }
 }
