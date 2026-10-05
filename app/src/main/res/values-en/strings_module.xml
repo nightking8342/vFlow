@@ -3620,8 +3620,8 @@
     <string name="param_vflow_logic_switch_case_match_name">Match value</string>
 
     <string name="sheet_switch_title">Switch</string>
-    <string name="sheet_switch_hint">All branches are managed here. Row order is execution order; hold ⠿ to drag a row.</string>
-    <string name="sheet_switch_value_hint">Value (every Case is compared against this)</string>
+    <string name="sheet_switch_hint">Row order is execution order; hold ⠿ to drag a row.</string>
+    <string name="sheet_switch_value_hint">Value</string>
     <string name="sheet_switch_branch_header">Branches (%1$d)</string>
     <string name="sheet_switch_branch_tag_case">Case</string>
     <string name="sheet_switch_branch_tag_default">Default</string>
@@ -3629,6 +3629,4 @@
     <string name="sheet_switch_add_default">＋ Add default branch</string>
     <string name="sheet_switch_drag_desc">Drag to reorder</string>
     <string name="sheet_switch_remove_desc">Delete this branch and its body</string>
-    <string name="sheet_switch_no_match_hint">(no match value)</string>
-    <string name="sheet_switch_case_hint">e.g. ok</string>
 </resources>

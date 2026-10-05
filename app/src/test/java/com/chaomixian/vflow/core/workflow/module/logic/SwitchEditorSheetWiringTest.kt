@@ -254,8 +254,6 @@ class SwitchEditorSheetWiringTest {
             "sheet_switch_add_default",
             "sheet_switch_drag_desc",
             "sheet_switch_remove_desc",
-            "sheet_switch_no_match_hint",
-            "sheet_switch_case_hint",
         )
 
         val locales = listOf("values", "values-en", "values-ja")

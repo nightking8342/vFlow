@@ -3626,15 +3626,13 @@
     <string name="param_vflow_logic_switch_case_match_name">匹配值</string>
 
     <string name="sheet_switch_title">Switch</string>
-    <string name="sheet_switch_hint">所有分支在这里管理。行的顺序就是执行顺序，按住 ⠿ 可拖动调序。</string>
-    <string name="sheet_switch_value_hint">匹配值（所有 Case 都拿这个值去比）</string>
-    <string name="sheet_switch_branch_header">分支（%1$d 条）</string>
+    <string name="sheet_switch_hint">行的顺序就是执行顺序，按住 ⠿ 可拖动调序。</string>
+    <string name="sheet_switch_value_hint">匹配值</string>
+    <string name="sheet_switch_branch_header">分支（%1$d）</string>
     <string name="sheet_switch_branch_tag_case">Case</string>
     <string name="sheet_switch_branch_tag_default">Default</string>
     <string name="sheet_switch_add_case">＋ 添加分支</string>
     <string name="sheet_switch_add_default">＋ 添加默认分支</string>
     <string name="sheet_switch_drag_desc">拖动排序</string>
     <string name="sheet_switch_remove_desc">删除该分支及其分支体</string>
-    <string name="sheet_switch_no_match_hint">（无匹配值）</string>
-    <string name="sheet_switch_case_hint">例如 ok</string>
 </resources>

@@ -1828,7 +1828,9 @@ class WorkflowEditorActivity : BaseActivity() {
         val branches = SwitchBlockSupport.readBranchesFromSteps(actionSteps, position)
             .ifEmpty { SwitchBlockSupport.readBranches(step.parameters[SWITCH_BRANCHES_KEY]) }
 
-        val sheet = SwitchEditorSheet.newInstance(value, branches)
+        // ⚠️ 必须把 `getAllEditableSteps()` 交给 sheet —— 胶囊渲染要靠它解析显示名；
+        //    传空列表会让 `{{...}}` / `[[...]]` **退化成原始引用文本**（不报错）。
+        val sheet = SwitchEditorSheet.newInstance(value, branches, getAllEditableSteps())
         sheet.onMagicVariableRequested = { targetInputId, currentText, onPicked ->
             // ⚠️ 必须走**带回调**的 `showVariablePillEditor` —— 默认分支会调
             //    `currentEditorSheet?.updateInputWithVariable(...)`，对 sheet 直连的输入框无效。
@@ -1886,7 +1888,9 @@ class WorkflowEditorActivity : BaseActivity() {
         val value = startParams[SWITCH_VALUE_KEY] as? String ?: ""
         val branches = SwitchBlockSupport.readBranches(startParams[SWITCH_BRANCHES_KEY])
 
-        val sheet = SwitchEditorSheet.newInstance(value, branches)
+        // ⚠️ 必须把 `getAllEditableSteps()` 交给 sheet —— 胶囊渲染要靠它解析显示名；
+        //    传空列表会让 `{{...}}` / `[[...]]` **退化成原始引用文本**（不报错）。
+        val sheet = SwitchEditorSheet.newInstance(value, branches, getAllEditableSteps())
         sheet.onMagicVariableRequested = { targetInputId, currentText, onPicked ->
             // 新建期还没有卡片 ⇒ 以一个「临时末尾位置」作为上下文（与既有做法一致）。
             showVariablePillEditor(

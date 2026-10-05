@@ -16,7 +16,9 @@
 package com.chaomixian.vflow.core.workflow.module.logic
 
 import android.annotation.SuppressLint
+import android.view.ContextThemeWrapper
 import android.os.Bundle
+import android.text.InputType
 import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
@@ -26,12 +28,12 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
-import androidx.core.widget.doAfterTextChanged
 import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.chaomixian.vflow.R
-import com.chaomixian.vflow.ui.workflow_editor.StandardControlFactory
+import com.chaomixian.vflow.core.workflow.model.ActionStep
+import com.chaomixian.vflow.ui.workflow_editor.RichTextView
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.textfield.TextInputLayout
@@ -61,10 +63,24 @@ class SwitchEditorSheet : BottomSheetDialogFragment() {
     private var initialValue: String = ""
     private var initialBranches: List<SwitchBranch> = emptyList()
 
+    /**
+     * 渲染胶囊（`{{...}}` / `[[...]]`）所需的工作流步骤快照。
+     *
+     * ⚠️ **不能为空** —— 为空时 `PillRenderer` 解析不出显示名，会把底层引用原样显示出来
+     * （这正是「用了魔法变量却没渲染成胶囊」的症状）。
+     */
+    private var allSteps: List<ActionStep> = emptyList()
+
     /** ⚠️ 只改它 —— 它就是「取消不产生副作用」的全部实现。 */
     private val workingBranches = mutableListOf<SwitchBranch>()
 
-    private var valueField: TextInputLayout? = null
+    /**
+     * ⚠️ 一律用 `RichTextView`（`TextInputEditText` 的子类，支持胶囊）而**不是**
+     * `StandardControlFactory.createTextInputLayout` —— 后者产出的是普通 `TextInputEditText`，
+     * `setText("{{...}}")` 只会显示成一段普通文本，**胶囊渲染不生效**。
+     */
+    private var valueField: RichTextView? = null
+
     private lateinit var branchesAdapter: BranchAdapter
     private lateinit var branchHeader: TextView
     private lateinit var addDefaultButton: MaterialButton
@@ -76,10 +92,15 @@ class SwitchEditorSheet : BottomSheetDialogFragment() {
          * 由宿主在 `onMagicVariableRequested` 的闭包里捕获（闭包在 Activity 内，
          * `getAllEditableSteps()` 直接可用）。
          */
-        fun newInstance(value: String, branches: List<SwitchBranch>): SwitchEditorSheet =
+        fun newInstance(
+            value: String,
+            branches: List<SwitchBranch>,
+            allSteps: List<ActionStep> = emptyList()
+        ): SwitchEditorSheet =
             SwitchEditorSheet().apply {
                 this.initialValue = value
                 this.initialBranches = branches
+                this.allSteps = allSteps
             }
     }
 
@@ -105,21 +126,33 @@ class SwitchEditorSheet : BottomSheetDialogFragment() {
         branchHeader = view.findViewById(R.id.text_switch_branch_header)
         addDefaultButton = view.findViewById(R.id.button_add_default_branch)
 
-        // ── 上段：value 输入（纯文本框，`{{...}}` 原样显示 —— 可点 🪄 换变量）──
-        val valueInput = StandardControlFactory.createTextInputLayout(
+        // ── 上段：value 输入 ──
+        // ⚠️ 用 `RichTextView`（不是 `createTextInputLayout`）：`{{...}}` 要渲染成**胶囊**，
+        //    而不是把底层引用原样显示出来。取原始值一律走 `getRawText()`。
+        val valueInput = createRichEditor(
             context = context,
-            isNumber = false,
-            currentValue = initialValue,
-            hint = context.getString(R.string.sheet_switch_value_hint)
+            hint = context.getString(R.string.sheet_switch_value_hint),
+            initialText = initialValue
         )
-        valueContainer.addView(valueInput)
-        valueField = valueInput
+        // ⚠️ 显式 MATCH_PARENT —— `valueContainer` 是 0dp+weight 的容器，不带参 `addView`
+        //    会落成 WRAP_CONTENT，hint 一短（如「匹配值」）输入框就缩成一小截。
+        valueContainer.addView(
+            valueInput.first,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        )
+        valueField = valueInput.second
+        valueInput.second.onVariablePillEditRequested = { currentRef, onUpdated ->
+            onMagicVariableRequested?.invoke(SWITCH_VALUE_KEY, currentRef, onUpdated)
+        }
         valueMagic.setOnClickListener {
             onMagicVariableRequested?.invoke(
                 SWITCH_VALUE_KEY,
-                valueInput.editText?.text?.toString().orEmpty()
+                valueField?.getRawText().orEmpty()
             ) { picked ->
-                valueInput.editText?.setText(picked.orEmpty())
+                setRichEditorText(valueField, picked.orEmpty())
             }
         }
 
@@ -160,8 +193,10 @@ class SwitchEditorSheet : BottomSheetDialogFragment() {
                 Toast.makeText(context, validation.errorMessage.orEmpty(), Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
+            // ⚠️ 取原始值必须走 `getRawText()` —— `text` 里装的是**胶囊化的显示文本**，
+            //    直接拿会存下「友好名称」而不是引用语法（静默写坏参数）。
             onSave?.invoke(
-                valueField?.editText?.text?.toString().orEmpty(),
+                valueField?.getRawText().orEmpty(),
                 workingBranches.toList()
             )
             dismiss()
@@ -181,6 +216,60 @@ class SwitchEditorSheet : BottomSheetDialogFragment() {
         branchHeader.text = getString(R.string.sheet_switch_branch_header, workingBranches.size)
         // Default 最多一张（设计文档 §2.5）：已有时置灰，删掉后复亮。
         addDefaultButton.isEnabled = workingBranches.none { it.match == null }
+    }
+
+    // ─────────────────────────── 胶囊输入框 ───────────────────────────
+
+    /**
+     * 造一个带胶囊能力的输入框：外层 `TextInputLayout`（描边 + hint）+ 内层 `RichTextView`。
+     *
+     * ⚠️ **必须用 `RichTextView`** —— 它是 `TextInputEditText` 的子类，`setRichText()` 会把
+     * `{{step.output}}` / `[[var]]` 渲染成胶囊；普通 `TextInputEditText` 只会把底层语法原样显示。
+     * ⚠️ **必须传 `allSteps`** —— 为空时解析不出显示名，胶囊会退化成原始引用。
+     *
+     * @return `Pair<整个 TextInputLayout, 内部的 RichTextView>`
+     */
+    private fun createRichEditor(
+        context: android.content.Context,
+        hint: String?,
+        initialText: String
+    ): Pair<TextInputLayout, RichTextView> {
+        val themed = ContextThemeWrapper(
+            context,
+            com.google.android.material.R.style.Widget_Material3_TextInputLayout_OutlinedBox
+        )
+        val layout = TextInputLayout(themed, null).apply {
+            // ⚠️ `hint == null` ⇒ **不设 hint**（分支行的匹配值输入框就是这样）。
+            //    不要回落成 `""`：空字符串 hint 会让 `TextInputLayout` 仍画出标签位置、留一条空隙。
+            if (hint != null) this.hint = hint
+            boxBackgroundMode = TextInputLayout.BOX_BACKGROUND_OUTLINE
+        }
+        val editor = RichTextView(themed).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 1
+            maxLines = 3
+            gravity = android.view.Gravity.TOP or android.view.Gravity.START
+            setPadding(24, 16, 24, 16)
+        }
+        // ⚠️ 必须显式给 MATCH_PARENT 的 LayoutParams —— 不带参 `addView` 生成的是 WRAP_CONTENT，
+        //    在 `TextInputLayout` 里会让输入框宽度只够内容（短文本时缩成一小截，看着像坏了）。
+        layout.addView(
+            editor,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        )
+        setRichEditorText(editor, initialText)
+        return layout to editor
+    }
+
+    /** 把原始文本（可含 `{{...}}`）写进 `RichTextView`，由它渲染成胶囊。 */
+    private fun setRichEditorText(editor: RichTextView?, rawText: String) {
+        editor ?: return
+        // ⚠️ 必须走 `setRichText`（它会带 `allSteps` 交给 `PillRenderer`）——
+        //    直接 `setText(rawText)` 只会得到一段纯文本。hint 由外层 `TextInputLayout` 提供。
+        editor.setRichText(rawText, allSteps)
     }
 
     /**
@@ -252,8 +341,8 @@ class SwitchEditorSheet : BottomSheetDialogFragment() {
         private val items: MutableList<SwitchBranch>
     ) : RecyclerView.Adapter<BranchHolder>() {
 
-        /** 当前**已绑定**的行输入框（`caseId` → 控件）。用户可能输入后未失焦就点保存。 */
-        private val boundInputs = mutableMapOf<String, TextInputLayout>()
+        /** 当前**已绑定**的行编辑器（`caseId` → `RichTextView`）。用户可能输入后未失焦就点保存。 */
+        private val boundInputs = mutableMapOf<String, RichTextView>()
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): BranchHolder =
             BranchHolder(
@@ -274,38 +363,52 @@ class SwitchEditorSheet : BottomSheetDialogFragment() {
             )
 
             // ── 匹配值输入框 ──
+            // ⚠️⚠️ **Default 行不建输入框** —— 它没有匹配值，留一个禁用空框只会让人以为「该填点什么」。
+            //    用户 2026-10-05 明确要求删掉它（原为 disabled + 「（无匹配值）」占位）。
             holder.matchContainer.removeAllViews()
             boundInputs.remove(branch.id)
-            val input = StandardControlFactory.createTextInputLayout(
-                context = context,
-                isNumber = false,
-                currentValue = branch.match.orEmpty(),
-                hint = context.getString(
-                    if (isDefault) R.string.sheet_switch_no_match_hint
-                    else R.string.sheet_switch_case_hint
+            if (isDefault) {
+                // ⚠️ 容器**留空但保持 VISIBLE**（不置 GONE）—— 它是 `0dp + weight=1` 的占位，
+                //    置 GONE 会让后面的 🗑 紧贴在「Default」标签右边，与其它行的右对齐位置错开。
+                holder.magic.visibility = View.GONE
+            } else {
+                holder.matchContainer.visibility = View.VISIBLE
+                holder.magic.visibility = View.VISIBLE
+                val (inputLayout, editor) = createRichEditor(
+                    context = context,
+                    hint = null,
+                    initialText = branch.match.orEmpty()
                 )
-            )
-            // Default 没有匹配值 ⇒ 输入框禁用（原型同款：disabled + 「（无匹配值）」placeholder）
-            input.editText?.isEnabled = !isDefault
-            input.editText?.doAfterTextChanged { text ->
-                val index = items.indexOfFirst { it.id == branch.id }
-                if (index >= 0) {
-                    items[index] = items[index].copy(match = text?.toString().orEmpty())
-                }
-            }
-            holder.matchContainer.addView(input)
-            if (!isDefault) boundInputs[branch.id] = input
+                editor.addTextChangedListener(object : android.text.TextWatcher {
+                    override fun beforeTextChanged(s: CharSequence?, st: Int, c: Int, a: Int) = Unit
+                    override fun onTextChanged(s: CharSequence?, st: Int, b: Int, c: Int) = Unit
+                    override fun afterTextChanged(s: android.text.Editable?) {
+                        // ⚠️ 取**原始**文本（`getRawText()`），不是胶囊化的显示文本。
+                        val index = items.indexOfFirst { it.id == branch.id }
+                        if (index >= 0) {
+                            items[index] = items[index].copy(match = editor.getRawText())
+                        }
+                    }
+                })
+                holder.matchContainer.addView(
+                    inputLayout,
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    )
+                )
+                boundInputs[branch.id] = editor
 
-            holder.magic.visibility = if (isDefault) View.GONE else View.VISIBLE
-            holder.magic.setOnClickListener {
-                val current = input.editText?.text?.toString().orEmpty()
-                onMagicVariableRequested?.invoke(SWITCH_MATCH_KEY, current) { picked ->
-                    // ⚠️ 回调时**按 caseId 重新解析索引** —— 选择器打开期间用户可能拖动了行，
-                    //    捕获 position 会把值写到别的分支上。
-                    val index = items.indexOfFirst { it.id == branch.id }
-                    if (index < 0) return@invoke
-                    items[index] = items[index].copy(match = picked.orEmpty())
-                    boundInputs[branch.id]?.editText?.setText(picked.orEmpty())
+                holder.magic.setOnClickListener {
+                    val current = editor.getRawText()
+                    onMagicVariableRequested?.invoke(SWITCH_MATCH_KEY, current) { picked ->
+                        // ⚠️ 回调时**按 caseId 重新解析索引** —— 选择器打开期间用户可能拖动了行，
+                        //    捕获 position 会把值写到别的分支上。
+                        val index = items.indexOfFirst { it.id == branch.id }
+                        if (index < 0) return@invoke
+                        items[index] = items[index].copy(match = picked.orEmpty())
+                        setRichEditorText(editor, picked.orEmpty())
+                    }
                 }
             }
 
@@ -342,16 +445,16 @@ class SwitchEditorSheet : BottomSheetDialogFragment() {
         /**
          * 把「已绑定但可能还没失焦」的输入框文本收进 `items`。
          *
-         * ⚠️ 只依赖 `doAfterTextChanged` 是不够的：用户输入后**立刻点保存**时，
-         * `TextInputEditText` 仍是焦点、`doAfterTextChanged` 可能尚未跑完最后一拍。
+         * ⚠️ 只依赖 `afterTextChanged` 是不够的：用户输入后**立刻点保存**时，
+         * `RichTextView` 仍是焦点、最后一次文本回调可能尚未跑完。
          */
         fun commitPendingText() {
             boundInputs.forEach { (caseId, layout) ->
                 val index = items.indexOfFirst { it.id == caseId }
                 if (index < 0) return@forEach
                 if (items[index].match == null) return@forEach // Default 没有匹配值
-                val text = layout.editText?.text?.toString().orEmpty()
-                items[index] = items[index].copy(match = text)
+                // ⚠️ 取原始文本（`getRawText()`），不能拿 `text`（那是胶囊化的显示文本）。
+                items[index] = items[index].copy(match = layout.getRawText())
             }
         }
     }
