@@ -740,10 +740,13 @@ fun WorkflowCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     if (colorfulCardsEnabled) {
+                        // ⚠️ **曲奇饼干花边**（参考 ShortX）：原来是 `RoundedCornerShape(14.dp)`。
+                        //    形状与实测依据见 `ScallopedBadgeShape`；花瓣数 12、起伏 4.1%
+                        //    都是对 ShortX 截图做极坐标半径扫描量出来的。
                         Surface(
                             modifier = Modifier.size(40.dp),
                             color = Color(visualColors.iconBackground),
-                            shape = RoundedCornerShape(14.dp)
+                            shape = remember { ScallopedBadgeShape() }
                         ) {
                             // ⚠️ 走 `WorkflowCardIcon`：卡片图标现在可能是**用户选的图片**
                             //    （绝对路径 / file://），不能再无条件 painterResource。
@@ -914,32 +917,38 @@ fun WorkflowCard(
 
                 if (isManualTrigger && !hasAutoTriggers) {
                     Box {
-                        Surface(
+                        // ⚠️ **执行按钮没有底色方块**（参考 ShortX）：整块消失，只留一个
+                        //    纯色三角。原先是「圆角矩形底 + 白图标」，等于在一张彩色卡上
+                        //    再叠一个高亮色块，而卡片本身已经带主题色了 —— 视觉上抢焦点。
+                        //
+                        //    现在的观感 = 主题色 × 40% 叠在卡片底色上，与 ShortX 一致
+                        //    （0.40 的来历见 `WorkflowVisuals.EXECUTE_ICON_ALPHA`）。
+                        Box(
                             modifier = Modifier
                                 .size(48.dp)
                                 .combinedClickable(
                                     onClick = onExecuteWorkflow,
                                     onLongClick = { delayedMenuExpanded = true }
                                 ),
-                            color = if (colorfulCardsEnabled) {
-                                Color(visualColors.accentBackground)
-                            } else {
-                                MaterialTheme.colorScheme.primaryContainer
-                            },
-                            shape = RoundedCornerShape(14.dp)
+                            contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 painter = painterResource(
-                                    if (isRunning) R.drawable.rounded_pause_fill_24
-                                    else R.drawable.rounded_play_arrow_fill_24
+                                    // ⚠️ **线框**版（不带 `_fill_`）—— 与 ShortX 一致。
+                                    //    填充版是实心三角，ShortX 的是空心（见
+                                    //    `WorkflowVisuals.EXECUTE_ICON_SIZE_DP` 的实测依据）。
+                                    if (isRunning) R.drawable.rounded_pause_24
+                                    else R.drawable.rounded_play_arrow_24
                                 ),
                                 contentDescription = stringResource(R.string.workflow_item_execute),
-                                tint = if (colorfulCardsEnabled) {
-                                    Color(visualColors.iconTint)
-                                } else {
-                                    MaterialTheme.colorScheme.onPrimaryContainer
-                                },
-                                modifier = Modifier.padding(12.dp)
+                                tint = executeIconColor(
+                                    colorfulCardsEnabled = colorfulCardsEnabled,
+                                    visualColors = visualColors,
+                                ),
+                                // ⚠️ 去掉底块后图标要**自己撑起视觉重量**。尺寸照 ShortX
+                                //    对齐（来历见 `EXECUTE_ICON_SIZE_DP`）：原先 24dp 盒里
+                                //    的字形只有 10dp 高，明显偏小。
+                                modifier = Modifier.size(WorkflowVisuals.EXECUTE_ICON_SIZE_DP.dp)
                             )
                         }
                         DropdownMenuPopup(
@@ -1526,7 +1535,9 @@ private fun WorkflowCompactCard(
             ) {
                 Surface(
                     modifier = Modifier.size(iconBox),
-                    shape = RoundedCornerShape(13.dp),
+                    // ⚠️ 曲奇饼干花边，与列表模式一致（`RoundedCornerShape(13.dp)` 是原来
+                    //    的形态）。花边是**纯几何**、不依赖主题色，故非多彩模式下照用。
+                    shape = remember { ScallopedBadgeShape() },
                     color = if (colorfulCardsEnabled) {
                         Color(visualColors.iconBackground)
                     } else {
@@ -1575,35 +1586,39 @@ private fun WorkflowCompactCard(
                 } else if (isManualTrigger) {
                     Spacer(modifier = Modifier.width(4.dp))
                     Box {
-                        Surface(
+                        // ⚠️ **无底色方块**（同列表模式，参考 ShortX）：见上方长注释。
+                        //    尺寸由 `controlSize` 承担触控目标，图标自己放大。
+                        //    ⚠️⚠️ 卡片底色走 `cardBrush` 的**渐变**，而 `executeIconColor`
+                        //    是按 `cardBackground`（渐变顶端）算的 —— 它在卡片顶部区域，
+                        //    两者逐像素贴合；再往下颜色会与卡片底色有细微偏移，
+                        //    肉眼不可见（0.40 的合成量本身就把差异压得很低）。
+                        Box(
                             modifier = Modifier
                                 .size(controlSize)
                                 .combinedClickable(
                                     onClick = onExecuteWorkflow,
                                     onLongClick = { delayedMenuExpanded = true }
                                 ),
-                            color = if (colorfulCardsEnabled) {
-                                Color(visualColors.accentBackground)
-                            } else {
-                                MaterialTheme.colorScheme.primaryContainer
-                            },
-                            shape = RoundedCornerShape(13.dp)
+                            contentAlignment = Alignment.Center
                         ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    painter = painterResource(
-                                        if (isRunning) R.drawable.rounded_pause_fill_24
-                                        else R.drawable.rounded_play_arrow_fill_24
-                                    ),
-                                    contentDescription = stringResource(R.string.workflow_item_execute),
-                                    tint = if (colorfulCardsEnabled) {
-                                        Color(visualColors.iconTint)
-                                    } else {
-                                        MaterialTheme.colorScheme.onPrimaryContainer
-                                    },
-                                    modifier = Modifier.size(iconInner + 2.dp)
-                                )
-                            }
+                            Icon(
+                                painter = painterResource(
+                                    // ⚠️ 线框版（不带 `_fill_`），与 ShortX 一致。
+                                    //    见 `WorkflowVisuals.EXECUTE_ICON_SIZE_DP`。
+                                    if (isRunning) R.drawable.rounded_pause_24
+                                    else R.drawable.rounded_play_arrow_24
+                                ),
+                                contentDescription = stringResource(R.string.workflow_item_execute),
+                                tint = executeIconColor(
+                                    colorfulCardsEnabled = colorfulCardsEnabled,
+                                    visualColors = visualColors,
+                                ),
+                                // ⚠️ 尺寸照 ShortX 对齐。**不再挂在 `iconInner` 上** ——
+                                //    那是左上角**图标徽章**的尺寸（18~20dp），拿它当
+                                //    执行按钮的尺寸会让「徽章」与「按钮」两个本该独立的
+                                //    设计变量被绑死。触控目标仍是 controlSize（38~44dp）。
+                                modifier = Modifier.size(WorkflowVisuals.EXECUTE_ICON_SIZE_DP.dp)
+                            )
                         }
                         DropdownMenuPopup(
                             expanded = delayedMenuExpanded,
@@ -1798,6 +1813,24 @@ private fun workflowSwitchColors(
     )
 } else {
     SwitchDefaults.colors()
+}
+
+/**
+ * 卡片上「执行」▶ / 「运行中」⏸ 图标的颜色。
+ *
+ * ⚠️ 多彩模式下是**预先合成好的实色**（主题色 × 40% 叠在卡片底色上，见
+ * `WorkflowVisuals.EXECUTE_ICON_ALPHA` 的实测来历），调用方不能再叠 alpha。
+ * 非多彩模式没有主题色可用，退回 `primary` —— 它要在一张中性色卡上
+ * 单独承担「这里能点」的语义（原先靠 `primaryContainer` 色块表达，色块已去掉了）。
+ */
+@Composable
+private fun executeIconColor(
+    colorfulCardsEnabled: Boolean,
+    visualColors: WorkflowVisuals.CardColors,
+): Color = if (colorfulCardsEnabled) {
+    Color(visualColors.executeIconColor)
+} else {
+    MaterialTheme.colorScheme.primary
 }
 
 @Composable

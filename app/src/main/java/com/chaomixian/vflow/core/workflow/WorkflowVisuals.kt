@@ -11,6 +11,54 @@ object WorkflowVisuals {
     const val DEFAULT_ICON_RES_NAME = "rounded_layers_fill_24"
     const val DEFAULT_THEME_COLOR_HEX = "#5B8CFF"
 
+    /**
+     * 执行按钮（▶ / ⏸）图标的不透明度 —— 「主题色 × 40%」。
+     *
+     * ⚠️ **0.40 不是随手取的整数，是照 ShortX 截图逐像素反解出来的**。
+     * 做法：量每张卡片右上角三角笔画**最纯处**的颜色，再与同一张卡片左上角
+     * 徽章（= 该卡主题色）**逐通道相除**。7 张卡 × 3 通道共 18 个比值，
+     * **中位数恰为 0.400**（范围 0.386 ~ 0.435）。
+     *
+     * ⚠️ 关键证据是**等比**：三个通道的比值几乎相同，且三角的色相/饱和度与主题色
+     * 一字不差（珊瑚红的主题色 HSV(4°, 0.73, 1.00) → 三角 HSV(4°, 0.72, 0.39)；
+     * 青的 HSV(190°, 1.00, 0.88) → HSV(190°, 0.99, 0.35)）。
+     * ⇒ 结论是「**主题色整体乘一个标量**」，而不是「另外配了一组暗色」——
+     * 后者会让饱和度一起掉下去，而实测没有。
+     *
+     * ⚠️ 同一批采样还反解出 ShortX 的**卡片底色** = 主题色 × 0.075 叠在页面底色上
+     * （7 张卡的比值 0.071 ~ 0.087）。本 App 自己的卡片底色是 0.18 /
+     * 渐变底端 0.06（见 [resolveCardColors]），比 ShortX 略亮 —— 故执行按钮
+     * 必须**叠在本 App 自己的卡片底色上**再输出（见 [CardColors.executeIconColor]），
+     * 而不是直接把「主题色 × 0.40」当实色用。
+     *
+     * ⚠️ 实测取自**深色主题**。浅色主题下同一条公式会把三角算得偏淡 ——
+     * 这是「半透明」的固有语义（ShortX 亦然），不是缺陷。
+     */
+    const val EXECUTE_ICON_ALPHA = 0.40f
+
+    /**
+     * 执行按钮（▶ / ⏸）图标的尺寸（dp）—— 与 ShortX 对齐后的值。
+     *
+     * ⚠️ **两件事一起定下来的，别只改一半**：
+     *
+     * **① 图标是「空心」的**（`rounded_play_arrow_24`，**不带 `_fill_`**）。
+     * 早期用的是填充版 `rounded_play_arrow_fill_24`，与 ShortX 不符。
+     * 判定依据是把 ShortX 三角放大成逐像素 ASCII 图：左侧竖边与右侧斜边各约 5~6px，
+     * 中间整块是卡片底色（`#####.....##########`）—— 线框而非实心。
+     *
+     * **② 32dp 的来历**：ShortX 三角的**字形**实测 27 × 34 px。用同屏 vFlow 卡片上
+     * 已知 dp 的图标徽章（67px = 34dp）反推得 px/dp ≈ 1.97，故 ShortX 的三角字形
+     * 高约 **17.2dp**；而 Material 的 `play_arrow` 字形高只占图标盒的 **51.5%**
+     * （494/960 viewport），故等效图标盒 ≈ 33.6dp。取 **32dp** 略保守。
+     * 佐证：ShortX 三角笔画 5~6px ≈ 2.7dp，而本图标在 32dp 盒下按矢量算出的笔画
+     * 恰好是 2.67dp —— 两处独立吻合，说明拿到的就是同一套 Material 线框图形。
+     *
+     * ⚠️ 原来两个调用点都在 **20~24dp**（字形只有 10~12dp 高），故观感明显偏小。
+     * ⚠️ 32dp 只放大**图标**，不动触控目标：两种卡片的可点区域仍是
+     * `controlSize`（38~44dp）/ 48dp。
+     */
+    const val EXECUTE_ICON_SIZE_DP = 32f
+
     private val iconRegistry = linkedMapOf(
         DEFAULT_ICON_RES_NAME to R.drawable.rounded_layers_fill_24,
         "rounded_auto_awesome_motion_24" to R.drawable.rounded_auto_awesome_motion_24,
@@ -107,6 +155,21 @@ object WorkflowVisuals {
         val chipBackground: Int,
         /** 渐变的底端颜色。默认等于 [cardBackground]（即不渐变），保证旧调用点行为不变。 */
         val cardBackgroundEnd: Int = cardBackground,
+        /**
+         * 卡片上「执行」▶ / 「运行中」⏸ 图标的颜色。
+         *
+         * ⚠️⚠️ **默认值刻意是 `iconTint` 而不是新算一个色** —— 本类有多个构造点，
+         *    加字段时任何一处漏传都会**静默**拿到一个看似合理、实则错误的颜色。
+         *    默认值等于「改动前的观感」，故漏传 = 行为不变，不会变成随机色。
+         *
+         * ⚠️ 它是一个**已合成的实色**（主题色 × [EXECUTE_ICON_ALPHA] 叠在
+         *    [cardBackground] 上），不是带 alpha 的颜色 —— 调用方直接 `tint =` 即可。
+         *    为什么不直接给带 alpha 的 Color：若将来这个色块挪到**另一层底色**上
+         *    （卡片底色变了、或放到弹窗里），实色不会跟着变、半透明会 ——
+         *    这里选「贴合当前卡片底色」的确定观感，把「换背景就要重算」这件事
+         *    留在 [resolveCardColors] 一个地方。
+         */
+        val executeIconColor: Int = iconTint,
     )
 
     fun defaultIconResName(): String = DEFAULT_ICON_RES_NAME
@@ -194,6 +257,10 @@ object WorkflowVisuals {
         } else {
             Color.WHITE
         }
+        // 执行按钮图标：**主题色直接缩到 40%**（见 EXECUTE_ICON_ALPHA 的实测说明），
+        // 再叠在卡片底色上 —— 注意是叠在 `cardBackground` 而不是在 `baseColor` 上，
+        // 否则算出来的色与「真的画在那张卡上」相差一个卡片底色的量。
+        val executeIconColor = ColorUtils.blendARGB(cardBackground, baseColor, EXECUTE_ICON_ALPHA)
         return CardColors(
             cardBackground = cardBackground,
             iconBackground = iconBackground,
@@ -201,6 +268,7 @@ object WorkflowVisuals {
             accentBackground = accentBackground,
             chipBackground = chipBackground,
             cardBackgroundEnd = cardBackgroundEnd,
+            executeIconColor = executeIconColor,
         )
     }
 }

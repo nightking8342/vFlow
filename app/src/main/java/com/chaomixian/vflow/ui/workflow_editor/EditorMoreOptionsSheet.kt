@@ -480,6 +480,18 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
         val cardColors = WorkflowVisuals.resolveCardColors(requireContext(), selectedThemeColor)
         cardVisualPreview.setCardBackgroundColor(cardColors.cardBackground)
         cardVisualPreviewIcon.setCardBackgroundColor(cardColors.iconBackground)
+        // ⚠️ **曲奇饼干花边**：列表卡片上图标徽章已改成 `ScallopedBadgeShape`，
+        //    这里是它的**形状对齐** —— 做不到像素级一致（`MaterialCardView`
+        //    只能吃 `CornerFamily`，没有 `Shape` 入口），但 `cardCornerRadius="20dp"`
+        //    配 40dp 的盒子渲染出的是**正圆**，是「圆形族」里最接近花边的一档；
+        //    原来的 14dp 圆角矩形则会与列表明显不同形。
+        //    形态差异本身是**刻意接受**的：预览只有一张、无对比对象，
+        //    而「列表上花边、预览里圆角矩形」会被当成 bug。
+        cardVisualPreviewIcon.setShapeAppearanceModel(
+            cardVisualPreviewIcon.shapeAppearanceModel.toBuilder()
+                .setAllCornerSizes(20f)
+                .build()
+        )
         // ⚠️ 预览也必须认「自定义图片」这一形态 —— 否则用户选完图、预览里
         //    还是默认图标，而列表卡片上显示的是图片（两处不一致）。
         //    判定走 `WorkflowIconValue`，与列表卡片共用同一份逻辑。
