@@ -911,6 +911,12 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 
 ### 快捷设置磁贴（QS Tile）优化（2026-10-06）—— **已实现**
 
+> ✅ commit `5333676c`（31 文件 / +3238 −227）。设计文档 `quick-settings-tile-design.md`
+> 已回写实现状态（含**三处与文档不同的偏离**，其中最要紧的是 `kind` 必须可空：
+> **Gson 不填 Kotlin 默认值**，缺键读出 `null` ⇒ 被 catch 吞成空列表 ⇒
+> 「20 个磁贴绑定全部消失」且无报错）。
+
+
 > 设计文档：`docs/fork/quick-settings-tile-design.md`（v1.0）。
 > 三件事：① 磁贴图标 = 绑定工作流的 `cardIconRes`（含自定义照片）；
 > ② 执行型磁贴不再常亮；③ **新增 20 个开关型磁贴**绑定有 auto trigger 的工作流。

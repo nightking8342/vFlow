@@ -1,9 +1,80 @@
 # 快捷设置磁贴（QS Tile）优化设计
 
-**状态**：设计定稿，待实现 ｜ **日期**：2026-10-06
+**状态**：**已实现**（`@dev`，2026-10-06，commit `5333676c`）｜ **日期**：2026-10-06
 **上位背景**：用户 2026-10-05 提出，2026-10-06 补齐核心要点（见 §1）。
 **相关**：`surveys/trigger-system-overview.md`（触发器体系）、`backup-webdav-design.md` §TileScope（备份语义）。
 上游无此文件的对应物。
+
+---
+
+## 实现状态（2026-10-06）
+
+**代码已落地并合入 `dev`**（commit `5333676c`，31 文件 / +3238 −227）。逐项对照：
+
+| § | 内容 | 状态 |
+|---|---|---|
+| §4.1 | 两池显式 `kind` 字段 | ✅ 但**形状与本文档写的不一样** —— 见下「实现期的三处偏离」① |
+| §4.2 | 槽位分配 / 类名不得改 | ✅ `WorkflowTileService0..19` 类名一字未动；新池 `WorkflowToggleTileService0..19` |
+| §4.3 | 图标三形态 + 两条回落 | ✅ `CardIconBitmap`（从 `ShortcutHelper` 抽出复用，未复制） |
+| §4.4 | 刷新时机 | ✅ `TileRefreshNotifier`（500ms 去抖），四处调用点全部接上 |
+| §4.5 | 点击行为 | ✅ 执行型 / 开关型各一个基类，`onClick` 不下沉到公共基类 |
+| §4.6 | 三道闸 | ✅ 三闸**全部**调 `TileGate`；闸 3 在两个子类的 `onClick` 里 |
+| §4.7 | 状态表 / 两池默认名 | ✅ manifest 40 条 + `TileSlot.displayName` 同一口径 |
+| §6.3 | 新增文案 | ✅ 12 键 ×3 语言 |
+| §8.1 | 纯函数单测 | ✅ 5 个文件 |
+| §8.2 | 源码扫描锚定 | ✅ 2 个文件（`TileManifestTest` / `TileWiringTest`），**3 条反证已实际执行** |
+| §8.3 | 真机验证 | ❌ **0 项 —— 本任务禁止触碰真机**，清单仍是待办 |
+| §6.4 | `TileScopeTest` 会被搞红 | ⚠️ **实际没有变红** —— 见下「实现期的三处偏离」② |
+
+**唯一的自动化证据超出 §8 的部分**：`assembleRelease` 产物核对 —— 40 条声明齐全
+（`vFlow Execute` 20 / `vFlow Toggle` 20 / 旧 `vFlow Tile` **0**）、`ACTIVE_TILE` 40 处、
+`TOGGLEABLE_TILE` 恰 20 处（只有开关池）、两端 service 类（0 与 19，两池）**都在 dex 里
+未被 R8 剥掉**。这**不是**真机验证，但能拦住「manifest 块被删空」「类被 shrinker 剥掉」这两类。
+
+### ⚠️ 实现期的三处偏离（都是本文档写错或没写清，按实际情况落地）
+
+**① `WorkflowTile.kind` 必须是可空的，Gson 不填 Kotlin 默认值。**
+
+本文档 §4.1 写的是 `val kind: TileKind = TileKind.EXECUTE`，并断言「旧记录落默认值
+`EXECUTE`，零迁移」。**实测（`TileKindBackwardCompatTest`）证明这个断言是错的**：
+
+Gson 用 `Unsafe.allocateInstance` 构造对象、**绕过 Kotlin 构造函数** ⇒ 缺键时读出的是
+**`null`**（枚举字段的 Java 默认值），不是 `EXECUTE`。而 `null` 赋给**非空** `val` 后，
+**第一次读取**才抛 `NullPointerException`，被 `TileManager.getAllTiles()` 的
+`catch (e: Exception)` **吞成 `emptyList()`** ⇒ 表现是「用户 20 个磁贴绑定全部消失」，
+且**没有任何报错**。
+
+⇒ 落地为 `val kind: TileKind? = null` + 新增 `TileFieldNormalizer.normalize(...)`
+（按**槽位**归一，不是一律 `EXECUTE` —— 槽位 20..39 属于开关池），
+在 `TileManager.getAllTiles()`（**所有读取路径的共同上游**）统一施加。
+这是本仓库对 Gson 默认值的**既有口径**（先例：`WorkflowLogLevel.fromStoredValue`）。
+`TileGate.isOutOfKind` 也**自己再容一次 `null`**，不依赖调用方先归一。
+
+**② `TileScope` 是文本层合并 ⇒ 它不该认识 `kind`，`TileScopeTest` 也不该断言三个键。**
+
+本文档 §6.4 预判那条断言会变红、要求「把期望集合改成三个键」。**实际没有变红**，
+因为该测试用的是**手工构造的、与 `TileManager` 同形状的** JSON，而那份 JSON 是
+测试自己写的（没写 `kind`）—— 它测的一直是「本 scope 忠实地搬运它拿到的形状」。
+
+而 `TileScope` 的实现（`mergeValue`）做的是**纯文本层** JSON 合并、**刻意不解析**
+`WorkflowTile`（解析会引入 android 依赖、破坏纯度扫描）。⇒ 正确的处置不是
+「改成三个键」，而是**改为断言真正有意义的语义**：存量记录（缺 `kind`）在往返里
+**键集合原样保留**、未知字段**原样带走**、MERGE 的判据**只有 `tileIndex`、与 `kind` 无关**。
+
+⚠️ **§6.4 的判据（「改成三个键而不是 containsAll」）方向是对的**，
+错的是它假设了「这条测试会看到新字段」—— 它看不到。已在测试里注明。
+
+**③ 新增了三处本文档没预见的保护。**
+
+| 保护 | 为什么必须有 |
+|---|---|
+| 自定义图片解码**包 try/catch**（不只是判 `null`） | `BitmapFactory.decodeFile` 对**损坏的图片**会**抛** `RuntimeException`（文档明写；单测里也实测到同类行为）。一个损坏的 PNG 就能崩掉 `onStartListening` ⇒ 磁贴永久空白 |
+| 执行型 `onClick` / 开关型 `onClick` **各自**判闸 3 | 两池的「被拒」文案与后续动作不同；放进公共基类就得先判 kind 再分派，写错就是「开关型去执行工作流」且不报错 |
+| `WorkflowTileServiceN` 的**父类改动 + 类名不动** | 父类由 `BaseWorkflowTileService` 换成 `BaseExecuteTileService`；**类名与槽位号一字未动**（SystemUI 按 `ComponentName` 记已添加的磁贴） |
+
+另有**一条被落实为「刻意不做」**：开关型磁贴**只刷自己那一个**（`requestListeningState(this)`），
+**不走** `TileRefreshNotifier` 的批量 —— 后者带 500ms 去抖，而用户此刻正盯着磁贴看，
+去抖会让它**看起来没反应**。
 
 ---
 
