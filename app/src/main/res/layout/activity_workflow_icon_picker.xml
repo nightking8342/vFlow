@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  图标选择器（独立页面）。
+
+  ⚠️ 结构：Toolbar → 搜索框 → 分类 Chip 横滚 → 图标网格（占满剩余高度）。
+     网格**必须**能撑满剩余高度（`layout_height="0dp"` + `layout_weight="1"`），
+     而不是 `wrap_content` —— 8300 个图标时 wrap_content 会让 RecyclerView
+     一次性测量全部子项（必崩）。同理这里**不套 NestedScrollView**：
+     网格自己滚。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="?attr/colorSurface"
+    android:orientation="vertical">
+
+    <com.google.android.material.appbar.MaterialToolbar
+        android:id="@+id/toolbar"
+        android:layout_width="match_parent"
+        android:layout_height="?attr/actionBarSize"
+        android:title="@string/workflow_card_icon_picker_title" />
+
+    <com.google.android.material.textfield.TextInputLayout
+        style="@style/Widget.Material3.TextInputLayout.OutlinedBox.Dense"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginHorizontal="16dp"
+        android:hint="@string/workflow_card_icon_search_hint"
+        app:endIconMode="clear_text"
+        app:startIconDrawable="@drawable/rounded_search_24">
+
+        <com.google.android.material.textfield.TextInputEditText
+            android:id="@+id/edit_icon_search"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:imeOptions="actionSearch"
+            android:inputType="text"
+            android:maxLines="1" />
+
+    </com.google.android.material.textfield.TextInputLayout>
+
+    <!--
+      ⚠️ 分类栏是 **Compose**（`IconCategoryBar`），不是 ChipGroup。
+          用户要求「模仿工作流页面的 table 栏，并根据『液态玻璃』开关换样式」——
+          工作流页那条栏是 Compose 组件（`WorkflowFolderTabBar(Switch)`），
+          用 ChipGroup 重画一套永远做不到"像"（且改一处不会同步）。
+          这里只放一个空壳 `ComposeView`，内容与开关判定都在 Activity 里接。
+
+      ⚠️ 高度 `wrap_content`：两种样式的固有高度不同（普通版 Chip 高，
+          玻璃版固定 46dp），写死会裁掉其中一种。
+
+      ⚠️ **上下要给指示块的放大留余量**（在 `IconCategoryBar` 里用
+          `padding(vertical = …)` 加，不在这里）—— 本页的父容器是 Android 的
+          `LinearLayout`（`clipChildren` 默认 **true**），指示块按下时放大到
+          1.39 倍、比 46dp 的栏高出约 3.5dp/侧，不给余量会被**切平**。
+          工作流页没这个问题：它的父容器在 Compose 里，而 Compose 不主动裁切子节点。
+    -->
+    <androidx.compose.ui.platform.ComposeView
+        android:id="@+id/compose_icon_categories"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp" />
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_marginTop="8dp">
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/recycler_icons"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipToPadding="false"
+            android:paddingHorizontal="12dp"
+            android:paddingBottom="16dp"
+            android:scrollbars="vertical"
+            tools:listitem="@layout/item_icon_selector" />
+
+        <!--
+          空状态：分类 + 搜索词的组合可能一个都不剩（如"商务"里搜 "wifi"）。
+          ⚠️ 必须给出**可操作的解释**：只说"没有结果"用户不知道是搜索词的问题
+             还是这一类本来就没图标。文案里点明"换分类或清空搜索"。
+        -->
+        <TextView
+            android:id="@+id/text_icon_empty"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:paddingHorizontal="32dp"
+            android:gravity="center"
+            android:text="@string/workflow_card_icon_picker_empty"
+            android:textAppearance="?attr/textAppearanceBodyMedium"
+            android:textColor="?attr/colorOnSurfaceVariant"
+            android:visibility="gone"
+            tools:visibility="visible" />
+
+    </FrameLayout>
+
+</LinearLayout>

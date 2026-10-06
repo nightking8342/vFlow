@@ -6,6 +6,7 @@ import androidx.compose.foundation.MutatorMutex
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.unit.IntSize
@@ -24,6 +25,14 @@ class DampedDragAnimation(
     val initialScale: Float,
     val pressedScale: Float,
     val canDrag: (Offset) -> Boolean = { true },
+    /**
+     * 是否**长按起拖**（默认 `false` = 即时起拖）。
+     *
+     * ⚠️ 默认值刻意保持 `false` —— 底栏（`MainComposeShell`）一直以来就是即时起拖，
+     * 改默认值会**静默改掉底栏手感**。需要长按的调用点显式传 `true`
+     * （图标分类栏要横向滚动，见 `inspectLongPressDragGestures` 的 KDoc）。
+     */
+    val longPressDrag: Boolean = false,
     val onDragStarted: DampedDragAnimation.(position: Offset) -> Unit,
     val onDragStopped: DampedDragAnimation.() -> Unit,
     val onDrag: DampedDragAnimation.(size: IntSize, dragAmount: Offset) -> Unit,
@@ -50,26 +59,34 @@ class DampedDragAnimation(
     val scaleY: Float get() = scaleYAnimation.value
     val velocity: Float get() = velocityAnimation.value
 
-    val modifier: Modifier = Modifier.pointerInput(Unit) {
-        inspectDragGestures(
-            onDragStart = { down ->
-                onDragStarted(down.position)
-                press()
-            },
-            onDragEnd = {
-                onDragStopped()
-                release()
-            },
-            onDragCancel = {
-                onDragStopped()
-                release()
-            }
-        ) { change, dragAmount ->
+    val modifier: Modifier = Modifier.pointerInput(longPressDrag) {
+        // ⚠️ `longPressDrag` 进了 `pointerInput` 的 key —— 每个 `pointerInput` 会缓存
+        //    自己的读取结果，key 不含它的话改了开关**不会生效**（且不报错）。
+        val onDragStart: (down: PointerInputChange) -> Unit = { down ->
+            onDragStarted(down.position)
+            press()
+        }
+        // ⚠️ 结束时**不看抬起位置**（`_` 丢弃）—— 原实现也是直接 `onDragStopped()`，
+        //    行为不变（拖动中手指滑出栏外时，落位仍按最近一格处理）。
+        val onDragEnd: (PointerInputChange) -> Unit = {
+            onDragStopped()
+            release()
+        }
+        val onDragCancel: () -> Unit = {
+            onDragStopped()
+            release()
+        }
+        val onDrag: (change: PointerInputChange, dragAmount: Offset) -> Unit = { change, dragAmount ->
             val isInside = canDrag(change.position)
             val wasInside = canDrag(change.previousPosition)
             if (isInside && wasInside) {
                 onDrag(size, dragAmount)
             }
+        }
+        if (longPressDrag) {
+            inspectLongPressDragGestures(onDragStart, onDragEnd, onDragCancel, onDrag)
+        } else {
+            inspectDragGestures(onDragStart, onDragEnd, onDragCancel, onDrag)
         }
     }
 

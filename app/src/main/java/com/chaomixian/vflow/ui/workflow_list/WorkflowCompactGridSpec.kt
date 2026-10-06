@@ -145,14 +145,14 @@ internal fun densityFor(laneWidth: Dp): CompactCardDensity = when {
  * 没有「未分类」这一档 —— 用户 2026-10-04 定的：**只有「全部」+ 各文件夹**。
  * 还没归到任何文件夹的工作流，只在「全部」里出现。
  */
-internal data class WorkflowFolderTab(
+data class WorkflowFolderTab(
     val folderId: String,
     val name: String,
     val workflowCount: Int,
 )
 
 /** 「全部」这一个 Tab 的哨兵 id（它不是真实文件夹）。 */
-internal const val WORKFLOW_TAB_ALL = "vflow.tab.all"
+const val WORKFLOW_TAB_ALL = "vflow.tab.all"
 
 /**
  * 按当前选中的 Tab 过滤工作流 —— **纯函数，有单测**。

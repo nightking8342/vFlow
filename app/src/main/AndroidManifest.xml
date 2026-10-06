@@ -486,6 +486,19 @@
             android:label="@string/permission_guardian_title"
             android:theme="@style/Theme.vFlow" />
 
+        <!--
+          图标选择器（fork 新增）。图标库扩到 4150 个后从「更多选项」sheet
+          里拆出来成为独立页面（分类导航 + 搜索需要整屏空间）。
+
+          ⚠️ `exported="false"`：只由 WorkflowEditorActivity 用显式 Intent 启动。
+             返回结果走 `setResult`，不需要额外权限声明。
+        -->
+        <activity
+            android:name=".ui.workflow_editor.WorkflowIconPickerActivity"
+            android:exported="false"
+            android:parentActivityName=".ui.workflow_editor.WorkflowEditorActivity"
+            android:theme="@style/Theme.vFlow" />
+
         <activity
             android:name=".ui.changelog.ChangelogActivity"
             android:exported="false"

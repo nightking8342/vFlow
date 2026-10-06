@@ -805,6 +805,27 @@
     <string name="workflow_icon">工作流图标</string>
     <string name="workflow_card_preview">卡片预览</string>
     <string name="workflow_card_icon">卡片图标</string>
+    <string name="workflow_card_icon_search_hint">搜索图标（英文名，如 play arrow）</string>
+    <string name="workflow_card_icon_custom">从相册选择图片</string>
+    <string name="workflow_card_icon_custom_toast">图片已设为卡片图标</string>
+    <string name="workflow_card_icon_custom_failed">图片设置失败：%1$s</string>
+    <string name="workflow_card_icon_picker_title">选择图标</string>
+    <string name="workflow_card_icon_picker_empty">这里没有匹配的图标
+换个分类或清空搜索词试试</string>
+    <string name="workflow_card_icon_pick">选择图标</string>
+    <string name="icon_category_popular">常用</string>
+    <string name="icon_category_all">全部</string>
+    <string name="icon_category_action">操作</string>
+    <string name="icon_category_communication">通讯社交</string>
+    <string name="icon_category_media">媒体图像</string>
+    <string name="icon_category_device">设备硬件</string>
+    <string name="icon_category_place">位置出行</string>
+    <string name="icon_category_file">文件编辑</string>
+    <string name="icon_category_text">文字</string>
+    <string name="icon_category_home">家居</string>
+    <string name="icon_category_business">商务</string>
+    <string name="icon_category_privacy">隐私安全</string>
+    <string name="icon_category_misc">其他</string>
     <string name="workflow_theme_color">主题色</string>
     <string name="workflow_theme_color_value">当前主题色：%1$s</string>
     <string name="workflow_reentry_behavior_title">当工作流再次触发时</string>

@@ -88,7 +88,7 @@ import com.chaomixian.vflow.R
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-internal fun WorkflowFolderTabBar(
+fun WorkflowFolderTabBar(
     tabs: List<WorkflowFolderTab>,
     selectedFolderId: String,
     onSelect: (String) -> Unit,
@@ -97,6 +97,18 @@ internal fun WorkflowFolderTabBar(
     onDissolveFolder: (String) -> Unit,
     onDeleteFolder: (String) -> Unit,
     modifier: Modifier = Modifier,
+    /**
+     * 是否启用**文件夹管理菜单**（长按 Tab 唤出「重命名 / 导出 / 解散 / 删除」）。
+     *
+     * ⚠️⚠️ 图标选择页的分类栏必须传 `false` —— 它把**分类 id**（`action` 等）
+     * 当成 `folderId` 复用这个组件，而下面的菜单判据是
+     * 「`folderId != WORKFLOW_TAB_ALL` 就当它是真实文件夹」⇒ 不关掉的话
+     * **长按任意分类都会弹出「删除文件夹」**，误点即数据全没（本项目无撤销）。
+     *
+     * ⚠️ 传空 lambda **不够** —— 菜单照样会弹出来，只是点了没反应，
+     * 比不弹更让人困惑。必须能整个关掉。
+     */
+    showFolderMenu: Boolean = true,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     var menuTarget by remember { mutableStateOf<String?>(null) }
@@ -111,7 +123,9 @@ internal fun WorkflowFolderTabBar(
         tabs.forEach { tab ->
             val selected = selectedFolderId == tab.folderId
             // 长按菜单只对**真实文件夹**有意义 ——「全部」是伪 Tab，没有可操作的对象。
-            val isRealFolder = tab.folderId != WORKFLOW_TAB_ALL
+            // ⚠️ `showFolderMenu == false` 时（图标分类栏）一律不算真实文件夹，
+            //    否则分类 id 会被当成文件夹、弹出「删除文件夹」。
+            val isRealFolder = showFolderMenu && tab.folderId != WORKFLOW_TAB_ALL
             // ⚠️ 每个 Tab 各自包一个 `Box`，菜单就挂在这个 `Box` 里 ——
             //    这样弹层从**被长按的那个 Tab 下方**弹出，而不是一律从 Tab 栏
             //    最左边弹出（用户 2026-10-05 指出）。

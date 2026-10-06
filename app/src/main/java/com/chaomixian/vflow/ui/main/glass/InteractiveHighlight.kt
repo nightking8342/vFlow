@@ -14,6 +14,7 @@ import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.util.fastCoerceIn
 import kotlinx.coroutines.CoroutineScope
@@ -22,7 +23,17 @@ import kotlinx.coroutines.launch
 @SuppressLint("NewApi")
 class InteractiveHighlight(
     val animationScope: CoroutineScope,
-    val position: (size: Size, offset: Offset) -> Offset = { _, offset -> offset }
+    val position: (size: Size, offset: Offset) -> Offset = { _, offset -> offset },
+    /**
+     * 是否**长按起拖**（要与同一个指示块上的 `DampedDragAnimation` 传一致）。
+     *
+     * ⚠️ 两者必须一致，否则在那段长按等待里一个已经亮了、另一个还没反应，
+     * 看起来像「光晕比拖动早半秒」。
+     * ⚠️ 本类**不消费**事件（消费由 `DampedDragAnimation` 负责）—— 两者都消费
+     * 会让同一节点上的另一个检测器被「已消费」挡掉。但它必须**容忍**被消费
+     * （见 `drag(ignoreConsumed = true)`），否则先跑的那个一消费、光晕就断。
+     */
+    val longPressDrag: Boolean = false,
 ) {
     private val pressProgressAnimationSpec = spring(0.5f, 300f, 0.001f)
     private val positionAnimationSpec = spring(0.5f, 300f, Offset.VisibilityThreshold)
@@ -67,29 +78,37 @@ class InteractiveHighlight(
         drawContent()
     }
 
-    val gestureModifier: Modifier = Modifier.pointerInput(animationScope) {
-        inspectDragGestures(
-            onDragStart = { down ->
-                startPosition = down.position
-                animationScope.launch {
-                    launch { pressProgressAnimation.animateTo(1f, pressProgressAnimationSpec) }
-                    launch { positionAnimation.snapTo(startPosition) }
-                }
-            },
-            onDragEnd = {
-                animationScope.launch {
-                    launch { pressProgressAnimation.animateTo(0f, pressProgressAnimationSpec) }
-                    launch { positionAnimation.animateTo(startPosition, positionAnimationSpec) }
-                }
-            },
-            onDragCancel = {
-                animationScope.launch {
-                    launch { pressProgressAnimation.animateTo(0f, pressProgressAnimationSpec) }
-                    launch { positionAnimation.animateTo(startPosition, positionAnimationSpec) }
-                }
+    val gestureModifier: Modifier = Modifier.pointerInput(animationScope, longPressDrag) {
+        val onDragStart: (down: PointerInputChange) -> Unit = { down ->
+            startPosition = down.position
+            animationScope.launch {
+                launch { pressProgressAnimation.animateTo(1f, pressProgressAnimationSpec) }
+                launch { positionAnimation.snapTo(startPosition) }
             }
-        ) { change, _ ->
+        }
+        val onDragEnd: (PointerInputChange) -> Unit = {
+            animationScope.launch {
+                launch { pressProgressAnimation.animateTo(0f, pressProgressAnimationSpec) }
+                launch { positionAnimation.animateTo(startPosition, positionAnimationSpec) }
+            }
+        }
+        val onDragCancel: () -> Unit = {
+            animationScope.launch {
+                launch { pressProgressAnimation.animateTo(0f, pressProgressAnimationSpec) }
+                launch { positionAnimation.animateTo(startPosition, positionAnimationSpec) }
+            }
+        }
+        val onDrag: (change: PointerInputChange, dragAmount: Offset) -> Unit = { change, _ ->
             animationScope.launch { positionAnimation.snapTo(change.position) }
+        }
+        // ⚠️ 与 `DampedDragAnimation` 用**同一个**手势函数：两者挂在同一个
+        //    指示块节点上，长按阈值必须一致，否则光晕与位移会差半秒。
+        //    ⚠️ 这里传的 lambda **不消费**事件（消费由 `DampedDragAnimation` 做）——
+        //    两个都消费会让同节点上的另一个检测器被「已消费」挡掉。
+        if (longPressDrag) {
+            inspectLongPressDragGestures(onDragStart, onDragEnd, onDragCancel, onDrag)
+        } else {
+            inspectDragGestures(onDragStart, onDragEnd, onDragCancel, onDrag)
         }
     }
 }

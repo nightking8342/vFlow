@@ -436,7 +436,15 @@ fun WorkflowListScreen(
                         onExportFolder = actions.onExportFolder,
                         onDissolveFolder = actions.onDissolveFolder,
                         onDeleteFolder = actions.onDeleteFolder,
-                        modifier = Modifier.padding(horizontal = 16.dp),
+                        // ⚠️⚠️ **两侧留白走 `contentInset`，不能加在 `modifier` 上**。
+                        //    两者视觉一样，但栏现在会因「文件夹多 / 名字长」而溢出滚动，
+                        //    而 `horizontalScroll` 会给自己的节点套一层
+                        //    `clipScrollableContainer`（没有开关）⇒ 留白加在 modifier 上时
+                        //    它落在**滚动视口之外**，指示块按下放大到 1.39 倍、
+                        //    超出内边距的那部分会被切平（图标分类栏踩过这个坑）。
+                        //    `fillMaxWidth` 是必需的：栏要撑满 item，留白才由组件内部出。
+                        modifier = Modifier.fillMaxWidth(),
+                        contentInset = 16.dp,
                     )
                 }
             }
@@ -713,13 +721,12 @@ fun WorkflowCard(
                             color = Color(visualColors.iconBackground),
                             shape = RoundedCornerShape(14.dp)
                         ) {
-                            Icon(
-                                painter = painterResource(
-                                    WorkflowVisuals.resolveIconDrawableRes(workflow.cardIconRes)
-                                ),
-                                contentDescription = null,
+                            // ⚠️ 走 `WorkflowCardIcon`：卡片图标现在可能是**用户选的图片**
+                            //    （绝对路径 / file://），不能再无条件 painterResource。
+                            WorkflowCardIcon(
+                                cardIconRes = workflow.cardIconRes,
                                 tint = Color(visualColors.iconTint),
-                                modifier = Modifier.padding(9.dp)
+                                size = 22.dp,
                             )
                         }
                         SpacerWidth(12.dp)
@@ -1157,6 +1164,11 @@ private fun WorkflowCompactGridContent(
                     onExportFolder = onExportFolder,
                     onDissolveFolder = onDissolveFolder,
                     onDeleteFolder = onDeleteFolder,
+                    // ⚠️ **不传 `contentInset`** —— 与列表模式不同，这里的左右留白
+                    //    已由网格自己的 `contentPadding`（`COMPACT_GRID_CONTENT_PADDING`）
+                    //    提供，再传一次就是双重留白（栏会比搜索卡片窄一截，
+                    //    而两者本该左对齐）。视口边缘 = 内容边缘，指示块放大也不会被切。
+                    modifier = Modifier.fillMaxWidth(),
                 )
             }
         }
@@ -1488,17 +1500,16 @@ private fun WorkflowCompactCard(
                     }
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            painter = painterResource(
-                                WorkflowVisuals.resolveIconDrawableRes(workflow.cardIconRes)
-                            ),
-                            contentDescription = null,
+                        // ⚠️ 同紧凑卡片：图标可能是自定义图片，见 `WorkflowCardIcon`。
+                        WorkflowCardIcon(
+                            cardIconRes = workflow.cardIconRes,
                             tint = if (colorfulCardsEnabled) {
                                 Color(visualColors.iconTint)
                             } else {
                                 MaterialTheme.colorScheme.onSecondaryContainer
                             },
-                            modifier = Modifier.size(iconInner)
+                            size = iconInner,
+                            iconPadding = 0.dp,
                         )
                     }
                 }

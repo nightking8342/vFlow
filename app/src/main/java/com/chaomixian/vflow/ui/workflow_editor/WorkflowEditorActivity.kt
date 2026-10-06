@@ -25,6 +25,10 @@ import android.widget.ImageButton
 import android.widget.PopupMenu
 import android.widget.PopupWindow
 import android.widget.Toast
+import android.net.Uri
+import java.io.File
+import java.io.FileOutputStream
+import com.chaomixian.vflow.core.workflow.WorkflowIconValue
 import com.chaomixian.vflow.core.locale.toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
@@ -196,6 +200,99 @@ class WorkflowEditorActivity : BaseActivity() {
     ) { result ->
         val uri = result.data?.data
         pickerHandler?.handleMediaPickerResult(uri)
+    }
+
+    /**
+     * 卡片图标「从相册选图」的结果回调。
+     *
+     * ⚠️ 回调是**一次性**的：`registerForActivityResult` 的 launcher 可以反复用，
+     * 但 `pendingCardIconCallback` 必须在消费后清空 —— 否则用户第二次打开
+     * 编辑器（同一个 Activity 实例被复用）时，会有一个**上一次的**回调被触发，
+     * 把图片设到错误的工作流上。
+     */
+    private var pendingCardIconCallback: ((String) -> Unit)? = null
+
+    private val cardIconPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val callback = pendingCardIconCallback
+        pendingCardIconCallback = null
+        val uri = result.data?.data
+        if (callback == null || uri == null) return@registerForActivityResult
+        savePickedCardIcon(uri)?.let(callback)
+    }
+
+    /**
+     * 打开**独立的图标选择页**并回传选中的图标名。
+     *
+     * ⚠️ 与 [pickCardIconImage] 分开注册（而不是共用一个 launcher）：
+     * 两者的**入参形态与失败面**完全不同 —— 选图标是"从 4150 个里点一个"、
+     * 返回值必然合法；选图片要读文件、可能因权限/空间/损坏而失败，
+     * 失败时不该把回调当成"选了张图"往下传。
+     */
+    private var pendingIconPageCallback: ((String) -> Unit)? = null
+
+    private val iconPageLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val callback = pendingIconPageCallback
+        pendingIconPageCallback = null
+        val picked = result.data?.getStringExtra(WorkflowIconPickerActivity.EXTRA_PICKED_ICON)
+        if (callback != null && result.resultCode == RESULT_OK && !picked.isNullOrBlank()) {
+            callback(picked)
+        }
+    }
+
+    /** 供 [EditorMoreOptionsSheet] 调用：打开图标选择页。 */
+    fun pickCardIconViaPickerPage(currentIcon: String?, onPicked: (String) -> Unit) {
+        pendingIconPageCallback = onPicked
+        iconPageLauncher.launch(
+            Intent(this, WorkflowIconPickerActivity::class.java).apply {
+                // ⚠️ 传当前图标：选择页要用它做初始选中态与滚动定位 ——
+                //    不传的话用户每次打开都回到列表顶部，改了图标想改回来
+                //    就得重新找一遍。
+                putExtra(WorkflowIconPickerActivity.EXTRA_CURRENT_ICON, currentIcon)
+            }
+        )
+    }
+
+    /**
+     * 供 [EditorMoreOptionsSheet] 调用：从相册选一张图作为卡片图标。
+     *
+     * ⚠️ 图片被**复制进应用私有目录**（`files/card_icons/`），而不是保存
+     * `content://` URI —— 后者只在本次授权内有效，重启 App 后就读不到了。
+     * 这套做法与 `ShortcutConfigActivity` 处理快捷方式图标时一致。
+     */
+    fun pickCardIconImage(onPicked: (String) -> Unit) {
+        pendingCardIconCallback = onPicked
+        cardIconPickerLauncher.launch(
+            Intent(Intent.ACTION_GET_CONTENT).apply {
+                type = "image/*"
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+        )
+    }
+
+    /** 复制选中的图片到应用私有目录，返回**绝对路径**；失败返回 null 并提示。 */
+    private fun savePickedCardIcon(uri: Uri): String? {
+        return try {
+            val dir = File(filesDir, WorkflowIconValue.CUSTOM_ICON_DIR).apply { mkdirs() }
+            val target = File(dir, "card_icon_${System.currentTimeMillis()}.png")
+            contentResolver.openInputStream(uri)?.use { input ->
+                FileOutputStream(target).use { output -> input.copyTo(output) }
+            } ?: return null
+            Toast.makeText(this, R.string.workflow_card_icon_custom_toast, Toast.LENGTH_SHORT).show()
+            target.absolutePath
+        } catch (e: Exception) {
+            // ⚠️ 带上 e.message：失败原因（权限被拒 / 存储满 / 图片损坏）对用户
+            //    是三种完全不同的处置，吞掉就只能报"设置失败"。
+            Toast.makeText(
+                this,
+                getString(R.string.workflow_card_icon_custom_failed, e.message ?: e.javaClass.simpleName),
+                Toast.LENGTH_SHORT
+            ).show()
+            null
+        }
     }
 
     companion object {

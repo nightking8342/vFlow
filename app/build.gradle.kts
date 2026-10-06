@@ -221,6 +221,11 @@ dependencies {
 
     // 图像处理
     implementation("io.coil-kt:coil:2.7.0")
+    // ⚠️ fork 追加：Compose 版的 AsyncImage。原来只有 `coil`（Java/Kotlin API），
+    //    而卡片图标现在要能在**列表卡片**（Compose）里显示用户选的图片。
+    //    用 AsyncImage 而不是把 Bitmap 塞进 UI 状态，是为了让 Coil 的
+    //    **内存/磁盘缓存与自动取消**生效 —— 卡片列表会快速滚过几百项。
+    implementation("io.coil-kt:coil-compose:2.7.0")
 
     // 测试库
     testImplementation("junit:junit:4.13.2")

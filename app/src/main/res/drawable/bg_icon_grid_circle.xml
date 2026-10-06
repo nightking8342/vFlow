@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  图标网格里的**圆形**底（fork 新增，2026-10-05 按用户要求从圆角方块改为圆形）。
+
+  ⚠️ 未选中态用 `colorSurfaceContainerHigh` 而不是原来的
+     `colorSurfaceContainerHighest`：圆形底比方块视觉面积小，同一个色阶会显得更淡，
+     选高一一档补回来。
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <solid android:color="?attr/colorSurfaceContainerHigh" />
+</shape>

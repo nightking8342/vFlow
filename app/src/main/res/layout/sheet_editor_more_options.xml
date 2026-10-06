@@ -426,13 +426,46 @@
                         android:textAppearance="?attr/textAppearanceLabelLarge"
                         android:textColor="?attr/colorOnSurfaceVariant" />
 
-                    <androidx.recyclerview.widget.RecyclerView
-                        android:id="@+id/recycler_workflow_icons"
+                    <!--
+                      图标入口（fork 改写）。
+
+                      ⚠️⚠️ **原来这里嵌着一个 240dp 的图标网格 + 搜索框，现已移除**。
+                      图标库扩到 4150 个（Material Symbols 全量）之后，网格嵌在
+                      sheet 里有三个问题：① 240dp 把 sheet 里其余设置挤到需长滚的位置，
+                      而它们与图标是**不相干的设置**；② 分类导航需要一行以上，
+                      在 sheet 里只能塞成横向滚动的小 Chip、既看不清也点不准；
+                      ③ sheet 的 `SOFT_INPUT_ADJUST_RESIZE` 与 NestedScrollView 叠加，
+                      搜索框获得焦点时列表会被软键盘顶出可视区。
+
+                      ⇒ 现在这里只留**两行入口**（选图标 / 从相册选图），
+                      点开 `WorkflowIconPickerActivity`（分类 + 搜索 + 网格）。
+                    -->
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/button_pick_icon"
+                        style="@style/Widget.Material3.Button.TonalButton"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="8dp"
-                        android:nestedScrollingEnabled="false"
-                        tools:listitem="@layout/item_icon_selector" />
+                        android:text="@string/workflow_card_icon_pick"
+                        app:icon="@drawable/rounded_dashboard_customize_24" />
+
+                    <!--
+                      自定义图片入口。
+
+                      ⚠️ 与「选择图标」并列而不是藏在二级页里：自定义图片是
+                         "我想要的图标库里没有"时的**唯一出路**，藏起来等于没有。
+
+                      ⚠️ 用 OutlinedButton 与上面那个 TonalButton 区分主次 ——
+                         默认路径是"从图标库里挑"。
+                    -->
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/button_custom_icon"
+                        style="@style/Widget.Material3.Button.OutlinedButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="@string/workflow_card_icon_custom"
+                        app:icon="@drawable/rounded_add_photo_alternate_24" />
 
                     <TextView
                         android:layout_width="match_parent"

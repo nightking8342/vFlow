@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  图标网格里**选中态**的圆形底（fork 新增）。
+
+  ⚠️ 选中态不能只靠"换个颜色"：圆形底没有描边时，"选中"与"未选中"在深色主题下
+     只差一点色阶，一眼看不出来。这里加一圈主色描边（2dp）——
+     替代原来 MaterialCardView 的 `strokeWidth=2dp`（圆形底不是 CardView，
+     拿不到那个属性）。
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <solid android:color="?attr/colorPrimaryContainer" />
+    <stroke
+        android:width="2dp"
+        android:color="?attr/colorPrimary" />
+</shape>

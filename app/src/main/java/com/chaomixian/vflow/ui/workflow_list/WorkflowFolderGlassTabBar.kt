@@ -6,7 +6,9 @@ import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -44,6 +46,7 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -70,8 +73,55 @@ private val GLASS_TAB_BAR_HEIGHT = 46.dp
 /** 胶囊内四边的留白 —— 滑动指示块就是这个范围内的一枚内嵌圆角块。 */
 private val GLASS_TAB_BAR_PADDING = 4.dp
 
-/** 单个 Tab 的期望宽度（上限）。实际会按可用宽度均分，窄了就让位、宽了就到此为止。 */
-private val GLASS_TAB_BAR_DESIRED_TAB_WIDTH = 92.dp
+/**
+ * 单个 Tab 的**最小宽度**。
+ *
+ * ⚠️ 它不是「裁剪阈值」而是**最小触控目标** —— 一两个字的名字（「全部 13」）
+ * 自然宽只有 60dp 上下，再窄下去相邻两格的手指按压会互相蹭到。
+ * Material 的无障碍建议是 48dp，这里取 64dp 是因为胶囊里还要留内边距。
+ */
+private val GLASS_TAB_BAR_MIN_TAB_WIDTH = 64.dp
+
+/**
+ * 单格宽度相对可用宽度的**上限比例**。
+ *
+ * ⚠️ 防的是「一个超长文件夹名占满大半屏」—— 那时用户连「这条栏还有别的东西」
+ * 都看不出来，拖动一格也要滑很远。超出部分按 `Ellipsis` 截断（与改动前一致）。
+ */
+private const val GLASS_TAB_BAR_MAX_TAB_WIDTH_FRACTION = 0.6f
+
+/** Tab 格子内部左右各留 [GLASS_TAB_CONTENT_HORIZONTAL_PADDING]。 */
+private val GLASS_TAB_CONTENT_HORIZONTAL_PADDING = 8.dp
+
+/**
+ * 由「每格内容的自然宽度」推出整条栏**统一的格宽**。
+ *
+ * ⚠️⚠️ **必须统一，不能每格按自己的内容定宽** —— 指示块的定位、拖动换算、
+ * 点击反查、栏宽计算**四处**都建立在「格宽相等」这个前提上（见 `folderTabTapAt`
+ * 与 `barWidth` 的注释）。所以取**最宽那一格**为准，短的格子多留白。
+ *
+ * ⚠️⚠️ **不写死阈值**：三语名字长度差很远（中文「操作」2 字 / 英文
+ * `Communication` 13 字符），任何写死的值都只能对一种语言正确。第一版写死 76dp，
+ * 中文四字分类「通讯社交 633」就被挤成了「通讯社…」—— 而**计数直接消失**，
+ * 因为数字排在名字后面、名字先占满了整格。
+ *
+ * 三条边界：
+ * - 内容为空 ⇒ `0.dp`（调用方据此不渲染指示块）；
+ * - 上限 = `availableWidth × [maxFraction]`；
+ * - 下限 = [minWidth]，且**不与上限打架**：首帧 `maxWidth` 可能是 0，
+ *   直接 `coerceIn(min, upper)` 会因区间倒置抛 `IllegalArgumentException`。
+ */
+internal fun glassTabWidthFor(
+    contentWidths: List<Dp>,
+    availableWidth: Dp,
+    horizontalPadding: Dp,
+    minWidth: Dp,
+    maxFraction: Float,
+): Dp {
+    val widest = contentWidths.maxOrNull() ?: return 0.dp
+    val upperBound = maxOf(availableWidth * maxFraction, minWidth)
+    return (widest + horizontalPadding).coerceIn(minWidth, upperBound)
+}
 
 /** 指示块按下时的放大倍率 —— 与底栏同一比例（78/56）。 */
 private const val GLASS_TAB_INDICATOR_PRESSED_SCALE = 78f / 56f
@@ -113,7 +163,7 @@ private const val GLASS_TAB_INDICATOR_PRESSED_SCALE = 78f / 56f
  * 这样两者用互不相干的手势通道（长按 = 拖动、单击 = 切换/菜单），不再打架。
  */
 @Composable
-internal fun WorkflowFolderGlassTabBar(
+fun WorkflowFolderGlassTabBar(
     tabs: List<WorkflowFolderTab>,
     selectedFolderId: String,
     onSelect: (String) -> Unit,
@@ -122,8 +172,56 @@ internal fun WorkflowFolderGlassTabBar(
     onDissolveFolder: (String) -> Unit,
     onDeleteFolder: (String) -> Unit,
     modifier: Modifier = Modifier,
+    /**
+     * 指示块**是否可拖动**（默认 `true`，保持工作流 Tab 栏的既有行为）。
+     *
+     * ⚠️ 设为 `false` 时**指示块本身仍在**：选中项的滑动动画、按下放大、
+     * 透镜效果都由动画值驱动，与手势无关 —— 只是拖不动。
+     */
+    draggable: Boolean = true,
+    /**
+     * 是否启用**文件夹管理菜单**（再点一次当前 Tab 唤出「重命名 / 导出 / 解散 / 删除」）。
+     *
+     * ⚠️⚠️ 图标选择页的分类栏必须传 `false` —— 它复用本组件展示**图标分类**
+     * （把分类 id 当 `folderId` 传），而下面的判据是「点当前 Tab 就弹菜单」、
+     * 菜单项是「删除文件夹」。不关掉的话**点两下当前分类就会看到删除文件夹的菜单**。
+     *
+     * ⚠️ 传空 lambda 不够：菜单照样弹，只是点了没反应。
+     */
+    showFolderMenu: Boolean = true,
+    /**
+     * 栏两侧的**内边距**（默认 `0.dp` = 栏紧贴给定宽度）。
+     *
+     * ⚠️⚠️ **不能改用「调用方在 modifier 上加 padding」** —— 两者视觉效果一样，
+     * 但裁切行为完全不同：
+     *
+     * - 加在 `modifier` 上 ⇒ padding **在滚动视口之外**，而
+     *   `horizontalScroll` 会给自己的节点套一层 `clipScrollableContainer`
+     *   （`ScrollableAreaKt.scrollableArea` 内部就会加，**没有开关**）。
+     *   于是视口边缘 = padding 内侧，**指示块按下时放大到 1.39 倍、
+     *   超出 4dp 内边距的那部分会被切掉**（左端第一格最明显）。
+     * - 加在这里 ⇒ padding **在滚动视口之内**，指示块的溢出落在 padding 带里，
+     *   照样看得见，只在屏幕真正边缘才裁。
+     *
+     * ⚠️ 工作流页传默认值 `0.dp`（它不在滚动容器里、也从不溢出）⇒ 行为不变。
+     */
+    contentInset: Dp = 0.dp,
+    /**
+     * 栏**上下**预留的空间（默认 `0.dp`）—— 给指示块按下时的放大留余量。
+     *
+     * ⚠️⚠️ **只在「宿主是 Android `ViewGroup`」时才需要**：那类容器的
+     * `clipChildren` 默认是 **true**，而指示块按下会放大到 1.39 倍，
+     * 比 46dp 的栏高出约 **3.5dp**（每侧）⇒ 不给余量就被上下**切平**。
+     * 工作流页的宿主在 Compose 里（LazyColumn 的 item），Compose 不主动裁切
+     * 子节点 ⇒ 它传默认值即可，行为与改动前一致。
+     */
+    verticalSlack: Dp = 0.dp,
 ) {
     if (tabs.isEmpty()) return
+
+    // ⚠️ 横向滚动状态。声明在 `BoxWithConstraints` **之外** —— 里面是 `maxWidth`
+    //    作用域，放进去会随约束变化重建。
+    val scrollState = rememberScrollState()
 
     val isLightTheme = !isSystemInDarkTheme()
     val containerColor = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.40f)
@@ -132,6 +230,9 @@ internal fun WorkflowFolderGlassTabBar(
     val rimColor = if (isLightTheme) Color.White else Color.White.copy(alpha = 0.6f)
 
     val density = LocalDensity.current
+    // ⚠️ 量文字自然宽度用（见 `tabWidth` 的推导）——必须每次组合共享同一个实例，
+    //    否则每格各建一个 `TextMeasurer`（内部带布局缓存），整条栏白付 N 份。
+    val textMeasurer = rememberTextMeasurer()
     val isLtr = LocalLayoutDirection.current == LayoutDirection.Ltr
     val animationScope = rememberCoroutineScope()
     // 只含 Tab 文字的那一层（供指示块采样放大）。与指示块平级 ⇒ 不自采样。
@@ -142,11 +243,42 @@ internal fun WorkflowFolderGlassTabBar(
     var menuExpanded by remember { mutableStateOf(false) }
 
     BoxWithConstraints(modifier = modifier) {
-        val innerWidth = (maxWidth - GLASS_TAB_BAR_PADDING * 2).coerceAtLeast(0.dp)
-        val evenWidth = innerWidth / tabs.size
-        // 宽度**由 Tab 数量决定**：少的时候用期望宽度（于是整条栏是窄的、靠左），
-        // 多的时候均分可用宽度（于是不会溢出屏幕）。
-        val tabWidth = evenWidth.coerceAtMost(GLASS_TAB_BAR_DESIRED_TAB_WIDTH).coerceAtLeast(0.dp)
+        val innerWidth =
+            (maxWidth - contentInset * 2 - GLASS_TAB_BAR_PADDING * 2).coerceAtLeast(0.dp)
+
+        // ⚠️⚠️ **宽度由「每格内容的自然宽度」推出，不再按可用宽度均分。**
+        //    均分的问题是名字一长就把后面的计数挤没了（`Text` 的 `Ellipsis` 只
+        //    截名字那一格，计数是它的兄弟节点、拿不到宽度就整个消失），
+        //    而三语的名字长度差很远，写死任何阈值都只能对一种语言正确。
+        //    推出来的宽度超出可用宽度时，下面的 `overflows` 会自动开横向滚动
+        //    （滚动能力本来就有，此前只是被 `minTabWidth` 这个开关挡着）。
+        // ⚠️ 两个 Text 的样式必须与 `GlassFolderTabContent` 里**逐字一致** ——
+        //    这里量多少、那里就画多少，样式一分叉量出来的宽度就不等于实际占用
+        //    （`FontWeight` 尤其隐蔽：`SemiBold` 比 `Normal` 宽一点，
+        //    选中项的名字会被自己的格宽卡出一个省略号），而且**不报错**。
+        val tabWidth = glassTabWidthFor(
+            contentWidths = with(density) {
+                tabs.map { tab ->
+                    val selected = tab.folderId == selectedFolderId
+                    textMeasurer.measure(
+                        text = tab.name,
+                        style = MaterialTheme.typography.labelLarge.copy(
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                        ),
+                        maxLines = 1,
+                    ).size.width.toDp() +
+                        textMeasurer.measure(
+                            text = " ${tab.workflowCount}",
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                        ).size.width.toDp()
+                }
+            },
+            availableWidth = innerWidth,
+            horizontalPadding = GLASS_TAB_CONTENT_HORIZONTAL_PADDING * 2,
+            minWidth = GLASS_TAB_BAR_MIN_TAB_WIDTH,
+            maxFraction = GLASS_TAB_BAR_MAX_TAB_WIDTH_FRACTION,
+        )
         val tabWidthPx = with(density) { tabWidth.toPx() }
         val paddingPx = with(density) { GLASS_TAB_BAR_PADDING.toPx() }
         val barWidth = tabWidth * tabs.size + GLASS_TAB_BAR_PADDING * 2
@@ -155,6 +287,7 @@ internal fun WorkflowFolderGlassTabBar(
         val dampedDragAnimation = remember(
             animationScope,
             tabs.size,
+            tabs,
             density,
             isLtr,
             tabWidthPx,
@@ -166,6 +299,12 @@ internal fun WorkflowFolderGlassTabBar(
                 visibilityThreshold = 0.001f,
                 initialScale = 1f,
                 pressedScale = GLASS_TAB_INDICATOR_PRESSED_SCALE,
+                // ⚠️ 长按起拖 —— **不能改成即时起拖**。本组件可能被放进横向滚动容器
+                //    （图标分类栏就是），即时起拖会与滚动抢同一条指针流
+                //    （见 `inspectLongPressDragGestures` 的 KDoc）。
+                //    代价是多一个长按阈值（底栏是即时起拖，两处手感因此不同）——
+                //    这是「要拖动就得先表达拖动意图」的必然代价。
+                longPressDrag = true,
                 onDragStarted = {},
                 onDragStopped = {
                     val targetIndex = targetValue.fastRoundToInt().fastCoerceIn(0, tabs.size - 1)
@@ -191,24 +330,42 @@ internal fun WorkflowFolderGlassTabBar(
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 InteractiveHighlight(
                     animationScope = animationScope,
-                    position = { size, _ ->
-                        Offset(
-                            if (isLtr) {
-                                (dampedDragAnimation.value + 0.5f) * tabWidthPx
-                            } else {
-                                size.width - (dampedDragAnimation.value + 0.5f) * tabWidthPx
-                            },
-                            size.height / 2f
-                        )
-                    }
+                    // ⚠️ 高光中心算在**指示块自己的坐标系**里（`size` 就是指示块的尺寸，
+                    //    而 `InteractiveHighlight.modifier` 正挂在指示块上、不会自动
+                    //    叠加它的 `translationX`）⇒ 直接取自己的中点即可。
+                    //    ⚠️ 原实现在这里乘了 `tabWidthPx`，那是**外层栏的**坐标系，
+                    //    在指示块上算出来永远是偏右的一大段距离，光斑被推到块外。
+                    position = { size, _ -> Offset(size.width / 2f, size.height / 2f) },
+                    // ⚠️ 必须与 `DampedDragAnimation` 的 `longPressDrag` 传同一个值，
+                    //    否则「光晕亮起」与「指示块开始跟手」会差一个长按阈值。
+                    longPressDrag = true,
                 )
             } else {
                 null
             }
         }
 
+        // ⚠️ 超宽时横向滚动。格宽由内容自然宽度推出 ⇒ **文件夹多、名字长时就会
+        //    溢出**，此时不再把每格压窄（那正是计数被挤没的原因），而是滚动。
+        //    ⚠️ `barWidth` 已含 `GLASS_TAB_BAR_PADDING * 2`，**不要再加一次** ——
+        //    多加的后果是「刚好放得下时也判溢出」，栏尾会多出一小段空滚。
+        val overflows = barWidth + contentInset * 2 > maxWidth
+
         // ⚠️ 外层 `Box` 只包到「栏的宽度」，不 `fillMaxWidth` —— 这就是「左对齐、
         //    宽度按 Tab 数量」的落点。调用方只需把它放进自己的 item 槽（默认即靠左）。
+        //
+        // ⚠️⚠️ 滚动**必须加在这一层**（而不是更外面）：`folderTabTapAt` 按
+        //    `position.x` 反查第几格，而指针坐标是**相对被挂节点的局部坐标**
+        //    （这个 `Box`）⇒ 滚了多少都不影响映射。把滚动加到外面再在外层做命中判定，
+        //    就得手动加上 `scrollState.value`，漏了会「点中间那个却选中左边的」——
+        //    而且**只有滚过之后**才出问题。
+        Box(
+            modifier = Modifier
+                .padding(vertical = verticalSlack)
+                .then(if (overflows) Modifier.horizontalScroll(scrollState) else Modifier)
+                // ⚠️ 水平 padding 加在**滚动容器内部**（见 `contentInset` 的 KDoc）。
+                .padding(horizontal = contentInset)
+        ) {
         Box(
             modifier = Modifier
                 .width(barWidth)
@@ -229,7 +386,9 @@ internal fun WorkflowFolderGlassTabBar(
                         // 点当前 Tab ⇒ 呼出菜单。「全部」是伪 Tab，没有可操作的对象。
                         // 菜单开着时点别处会先 `onDismissRequest` 关掉它，
                         // 所以下一次点同一个 Tab 必然是从 false → true，会重新弹。
-                        if (tab.folderId != WORKFLOW_TAB_ALL) {
+                        // ⚠️ `showFolderMenu == false` 时（图标分类栏）整段跳过 ——
+                        //    重复点当前分类应当**什么都不发生**，而不是弹出「删除文件夹」。
+                        if (showFolderMenu && tab.folderId != WORKFLOW_TAB_ALL) {
                             menuTarget = tab.folderId
                             menuExpanded = true
                         }
@@ -315,8 +474,11 @@ internal fun WorkflowFolderGlassTabBar(
                                 -dampedDragAnimation.value * tabWidthPx
                             }
                         }
-                        .then(interactiveHighlight?.gestureModifier ?: Modifier)
-                        .then(dampedDragAnimation.modifier)
+                        // ⚠️ 只加一次 `interactiveHighlight`（它在 `gestureModifier` 与
+                        //    `modifier` 两处都要用；`pointerInput` 是**叠加**的，
+                        //    同一个实例挂两次会收到两遍事件、透镜位置跳成两处）。
+                        .then(if (draggable) interactiveHighlight?.gestureModifier ?: Modifier else Modifier)
+                        .then(if (draggable) dampedDragAnimation.modifier else Modifier)
                         .drawBackdrop(
                             backdrop = itemsBackdrop,
                             shape = { CircleShape },
@@ -360,6 +522,7 @@ internal fun WorkflowFolderGlassTabBar(
                 )
             }
         }
+        }
     }
 }
 
@@ -381,6 +544,23 @@ internal fun WorkflowFolderTabBarSwitch(
     onDissolveFolder: (String) -> Unit,
     onDeleteFolder: (String) -> Unit,
     modifier: Modifier = Modifier,
+    /**
+     * 指示块是否可拖动（默认 `true`）。⚠️ 只有**玻璃版**有这个开关，
+     * 普通版没有拖拽手势，传什么都不影响 —— 图标分类栏把它设为 `false`。
+     */
+    draggable: Boolean = true,
+    /**
+     * 是否启用文件夹管理菜单（默认 `true`）。
+     * ⚠️ 图标分类栏必须传 `false`（详见两版组件各自的 KDoc）。
+     */
+    showFolderMenu: Boolean = true,
+    /**
+     * 栏两侧内边距（**滚动容器内部**）。⚠️ 只对**玻璃版**有意义，见组件 KDoc；
+     * 普通版不需要 —— 它是 `FilterChip` 自己撑宽 + 整条栏横滚，没有"放大溢出被裁"的问题。
+     */
+    contentInset: Dp = 0.dp,
+    /** 栏上下预留的空间（宿主是 Android `ViewGroup` 时必须给，见组件 KDoc）。 */
+    verticalSlack: Dp = 0.dp,
 ) {
     if (liquidGlassEnabled) {
         WorkflowFolderGlassTabBar(
@@ -391,7 +571,18 @@ internal fun WorkflowFolderTabBarSwitch(
             onExportFolder = onExportFolder,
             onDissolveFolder = onDissolveFolder,
             onDeleteFolder = onDeleteFolder,
+            // ⚠️⚠️ **`modifier` 原样转发，包括它的 `padding`** ——
+            //    曾想过「把 padding 换成 `BoxWithConstraints` 上的 `padding`、
+            //    让 `maxWidth` 变成内容宽度」，那样不对：`BoxWithConstraints`
+            //    自己会把「外层约束」按自己的 padding **收缩后再交给内容**
+            //    （`padding` 通过 `measure` 改约束），于是 `maxWidth` 已经是内宽，
+            //    再加一次就等于扣两遍 —— 表现为「明明放得下却开了滚动」。
+            //    ⇒ 调用方要留白，正确地传 `contentInset`（见列表模式调用点）。
             modifier = modifier,
+            draggable = draggable,
+            showFolderMenu = showFolderMenu,
+            contentInset = contentInset,
+            verticalSlack = verticalSlack,
         )
     } else {
         WorkflowFolderTabBar(
@@ -402,7 +593,18 @@ internal fun WorkflowFolderTabBarSwitch(
             onExportFolder = onExportFolder,
             onDissolveFolder = onDissolveFolder,
             onDeleteFolder = onDeleteFolder,
-            modifier = modifier,
+            // ⚠️⚠️ **普通版必须自己把 `contentInset` 加回去**。它没有「视口内/视口外」
+            //    的区分（`FilterChip` 自己撑宽、整条栏横滚，不存在放大被切的问题），
+            //    所以调用方按玻璃版的口径把留白改成了 `contentInset`
+            //    （列表模式的 `modifier` 里已不含 padding）—— 这里不补的话，
+            //    关掉液态玻璃后第一枚 Chip 会**贴着屏幕左边缘**，
+            //    而玻璃版正常，排障时会一直往玻璃那条路找。
+            modifier = modifier.padding(horizontal = contentInset),
+            // ⚠️ 必须转发 —— 漏了的话「关掉菜单」只在玻璃版生效，
+            //    而这是**按开关切换样式**的页面：用户关掉液态玻璃后
+            //    长按分类就会看到「删除文件夹」（玻璃版正常、普通版出事，
+            //    排障时会一直往液态玻璃那条路找）。
+            showFolderMenu = showFolderMenu,
         )
     }
 }
@@ -465,7 +667,10 @@ private fun GlassFolderTabContent(
     Row(
         modifier = modifier
             .width(tabWidth)
-            .padding(horizontal = 8.dp),
+            // ⚠️ 必须与 `glassTabWidthFor` 的 `horizontalPadding` 用**同一个常量** ——
+            //    两处脱节的话，算出来的格宽与实际排版差一点，而**不报错**，
+            //    只是名字在临界情况下又开始出现省略号。
+            .padding(horizontal = GLASS_TAB_CONTENT_HORIZONTAL_PADDING),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center,
     ) {

@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  R8 资源收缩白名单：按【字符串名】查找的图标。
+
+  ## 为什么需要这个文件
+
+  `isShrinkResources = true`（`app/build.gradle.kts:92`）会剥掉「代码没静态引用」
+  的资源，判活依据是 `R.drawable.xxx` 这类**编译期引用**。而图标选择器走的是
+  `resources.getIdentifier(name, "drawable", pkg)`，名字是**字符串**，
+  shrinker 看不见，于是这些图标被当死资源剥掉。
+
+  这不是推测，已实测：在本文件生效之前，`rounded_download_24` 出现在
+  `IconSelectorAdapter` 的候选列表里（用户能选），但 `aapt2 dump resources`
+  在 release APK 里查不到它，表现是「选择器里点一下，图标纹丝不动，也不报错」。
+
+  官方文档把这条场景点得很明白：
+  「You should rarely need to keep resources. The use of getIdentifier() is an
+  exception」。见 developer.android.com 的 customize-which-resources-to-keep。
+
+  ## 为什么用【通配】而不是逐个列 8310 个名字
+
+  通配在这里不是图省事，而是唯一与语义相符的写法：
+
+  1. 不需要维护。逐个列的话，import_material_symbols.py 每导入一次图标库就得
+     重写一份 8310 项的白名单；清单一旦与资源脱节，脱节的方式是**静默的**
+     （选择器里点一下没反应），不会构建报错。
+  2. 语义正好。「rounded_* 全部来自 Material Symbols，而 Material Symbols 的
+     名字会出现在字符串里」，这正是要钉住的那一批。
+  3. 与 shrinker 的默认行为不冲突。官方限制写明「The optimizer only removes
+     resources that aren't referenced by your app code」，通配 keep 只是把它们
+     标进引用图，不会让收缩失效。
+
+  ## !!! 一个踩过的坑：XML 注释里不能出现双连字符 !!!
+
+  本文件第一版在注释里写了 Markdown 表格分隔行（一连串的连字符），
+  而 **XML 规范禁止注释内容出现连续两个连字符**。结果是**整份文件非法**，
+  AAPT2 **没有报错**、直接忽略，`tools:keep` 完全失效 —— 表现为
+  「明明写了白名单，图标还是一个都不进包」。
+
+  排查手法：用任意 XML 解析器 parse 一下本文件；非法时它连注释都读不过去。
+  写注释时若要画表，用「竖线 + 空格」代替连字符行。
+
+  ## 已验证的写法（2026-10-05）
+
+  1. 三个精确名字，逗号分隔：3 个都进包。
+  2. `@drawable/rounded_download*,@drawable/rounded_sort*`（两个前缀通配，逗号分隔）：
+     10 + 4 个进包 —— 说明**逗号分隔与通配都正常**。
+  3. 下面这一行：8310 个进包。
+
+  ## 验证方式（重要）
+
+  必须以「clean 后的全新建包」为准。增量构建会让 `aapt2 dump` 读到上一版产出的
+  APK，看起来「什么都没变」。复核命令：
+
+      ./gradlew clean :app:assembleRelease
+      "$ANDROID_HOME/build-tools/<ver>/aapt2" dump resources \
+          app/build/outputs/apk/release/app-arm64-v8a-release.apk \
+          | grep -oE 'drawable/[a-z0-9_]+' | sort -u | grep -c '^drawable/rounded_'
+
+  期望 8310（4150 线框 + 4160 填充）。
+
+  ## 覆盖范围
+
+  · `@drawable/rounded_*_24`       4150 个线框图标（含 fork 自绘的 10 个）
+  · `@drawable/rounded_*_fill_24`  4160 个填充图标
+  · `@drawable/ic_shortcut_play`   快捷方式默认图标
+
+  `WorkflowVisuals` 里那张图标表**不需要**在这里列：那条路径用 `R.drawable.`
+  静态引用，shrinker 自己看得见。本文件只管「名字会变成字符串」的。
+
+  ## 维护
+
+  · 图标库变更：重跑 scripts/assets/import_material_symbols.py。
+  · 新增按名字查找的非 Material 图标：在下面补一条。漏补的表现同样是
+    「build 通过、release 里选不出来」，而增量构建看不出来。
+-->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@drawable/rounded_*_24,@drawable/rounded_*_fill_24,@drawable/ic_shortcut_play" />

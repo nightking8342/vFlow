@@ -15,6 +15,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.core.widget.doAfterTextChanged
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -37,6 +38,7 @@ import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.chaomixian.vflow.R
 import com.chaomixian.vflow.core.types.VTypeRegistry
+import com.chaomixian.vflow.core.workflow.WorkflowIconValue
 import com.chaomixian.vflow.core.workflow.WorkflowVisuals
 import com.chaomixian.vflow.core.workflow.model.Workflow
 import com.chaomixian.vflow.core.workflow.model.WorkflowLogLevel
@@ -98,7 +100,6 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
     private lateinit var textVisualPreviewName: TextView
     private lateinit var textVisualPreviewColor: TextView
     private lateinit var textSelectedThemeColor: TextView
-    private lateinit var iconPickerAdapter: WorkflowIconPickerAdapter
     private lateinit var themeColorAdapter: WorkflowThemeColorAdapter
 
     private var selectedIconRes: String = WorkflowVisuals.defaultIconResName()
@@ -213,7 +214,6 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
             selectedReentryBehavior = wf.reentryBehavior
             selectedLogLevel = wf.logLevel
             switchSilentExecution.isChecked = wf.silentExecution
-            iconPickerAdapter.setSelectedIcon(selectedIconRes)
             themeColorAdapter.setSelectedColor(selectedThemeColor)
             updateVisualPreview()
 
@@ -254,7 +254,6 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
             selectedReentryBehavior = WorkflowReentryBehavior.BLOCK_NEW
             selectedLogLevel = WorkflowLogLevel.VERBOSE
             switchSilentExecution.isChecked = false
-            iconPickerAdapter.setSelectedIcon(selectedIconRes)
             themeColorAdapter.setSelectedColor(selectedThemeColor)
             updateVisualPreview()
         }
@@ -436,16 +435,32 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
     }
 
     private fun setupVisualPickers(view: View) {
-        val iconRecyclerView = view.findViewById<RecyclerView>(R.id.recycler_workflow_icons)
-        iconPickerAdapter = WorkflowIconPickerAdapter { iconRes ->
-            selectedIconRes = iconRes
-            updateVisualPreview()
+        // ⚠️⚠️ 图标网格已**搬到独立页面** `WorkflowIconPickerActivity`（见布局里的注释）。
+        //    本 sheet 只保留两个入口按钮。
+        //
+        //    历史：这里曾嵌着一个 240dp 的 RecyclerView + 搜索框（图标从 18 个
+        //    扩到 4150 个时加的）。拆出去的原因有三条 —— 挤占无关设置的空间、
+        //    分类 Chip 塞不下、软键盘把列表顶出可视区 —— 详见布局里的注释。
+        view.findViewById<View>(R.id.button_pick_icon).setOnClickListener {
+            // ⚠️ 用 Activity Result API 里的 `registerForActivityResult` 由宿主
+            //    Activity 转发（`WorkflowEditorActivity.pickCardIconViaPickerPage`），
+            //    而不是 Fragment 自己注册：本 sheet 是 BottomSheetDialogFragment，
+            //    自己注册的结果回调在 sheet 被 dismiss 后会丢（用户点完图标回来
+            //    发现没生效）。宿主 Activity 的生命周期比 sheet 长，更稳。
+            (activity as? WorkflowEditorActivity)?.pickCardIconViaPickerPage(selectedIconRes) { picked ->
+                selectedIconRes = picked
+                updateVisualPreview()
+            }
         }
-        iconRecyclerView.layoutManager = object : GridLayoutManager(requireContext(), 5) {
-            override fun canScrollVertically(): Boolean = false
+
+        // 自定义图片入口。⚠️ 从相册选图同样必须由 Activity 做（理由同上）。
+        view.findViewById<View>(R.id.button_custom_icon).setOnClickListener {
+            (activity as? WorkflowEditorActivity)?.pickCardIconImage { path ->
+                selectedIconRes = path
+                // ⚠️ 选完图**立刻刷新预览**：预览要显示那张图。
+                updateVisualPreview()
+            }
         }
-        iconRecyclerView.adapter = iconPickerAdapter
-        iconRecyclerView.overScrollMode = View.OVER_SCROLL_NEVER
 
         val colorRecyclerView = view.findViewById<RecyclerView>(R.id.recycler_workflow_colors)
         themeColorAdapter = WorkflowThemeColorAdapter { colorHex ->
@@ -465,10 +480,23 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
         val cardColors = WorkflowVisuals.resolveCardColors(requireContext(), selectedThemeColor)
         cardVisualPreview.setCardBackgroundColor(cardColors.cardBackground)
         cardVisualPreviewIcon.setCardBackgroundColor(cardColors.iconBackground)
-        imageVisualPreviewIcon.setImageResource(
-            WorkflowVisuals.resolveIconDrawableRes(selectedIconRes)
-        )
-        imageVisualPreviewIcon.imageTintList = ColorStateList.valueOf(cardColors.iconTint)
+        // ⚠️ 预览也必须认「自定义图片」这一形态 —— 否则用户选完图、预览里
+        //    还是默认图标，而列表卡片上显示的是图片（两处不一致）。
+        //    判定走 `WorkflowIconValue`，与列表卡片共用同一份逻辑。
+        val customPath = WorkflowIconValue.filePathOf(selectedIconRes)
+        if (customPath != null) {
+            imageVisualPreviewIcon.setImageURI(null)
+            imageVisualPreviewIcon.setImageURI(android.net.Uri.fromFile(java.io.File(customPath)))
+            // ⚠️ 自定义图片**必须清掉 tint**：内置图标是单色矢量、tint 是它上色的
+            //    唯一手段；给彩色图片套 tint 会把它整张染成一种颜色。
+            imageVisualPreviewIcon.imageTintList = null
+        } else {
+            imageVisualPreviewIcon.setImageURI(null)
+            imageVisualPreviewIcon.setImageResource(
+                WorkflowVisuals.resolveIconDrawableRes(selectedIconRes)
+            )
+            imageVisualPreviewIcon.imageTintList = ColorStateList.valueOf(cardColors.iconTint)
+        }
         textVisualPreviewName.text = previewName
         textVisualPreviewColor.text = selectedThemeColor
         textSelectedThemeColor.text = getString(R.string.workflow_theme_color_value, selectedThemeColor)

@@ -756,6 +756,27 @@
     <string name="workflow_icon">ワークフローアイコン</string>
     <string name="workflow_card_preview">カードのプレビュー</string>
     <string name="workflow_card_icon">カードアイコン</string>
+    <string name="workflow_card_icon_search_hint">アイコンを検索（英語名、例: play arrow）</string>
+    <string name="workflow_card_icon_custom">ギャラリーから画像を選択</string>
+    <string name="workflow_card_icon_custom_toast">画像をカードアイコンに設定しました</string>
+    <string name="workflow_card_icon_custom_failed">画像の設定に失敗しました: %1$s</string>
+    <string name="workflow_card_icon_picker_title">アイコンを選択</string>
+    <string name="workflow_card_icon_picker_empty">一致するアイコンがありません
+別のカテゴリか検索語をお試しください</string>
+    <string name="workflow_card_icon_pick">アイコンを選択</string>
+    <string name="icon_category_popular">よく使う</string>
+    <string name="icon_category_all">すべて</string>
+    <string name="icon_category_action">操作</string>
+    <string name="icon_category_communication">コミュニケーション</string>
+    <string name="icon_category_media">メディア</string>
+    <string name="icon_category_device">デバイス</string>
+    <string name="icon_category_place">場所</string>
+    <string name="icon_category_file">ファイル</string>
+    <string name="icon_category_text">テキスト</string>
+    <string name="icon_category_home">ホーム</string>
+    <string name="icon_category_business">ビジネス</string>
+    <string name="icon_category_privacy">プライバシー</string>
+    <string name="icon_category_misc">その他</string>
     <string name="workflow_theme_color">テーマカラー</string>
     <string name="workflow_theme_color_value">現在のテーマカラー: %1$s</string>
     <string name="workflow_reentry_behavior_title">ワークフローが再度トリガーされるとき</string>

@@ -803,6 +803,27 @@
     <string name="workflow_icon">Workflow icon</string>
     <string name="workflow_card_preview">Card preview</string>
     <string name="workflow_card_icon">Card icon</string>
+    <string name="workflow_card_icon_search_hint">Search icons (English name, e.g. play arrow)</string>
+    <string name="workflow_card_icon_custom">Choose image from gallery</string>
+    <string name="workflow_card_icon_custom_toast">Image set as card icon</string>
+    <string name="workflow_card_icon_custom_failed">Failed to set image: %1$s</string>
+    <string name="workflow_card_icon_picker_title">Choose icon</string>
+    <string name="workflow_card_icon_picker_empty">No icons match.
+Try another category or clear the search.</string>
+    <string name="workflow_card_icon_pick">Choose icon</string>
+    <string name="icon_category_popular">Popular</string>
+    <string name="icon_category_all">All</string>
+    <string name="icon_category_action">Actions</string>
+    <string name="icon_category_communication">Communication</string>
+    <string name="icon_category_media">Media</string>
+    <string name="icon_category_device">Devices</string>
+    <string name="icon_category_place">Places</string>
+    <string name="icon_category_file">Files</string>
+    <string name="icon_category_text">Text</string>
+    <string name="icon_category_home">Home</string>
+    <string name="icon_category_business">Business</string>
+    <string name="icon_category_privacy">Privacy</string>
+    <string name="icon_category_misc">Other</string>
     <string name="workflow_theme_color">Theme color</string>
     <string name="workflow_theme_color_value">Current theme color: %1$s</string>
     <string name="workflow_reentry_behavior_title">When the workflow is triggered again</string>

@@ -1,29 +1,82 @@
 <?xml version="1.0" encoding="utf-8"?>
-<com.google.android.material.card.MaterialCardView xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
-    android:layout_width="wrap_content"
-    android:layout_height="wrap_content"
-    android:layout_margin="4dp"
-    app:cardElevation="0dp"
-    app:strokeWidth="2dp"
-    app:cardCornerRadius="12dp">
+<!--
+  图标网格的一项（fork 改写，2026-10-05）。
 
-    <LinearLayout
+  ## 本次改了什么、为什么
+
+  1. **圆角方块 → 圆形**（用户要求）。外层不再是 `MaterialCardView`（它的
+     `cardCornerRadius` 只能做圆角矩形，做不出正圆），改为 `FrameLayout` +
+     两个圆形 `shape` drawable（未选中 / 选中态各一份，见 `bg_icon_grid_circle*.xml`）。
+     代码侧原来改的是 `cardView.strokeColor`，现在改成切 `background` 资源。
+
+  2. **固定 56dp → `match_parent` 宽度**（用户反馈「右边间距好大」）。
+     ⚠️⚠️ **根因**：原来根布局是 `MaterialCardView` + **`layout_width="wrap_content"`**，
+     而 `GridLayoutManager` 分配格子时，`wrap_content` 的 item **不会填满格子**，
+     RecyclerView 把它按自身内容宽度居中/靠左放 ⇒ 每列右侧留一块空白，
+     且**列数越多越明显**（5 列时右侧累计留白接近半格）。
+     ⇒ 改为宽度撑满格子。
+
+  3. **加图标名文字**（用户要求）。名字取自 `WorkflowIconValue.officialLabelOf`
+     （把资源名还原成 Material Symbols 的官方叫法，如 `rounded_play_arrow_24`
+     → `play arrow`）—— 与搜索框的匹配口径**共用同一个函数**，
+     避免"搜得到但看不懂叫什么"。
+
+     ⚠️ 名字**必须 `ellipsize`**：`arrow_back_ios_new` 这类长名字在 5 列布局下
+        一行放不下，不截断会把格子撑宽、挤掉后面的列（"加到第 3 个图标就爆版"）。
+
+  4. **高度自适应**：图标 32dp + 名字 1 行（约 14dp）+ 间距 ⇒ 约 92dp。
+     不再写死 56dp（写死会让文字被裁）。
+
+  ⚠️ 这个布局被**两个 Adapter** 共用：图标选择页（`WorkflowIconPickerAdapter`）
+     与快捷方式图标选择（`IconSelectorAdapter`）。后者没有"名字"的概念，
+     它把 `text_icon_name` 设为 `GONE`（见那边的 `bind`）。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:gravity="center_horizontal"
+    android:padding="4dp">
+
+    <!--
+      ⚠️ 外层是 `FrameLayout` 而**不是** CardView：要正圆只能用 shape drawable。
+         宽高都是 52dp —— 比原来的 56dp 略小，因为下面多了一行文字，
+         不缩会让每格过高、一屏看不到几个图标。
+    -->
+    <FrameLayout
         android:id="@+id/icon_container"
-        android:layout_width="56dp"
-        android:layout_height="56dp"
-        android:gravity="center"
-        android:background="?attr/colorSurfaceContainerHighest">
+        android:layout_width="52dp"
+        android:layout_height="52dp"
+        android:background="@drawable/bg_icon_grid_circle"
+        android:clickable="true"
+        android:focusable="true">
 
         <ImageView
             android:id="@+id/image_view_icon"
-            android:layout_width="32dp"
-            android:layout_height="32dp"
+            android:layout_width="26dp"
+            android:layout_height="26dp"
+            android:layout_gravity="center"
             android:src="@drawable/ic_shortcut_play"
             android:scaleType="centerInside"
-            android:tint="?attr/colorOnSurface"
-            app:tintMode="src_in" />
+            android:tint="?attr/colorOnSurface" />
 
-    </LinearLayout>
+    </FrameLayout>
 
-</com.google.android.material.card.MaterialCardView>
+    <!--
+      ⚠️ `maxLines=1` + `ellipsize=end` 是**必需的**，不是美化：官方名字最长
+         43 个字符（`rounded_troubleshoot_fill_24` 之类），不截断会把格子撑宽。
+    -->
+    <TextView
+        android:id="@+id/text_icon_name"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:gravity="center"
+        android:maxLines="1"
+        android:ellipsize="end"
+        android:textAppearance="?attr/textAppearanceLabelSmall"
+        android:textColor="?attr/colorOnSurfaceVariant"
+        tools:text="play arrow" />
+
+</LinearLayout>
