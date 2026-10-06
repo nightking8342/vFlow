@@ -76,11 +76,22 @@ abstract class BaseToggleTileService : BaseWorkflowTileService() {
      * ⚠️ **关闭路径必须同步完成**（不进协程）—— `TileService` 在 `onClick` 返回后
      * 随时可能被系统回收；关闭是**纯写盘**，没有异步成分，同步做完最安全。
      * 开启路径要跑权限恢复（suspend + 跨进程），必须进协程。
+     *
+     * ⚠️⚠️ **刷新的时机很关键，曾经踩过一个坑**：早先版本在 `saveWorkflow` **之后**
+     * 立刻调 `refreshTile()`，于是「数据已写、但 `updateTileState` 里读到的还是旧值」
+     * 这类时序问题会被**下一次** `onStartListening` 的日志暴露出来。
+     * 现在把每条路径的**终态**都打出来（`toggle 后` 那条日志），
+     * 真机上能不能对上就一目了然。
      */
     private fun toggleWorkflowEnabled(workflow: Workflow) {
         val appContext = applicationContext
         val enable = !workflow.isEnabled
         val manager = WorkflowManager(appContext)
+
+        DebugLogger.d(
+            TAG,
+            "开关磁贴点击：${workflow.name} isEnabled=${workflow.isEnabled} ⇒ 目标=$enable"
+        )
 
         manager.saveWorkflow(
             workflow.copy(
@@ -89,6 +100,11 @@ abstract class BaseToggleTileService : BaseWorkflowTileService() {
                 wasEnabledBeforePermissionsLost = false
             )
         )
+
+        // 回读确认（⚠️ 只用于诊断；回读不一致**不改判失败** —— 与 `SimDataSwitch` 同款纪律
+        // 那是「切换异步、期间不一致」的正常现象，在这里也不该当失败处理）
+        val readBack = manager.getWorkflow(workflow.id)?.isEnabled
+        DebugLogger.d(TAG, "开关磁贴写入后回读：${workflow.name} isEnabled=$readBack")
 
         if (!enable) {
             // 关闭：立即刷新磁贴（`requestListeningState` 会再走一次 onStartListening）
@@ -102,7 +118,15 @@ abstract class BaseToggleTileService : BaseWorkflowTileService() {
             val remaining = withContext(Dispatchers.IO) {
                 TriggerExecutionCoordinator.recoverMissingPermissions(appContext, latest)
             }
-            if (remaining.isEmpty()) return@launch
+            if (remaining.isEmpty()) {
+                // ⚠️ 权限齐全也要刷！这条 `return@launch` 曾经让**开启路径永远不刷新** ——
+                //    「关了能亮、开了不亮」的不对称正是这么来的：关闭路径在同步分支里
+                //    调了 `refreshTile()`，而开启路径走协程，权限齐全时**直接 return**
+                //    把刷新漏掉了。表现是「点一下灭、然后永远不亮」。
+                DebugLogger.d(TAG, "开关磁贴开启成功（权限齐全）：${workflow.name}")
+                withContext(Dispatchers.Main) { refreshTile() }
+                return@launch
+            }
 
             // 仍缺权限 ⇒ 回弹为关闭，并把「是权限恢复想开它」记在
             // `wasEnabledBeforePermissionsLost = true` 上（与列表页一致）
@@ -120,8 +144,11 @@ abstract class BaseToggleTileService : BaseWorkflowTileService() {
             )
             withContext(Dispatchers.Main) {
                 toast(getString(R.string.tile_toggle_failed_permission))
+                // ⚠️ 回弹后同样要重绘 —— 这次 `onClick` 已经返回很久了，
+                //    不在 `TileService` 的生命周期里，但 `qsTile` 仍拿得到
+                //    （`TileService` 由系统持有），且**必须**在主线程改。
+                refreshTile()
             }
-            refreshTile()
         }
     }
 
@@ -134,6 +161,22 @@ abstract class BaseToggleTileService : BaseWorkflowTileService() {
      * 而 `requestListeningState(this)` 只针对**本磁贴**，代价可以忽略。
      */
     private fun refreshTile() {
+        // ⚠️⚠️ **必须同时做两件事**，缺一个就会出现「灭一下又亮回来 / 永远不亮」。
+        //
+        // 1. **就地同步重绘**（`updateTileState()`）：`onClick` 跑在 `TileService`
+        //    自己的生命周期里，此刻直接改 `qsTile` 是**立即**生效的 —— 这是唯一
+        //    「点完就变」的路径。
+        // 2. **再请求一次 `onStartListening`**：把我方内存里刚算出的状态与 SystemUI
+        //    真正持有的一致化（`requestListeningState` 是**异步**的，靠它单打独斗
+        //    会让用户先看到旧状态、几百毫秒后才变，观感就是「灭一下又亮」）。
+        //
+        // ⚠️ 反过来只做 1、不做 2 也不行：`onClick` 结束、面板还在时 SystemUI
+        //    可能用**它自己缓存**的 state 再画一次，把刚改的覆盖回去。
+        try {
+            updateTileState()
+        } catch (e: Exception) {
+            DebugLogger.d(TAG, "开关型磁贴就地重绘失败（不影响开关本身）", e)
+        }
         try {
             android.service.quicksettings.TileService.requestListeningState(
                 applicationContext,

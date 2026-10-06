@@ -69,6 +69,10 @@ object TileRefreshNotifier {
 
     private var scheduled = false
 
+    /** 组件存在性只核对一次（见 [verifyComponentsResolvableOnce]）。 */
+    @Volatile
+    private var componentsVerified = false
+
     /**
      * 请求刷新全部 40 个磁贴（带去抖）。可从任意线程调用。
      *
@@ -95,6 +99,8 @@ object TileRefreshNotifier {
         scheduled = false
         if (context == null) return
 
+        verifyComponentsResolvableOnce(context)
+
         val outcome = dispatchAll { className ->
             TileService.requestListeningState(context, ComponentName(context, className))
         }
@@ -107,6 +113,52 @@ object TileRefreshNotifier {
                 TAG,
                 "磁贴刷新：成功 ${outcome.succeeded}，失败 ${outcome.failures.size}：" +
                     outcome.failures.joinToString(", ")
+            )
+        }
+    }
+
+    /**
+     * **一次性**核对 40 个组件名在 manifest 里真的存在，只打日志、不改变行为。
+     *
+     * ⚠️ 存在的理由：`TileSlot.serviceClassName` 是**字符串拼**出来的
+     * （`"...WorkflowToggleTileService$slot"`），而 R8 只看得见 `R.drawable.` 那类
+     * **符号**引用，**看不见字符串**。一旦某个 service 被 shrinker 判为无用（例如
+     * 它只被 manifest 字符串引用、代码里没人直接 `new`），组件就会**静默消失** ——
+     * 表现正是「磁贴存在、能点、但状态永远不刷新」。
+     *
+     * ⚠️ 本仓库在图标选择器上踩过**完全同形**的坑（`MaterialSymbolNames` 的 KDoc
+     * 记着 `rounded_download_24` 曾「选择器里可选、release 包里不存在」）。
+     * 那次靠 `res/raw/keep.xml` 兜住；这次没有任何白名单，
+     * 所以**必须留一条可观测的判据**。
+     */
+    private fun verifyComponentsResolvableOnce(context: Context) {
+        if (componentsVerified) return
+        componentsVerified = true
+
+        val missing = mutableListOf<String>()
+        for (kind in TileKind.entries) {
+            for (slot in 0 until TileSlot.tileCountOf(kind)) {
+                val className = TileSlot.serviceClassName(kind, slot)
+                val resolvable = runCatching {
+                    context.packageManager.getServiceInfo(
+                        ComponentName(context, className),
+                        0
+                    )
+                }.getOrNull() != null
+                if (!resolvable) missing += className
+            }
+        }
+
+        if (missing.isEmpty()) {
+            DebugLogger.d(TAG, "40 个磁贴组件均已注册（不含被 shrinker 剥掉的）")
+        } else {
+            // ⚠️ E 级：这一条指向**构建配置**问题，不是运行时问题 ——
+            //    用户按提示去找 App 侧代码是找不到的。
+            DebugLogger.e(
+                TAG,
+                "有 ${missing.size} 个磁贴组件在 manifest 里不存在 ⇒ 它们的状态**永远不会刷新**。" +
+                    "这是 R8 / shrinkResources 把 service 剥掉了（组件名是字符串拼的、R8 看不见），" +
+                    "需要 proguard 白名单。缺失：$missing"
             )
         }
     }

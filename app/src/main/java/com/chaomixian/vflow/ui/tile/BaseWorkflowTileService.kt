@@ -83,18 +83,37 @@ abstract class BaseWorkflowTileService : TileService() {
     /**
      * §4.7 状态表。**六个格子逐条落实**，没有隐含分支。
      *
+     * ⚠️ `protected` 而**不是** `private`：`onClick` 里写完盘之后要**同步重绘一次**
+     * （见 `BaseToggleTileService.refreshTile`）—— 只靠 `requestListeningState`
+     * 那条回叫是被动的、时机不由我方控制，用户点完到重绘之间会看到旧状态。
+     *
      * ⚠️ `subtitle` 与 `icon` **每一格都要显式设置**（包括设为 `null`）——
      * `Tile` 对象在两次 `onStartListening` 之间是**复用的**，只在新值非空时赋值
      * 会让「上一次的 subtitle」粘住不放（例如从越界态恢复后仍显示「请重新绑定」），
      * 而这是**纯视觉、无报错的**。
      */
-    private fun updateTileState() {
+    protected fun updateTileState() {
         val qsTile = qsTile ?: return
 
         val tileIndex = getTileIndex()
         val kind = tileKind()
         val bound: WorkflowTile? = tileManager.getTile(tileIndex)
         val workflow: Workflow? = bound?.workflowId?.let { workflowManager.getWorkflow(it) }
+
+        // ⚠️⚠️ **诊断日志：真机排查开关型磁贴「点一下灭、立刻又亮」时必须先看这几行。**
+        //     判据全在这里（`workflow.isEnabled` 与 `qsTile.state` 是两个不同的东西，
+        //     前者是数据、后者才是用户看到的高亮），而在真机上**没有别的办法**区分
+        //     「数据没变」与「数据变了但 SystemUI 没接受这次 updateTile()」。
+        //     `bound == null` 是**最常见**的一种：那个槽在 prefs 里根本没有记录
+        //     （用户是在**另一池**绑的），于是这里渲染成「未绑定」的 `INACTIVE`
+        //     ——看起来就像「开关磁贴坏了」。
+        DebugLogger.d(
+            TAG,
+            "磁贴状态刷新：${javaClass.simpleName} index=$tileIndex kind=$kind " +
+                "bound=${bound != null} workflowId=${bound?.workflowId} " +
+                "workflow=${workflow?.name} isEnabled=${workflow?.isEnabled} " +
+                "tileKind=${bound?.kind}"
+        )
 
         when {
             // ── 未绑定 / 工作流已被删：两池各自的名字 + 提示（§4.7 前两行）──
@@ -123,6 +142,17 @@ abstract class BaseWorkflowTileService : TileService() {
                 applyWorkflowIcon(qsTile, workflow)
             }
         }
+
+        DebugLogger.d(
+            TAG,
+            "磁贴状态已应用：${javaClass.simpleName} state=" +
+                when (qsTile.state) {
+                    Tile.STATE_ACTIVE -> "ACTIVE"
+                    Tile.STATE_INACTIVE -> "INACTIVE"
+                    Tile.STATE_UNAVAILABLE -> "UNAVAILABLE"
+                    else -> qsTile.state.toString()
+                } + " label=${qsTile.label} subtitle=${qsTile.subtitle}"
+        )
 
         qsTile.updateTile()
     }
