@@ -457,21 +457,18 @@ class GlassSwitchTest {
     fun `示例版的尺寸与库内示例逐值一致`() {
         // 用户 2026-10-06 明确要求「完全按照库里的示例实现一版」，
         // 这三个尺寸就是那次要求的直接落点，改动即偏离示例。
-        // ⚠️ 轨道宽是**唯一**刻意偏离示例的地方：示例 64dp，我们 60dp
-        //    （用户「示例有些偏宽」+ 卡片单列约 116dp）。
-        assertEquals("示例 64dp，本项目收到 60dp", 60f, LiquidToggleTokens.TrackWidth.value, 0.001f)
-        assertEquals("示例 size(64f.dp, 28f.dp) —— 高度照抄", 28f, LiquidToggleTokens.TrackHeight.value, 0.001f)
-        assertEquals("示例 size(40f.dp, 24f.dp)", 40f, LiquidToggleTokens.ThumbWidth.value, 0.001f)
-        assertEquals(24f, LiquidToggleTokens.ThumbHeight.value, 0.001f)
+        // ⚠️⚠️ **唯一**的偏离是「整体等比缩小」：轨道 64 → 55，**其余尺寸同乘一个系数**。
+        //    只收轨道而让滑块原地不动，会让滑块占比从 62.5% 升到 66.7% ——
+        //    关闭态两侧露出的柱位更窄（用户上一版反馈的「看不到槽位」会被放大）。
+        assertEquals("示例 64dp，本项目等比缩到 55dp", 55f, LiquidToggleTokens.TrackWidth.value, 0.001f)
+        assertEquals("示例 28dp", 24f, LiquidToggleTokens.TrackHeight.value, 0.001f)
+        assertEquals("示例 40dp", 34f, LiquidToggleTokens.ThumbWidth.value, 0.001f)
+        assertEquals("示例 24dp", 20f, LiquidToggleTokens.ThumbHeight.value, 0.001f)
         assertEquals("示例 padding = 2f.dp", 2f, LiquidToggleTokens.Padding.value, 0.001f)
-        // ⚠️ pressedScale 是**第二处**刻意偏离：示例 1.5f，我们收回 1f。
-        //    用户反馈「关闭的时候那个圆为什么会变小」的真因就是它 ——
-        //    按下整体放大，松手后缩回去读起来像「变小」。
-        assertEquals("示例 1.5f，本项目收回 1f（见 PressedScale 的 KDoc）", 1f, LiquidToggleTokens.PressedScale, 0.001f)
-        assertTrue(
-            "收回 pressedScale 后必须补一条别的按下反馈，否则「按下去没反应」",
-            LiquidToggleTokens.PressedTrackHighlight > 0f,
-        )
+        // ⚠️⚠️ **pressedScale 必须照抄 1.5f，不许收回**。它一度被我误判成
+        //    「关闭时那个圆变小」的真因而改成 1f，用户随后明确指出：
+        //    原版就是「拖动时滑块浮起并变大覆盖掉轨道」—— 那正是本控件的核心观感。
+        assertEquals("示例 pressedScale = 1.5f（不可收回）", 1.5f, LiquidToggleTokens.PressedScale, 0.001f)
     }
 
     @Test
@@ -485,12 +482,31 @@ class GlassSwitchTest {
         //    真正被它抓住的是**改尺寸**：把 `TrackWidth` 改成 52 会让它红
         //    （反证 V 实测 3 条红），而那正是「忘了同步 travel」的后果。
         //    ⇒ 「按公式写」这一层是**约定**，没有机器化守卫（写在这里以免高估它）。
-        // 60 − 40 − 2×2 = 16（示例是 64 − 40 − 4 = 20，我们收窄轨道后同步变小）
-        assertEquals(16f, liquidToggleTravelDp().value, 0.001f)
+        // 55 − 34 − 2×2 = 17（示例是 64 − 40 − 4 = 20，等比缩小后同步变小）
+        assertEquals(17f, liquidToggleTravelDp().value, 0.001f)
         assertTrue(
             "可移动距离必须为正，否则拖动时分母为 0（fraction 变 NaN 且不报错）",
             liquidToggleTravelDp().value > 0f,
         )
+    }
+
+    @Test
+    fun `缩放后各尺寸的相对比例与示例一致`() {
+        // ⚠️ 这条锁的是「等比缩小」这个约定本身 —— 只改其中一两个数值会让
+        //    滑块占比漂移，而观感变化（柱位露多少）是**没有报错**的。
+        val s = LiquidToggleTokens.Scale
+        assertEquals("轨道高 / 轨道宽 的比例", 28f / 64f, LiquidToggleTokens.TrackHeight.value / LiquidToggleTokens.TrackWidth.value, 0.005f)
+        assertEquals("滑块宽 / 轨道宽 的比例（示例 40/64 = 62.5%）", 40f / 64f, LiquidToggleTokens.ThumbWidth.value / LiquidToggleTokens.TrackWidth.value, 0.01f)
+        // ⚠️ 高度方向**做不到精确等比**：24 × 0.859 = 20.63，而 dp 只能取整数
+        //    （取 20 ⇒ 比例 0.833，取 21 ⇒ 0.875，都比 0.857 偏）。
+        //    容差按这个取值粒度给，不假装它是精确的。
+        assertEquals(
+            "滑块高 / 轨道高 的比例（20/24 是取整结果，容差按 1dp 粒度给）",
+            24f / 28f,
+            LiquidToggleTokens.ThumbHeight.value / LiquidToggleTokens.TrackHeight.value,
+            0.025f,
+        )
+        assertTrue("缩放系数应小于 1（我们是缩小）", s in 0.5f..1f)
     }
 
     @Test
@@ -504,10 +520,10 @@ class GlassSwitchTest {
         // ⚠️ 端点位置 = padding + travel = 2 + 20 = 22dp，**不是** 64 − 40 − 2 = 22
         //    （同一个数，但写成 62 是把「右边缘」当成了「左边距」—— 第一版就这么错的）。
         val endX = liquidToggleThumbXDp(1f, isLtr = true).value
-        assertEquals("fraction=1 时左边距 = padding + travel = 18dp", 18f, endX, 0.001f)
+        assertEquals("fraction=1 时左边距 = padding + travel = 19dp", 19f, endX, 0.001f)
         assertEquals(
-            "于是右边缘 = 18 + 40 = 58dp，距轨道右端恰好也是 padding",
-            58f,
+            "于是右边缘 = 19 + 34 = 53dp，距轨道右端恰好也是 padding",
+            53f,
             endX + LiquidToggleTokens.ThumbWidth.value,
             0.001f,
         )
@@ -534,7 +550,6 @@ class GlassSwitchTest {
         assertTrue("示例：滑块的白随 progress 退到 0", s.contains("1f - progress"))
         assertTrue("示例：静止时轨道采样压扁量为 0 的起点", s.contains("THUMB_SAMPLE_SCALE_Y_MAX"))
         assertTrue("pressedScale 须由常量传入", s.contains("LiquidToggleTokens.PressedScale"))
-        assertTrue("收回 pressedScale 后的替代反馈：按下提亮轨道", s.contains("PressedTrackHighlight"))
         assertTrue(
             "示例：轨道采样横向压扁范围 lerp(2/3, 0.75)",
             s.contains("THUMB_SAMPLE_SCALE_X_MIN") && s.contains("THUMB_SAMPLE_SCALE_X_MAX"),

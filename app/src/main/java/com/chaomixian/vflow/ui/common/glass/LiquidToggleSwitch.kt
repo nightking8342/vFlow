@@ -94,47 +94,49 @@ import androidx.compose.foundation.shape.RoundedCornerShape
  */
 internal object LiquidToggleTokens {
     /**
-     * 轨道宽。⚠️ 示例是 **64dp**，这里收到 **60**（滑块 40 不变）。
-     *
-     * 用户 2026-10-06 反馈「示例的开关是有些偏宽的」+ 卡片单列只有约 116dp，
-     * ⇒ 只收这 4dp，「摇杆」式的观感（宽矮胶囊 + 宽滑块）**完全保留**。
-     * ⚠️ 连同滑块占轨道的比例从 62.5% 降到 66.7%，**关闭态柱位露出的绝对宽度
-     * 不变（两侧各 8dp）** —— 真正让柱位看不见的原因不是宽度，见 [ThumbHeight] 那条。
+     * 轨道宽。⚠️ 示例是 **64dp**，这里同等比例收到 **55**。
+     * ⚠️ 其余所有尺寸都按同一个系数缩放（见 [Scale]），滑块也一起缩。
      */
-    val TrackWidth = 60.dp
-    val TrackHeight = 28.dp
+    val TrackWidth = 55.dp
+    val TrackHeight = 24.dp
 
-    /** 示例 `size(40f.dp, 24f.dp)`。 */
-    val ThumbWidth = 40.dp
-    val ThumbHeight = 24.dp
+    /** 示例 `size(40f.dp, 24f.dp)` —— 按 [Scale] 缩放。 */
+    val ThumbWidth = 34.dp
+    val ThumbHeight = 20.dp
 
     /** 示例里的 `padding = 2f.dp`。 */
     val Padding = 2.dp
 
     /**
-     * 按下时滑块的缩放。
+     * **按下时滑块浮起并放大**的倍率 —— 示例 `1.5f`。
      *
-     * ⚠️⚠️ **示例是 `1.5f`，这里改成 `1f`** —— 用户 2026-10-06 反馈
-     * 「关闭的时候那个圆为什么会变小呢？原版不是这样的吧」，而根因**不是**
-     * 关闭态变宽/变窄，是**示例把按下放大写在 `pressedScale` 上**：
-     * 它把滑块（含玻璃层）整体放大到 1.5 倍，于是「按下时大、松手后小」，
-     * 在 40dp 的滑块上就是一个非常明显的「缩回去」。
+     * ⚠️⚠️ **这条曾经被误判掉过一次，记在这里以免再犯**：我一度把它收回 `1f`，
+     * 理由写的是「用户反馈『关闭的时候那个圆会变小』的真因就是它」。
+     * **那个判断是错的**，用户随后明确指出原版就是「拖动时滑块浮起并变大覆盖掉轨道」，
+     * 而这正是本参数 + `layerBlock` 里的 `scaleX/scaleY` 共同产生的效果，
+     * 是本控件「液态」观感的核心，**不能删**。
      *
-     * 示例是在**整屏 demo**里展示的，那个幅度是展示效果的一部分；
-     * 而在列表卡片上它读起来就是「开关在变大小」。
-     * ⇒ 收回 `1f`，同时**给它补一个更含蓄的反馈**：按下时轨道**提亮**
-     * （`pressedTrackHighlight`）+ 按下时滑块**不变形** —— 观感更接近原生。
+     * ⚠️ 它在两处生效，缺一不可：
+     * 1. `layerBlock` 里的 `scaleX/scaleY = dampedDragAnimation.scaleX/scaleY`
+     *    —— 把滑块（含玻璃层）整体放大；
+     * 2. `pressedScale` 就是 `DampedDragAnimation` 用来推 `scaleX/scaleY` 的目标值。
+     *
+     * ⚠️ 放大后滑块**会盖到轨道外面**（`Box` 默认不裁剪）：这是**刻意的**，
+     * 「浮起并覆盖掉轨道」正是要的效果。
      */
-    const val PressedScale = 1f
+    const val PressedScale = 1.5f
 
     /**
-     * 按下时轨道的**提亮**量（0..1）。
+     * 示例尺寸与本实现尺寸之间的比例系数（55 / 64）。
      *
-     * 收回 `pressedScale` 之后需要另一条按下反馈，否则「按下去没反应」。
-     * 用 `lerp(trackColor, Color.White, 该值 * pressProgress)` ——
-     * 玻璃的反馈语言本来就该是**透光变化**而不是尺寸变化（见 `GlassSwitch` 的 KDoc）。
+     * ⚠️ **所有尺寸同乘这个系数**：只收轨道宽而不收滑块的话，滑块占轨道的
+     * 比例会从 62.5% 升到 66.7%，关闭态两侧露出的柱位更窄（用户上一版反馈的
+     * 「关闭时看不到柱位」就会被放大）。
+     *
+     * ⚠️ 系数是**算出来的、不是调出来的**：先定轨道宽 55（卡片单列约 116dp
+     * 里它要与图标/⋮ 挤一行），其余按比例推。
      */
-    const val PressedTrackHighlight = 0.12f
+    const val Scale = 55f / 64f
 }
 
 /**
@@ -256,10 +258,7 @@ internal fun LiquidToggleSwitch(
                 .clip(TOGGLE_CAPSULE)
                 .drawBehind {
                     // 示例：`drawRect(lerp(trackColor, accentColor, fraction))` —— 整条纯色。
-                    val base = lerp(trackColor, accentColor, dampedDragAnimation.value.fastCoerceIn(0f, 1f))
-                    // ⚠️ 按下提亮：代替被收回的 `pressedScale = 1.5f`（见 [PressedScale]）。
-                    val pressed = dampedDragAnimation.pressProgress * LiquidToggleTokens.PressedTrackHighlight
-                    drawRect(lerp(base, Color.White, pressed.fastCoerceIn(0f, 1f)))
+                    drawRect(lerp(trackColor, accentColor, dampedDragAnimation.value.fastCoerceIn(0f, 1f)))
                 }
                 .size(LiquidToggleTokens.TrackWidth, LiquidToggleTokens.TrackHeight)
                 // ⚠️ 语义显式补上（示例原版也没有；它靠滑块上的 `role = Role.Switch`）。
