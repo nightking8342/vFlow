@@ -35,12 +35,19 @@
 > 「确实，我只区分：只要有自动化 trigger 的，就属于这种自动化的工作流；
 > 没有 auto trigger 的，就属于执行一次的那种效果。」
 
-⇒ **判据定案：`Workflow.hasAutoTriggers()`。** 两池互补且穷尽：
+⇒ **判据定案：`Workflow.hasAutoTriggers()`。** 两池互补、**互斥**、穷尽：
 
 | 池 | 判据 | 手势 | 状态 |
 |---|---|---|---|
 | 执行型（原有 20 个） | `!hasAutoTriggers()` | 点 = **执行一次** | **恒不高亮**（§3） |
 | 开关型（新增 20 个） | `hasAutoTriggers()` | 点 = **开/关自动触发** | 高亮 = 已启用 |
+
+⚠️⚠️ **「互斥」是强制的，不只是 UI 选项**（用户 2026-10-06 补充）：
+
+> 执行型磁贴不允许绑有 auto trigger 的工作流
+
+⇒ 绑定时按判据**拒绝**（菜单项不显示 / 选择面板不列 / service 侧再兜一层，见 §4.7），
+不是一个「两种都可以，只是推荐」的划分。**同一个工作流不会同时出现在两个池里。**
 
 ⚠️ 这与现有的 `hasManualTrigger()` 判据**不是一回事**，且现有代码里多处混用
 （见 §2.4）—— 那正是要统一的地方。
@@ -324,19 +331,48 @@ onClick() {
 ⚠️ **绕过 `onClick` 的两种情形**（`STATE_UNAVAILABLE` 时系统不派发点击、
 锁屏时需 `unlockAndRun`）—— 见 §7 第 6 条。
 
-### 4.6 状态与文案
+### 4.6 绑定的**三道闸**（两池互斥的落实）
 
-| kind | state | label | subtitle | icon |
-|---|---|---|---|---|
-| EXECUTE 已绑定 | **恒 `STATE_INACTIVE`** | `workflow.name` | — | 工作流图标 |
-| EXECUTE 未绑定 | `STATE_INACTIVE` | `vFlow Tile N` | 「尚未绑定工作流」 | `ic_workflows` |
-| TOGGLE 已绑定 | `isEnabled ? ACTIVE : INACTIVE` | `workflow.name` | `isEnabled ? "已启用" : "已暂停"` | 工作流图标 |
-| TOGGLE 未绑定 | `INACTIVE` | `自动化 N` | 「尚未绑定工作流」 | `ic_workflows` |
+用户 2026-10-06 定案「执行型不允许绑 auto 工作流」⇒ 互斥是**强制的**。
+但它要落在**三个地方**，缺一处就有一条路径能绕过：
+
+| # | 闸 | 位置 | 作用 |
+|---|---|---|---|
+| 1 | 菜单项显隐 | `WorkflowListScreen` 的 `regularMenuActions` | 有 auto 的工作流**不显示**「添加到控制中心（执行）」；无 auto 的**不显示**「添加到控制中心（开关）」 |
+| 2 | 选择面板分段 | `TileSelectionSheet` | 面板**按 kind 分段显示两组槽位**，且只列**属于这一池**的那个（另一池的槽位置灰或整段不显示） |
+| 3 | Service 侧兜底 | 两个 `BaseXxxTileService` | 绑定关系可能在**闸 1/2 之后**失效（用户后来给工作流加了自动触发器，见 §9 第 4 条）⇒ 点击时**再判一次**，不匹配就弹 Toast 并 `openApp()`，**不执行** |
+
+⚠️⚠️ **闸 3 不是冗余** —— 前两道闸判的是「绑定的那一刻」，而
+`hasAutoTriggers()` 的结果**会随用户编辑而变**。少了闸 3，一个「绑定时是手动型、
+后来加了定时触发」的工作流会**继续按执行型跑**，而它的 `isEnabled` 开关
+在卡片上显示着、用户以为那个开关管用 —— 实际磁贴每次点击都在**绕过它执行**。
+
+⚠️ **闸 3 的表现要刻意设计**：不匹配时**不能静默**（用户会以为磁贴在执行），
+也不能直接执行（那是把自动工作流当手动跑）。做法是**磁贴直接进「越界态」**
+（`STATE_UNAVAILABLE` + subtitle 说明要去哪一池，见 §4.7），
+且**点击时只 `openApp()`**，不再执行也不切换。
+⇒ 越界是**可见**的，用户一眼看出「这个磁贴需要重新绑定」，而不是点下去才发现没用。
+
+⚠️ 三个闸用的**必须是同一个判据**（`hasAutoTriggers()`）——
+各写各的（例如闸 1 用 `hasManualTrigger()`）就会出现「菜单项显示着、点了却被拒绝」。
+
+### 4.7 状态与文案
+
+| kind | 情况 | state | label | subtitle | icon |
+|---|---|---|---|---|---|
+| EXECUTE | 已绑定 | **恒 `STATE_INACTIVE`** | `workflow.name` | — | 工作流图标 |
+| EXECUTE | 未绑定 | `STATE_INACTIVE` | `vFlow Tile N` | 「尚未绑定工作流」 | `ic_workflows` |
+| EXECUTE | **越界**（§4.6 闸 3） | `STATE_UNAVAILABLE` | `workflow.name` | 「含自动触发器，请重新绑定到开关磁贴」 | `ic_workflows` |
+| TOGGLE | 已绑定 | `isEnabled ? ACTIVE : INACTIVE` | `workflow.name` | `isEnabled ? "已启用" : "已暂停"` | 工作流图标 |
+| TOGGLE | 未绑定 | `INACTIVE` | `自动化 N` | 「尚未绑定工作流」 | `ic_workflows` |
+| TOGGLE | **越界**（已无 auto） | `STATE_UNAVAILABLE` | `workflow.name` | 「已无自动触发器，请重新绑定到执行磁贴」 | `ic_workflows` |
+
+⚠️ 越界态用 `STATE_UNAVAILABLE` 是**唯一**允许用它的一格 —— 它恰恰满足官方说的
+「could be put into an available state later」（用户去改绑就恢复）。
+其余格子一律 `INACTIVE` 或按 `isEnabled` 双态。
 
 ⚠️ `setSubtitle` 是 **API 29** 起（本机 `api-versions.xml` 核实），`minSdk = 29` ⇒ 可用。
 ⚠️ `setStateDescription` 是 **API 30** ⇒ 用它必须判版本，或干脆不用（subtitle 已够）。
-
----
 
 ## 5. 决策台账
 
@@ -354,6 +390,8 @@ onClick() {
 | 10 | 解码逻辑**抽取复用**而非复制 | 避免 `ShortcutHelper` / 磁贴两份实现漂移 |
 | 11 | 两个池都加 `ACTIVE_TILE` | 让刷新可控（`requestListeningState` 推）而非等系统绑 |
 | 12 | `wasEnabledBeforePermissionsLost` **必须清零** | §2.5：不清会被权限恢复自动重开 |
+| 13 | 两池**强制互斥** —— 执行型不允许绑 auto 工作流 | 用户 2026-10-06 定案。落实为**三道闸**（§4.7），且三闸**共用同一判据** |
+| 14 | 闸 3（service 侧兜底）不匹配时 **`openApp()` + Toast**，不静默也不执行 | §4.7：`hasAutoTriggers()` 会随用户编辑而变；静默会让用户以为磁贴在执行 |
 
 ---
 
@@ -365,6 +403,7 @@ onClick() {
 |---|---|
 | `core/workflow/model/TileKind.kt` | `enum class TileKind { EXECUTE, TOGGLE }`（独立文件便于纯 JVM 单测） |
 | `core/workflow/TileSlot.kt` | **纯函数层**：`kindOf(tileIndex)` / `indexInKind(tileIndex)` / `tileIndexOf(kind, slot)` / `displayName(kind, slot)`。无 Android 依赖 |
+| `core/workflow/TileGate.kt` | **纯函数层（互斥判据的唯一落点）**：`accepts(kind, workflow)` / `isOutOfKind(tile, workflow)` / `mismatchMessageRes(kind)` / `outOfKindMessageRes(kind)`。⚠️ §4.6 的三道闸**全部调它**，任何一处自己写 `hasAutoTriggers()` 都会让「三闸判据一致」失效 |
 | `ui/tile/BaseExecuteTileService.kt` | 从 `BaseWorkflowTileService` 拆出（或保留基类 + 加 `tileKind()` 抽象） |
 | `ui/tile/BaseToggleTileService.kt` | 开关型基类 |
 | `ui/tile/WorkflowToggleTileServices.kt` | `WorkflowToggleTileService0..19` |
@@ -379,10 +418,10 @@ onClick() {
 | `core/workflow/model/WorkflowTile.kt` | 加 `kind` 字段 + `TILE_COUNT` 40 + 两个分池常量 |
 | `core/workflow/TileManager.kt` | 新增按 kind 查/存/删的方法；`getAllTilesWithEmpty` 返回 40 |
 | `core/backup/scopes/TileScope.kt` | KDoc 更新（`TILE_COUNT` 20→40）；**合并逻辑不动**。⚠️ 见 §6.4 —— 但它的**测试**会被本改动搞红 |
-| `ui/tile/BaseWorkflowTileService.kt` | `updateTileState` 改（state 策略按 kind 分派 + 设 icon + subtitle）；`onClick` 判据改 |
+| `ui/tile/BaseWorkflowTileService.kt` | `updateTileState` 改（state 策略按 kind 分派 + `TileGate.isOutOfKind` 的越界态 + 设 icon + subtitle）；`onClick` 按 `TileGate.accepts` 兜底（**闸 3**） |
 | `AndroidManifest.xml` | 20 处执行型改元数据（去 `TOGGLEABLE_TILE`、加 `ACTIVE_TILE`）+ **新增 20 条**开关型 |
-| `ui/workflow_list/WorkflowListScreen.kt` | `:522`、`:1251` 判据 `hasManualTrigger()` → `!hasAutoTriggers()` |
-| `ui/workflow_list/WorkflowListRoute.kt` | `onAddToTile` 按判据分流到两池；`tileItems` 分两段 |
+| `ui/workflow_list/WorkflowListScreen.kt` | `:522`、`:1251` 判据 `hasManualTrigger()` → `TileGate.accepts(...)`（**两个菜单项各按自己那一池判**）。⚠️ 现在只有一个「添加到控制中心」菜单项，要拆成两个、各自按池显隐 |
+| `ui/workflow_list/WorkflowListRoute.kt` | `onAddToTile` 按 `TileGate.accepts` 分流到两池；`tileItems` 分两段（只列这一池的槽位） |
 | `ui/common/ShortcutHelper.kt` | `loadCenterCroppedBitmap` 改为委托新文件 |
 | `core/workflow/WorkflowManager.kt` | `saveWorkflow` / `deleteWorkflow` 尾部调 `TileRefreshNotifier` |
 | 三语 `strings*.xml` | 新增巢式文案（见 §6.3） |
@@ -390,15 +429,23 @@ onClick() {
 ### 6.3 新增文案
 
 ```
-tile_execute_pool_title      执行磁贴
-tile_toggle_pool_title       开关磁贴
-tile_kind_mismatch_execute   该工作流含自动触发器，请添加到「开关磁贴」
-tile_kind_mismatch_toggle    该工作流没有自动触发器，请添加到「执行磁贴」
-tile_unbound_subtitle        尚未绑定工作流
-tile_toggle_enabled          已启用
-tile_toggle_disabled         已暂停
-tile_toggle_failed_permission 缺少权限，无法启用
+tile_execute_pool_title        执行磁贴
+tile_toggle_pool_title         开关磁贴
+tile_kind_mismatch_execute     该工作流含自动触发器，请添加到「开关磁贴」
+tile_kind_mismatch_toggle      该工作流没有自动触发器，请添加到「执行磁贴」
+tile_unbound_subtitle          尚未绑定工作流
+tile_toggle_enabled            已启用
+tile_toggle_disabled           已暂停
+tile_toggle_failed_permission  缺少权限，无法启用
+tile_out_of_kind_execute       含自动触发器，请重新绑定到开关磁贴
+tile_out_of_kind_toggle        已无自动触发器，请重新绑定到执行磁贴
 ```
+
+⚠️ 后两条（`tile_out_of_kind_*`）是 §4.7 的**越界态** subtitle。
+与 `tile_kind_mismatch_*`（§4.6 闸 1/2 的**绑定被拒**提示）**刻意分开** ——
+一个发生在「绑定时」、一个发生在「已经绑了但条件变了」，
+用户要做的事不同（前者是换一池，后者是**重新**绑）。混用会让用户以为
+「我明明绑上过，怎么又说不行」。
 
 ---
 
@@ -440,6 +487,9 @@ assertEquals(
 | 12 | 去抖做错（只在同一个实例内去抖） | 磁贴 service 与 App 不同进程，**去抖跨不过去** | 去抖只在 App 侧单进程内做 |
 | 13 | `WorkflowIconValue.isCustomImage` 判定顺序写反（先看 `/` 再看 `file://`） | `file://...` 落到资源名路径 ⇒ `getIdentifier` 返回 0 ⇒ 磁贴**空白** | 判定集中在 `WorkflowIconValue`（已有），磁贴侧只调它 |
 | 14 | 图片文件已被删 / 换机后路径失效 | 解码返回 null ⇒ 若直接 `createWithBitmap(null)` 会 **NPE 崩 service** | null 时回落 `ic_workflows`（与 `WorkflowCardIcon` 同一策略） |
+| 15 | 三闸判据不统一（闸 1 用 `hasManualTrigger()`、闸 3 用 `hasAutoTriggers()`） | 菜单项**显示着**，点了却被拒 —— 用户认为「功能坏了」 | 三闸共用同一判据 + 源码扫描锁 |
+| 16 | 漏掉闸 3（只做 UI 两道闸） | 绑定时是手动型、后来加了定时触发 ⇒ 磁贴**继续按执行型跑**，绕过用户以为管用的 `isEnabled` 开关 | service 侧再判一次 + 单测锁 |
+| 17 | 给工作流加了自动触发器后，**另一个**「开关型」磁贴也指向它 | 两个磁贴同时控制同一个 `isEnabled`，看不出谁是谁 | 与 §9 第 4 条同源，需定案 |
 
 ---
 
@@ -451,17 +501,26 @@ assertEquals(
   `kindOf` 与 `tileIndexOf` 互为逆。
 - `TileKindBackwardCompatTest` —— Gson 反序列化**缺 `kind` 的旧 JSON** ⇒ 落 `EXECUTE`；
   往返不丢字段。
+- `TileGateTest` —— **互斥判据逐格验**（§4.6）：`EXECUTE + 无 auto` ✅ /
+  `EXECUTE + 有 auto` ❌ / `TOGGLE + 有 auto` ✅ / `TOGGLE + 无 auto` ❌ /
+  `TOGGLE + 无 auto + 有 manual` ❌（**反向锁**：别把 manual 也当成 auto）/
+  **未绑定（`workflowId = null`）不算越界**（它只是空槽，不该显示「请重新绑定」）。
 - `CardIconBitmapTest` —— 缩放目标、中心裁剪、文件不存在返回 null（**要造真实临时文件**）。
 
 ### 8.2 源码扫描型接线锚定
 
 ⚠️ 本仓库反复踩过「纯函数全绿但调用点缺失」（`CoreLauncher` 漏调 `recordLaunchedDexFingerprint`）。
-本改动有**三处**同类风险，各需一条扫描断言（带反证）：
+本改动有**五处**同类风险，各需一条扫描断言（带反证）：
 
 1. `WorkflowListScreen` 的两处判据**真的**改成了 `!hasAutoTriggers()`（且 `hasManualTrigger` 不再出现在「添加到控制中心」邻近）；
 2. `WorkflowManager.saveWorkflow` / `deleteWorkflow` **真的**调了 `TileRefreshNotifier`；
 3. `AndroidManifest.xml` 里执行型 20 条**没有** `TOGGLEABLE_TILE`、**有** `ACTIVE_TILE`；
-   开关型 20 条**两者都有**（逐条数数，防空转）。
+   开关型 20 条**两者都有**（逐条数数，防空转）；
+4. **闸 3 真的存在** —— 两个 `BaseXxxTileService` 的 `onClick` 里都要有按 `hasAutoTriggers()`
+   的判定（§4.7）。⚠️ 少了它，一条命令就能改回的「只做 UI 两道闸」**没有任何行为测试会红**；
+5. **三闸判据一致** —— 三个闸（菜单 / 面板 / service）**都调 `TileGate`**，
+   源码里**不得**直接出现 `hasAutoTriggers()` 与磁贴判据相邻（§7 第 15 条）。
+   ⚠️ 这与第 1 条是**两件事**：第 1 条锁「改对了」，第 5 条锁「只有一处这么判」。
 
 ### 8.3 真机验证清单（**当前 0 项已做**）
 
@@ -475,6 +534,11 @@ assertEquals(
 - [ ] 未绑定槽位的 subtitle 文案
 - [ ] 系统「添加磁贴」面板里，40 个磁贴**能区分**两个池（图标 / 标签）
 - [ ] 长按磁贴 ⇒ 打开 App 详情页（不是控制中心面板）
+- [ ] **互斥闸 1**：有 auto 的工作流，菜单里**没有**「添加到控制中心（执行）」
+- [ ] **互斥闸 2**：选择面板按 kind 分段，且不列出不属于这一池的工作流
+- [ ] **互斥闸 3**：把已绑在**执行型**上的工作流**加上**一个定时触发器 ⇒
+      磁贴变 `UNAVAILABLE` + subtitle 提示；再点它 ⇒ **不执行**、只打开 App
+      （**不是静默、也不是照跑**）
 
 ---
 
@@ -482,11 +546,15 @@ assertEquals(
 
 | # | 问题 | 影响 |
 |---|---|---|
-| 1 | **执行型磁贴是否允许绑「有 auto trigger」的工作流**？ | 现设计是两池互补互斥（§1）。但用户可能想给同一个工作流**两个**磁贴（一个执行、一个开关）。`TileManager.removeTileByWorkflowId` 会删掉该工作流的**全部**磁贴 ⇒ 加第二个会把第一个也删掉（`TileManager.kt:57-61`） |
-| 2 | `requestListeningState` 在**磁贴尚未被添加到控制中心**时调用会怎样？ | 官方未明说。若会抛异常需 try/catch（可能是静默 no-op） |
-| 3 | 40 个磁贴对 SystemUI 的负担 | 每个 `TileService` 都是一个独立组件。`ACTIVE_TILE` 已减轻绑定频率，但「添加磁贴」面板会列 40 项 |
-| 4 | 开关型磁贴是否支持「`isEnabled=false` 时也允许执行一次」 | 现设计不允许（关了就是关了）。但用户可能期望长按执行 |
-| 5 | `TileManager.removeTileByWorkflowId` 是否该按 kind 限定 | 与未决项 1 同源 |
+| 1 | `requestListeningState` 在**磁贴尚未被添加到控制中心**时调用会怎样？ | 官方未明说。若会抛异常需 try/catch（可能是静默 no-op） |
+| 2 | 40 个磁贴对 SystemUI 的负担 | 每个 `TileService` 都是一个独立组件。`ACTIVE_TILE` 已减轻绑定频率，但「添加磁贴」面板会列 40 项 |
+| 3 | 开关型磁贴是否支持「`isEnabled=false` 时也允许执行一次」 | 现设计不允许（关了就是关了）。但用户可能期望长按执行 |
+| 4 | 已绑定的工作流**后来加了自动触发器**（或删光了）怎么办 | 两池互斥（§1），但用户的编辑会让已绑的那个磁贴**越界**。本设计的处置是 **§4.7 的越界态**（`STATE_UNAVAILABLE` + subtitle 提示重新绑定），**未选**「自动迁移到对面池的空槽」——迁移会**背着用户改数据**，且目标槽可能已占。⚠️ 若将来要做迁移，须先解决「迁移后原来的槽空出来了，用户还以为是同一个磁贴」 |
+| 5 | `TileManager.removeTileByWorkflowId` 是否该按 kind 限定 | 两池互斥后「同一工作流两个磁贴」不再可能，但该方法现在仍是**无差别**删全部 —— 将来若放开互斥会打架 |
+
+> ⚠️ 原本记在这里的「执行型是否允许绑 auto 工作流」**已由用户 2026-10-06 定案：不允许**（§1）。
+> 它带来的**新**未决项是第 4 条 —— 「不允许」是绑定时的一次性判定，
+> 而 `hasAutoTriggers()` 的结果**会随用户编辑而变**。
 
 ---
 
@@ -495,6 +563,10 @@ assertEquals(
 - **§3 是本文档最容易被忽略的一节** —— 它纠正了一个直觉错误（元数据控制高亮），
   直接决定「改哪里」。若有人只改了元数据、没改 `Tile.state`，
   磁贴**照样常亮**，而他会以为「改了没用」。
+- **§4.6 / §4.7 是本文档最容易被做少的一节** —— 两池互斥**不是 UI 选项**，
+  是用户定案的硬约束；它要落在**三道闸**上，而且**判据必须只有一处**（`TileGate`）。
+  只做 UI 两道闸 = 「绑定时是手动型、后来加了定时触发」的磁贴会**继续按执行型跑**，
+  绕过用户以为管用的 `isEnabled` 开关，且**没有任何行为测试会红**。
 - 本文档写于 2026-10-06，`file:line` 引用锚定在 `64c229b7` / `ef34ec5d`。
 - 本文档**全部结论来自代码直读 + 官方文档 + AOSP 源码**，
   **不含任何真机实测**（§8.3 是待办清单，不是已验证清单）。
