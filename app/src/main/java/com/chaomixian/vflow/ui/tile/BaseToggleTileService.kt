@@ -4,6 +4,7 @@ import com.chaomixian.vflow.R
 import com.chaomixian.vflow.core.logging.DebugLogger
 import com.chaomixian.vflow.core.workflow.TileGate
 import com.chaomixian.vflow.core.workflow.TriggerExecutionCoordinator
+import com.chaomixian.vflow.core.workflow.WorkflowDataChangeBus
 import com.chaomixian.vflow.core.workflow.WorkflowManager
 import com.chaomixian.vflow.core.workflow.model.TileKind
 import com.chaomixian.vflow.core.workflow.model.Workflow
@@ -106,6 +107,13 @@ abstract class BaseToggleTileService : BaseWorkflowTileService() {
         val readBack = manager.getWorkflow(workflow.id)?.isEnabled
         DebugLogger.d(TAG, "开关磁贴写入后回读：${workflow.name} isEnabled=$readBack")
 
+        // ⚠️⚠️ **必须通知列表页**：下拉 QS 面板**不会**触发 Activity 的 `ON_RESUME`
+        //     也不会改 `isActive`，而列表只在那两个时机读盘 ⇒ 不通知的话
+        //     用户回到列表看到的是**旧状态**，要切出去再切回来才刷新。
+        //     ⚠️ 发布点只在这里、不在 `WorkflowManager.saveWorkflow` —— 理由见
+        //     `WorkflowDataChangeBus` 的 KDoc（避免列表自己改自己时多付一趟读盘）。
+        WorkflowDataChangeBus.notifyChanged()
+
         if (!enable) {
             // 关闭：立即刷新磁贴（`requestListeningState` 会再走一次 onStartListening）
             refreshTile()
@@ -142,6 +150,9 @@ abstract class BaseToggleTileService : BaseWorkflowTileService() {
                 TAG,
                 "开关型磁贴开启失败：工作流「${workflow.name}」仍缺权限，已回弹为关闭"
             )
+            // 回弹也是一次**数据变更**（用户看到的是「点了开、结果还是关」），
+            // 列表页同样要跟上，否则它显示的是那次没站住的「开」。
+            WorkflowDataChangeBus.notifyChanged()
             withContext(Dispatchers.Main) {
                 toast(getString(R.string.tile_toggle_failed_permission))
                 // ⚠️ 回弹后同样要重绘 —— 这次 `onClick` 已经返回很久了，

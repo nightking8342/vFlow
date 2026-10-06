@@ -43,6 +43,7 @@ import com.chaomixian.vflow.core.workflow.TileSlot
 import com.chaomixian.vflow.core.workflow.model.TileKind
 import com.chaomixian.vflow.core.workflow.TriggerExecutionCoordinator
 import com.chaomixian.vflow.core.workflow.WorkflowBatchEnumMigrationPreview
+import com.chaomixian.vflow.core.workflow.WorkflowDataChangeBus
 import com.chaomixian.vflow.core.workflow.WorkflowEnumMigration
 import com.chaomixian.vflow.core.workflow.WorkflowManager
 import com.chaomixian.vflow.core.workflow.WorkflowPermissionRecovery
@@ -407,6 +408,28 @@ fun WorkflowListRoute(
     LaunchedEffect(Unit) {
         ExecutionStateBus.stateFlow.collectLatest {
             workflowListViewModel.bumpExecutionStateVersion()
+        }
+    }
+
+    // fork（2026-10-06）：工作流数据**在 App 之外**被改掉时重新读盘。
+    //
+    // ⚠️⚠️ **这是本次唯一新增的读盘触发点，不能省。** 列表页原本只在这两处读盘：
+    //   · `ON_RESUME`（`DisposableEffect` 里的 lifecycle 观察者）
+    //   · `isActive` 变化（`LaunchedEffect(isActive)`）
+    //   而**下拉 QS 面板这两者都不会发生**（Activity 不重启、`isActive` 不变）
+    //   ⇒ 从**开关型磁贴**改了 `isEnabled` 之后回到列表，看到的还是旧状态，
+    //   必须切出去再切回来才刷新 —— 界面与实际不一致里最难自查的一种。
+    //
+    // ⚠️ 发布点在磁贴（`BaseToggleTileService`）而**不在** `WorkflowManager.saveWorkflow`：
+    //   后者是**所有**写入路径的汇聚点，在那里发布会让「列表页自己开关」也绕一圈
+    //   重新 `loadData()`（不会成环 —— `loadData` 会 cancel 上一个 job ——
+    //   但每次列表内开关都白付一趟读盘 + 一次 `setLoading(true)` 的闪）。
+    //
+    // ⚠️ `loadData()` 自带 `loadDataJob?.cancel()`，连发多次不会打架；
+    //   而 SharedFlow 的 `extraBufferCapacity = 1` 也把连发揉成一次。
+    LaunchedEffect(Unit) {
+        WorkflowDataChangeBus.changes.collect {
+            loadData()
         }
     }
 
