@@ -864,6 +864,29 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 > （`aapt2 dump resources` 数 8310 —— `keep.xml` 的白名单就是为它写的，
 > 但**注释里的双连字符陷阱**曾让整份文件静默失效，值得单独跑一次）。
 
+### 快捷设置磁贴（QS Tile）优化（2026-10-06）—— **仅设计，未实现**
+
+> 设计文档：`docs/fork/quick-settings-tile-design.md`（v1.0，含 §3 一处认知纠正、
+> §7 静默失效点 19 条、§8.3 真机清单 **0 项已做**）。
+> ⚠️ **本批只有一份文档，没有一行代码。** 它登记在此是因为三件事：
+> ① 它会**改动上游文件**（`AndroidManifest.xml` / `WorkflowListScreen` /
+> `WorkflowListRoute` / `ShortcutHelper` / `WorkflowManager`），改动面已可预见；
+> ② 它纠正了一处会被后来者踩回去的认知（§3）；
+> ③ 它含一条**必须一并修**的既有缺陷（下条）。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `docs/fork/quick-settings-tile-design.md`（新增） | fork 独有：**快捷设置磁贴优化设计**。三件事：磁贴显示绑定工作流的图标（含自定义照片）、执行型磁贴改成**不高亮**、**新增 20 个开关型磁贴**绑定有 auto trigger 的工作流。⚠️⚠️ **§3 是最容易被做错的一节**：用户需求说「改成官方推荐的样式（没有高亮）」，方向对，但**元数据 `TOGGLEABLE_TILE` 不控制高亮** —— 官方文档对它只有无障碍说明，AOSP `CustomTile.java` 里它只影响 `BooleanState` vs `State` 与 `expandedAccessibilityClassName`（`Switch` vs `Button`），**没有任何绘图调用**。⇒ **高亮完全由 `Tile.state` 决定**，两件事要分开做（视觉改 state、无障碍去元数据），只做一件都会留下问题。⚠️ 两池**强制互斥**（用户定案：执行型不允许绑 auto 工作流），落实为**三道闸**（菜单 / 选择面板 / service 兜底），且三闸**判据只能有一处**（`TileGate`）—— 前两道判的是「绑定的那一刻」，而 `hasAutoTriggers()` **会随用户编辑而变**，少了第三道闸，一个「绑定时是手动型、后来加了定时触发」的工作流会**继续按执行型跑**并绕过用户以为管用的 `isEnabled` 开关，且**没有任何行为测试会红**。⚠️ **未绑定时两池的默认名必须能区分**（`vFlow Execute N` / `vFlow Toggle N`）—— 系统「添加磁贴」面板显示的就是 manifest 的 `android:label`，那一刻还没绑定、改不了；现有 20 条 `vFlow Tile N` **要改**。⚠️ **执行型的 service 类名不得改**（SystemUI 按 `ComponentName` 记已添加的磁贴，改名会让它们全部消失）。⚠️ 文档**不含任何真机实测**，全部结论来自代码直读 + 官方文档 + AOSP 源码 | 我方 |
+| `app/src/main/java/.../core/workflow/model/Workflow.kt`（**待改，尚未改**） | ⚠️⚠️ **一处必须一并修的既有缺陷**：磁贴相关的三处判据（`WorkflowListScreen.kt:522`/`:1251`、`BaseWorkflowTileService.kt:84`）用的都是 `hasManualTrigger()`，而「有 auto trigger ⇒ 没有手动触发器」**是错的** —— 编辑器新建工作流时默认就带一个 `vflow.trigger.manual`，用户之后再加自动触发器**不会**把它删掉 ⇒ 实践中多数自动化工作流**同时**有 manual + auto，两个判据**碰巧都成立**，缺陷被掩盖。但 `WorkflowNormalizer.normalize`（`core/workflow/WorkflowNormalizer.kt:29-38`）在**已有任意触发器**时**不会**补手动触发器 ⇒ **Agent 建的、或从外部导入的纯自动工作流根本没有**「添加到控制中心」菜单项。判据统一为 `hasAutoTriggers()`（落点为新增的 `TileGate`） | **手动合并** |
+
+> ⚠️ **本批的真机验证：0 项**。§8.3 是**待办清单，不是已验证清单** ——
+> 尤其「`ACTIVE_TILE` + `requestListeningState` 的实际刷新时机」与
+> 「40 个磁贴的面板表现」必须上机确认后才能当结论引用。
+> ⚠️ 另记一处**会被本改动搞红**的既有测试：`TileScopeTest.the wire shape matches what
+> TileManager writes` 断言元素键集合恰为 `{tileIndex, workflowId}`，加 `kind` 后必然变红。
+> 它是**正常工作**的表现（设计来拦住「模型加字段但没人意识到备份形状变了」），
+> 处理方式是补上第三个键，**不得**改成「包含」断言。
+
 ---
 
 ## 暂未分歧、但日后改动时须登记的敏感点
