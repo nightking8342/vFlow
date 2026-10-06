@@ -63,6 +63,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuDefaults
 import androidx.compose.material3.Surface
+import com.chaomixian.vflow.ui.common.glass.GlassBadge
 import com.chaomixian.vflow.ui.common.glass.VFlowSwitch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -79,7 +80,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.style.TextOverflow
@@ -738,19 +738,26 @@ fun WorkflowCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     if (colorfulCardsEnabled) {
-                        // ⚠️ **曲奇饼干花边**（参考 ShortX）：原来是 `RoundedCornerShape(14.dp)`。
-                        //    形状与实测依据见 `ScallopedBadgeShape`；花瓣数 12、起伏 4.1%
-                        //    都是对 ShortX 截图做极坐标半径扫描量出来的。
-                        Surface(
+                        // ⚠️ **液态玻璃徽章**（形状仍是曲奇花边 —— ShortX 截图
+                        //    极坐标扫描量出来的 12 瓣 / 4.1% 起伏；玻璃关掉时
+                        //    退回原来的实色底 + 原图标色，逐字不变）。
+                        GlassBadge(
                             modifier = Modifier.size(40.dp),
-                            color = Color(visualColors.iconBackground),
-                            shape = remember { ScallopedBadgeShape() }
+                            tint = Color(visualColors.badgeGlassTint),
+                            // ⚠️ 徽章背后**就是卡片自己**（渐变顶端那一带）。
+                            backdropBrush = WorkflowVisuals.cardBackgroundBrush(
+                                colors = visualColors,
+                                colorfulCardsEnabled = true,
+                                surfaceContainerLow = MaterialTheme.colorScheme.surfaceContainerLow,
+                            ),
+                            fallbackColor = Color(visualColors.iconBackground),
+                            shape = remember { ScallopedBadgeShape() },
                         ) {
                             // ⚠️ 走 `WorkflowCardIcon`：卡片图标现在可能是**用户选的图片**
                             //    （绝对路径 / file://），不能再无条件 painterResource。
                             WorkflowCardIcon(
                                 cardIconRes = workflow.cardIconRes,
-                                tint = Color(visualColors.iconTint),
+                                tint = Color(visualColors.badgeIconTint),
                                 size = 22.dp,
                             )
                         }
@@ -1486,21 +1493,15 @@ private fun WorkflowCompactCard(
     //    `cardBackgroundEnd` 由 `WorkflowVisuals.resolveCardColors` 给出；
     //    非多彩模式（`colorfulCardsEnabled == false`）下两个端点相同 ⇒ 退化成纯色，
     //    与改动前的观感一致。
-    val cardBrush = if (colorfulCardsEnabled) {
-        Brush.verticalGradient(
-            colors = listOf(
-                Color(visualColors.cardBackground),
-                Color(visualColors.cardBackgroundEnd),
-            )
-        )
-    } else {
-        Brush.verticalGradient(
-            colors = listOf(
-                MaterialTheme.colorScheme.surfaceContainerLow,
-                MaterialTheme.colorScheme.surfaceContainerLow,
-            )
-        )
-    }
+    // ⚠️ 走 `WorkflowVisuals.cardBackgroundBrush` 而**不是**就地拼一份 ——
+    //    玻璃徽章要拿同一个 brush 当「背后是什么」（见 `GlassBadge` 第 2 点），
+    //    两边各拼一份的话，改了其中一处就会出现「徽章透出的颜色与卡片对不上」，
+    //    而那是静默的（只是看着有点脏）。
+    val cardBrush = WorkflowVisuals.cardBackgroundBrush(
+        colors = visualColors,
+        colorfulCardsEnabled = colorfulCardsEnabled,
+        surfaceContainerLow = MaterialTheme.colorScheme.surfaceContainerLow,
+    )
 
     Card(
         modifier = Modifier
@@ -1531,30 +1532,37 @@ private fun WorkflowCompactCard(
                     .then(dragHandleModifier),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Surface(
+                // ⚠️ **液态玻璃徽章**（形状仍是曲奇花边，用户 2026-10-07
+                //    「保留曲奇花边，只换材质」）。玻璃关掉时退回实色，
+                //    底色/图标色与本改动之前逐字一致。
+                GlassBadge(
                     modifier = Modifier.size(iconBox),
-                    // ⚠️ 曲奇饼干花边，与列表模式一致（`RoundedCornerShape(13.dp)` 是原来
-                    //    的形态）。花边是**纯几何**、不依赖主题色，故非多彩模式下照用。
-                    shape = remember { ScallopedBadgeShape() },
-                    color = if (colorfulCardsEnabled) {
+                    tint = if (colorfulCardsEnabled) {
+                        Color(visualColors.badgeGlassTint)
+                    } else {
+                        MaterialTheme.colorScheme.secondaryContainer
+                    },
+                    // ⚠️ 徽章背后**就是卡片自己**（渐变顶端那一带）——
+                    //    不传一份等效的进去，玻璃就没有「底色」可透。
+                    backdropBrush = cardBrush,
+                    fallbackColor = if (colorfulCardsEnabled) {
                         Color(visualColors.iconBackground)
                     } else {
                         MaterialTheme.colorScheme.secondaryContainer
-                    }
+                    },
+                    shape = remember { ScallopedBadgeShape() },
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        // ⚠️ 同紧凑卡片：图标可能是自定义图片，见 `WorkflowCardIcon`。
-                        WorkflowCardIcon(
-                            cardIconRes = workflow.cardIconRes,
-                            tint = if (colorfulCardsEnabled) {
-                                Color(visualColors.iconTint)
-                            } else {
-                                MaterialTheme.colorScheme.onSecondaryContainer
-                            },
-                            size = iconInner,
-                            iconPadding = 0.dp,
-                        )
-                    }
+                    // ⚠️ 同紧凑卡片：图标可能是自定义图片，见 `WorkflowCardIcon`。
+                    WorkflowCardIcon(
+                        cardIconRes = workflow.cardIconRes,
+                        tint = if (colorfulCardsEnabled) {
+                            Color(visualColors.badgeIconTint)
+                        } else {
+                            MaterialTheme.colorScheme.onSecondaryContainer
+                        },
+                        size = iconInner,
+                        iconPadding = 0.dp,
+                    )
                 }
 
                 Spacer(modifier = Modifier.weight(1f))

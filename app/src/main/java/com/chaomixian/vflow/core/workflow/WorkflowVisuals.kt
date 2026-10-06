@@ -170,6 +170,25 @@ object WorkflowVisuals {
          *    留在 [resolveCardColors] 一个地方。
          */
         val executeIconColor: Int = iconTint,
+        /**
+         * **玻璃徽章**上那层染色的颜色（不带 alpha，实际不透明度由控件决定）。
+         *
+         * 基本就是 `baseColor` —— 徽章背后没有真实内容可采样，玻璃的「底色」
+         * 只能由调用方画进去（原因见 `GlassBadge` 的类 KDoc）。
+         *
+         * ⚠️ 与 [executeIconColor] 同理，**默认值取 `iconBackground`** 而不是新算一个色：
+         *    漏传 = 退回改动前的观感，不会变成随机色。
+         */
+        val badgeGlassTint: Int = iconBackground,
+        /**
+         * 玻璃徽章上**图标**的颜色 —— 与 [iconTint] **是两个色**，别混用。
+         *
+         * ⚠️⚠️ 实色底的亮度是 `blend(surface, base, 0.82)`，而玻璃底是
+         *    「玻璃 + 68% 染色」，整体向 `surface` 靠了一档 ⇒ **对比色要重算**。
+         *    直接用 [iconTint] 的话，浅色主题色（黄 / 青）上会出现一个
+         *    对比不足的图标 —— 而它**不报错、也不崩**，只是看不清。
+         */
+        val badgeIconTint: Int = iconTint,
     )
 
     fun defaultIconResName(): String = DEFAULT_ICON_RES_NAME
@@ -206,6 +225,35 @@ object WorkflowVisuals {
             return normalized
         }
         return DEFAULT_THEME_COLOR_HEX
+    }
+
+    /**
+     * 卡片底色渐变（顶端 → 底端）。**两处消费点必须共用这一个函数**：
+     * 卡片自己用它当背景，玻璃徽章用它当「背后是什么」——
+     * 两边各拼一份的话，改了其中一处就会出现「徽章透出来的颜色与卡片对不上」，
+     * 而那是**静默**的（只是看着有点脏）。
+     *
+     * ⚠️ 非彩色模式（`colorfulCardsEnabled == false`）下两个端点相同 ⇒ 退化成纯色，
+     *    与多彩模式出现之前的行为一致。
+     *
+     * @param surfaceContainerLow 非多彩模式用的中性底色（调用方从主题取，
+     *   本函数刻意不碰 `MaterialTheme` —— 它在 `core/` 下、没有 Compose 环境）。
+     */
+    fun cardBackgroundBrush(
+        colors: CardColors,
+        colorfulCardsEnabled: Boolean,
+        surfaceContainerLow: androidx.compose.ui.graphics.Color,
+    ): androidx.compose.ui.graphics.Brush = if (colorfulCardsEnabled) {
+        androidx.compose.ui.graphics.Brush.verticalGradient(
+            listOf(
+                androidx.compose.ui.graphics.Color(colors.cardBackground),
+                androidx.compose.ui.graphics.Color(colors.cardBackgroundEnd),
+            )
+        )
+    } else {
+        androidx.compose.ui.graphics.Brush.verticalGradient(
+            listOf(surfaceContainerLow, surfaceContainerLow)
+        )
     }
 
     fun resolveIconDrawableRes(iconResName: String?): Int {
@@ -257,6 +305,17 @@ object WorkflowVisuals {
         } else {
             Color.WHITE
         }
+        // 玻璃徽章上那层染色的**等效底色**：0.82 的实色底换成「玻璃 + 68% 染色」
+        // 之后，亮度整体向 surface 靠了一档 —— 图标对比色必须按**新的**底色重算，
+        // 否则浅色主题色（黄/青）上会留下一个对比不足的图标。
+        // 0.68 与 `GlassBadge.TINT_ALPHA` 是同一个数（那边是实际的绘制不透明度）。
+        val badgeTint = if (
+            ColorUtils.calculateLuminance(ColorUtils.blendARGB(surface, baseColor, 0.68f)) > 0.46
+        ) {
+            Color.parseColor("#111827")
+        } else {
+            Color.WHITE
+        }
         // 执行按钮图标：**主题色直接缩到 40%**（见 EXECUTE_ICON_ALPHA 的实测说明），
         // 再叠在卡片底色上 —— 注意是叠在 `cardBackground` 而不是在 `baseColor` 上，
         // 否则算出来的色与「真的画在那张卡上」相差一个卡片底色的量。
@@ -269,6 +328,8 @@ object WorkflowVisuals {
             chipBackground = chipBackground,
             cardBackgroundEnd = cardBackgroundEnd,
             executeIconColor = executeIconColor,
+            badgeGlassTint = baseColor,
+            badgeIconTint = badgeTint,
         )
     }
 }
