@@ -62,6 +62,7 @@ import com.chaomixian.vflow.core.backup.ImportStatus
 import com.chaomixian.vflow.core.backup.ScopeImportResult
 import com.chaomixian.vflow.core.backup.SecretContext
 import com.chaomixian.vflow.core.logging.DebugLogger
+import com.chaomixian.vflow.core.workflow.TileRefreshNotifier
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -147,7 +148,28 @@ fun BackupRestoreScreen(onBack: () -> Unit) {
             val summary = withContext(Dispatchers.IO) {
                 val env = AndroidBackupEnvironment(context.applicationContext)
                 val secrets = pw?.takeIf { it.isNotEmpty() }?.let { SecretContext(it.toCharArray()) }
-                when (val outcome = BackupPipeline.import(env, text, mode, secrets)) {
+                val outcome = BackupPipeline.import(env, text, mode, secrets)
+
+                // ⚠️⚠️ fork（2026-10-06）**磁贴刷新的第四处调用点**（设计 §4.4）。
+                //     备份导入是唯一**不经过** `WorkflowManager.saveWorkflow` 的写入路径：
+                //     REPLACE 走 `replaceAllWorkflows`、MERGE 走 `saveAllWorkflows`
+                //     ⇒ 那两个方法都不会通知磁贴。漏了这里的表现是
+                //     「导入一份备份后磁贴还是导入前的名字 / 图标」，用户会以为导入失败。
+                //
+                //     ⚠️ 判据用「这两种 outcome 才真的写过盘」而不是无条件调：
+                //     `Rejected` / `Corrupted` / `WrongPassphrase` 三种**一个字节都没写**，
+                //     对它们发 40 次跨进程调用纯属浪费。
+                //     ⚠️ **`PassphraseRequired` 也必须算** —— 它是「非加密 scope 已经真的
+                //     导入了一遍、只是加密段还要口令」，`results` 里已经有内容了。
+                //     ⚠️ 本块**在 `Dispatchers.IO` 里**，故 `TileRefreshNotifier` 内部
+                //     自己投主线程这件事是必需的、不是可选的。
+                if (outcome is BackupPipeline.ImportOutcome.Done ||
+                    outcome is BackupPipeline.ImportOutcome.PassphraseRequired
+                ) {
+                    TileRefreshNotifier.requestAll(context)
+                }
+
+                when (outcome) {
                     is BackupPipeline.ImportOutcome.Done -> ImportSummary(
                         title = context.getString(R.string.backup_restore_import_done),
                         body = renderResults(context, outcome.results),

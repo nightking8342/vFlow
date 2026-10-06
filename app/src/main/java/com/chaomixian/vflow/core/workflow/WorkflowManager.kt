@@ -115,6 +115,13 @@ class WorkflowManager(val context: Context) {
 
         prefs.edit().putString("workflow_list", gson.toJson(workflows)).apply()
         TriggerServiceProxy.notifyWorkflowChanged(context, workflowToSave, oldWorkflow)
+        // fork（2026-10-06）：磁贴显示工作流名 / 图标 / 启用态，而这些都在本次写入里。
+        // ⚠️ 必须放在**所有**写入路径的汇聚点（本方法）—— 磁贴是「推」模型：
+        //    加了 `ACTIVE_TILE` 元数据之后系统不会主动绑，只靠 `requestListeningState`。
+        //    少了这一行，表现是「进 App 改了图标，退出后磁贴还是旧的」，看起来像系统缓存。
+        // ⚠️ 必须放在 `notifyWorkflowChanged` **之后** —— 那条链路会异步改 `isEnabled`
+        //    （权限恢复回弹），先刷会读到中间态。
+        TileRefreshNotifier.requestAll(context)
     }
 
     fun findShareableWorkflows(): List<Workflow> {
@@ -142,6 +149,9 @@ class WorkflowManager(val context: Context) {
             workflows.remove(workflowToRemove)
             prefs.edit().putString("workflow_list", gson.toJson(workflows)).apply()
             TriggerServiceProxy.notifyWorkflowRemoved(context, workflowToRemove)
+            // fork（2026-10-06）：绑了这个工作流的磁贴要回落成「未绑定」态
+            // （`BaseWorkflowTileService.updateTileState` 里 `workflow == null` 的分支）。
+            TileRefreshNotifier.requestAll(context)
         }
     }
 
