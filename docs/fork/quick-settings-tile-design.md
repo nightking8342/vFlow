@@ -358,14 +358,50 @@ onClick() {
 
 ### 4.7 状态与文案
 
+#### 未绑定时：**两个池的默认名必须能区分**（用户 2026-10-06 补充）
+
+> 未绑定的磁贴的文字目前都是 vFlow Tile，然后数字后面加开关式的，要区分一下这两种
+
+现状是 20 条 manifest 全是 `vFlow Tile N`（`AndroidManifest.xml:513` 起，逐条手写），
+40 个磁贴都叫「vFlow Tile」时，用户在**系统「添加磁贴」面板**里根本分不出哪个是执行、
+哪个是开关 —— 而面板里显示的就是 manifest 的 `android:label`（那时磁贴还没绑定，
+`onStartListening` 还没跑，改不了）。
+
+⇒ **manifest 的 label 与运行时未绑定态的 label 用同一套命名**（否则「添加」前看一个名字、
+添加后突然变另一个）：
+
+| kind | 未绑定时的名字 |
+|---|---|
+| `EXECUTE` | `vFlow Execute N`（N = 1..20） |
+| `TOGGLE` | `vFlow Toggle N`（N = 1..20） |
+
+⚠️ **三语一律英文**（`vFlow Execute 1` / `vFlow Toggle 1`）—— 与仓库既有先例一致
+（`Switch` / `Case` / `Default` / `End Switch` 四个模块名三语都写英文）。
+理由：manifest 的 label **不能拼变量**，三语就要新增 120 条手写字面量；
+且「确定机器上那个面板里面显示的字符串逐字一致」比「本地化」更值。
+
+⚠️ **不把这两个名字放进字符串资源**：manifest 的 `android:label` 只能是资源引用或字面量，
+走资源就要 40 条 ×3 语言；本设计选**字面量**（与现状 `vFlow Tile N` 的做法一致），
+而运行时未绑定态也直接用同一个字面量拼接（`TileSlot.displayName(kind, slot)`）。
+
+⚠️ **现有的 20 条 `vFlow Tile N` 要改成 `vFlow Execute N`** —— 这不是可选项：
+两池都叫「vFlow Tile」等于没区分。改名只影响**面板里显示的名字**，
+不影响已添加的磁贴（SystemUI 按 `ComponentName` 记，不按 label）。
+
+#### 完整状态表
+
 | kind | 情况 | state | label | subtitle | icon |
 |---|---|---|---|---|---|
 | EXECUTE | 已绑定 | **恒 `STATE_INACTIVE`** | `workflow.name` | — | 工作流图标 |
-| EXECUTE | 未绑定 | `STATE_INACTIVE` | `vFlow Tile N` | 「尚未绑定工作流」 | `ic_workflows` |
+| EXECUTE | 未绑定 | `STATE_INACTIVE` | `vFlow Execute N` | 「尚未绑定工作流」 | `ic_workflows` |
 | EXECUTE | **越界**（§4.6 闸 3） | `STATE_UNAVAILABLE` | `workflow.name` | 「含自动触发器，请重新绑定到开关磁贴」 | `ic_workflows` |
 | TOGGLE | 已绑定 | `isEnabled ? ACTIVE : INACTIVE` | `workflow.name` | `isEnabled ? "已启用" : "已暂停"` | 工作流图标 |
-| TOGGLE | 未绑定 | `INACTIVE` | `自动化 N` | 「尚未绑定工作流」 | `ic_workflows` |
+| TOGGLE | 未绑定 | `INACTIVE` | `vFlow Toggle N` | 「尚未绑定工作流」 | `ic_workflows` |
 | TOGGLE | **越界**（已无 auto） | `STATE_UNAVAILABLE` | `workflow.name` | 「已无自动触发器，请重新绑定到执行磁贴」 | `ic_workflows` |
+
+⚠️ **已绑定后 label 只显示工作流名**（用户 2026-10-06 定案），不追加「· 执行 / · 开关」：
+磁贴 label 很短（中文约 8 字就到头），加后缀会把工作流名截掉；
+而「执行型 vs 开关型」已经由**高亮**（恒暗 vs 双态）+ **subtitle** 区分得开了。
 
 ⚠️ 越界态用 `STATE_UNAVAILABLE` 是**唯一**允许用它的一格 —— 它恰恰满足官方说的
 「could be put into an available state later」（用户去改绑就恢复）。
@@ -390,8 +426,10 @@ onClick() {
 | 10 | 解码逻辑**抽取复用**而非复制 | 避免 `ShortcutHelper` / 磁贴两份实现漂移 |
 | 11 | 两个池都加 `ACTIVE_TILE` | 让刷新可控（`requestListeningState` 推）而非等系统绑 |
 | 12 | `wasEnabledBeforePermissionsLost` **必须清零** | §2.5：不清会被权限恢复自动重开 |
-| 13 | 两池**强制互斥** —— 执行型不允许绑 auto 工作流 | 用户 2026-10-06 定案。落实为**三道闸**（§4.7），且三闸**共用同一判据** |
-| 14 | 闸 3（service 侧兜底）不匹配时 **`openApp()` + Toast**，不静默也不执行 | §4.7：`hasAutoTriggers()` 会随用户编辑而变；静默会让用户以为磁贴在执行 |
+| 13 | 两池**强制互斥** —— 执行型不允许绑 auto 工作流 | 用户 2026-10-06 定案。落实为**三道闸**（§4.6），且三闸**共用同一判据** |
+| 14 | 闸 3（service 侧兜底）不匹配时进**越界态**（`UNAVAILABLE` + 提示），点击只 `openApp()` | §4.7：`hasAutoTriggers()` 会随用户编辑而变；静默会让用户以为磁贴在执行 |
+| 15 | 未绑定时两池的**名字必须能区分**：`vFlow Execute N` / `vFlow Toggle N` | 用户 2026-10-06 定案。manifest 的 `android:label` 就是面板里显示的那个名字，**两个池都叫 `vFlow Tile` 等于没区分** |
+| 16 | 这两个名字**用英文字面量、不进字符串资源**；且已绑定后 label **不加类型后缀** | 前者：manifest 不能拼变量，走资源要 40×3 条；后者：label 短（中文约 8 字截断），加后缀会把工作流名挤掉，而类型已由高亮 + subtitle 区分 |
 
 ---
 
@@ -402,7 +440,7 @@ onClick() {
 | 文件 | 内容 |
 |---|---|
 | `core/workflow/model/TileKind.kt` | `enum class TileKind { EXECUTE, TOGGLE }`（独立文件便于纯 JVM 单测） |
-| `core/workflow/TileSlot.kt` | **纯函数层**：`kindOf(tileIndex)` / `indexInKind(tileIndex)` / `tileIndexOf(kind, slot)` / `displayName(kind, slot)`。无 Android 依赖 |
+| `core/workflow/TileSlot.kt` | **纯函数层**：`kindOf(tileIndex)` / `indexInKind(tileIndex)` / `tileIndexOf(kind, slot)` / `displayName(kind, slot)`（→ `vFlow Execute N` / `vFlow Toggle N`，§4.7）。无 Android 依赖 |
 | `core/workflow/TileGate.kt` | **纯函数层（互斥判据的唯一落点）**：`accepts(kind, workflow)` / `isOutOfKind(tile, workflow)` / `mismatchMessageRes(kind)` / `outOfKindMessageRes(kind)`。⚠️ §4.6 的三道闸**全部调它**，任何一处自己写 `hasAutoTriggers()` 都会让「三闸判据一致」失效 |
 | `ui/tile/BaseExecuteTileService.kt` | 从 `BaseWorkflowTileService` 拆出（或保留基类 + 加 `tileKind()` 抽象） |
 | `ui/tile/BaseToggleTileService.kt` | 开关型基类 |
@@ -419,7 +457,7 @@ onClick() {
 | `core/workflow/TileManager.kt` | 新增按 kind 查/存/删的方法；`getAllTilesWithEmpty` 返回 40 |
 | `core/backup/scopes/TileScope.kt` | KDoc 更新（`TILE_COUNT` 20→40）；**合并逻辑不动**。⚠️ 见 §6.4 —— 但它的**测试**会被本改动搞红 |
 | `ui/tile/BaseWorkflowTileService.kt` | `updateTileState` 改（state 策略按 kind 分派 + `TileGate.isOutOfKind` 的越界态 + 设 icon + subtitle）；`onClick` 按 `TileGate.accepts` 兜底（**闸 3**） |
-| `AndroidManifest.xml` | 20 处执行型改元数据（去 `TOGGLEABLE_TILE`、加 `ACTIVE_TILE`）+ **新增 20 条**开关型 |
+| `AndroidManifest.xml` | 20 处执行型改元数据（去 `TOGGLEABLE_TILE`、加 `ACTIVE_TILE`）+ **改 label**（`vFlow Tile N` → `vFlow Execute N`）+ **新增 20 条**开关型（`vFlow Toggle N`） |
 | `ui/workflow_list/WorkflowListScreen.kt` | `:522`、`:1251` 判据 `hasManualTrigger()` → `TileGate.accepts(...)`（**两个菜单项各按自己那一池判**）。⚠️ 现在只有一个「添加到控制中心」菜单项，要拆成两个、各自按池显隐 |
 | `ui/workflow_list/WorkflowListRoute.kt` | `onAddToTile` 按 `TileGate.accepts` 分流到两池；`tileItems` 分两段（只列这一池的槽位） |
 | `ui/common/ShortcutHelper.kt` | `loadCenterCroppedBitmap` 改为委托新文件 |
@@ -446,6 +484,11 @@ tile_out_of_kind_toggle        已无自动触发器，请重新绑定到执行�
 一个发生在「绑定时」、一个发生在「已经绑了但条件变了」，
 用户要做的事不同（前者是换一池，后者是**重新**绑）。混用会让用户以为
 「我明明绑上过，怎么又说不行」。
+
+⚠️ **未绑定的两个池名不在这个清单里** —— `vFlow Execute N` / `vFlow Toggle N`
+是 manifest 的**字面量**（见 §4.7），运行时由 `TileSlot.displayName(kind, slot)` 拼接。
+刻意**不**放进 `strings*.xml`：manifest 不能拼变量，两者共用同一套命名口径即可，
+放进资源反而会让人以为「改资源就能改面板里的名字」（改不了）。
 
 ---
 
@@ -490,6 +533,8 @@ assertEquals(
 | 15 | 三闸判据不统一（闸 1 用 `hasManualTrigger()`、闸 3 用 `hasAutoTriggers()`） | 菜单项**显示着**，点了却被拒 —— 用户认为「功能坏了」 | 三闸共用同一判据 + 源码扫描锁 |
 | 16 | 漏掉闸 3（只做 UI 两道闸） | 绑定时是手动型、后来加了定时触发 ⇒ 磁贴**继续按执行型跑**，绕过用户以为管用的 `isEnabled` 开关 | service 侧再判一次 + 单测锁 |
 | 17 | 给工作流加了自动触发器后，**另一个**「开关型」磁贴也指向它 | 两个磁贴同时控制同一个 `isEnabled`，看不出谁是谁 | 与 §9 第 4 条同源，需定案 |
+| 18 | 新增 20 条 manifest 时漏改 label（新池也写 `vFlow Tile N`） | **面板里 40 个磁贴名字逐字相同**，用户随便挑一个 ⇒ 不知道自己加的是执行还是开关 | manifest 标签断言（§8.2 第 6 条） |
+| 19 | 运行时未绑定名（`TileSlot.displayName`）与 manifest 的 label **口径漂移** | 面板里叫「vFlow Execute 3」，加进控制中心后变名字 —— 用户以为是两个不同的东西 | 两者用同一套命名，且由源码扫描比对（§8.2 第 6 条） |
 
 ---
 
@@ -498,7 +543,11 @@ assertEquals(
 ### 8.1 纯函数单测（可纯 JVM）
 
 - `TileSlotTest` —— 两池的 index ↔ (kind, slot) 往返、边界（0/19/20/39）、越界、
-  `kindOf` 与 `tileIndexOf` 互为逆。
+  `kindOf` 与 `tileIndexOf` 互为逆；**`displayName` 两池互不相同**（反向锁：
+  防有人把两个池都写成「vFlow Tile N」—— 那正是本次要修的）。
+- `TileManifestLabelTest`（源码扫描）—— `AndroidManifest.xml` 里 `vFlow Execute N`
+  **恰 20 条**、`vFlow Toggle N` **恰 20 条**、**不得再有** `vFlow Tile N`；
+  且 `TileSlot.displayName` 拼出的字符串与 manifest 里的**逐字一致**（同一个口径）。
 - `TileKindBackwardCompatTest` —— Gson 反序列化**缺 `kind` 的旧 JSON** ⇒ 落 `EXECUTE`；
   往返不丢字段。
 - `TileGateTest` —— **互斥判据逐格验**（§4.6）：`EXECUTE + 无 auto` ✅ /
@@ -510,17 +559,20 @@ assertEquals(
 ### 8.2 源码扫描型接线锚定
 
 ⚠️ 本仓库反复踩过「纯函数全绿但调用点缺失」（`CoreLauncher` 漏调 `recordLaunchedDexFingerprint`）。
-本改动有**五处**同类风险，各需一条扫描断言（带反证）：
+本改动有**六处**同类风险，各需一条扫描断言（带反证）：
 
-1. `WorkflowListScreen` 的两处判据**真的**改成了 `!hasAutoTriggers()`（且 `hasManualTrigger` 不再出现在「添加到控制中心」邻近）；
+1. `WorkflowListScreen` 的两处判据**真的**改成了 `TileGate.accepts(...)`（且 `hasManualTrigger` 不再出现在「添加到控制中心」邻近）；
 2. `WorkflowManager.saveWorkflow` / `deleteWorkflow` **真的**调了 `TileRefreshNotifier`；
 3. `AndroidManifest.xml` 里执行型 20 条**没有** `TOGGLEABLE_TILE`、**有** `ACTIVE_TILE`；
    开关型 20 条**两者都有**（逐条数数，防空转）；
-4. **闸 3 真的存在** —— 两个 `BaseXxxTileService` 的 `onClick` 里都要有按 `hasAutoTriggers()`
-   的判定（§4.7）。⚠️ 少了它，一条命令就能改回的「只做 UI 两道闸」**没有任何行为测试会红**；
+4. **闸 3 真的存在** —— 两个 `BaseXxxTileService` 的 `onClick` 里都要有按 `TileGate.accepts`
+   的判定（§4.6）。⚠️ 少了它，一条命令就能改回的「只做 UI 两道闸」**没有任何行为测试会红**；
 5. **三闸判据一致** —— 三个闸（菜单 / 面板 / service）**都调 `TileGate`**，
    源码里**不得**直接出现 `hasAutoTriggers()` 与磁贴判据相邻（§7 第 15 条）。
-   ⚠️ 这与第 1 条是**两件事**：第 1 条锁「改对了」，第 5 条锁「只有一处这么判」。
+   ⚠️ 这与第 1 条是**两件事**：第 1 条锁「改对了」，第 5 条锁「只有一处这么判」；
+6. **两个池的默认名真的分开了** —— manifest 里 `vFlow Execute N` 恰 20 / `vFlow Toggle N` 恰 20 /
+   `vFlow Tile N` **零条**，且与 `TileSlot.displayName` 的拼接口径逐字一致（§4.7）。
+   ⚠️ 漏了这条的表现是「面板里 40 个磁贴名字一模一样」，**只能在真机上肉眼发现**。
 
 ### 8.3 真机验证清单（**当前 0 项已做**）
 
@@ -532,7 +584,8 @@ assertEquals(
 - [ ] 从磁贴关掉后再触发权限恢复 ⇒ **不应被自动重开**
 - [ ] 在 App 里改工作流图标 ⇒ 下拉面板，磁贴**立刻**是新图标
 - [ ] 未绑定槽位的 subtitle 文案
-- [ ] 系统「添加磁贴」面板里，40 个磁贴**能区分**两个池（图标 / 标签）
+- [ ] 系统「添加磁贴」面板里，40 个磁贴在**还没绑定**时就能区分 ——
+      前 20 个叫 `vFlow Execute N`、后 20 个叫 `vFlow Toggle N`（§4.7）
 - [ ] 长按磁贴 ⇒ 打开 App 详情页（不是控制中心面板）
 - [ ] **互斥闸 1**：有 auto 的工作流，菜单里**没有**「添加到控制中心（执行）」
 - [ ] **互斥闸 2**：选择面板按 kind 分段，且不列出不属于这一池的工作流
