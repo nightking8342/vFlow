@@ -308,6 +308,13 @@ Kotlin 生成的 `CREATOR` 仍按新布局读写；本字段事实上只在进�
 且它是**一次系统调用**、不是廉价的本地操作 ⇒ 上面四处都做**去抖**
 （例如 `saveWorkflow` 连续调 5 次只发一次）。
 
+⚠️ **去抖不是可选的，因为 `saveWorkflow` 会被循环批量调用**（实现期核实）：
+`WorkflowListRoute.kt:980` 的 `showDissolveFolderConfirmationDialog` 里是
+`.forEach { workflow -> workflowManager.saveWorkflow(workflow.copy(folderId = null)) }` ——
+一个文件夹 N 个工作流 = **N 次调用**，不去抖就是 N × 40 次系统调用。
+（反例，别拿它当理由：列表页拖拽排序走 `saveAllWorkflows`，**不经过 `saveWorkflow`**，
+不产生刷新。）
+
 ⚠️⚠️ **不要试图在 `onStartListening` 里读 `isEnabled` 之外的东西** ——
 `requestListeningState` 只保证「会调一次 `onStartListening`」，
 在那之前 SystemUI 显示的是**上一次的 Tile 对象**。所以刷新必须**推**，不能等拉。
@@ -527,7 +534,7 @@ assertEquals(
 | 9 | 两池的 `tileIndex` 映射靠类后缀推 | 两个池都有 0..19，**看起来一样**，点开关型却执行了工作流 | 显式偏移常量 + 单测 |
 | 10 | 开关型磁贴对「纯自动、无 manual」工作流执行 | 现有闸 `hasManualTrigger()` 会**静默拒绝**（只弹 Toast） | 判据改 `hasAutoTriggers()` |
 | 11 | `setStateDescription` 未判版本 | API 29 上 `NoSuchMethodError` | 不用它，或判 `SDK_INT >= 30` |
-| 12 | 去抖做错（只在同一个实例内去抖） | 磁贴 service 与 App 不同进程，**去抖跨不过去** | 去抖只在 App 侧单进程内做 |
+| 12 | 去抖做错（把去抖放在会被批量调用的路径里） | 一次操作打出 N×40 次 `requestListeningState`（**系统调用**），下拉面板时卡顿 | 去抖放在 `TileRefreshNotifier` 里，且接在会被循环调用的 `saveWorkflow` 上 |
 | 13 | `WorkflowIconValue.isCustomImage` 判定顺序写反（先看 `/` 再看 `file://`） | `file://...` 落到资源名路径 ⇒ `getIdentifier` 返回 0 ⇒ 磁贴**空白** | 判定集中在 `WorkflowIconValue`（已有），磁贴侧只调它 |
 | 14 | 图片文件已被删 / 换机后路径失效 | 解码返回 null ⇒ 若直接 `createWithBitmap(null)` 会 **NPE 崩 service** | null 时回落 `ic_workflows`（与 `WorkflowCardIcon` 同一策略） |
 | 15 | 三闸判据不统一（闸 1 用 `hasManualTrigger()`、闸 3 用 `hasAutoTriggers()`） | 菜单项**显示着**，点了却被拒 —— 用户认为「功能坏了」 | 三闸共用同一判据 + 源码扫描锁 |
