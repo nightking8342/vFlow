@@ -111,7 +111,7 @@
     <string name="settings_switch_colorful_workflow_cards">多彩配色 (Beta)</string>
     <string name="settings_switch_colorful_workflow_cards_desc">为工作流卡片启用多彩配色。</string>
     <string name="settings_switch_liquid_glass_nav_bar">液态玻璃</string>
-    <string name="settings_switch_liquid_glass_nav_bar_desc">界面控件使用液态玻璃风格（底部导航栏、文件夹标签栏等）。</string>
+    <string name="settings_switch_liquid_glass_nav_bar_desc">界面控件使用液态玻璃风格（底部导航栏、文件夹标签栏、开关等）。</string>
     <string name="settings_app_scale">缩放比例</string>
     <string name="settings_app_scale_default_value">100%%</string>
     <string name="settings_app_scale_value">%1$d%%</string>

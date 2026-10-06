@@ -23,6 +23,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.chaomixian.vflow.ui.common.glass.VFlowSwitch
 import com.chaomixian.vflow.R
 import com.chaomixian.vflow.core.locale.LocaleManager
 import com.chaomixian.vflow.core.locale.toast
@@ -239,7 +240,7 @@ fun AccessibilityGuardCard(
                     text = stringResource(R.string.permission_guardian_enable_guard),
                     style = MaterialTheme.typography.bodyMedium
                 )
-                Switch(
+                VFlowSwitch(
                     checked = guardEnabled,
                     onCheckedChange = {
                         if (!canUseShell) {

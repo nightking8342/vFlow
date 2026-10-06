@@ -11,6 +11,7 @@ import android.os.Bundle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import com.chaomixian.vflow.ui.common.glass.VFlowSwitch
 import com.chaomixian.vflow.ui.common.BaseActivity
 import com.chaomixian.vflow.ui.common.VFlowTheme
 import androidx.compose.animation.AnimatedVisibility
@@ -735,7 +736,7 @@ private fun CoreManagementScreen(
                             )
                         }
 
-                        Switch(
+                        VFlowSwitch(
                             checked = autoStartEnabled,
                             onCheckedChange = {
                                 autoStartEnabled = it
@@ -776,7 +777,7 @@ private fun CoreManagementScreen(
                             )
                         }
 
-                        Switch(
+                        VFlowSwitch(
                             checked = mutualKeepAliveEnabled,
                             onCheckedChange = {
                                 mutualKeepAliveEnabled = it
@@ -822,7 +823,7 @@ private fun CoreManagementScreen(
                             )
                         }
 
-                        Switch(
+                        VFlowSwitch(
                             checked = unixSocketEnabled,
                             onCheckedChange = {
                                 unixSocketEnabled = it

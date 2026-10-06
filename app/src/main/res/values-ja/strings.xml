@@ -110,7 +110,7 @@
     <string name="settings_switch_colorful_workflow_cards">カラフルな色 (ベータ版)</string>
     <string name="settings_switch_colorful_workflow_cards_desc">ワークフロー カードのカラフルな色を有効にします。</string>
     <string name="settings_switch_liquid_glass_nav_bar">液体ガラス</string>
-    <string name="settings_switch_liquid_glass_nav_bar_desc">UI コントロール（ボトムナビゲーションバー、フォルダタブバーなど）に液体ガラススタイルを使用します。</string>
+    <string name="settings_switch_liquid_glass_nav_bar_desc">UI コントロール（ボトムナビゲーションバー、フォルダタブバー、スイッチなど）に液体ガラススタイルを使用します。</string>
     <string name="settings_app_scale">ズーム倍率</string>
     <string name="settings_app_scale_default_value">100%%</string>
     <string name="settings_app_scale_value">%1$d%%</string>

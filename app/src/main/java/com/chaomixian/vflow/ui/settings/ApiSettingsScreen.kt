@@ -17,6 +17,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.chaomixian.vflow.ui.common.glass.VFlowSwitch
 import com.chaomixian.vflow.R
 import com.chaomixian.vflow.api.ApiService
 import kotlinx.coroutines.launch
@@ -108,7 +109,7 @@ fun ApiSettingsScreen(
                                 }
                             )
 
-                            Switch(
+                            VFlowSwitch(
                                 checked = serverState == ApiService.ServerState.RUNNING,
                                 onCheckedChange = { enabled ->
                                     scope.launch {

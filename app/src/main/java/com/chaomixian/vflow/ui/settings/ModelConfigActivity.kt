@@ -59,7 +59,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
+import com.chaomixian.vflow.ui.common.glass.VFlowSwitch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -801,7 +801,7 @@ private fun ResponseApiToggleRow(
                     style = MaterialTheme.typography.titleSmall,
                 )
             }
-            Switch(
+            VFlowSwitch(
                 checked = checked,
                 onCheckedChange = onCheckedChange,
             )

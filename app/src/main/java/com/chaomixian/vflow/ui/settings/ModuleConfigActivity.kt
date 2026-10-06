@@ -50,7 +50,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
-import androidx.compose.material3.Switch
+import com.chaomixian.vflow.ui.common.glass.VFlowSwitch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.ToggleButton
@@ -1360,7 +1360,7 @@ fun ModuleConfigScreen(initialSection: String? = null, onBack: () -> Unit) {
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
-                            Switch(
+                            VFlowSwitch(
                                 checked = screenOperationPointerEnabled,
                                 onCheckedChange = { enabled ->
                                     screenOperationPointerEnabled = enabled

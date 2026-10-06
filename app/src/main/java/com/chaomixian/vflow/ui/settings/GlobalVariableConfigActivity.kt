@@ -27,7 +27,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Switch
+import com.chaomixian.vflow.ui.common.glass.VFlowSwitch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.ButtonGroupDefaults
@@ -289,7 +289,7 @@ private fun GlobalVariableEditorDialog(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(stringResource(R.string.global_variable_config_boolean_value))
-                        Switch(checked = booleanValue, onCheckedChange = { booleanValue = it })
+                        VFlowSwitch(checked = booleanValue, onCheckedChange = { booleanValue = it })
                     }
                     else -> OutlinedTextField(
                         value = valueText,

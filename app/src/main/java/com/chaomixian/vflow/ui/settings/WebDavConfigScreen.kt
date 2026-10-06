@@ -22,7 +22,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Switch
+import com.chaomixian.vflow.ui.common.glass.VFlowSwitch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -408,7 +408,7 @@ private fun WebDavEditorDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(stringResource(R.string.webdav_config_allow_insecure_tls))
-                    Switch(checked = allowInsecureTls, onCheckedChange = { allowInsecureTls = it })
+                    VFlowSwitch(checked = allowInsecureTls, onCheckedChange = { allowInsecureTls = it })
                 }
             }
         },

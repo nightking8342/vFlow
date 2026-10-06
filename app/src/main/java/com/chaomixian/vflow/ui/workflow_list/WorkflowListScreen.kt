@@ -64,7 +64,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuDefaults
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
+import com.chaomixian.vflow.ui.common.glass.VFlowSwitch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -905,7 +905,7 @@ fun WorkflowCard(
                 Spacer(modifier = Modifier.weight(1f))
 
                 if (hasAutoTriggers) {
-                    Switch(
+                    VFlowSwitch(
                         checked = workflow.isEnabled,
                         onCheckedChange = onToggleEnabled,
                         colors = workflowSwitchColors(
@@ -1566,7 +1566,7 @@ private fun WorkflowCompactCard(
                 //    塞进第三个图标（⋮）会把「图标 → 空白 → ⋮ → 开关」挤成一条线。
                 if (hasAutoTriggers) {
                     Spacer(modifier = Modifier.width(4.dp))
-                    Switch(
+                    VFlowSwitch(
                         checked = workflow.isEnabled,
                         onCheckedChange = onToggleEnabled,
                         // ⚠️ 间距加大后单列只有约 116dp（手机）/ 153dp（展开），
