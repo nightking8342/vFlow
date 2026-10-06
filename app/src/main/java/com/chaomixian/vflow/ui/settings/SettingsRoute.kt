@@ -325,6 +325,9 @@ fun SettingsRoute(
             onOpenLogcatViewer = {
                 context.startActivity(Intent(context, LogcatViewerActivity::class.java))
             },
+            onOpenSwitchTuner = {
+                context.startActivity(Intent(context, SwitchTunerActivity::class.java))
+            },
             onOpenCoreManagement = {
                 context.startActivity(Intent(context, CoreManagementActivity::class.java))
             },

@@ -857,6 +857,10 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 | ⚠️ **2026-10-06 五次定版（最终）：滑块单独收小 + 清掉调用点的尺寸覆盖** | 用户反馈两条，**真因不同**：<br/>① **「开启状态时滑块超出轨道边界」+「关闭状态右侧缝隙很少」** ⇒ 真因**不在开关里**，在**卡片调用点传了 `requiredSize(48.dp, 28.dp)`**：它**覆盖父约束**，轨道画出来只有 48dp 宽，而滑块的位移/宽度仍按常量的 55dp 算 ⇒ 开启态右边缘跑到轨道外面、关闭态右侧缝隙被挤掉。⇒ 调用点的 `requiredSize` 与 `scale` **全部去掉**（有断言逐个调用点扫，反证确认 1 条红）。⚠️ `scale` 另有独立问题：它缩的是**玻璃层**，会让 `drawBackdrop` 的采样区与绘制区错位。<br/>② **「滑块应该再小一点」** ⇒ 滑块由 34 收到 **26**（**刻意不参与等比**：等比应是 34；26/55 = 47%，接近 M3 的 24/52 = 46%）。于是关闭态两侧各露 27dp、柱位一眼可见。⚠️ 仍保持「略宽于高」的横椭圆（26×20）—— 那是库示例「摇杆」观感的一部分，不做成正圆。<br/>⇒ **尺寸最终为：轨道 55×24 / 滑块 26×20 / 内边距 2 / travel 25 / `pressedScale` 1.5f（照抄）** | **手动合并**（滑块尺寸 + 调用点去覆盖） |
 | `GlassSwitch.kt`（改） | 移除其中的 `VFlowSwitch`（改由示例版那个文件提供）—— ⚠️ 两个同签名顶层函数会**直接编译失败**（`Conflicting overloads`），有断言把「`fun VFlowSwitch(` 恰好定义一次」钉住。文件内的 `GlassSwitch` 与那几条纯函数（`glassThumbXDp` / `thumbDiameterDp` / `dragWidthDp`）**全部保留**，后者仍被测试逐值锚定 | **手动合并**（删一段 + 补回被误删的两个 helper） |
 | `app/proguard-rules.pro`（改） | 第 32 节：`-keepnames` 示例版开关的入口（按名字排查真机问题时有用）。⚠️ `DampedDragAnimation` 是**跨包直接调用**（`ui.main.glass`），不是反射，R8 对它无额外要求 | **手动合并**（追加） |
+| `ui/settings/SwitchTunerActivity.kt`（新增，2026-10-06） | fork 独有：**玻璃开关调参页**（设置 → 调试区多一个入口）。三条滑杆调轨道宽 / 滑块宽 / 滑块高，**现场预览**，页底显示派生量「可移动距离」（≤2 会拖不动，变红提示）与「重置为默认」。存在理由：开关尺寸已来回改过五轮，每轮「改常量 → 打包 → 互传 → 装上 → 看」要十几分钟，而手感**必须在真机上看**。⚠️ **调参值是运行期覆盖、不落盘**（`switchTunerOverrides` 可变表，`LiquidToggleTokens` 的 getter 先查表后用常量默认值）—— 落盘会变成「用户设备上有一个没人记得来源的尺寸」（磁贴 `kind` 上踩过同形的坑）。⚠️ 覆盖用 `Modifier.layout { … }` 承载而**不给 `VFlowSwitch` 加参数**：加参数会让 12 个生产调用点全部多一个「可以传、但永远不该传」的入口 | 我方 |
+| `ui/common/glass/LiquidToggleSwitch.kt`（改，**两处真机 bug**） | ① ⚠️⚠️ **`glassEnabled` 不能 `remember`** —— 原写法 `remember(context) { isLiquidGlassNavBarEnabled(context) }` **只在首次组合时读一次**，之后设置页把开关关掉、`MainActivity` 那边重组了，这里拿到的仍是首帧值 ⇒ 用户反馈「玻璃效果似乎没有判断液态玻璃开关是否启用，好像不管启没启用都是这个玻璃效果」。改为每次组合直接读（`SharedPreferences` 是内存缓存，代价可忽略）。<br/>② ⚠️⚠️ **手势从滑块挪到最外层 Box** —— 原来挂在滑块上（26×20dp），**只覆盖那一小块**，点到轨道其余地方事件冒泡到卡片的 `combinedClickable` ⇒ 用户反馈「点击开关还是会穿透进入到工作流页面」。同时补 `minimumInteractiveComponentSize()`（轨道只有 24dp 高，裸放达不到 Material 的 48dp 可点下限）。⚠️ 手势**只能挂一次**（挂两处会收到两遍事件、透镜位置跳成两处），有断言锁 | **手动合并**（两处 + 尺寸改运行期覆盖） |
+| 三语 `strings*.xml` + `AndroidManifest.xml` + `SettingsScreen/Route`（改） | 追加调参页入口（调试按钮网格里新增一格 `switch_tuner_entry_title`，**只往那个列表里插、不拆成多个网格** —— 落单按钮的整行宽度是按这一片算的）与 7 条文案 ×3 语言。⚠️ 文案里的 `≤` **必须换成文字**：英文串里出现非 ASCII 会让 aapt2 的 Properties 解析器报 `Invalid unicode escape sequence`（与本仓库记过的「不能写 `'`」同源，已实际踩到）；多条替换必须用**显式索引** `%1$.0f`（裸写 `%.0f` 会报 `Multiple substitutions specified in non-positional format`） | **手动合并**（追加条目 + 追加声明 + 2 处接线） |
+| `test/.../ui/common/glass/GlassSwitchTest.kt`（改，**27 例**） | 新增 2 例锁上面两只 bug：**「液态玻璃开关必须每次组合都读、不能 remember 缓存」**（反证 AE：加回 `remember` ⇒ 1 条红）与**「手势挂在最外层而不是滑块上」**（含 `minimumInteractiveComponentSize` 与「手势只挂一次」；反证 AF：挪回滑块 ⇒ 1 条红）| 我方 |
 | 8 个设置页 + `WorkflowListScreen`（改，**开关全量换 `VFlowSwitch`**，2026-10-06） | `SettingsScreen` / `ApiSettingsScreen` / `CoreManagementActivity`(×3) / `GlobalVariableConfigActivity` / `ModelConfigActivity` / `ModuleConfigActivity` / `PermissionGuardianActivity` / `WebDavConfigScreen` / `WorkflowListScreen`(×2) 共 **12 个调用点**由 M3 `Switch(` 换成 `VFlowSwitch(`（纯替换，**无参数变化**）；其中 3 个文件是 `material3.*` 通配导入，另加显式 import。⚠️ **必须全量换** —— 「有的开关是玻璃、有的不是」比全不玻璃更扎眼，而它**完全编译得过**（有源码扫描测试逐文件锁） | **手动合并**（每文件 1 行 import + 调用点改名） |
 | 三语 `strings*.xml`（改） | `settings_switch_liquid_glass_nav_bar_desc` 补一项：中/英/日各加「开关 / switches / スイッチ」—— 该开关此前只管底栏与 Tab 栏，现在开关也归它管，描述不能停在旧范围（与 `WorkflowFolderGlassTabBar` 那次「名字不能再钉死在标签栏上」同一条教训） | **手动合并**（改写条目） |
 | `test/.../ui/common/glass/GlassSwitchTest.kt`（新增，**21 例**） | fork 独有。⚠️ **为什么必须有**：失败模式**全是静默的** —— ① 尺寸抄错；② 滑块算出界（`Box` 不裁剪 ⇒ 不报错，只是探出来）；③ **有调用点漏换**（完全编译得过）；④ **退化成手画仿制品**（第一版被否掉的原因）；⑤ **宽高不同步**（竖条滑块）；⑥ **抬手不落位**（「拖不动」）。⇒ 尺寸逐值锚定 token、**中心点三个锚点**（关 12 / 中 24 / 开 36）+ 位置关于 fraction 单调不减（反向锁「中途回退」）+ 用力时中心不动、**宽高由同一个值驱动**、拖动参考宽度为正且小于轨道宽、**实现里必须真的用上折射链路**（`drawBackdrop` / `lens` / `Highlight.Ambient` / `InnerShadow` / `chromaticAberration`）、抬手必须 `settleTo` + `onSettled` + `release` + 手势原语（`positionChangeIgnoreConsumed` / `Pass.Initial` / `consume`）、全项目源码扫描「不得有裸 `Switch(`」+ 两张卡片单独锁 + 防空转。<br/>⚠️⚠️ **写它时先后踩到两条弱断言，都当场收紧**：①「滑块的白必须随按下退掉」只断言源码里有 `1f - p` —— 而源码里**另有三处**同款表达式，把 `onDrawSurface` 里的褪白改掉后**照样绿**；②「抬手必须落位」只断言源码里有 `settleTo(` —— 而**方法定义本身**就含这个字符串，把唯一那处**调用**删掉后**照样绿**。两条都改为锚**具体那段 lambda / 回调的体内**。这正是本仓库「断言要经过调用点」那条教训的复用。<br/>⚠️ 另有一处**判据位置放错**：落位发生在 `modifier` 属性的 `onEnd` lambda 里、**不在手势循环函数体内**，第一版两条往函数体里找 ⇒ 恒红（看起来像生产代码漏了落位）。<br/>⚠️ **反证已实际做过（7 条，全部确认变红）**：删 `lens(` ⇒ 1 条红；`onDrawSurface` 褪白改常量 ⇒ 1 条红；轨道压扁量改常量 ⇒ 1 条红；**直径写死成轨道内高（复现竖条 bug）⇒ 2 条红**；**位置退回「两端各一支」老写法（中间态回退）⇒ 3 条红**；拖动参考宽度改 0 ⇒ 1 条红；抬手删 `settleTo` ⇒ 1 条红；另有未选中按下改右锚定 ⇒ 3 条红、`TrackWidth` 改 56dp ⇒ 1 条红、新建文件写裸 `Switch(` ⇒ 1 条红。<br/>⚠️ **示例版的 5 条新用例**（尺寸逐值对示例 / 可移动距离 / 两端贴合与不越界 / 折射链路与示例三处运镜 / `fun VFlowSwitch` 恰好定义一次）的反证：`pressedScale` 改 1f ⇒ 1 条红；示例版 `TrackWidth` 改 52dp ⇒ **3 条红**。<br/>⚠️⚠️ **一处如实标注的弱断言**：「可移动距离 = 20dp」实测**抓不住「把公式换成硬编码 20」**（两者等价，反证确认不变红）；它真正抓的是**改尺寸却忘了同步**。已把这条写进用例注释，避免后人高估它的强度。<br/>⚠️ 另修了测试自身的两处错误：端点算成「右边缘」而实际是「左边距」（22 而非 62，数值巧合掩盖了语义错误）；以及 M3 裸 `Switch` 的豁免名单漏了新增的 `LiquidToggleSwitch.kt`（会让那条**恒红**，而恒红的断言会被下一个实现者删掉）| 我方 |
@@ -877,6 +881,43 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 > 搜索与分类筛选可用、选中后卡片图标确实变化。**未验证**：release 包里图标是否完整
 > （`aapt2 dump resources` 数 8310 —— `keep.xml` 的白名单就是为它写的，
 > 但**注释里的双连字符陷阱**曾让整份文件静默失效，值得单独跑一次）。
+
+### 广播触发器（`vflow.trigger.broadcast`，2026-10-07）—— **仅设计，未实现**
+
+> 设计文档：`docs/fork/broadcast-trigger-design.md`（v1.0）。
+> ⚠️ **本批只有一份文档，没有一行代码。**
+> 一句话：让用户**自由配置若干 action**，动态注册一个 `RECEIVER_EXPORTED` 的
+> `BroadcastReceiver`，把 `action / data / extras` 打包给下游引用。
+>
+> ⚠️ 登记在此是因为它记录了**四条会被后来者踩回去的平台结论**（全部经 AOSP 源码核实）：
+> ① **`IntentFilter` 的 action 没有通配写法** —— `addAction("*")` 无效（`mActions.contains`
+> 不认它，而 `WILDCARD.equals(action)` 检查的是**收到的 intent** 的 action）；
+> 而**不声明任何 action 只匹配「没有 action 的 intent」**（类级 javadoc 逐字）。
+> ⚠️ 同时记下一处**文档自相矛盾**：`addAction` 的**方法级** javadoc 写「no actions ⇒ action is ignored」，
+> 与类级 javadoc + `matchAction` 源码**相反**。⇒ 本触发器的 `actions` **必填**，
+> **不得沿用本仓库「留空 = 任意」的惯例**。
+> ② **data scheme 留空 ≠ 任意**：filter 未声明 scheme 时，带 data 的 intent 直接
+> 返回 `NO_MATCH_DATA`（`content`/`file` 两个 scheme 是例外）；且 **`addDataScheme("*")` 同样无效** ——
+> IntentFilter **没有「任意 scheme」的能力**。
+> ③ **必须 `RECEIVER_EXPORTED`**（用户会配第三方应用的 action；`NOT_EXPORTED` 只收系统定向投递）。
+> ⚠️ 与 `SimDataSwitchTriggerHandler` 的 `EXPORTED` **理由不同**，**不要把这条推广到**
+> DND / Power / Screen 那些（它们用 `NOT_EXPORTED` 是对的）。
+> ④ **发送方身份取不到 ⇒ 不设 token、不做鉴权**（用户 2026-10-07 明确否掉鉴权层）：
+> `getSentFromPackage()` / `getSentFromUid()` 是 **API 34+**，且只有发送方
+> `BroadcastOptions.setShareIdentityEnabled(true)`（**默认 false**）才给值。
+> ⇒ 也**不暴露 `sender_package` 输出**（永远是 null，暴露即误导）。
+>
+> ⚠️ 另记：**Core 通道收不到广播** 是既有实测（`app_process` 进程身份问题），
+> 故本设计**不走 Core / Xposed**，纯 App 层动态注册。
+> 且 Android 8.0+ 的隐式广播限制**只约束清单静态注册，不约束动态注册**——
+> 这是本设计的关键优势，勿被「必须静态注册」的说法带偏。
+>
+> **§7 静默失效点 13 条**、**§10 未决项 6 条**（含 `extras` 编码层与 `ActivityPayload`
+> 如何共享的三个候选落点）、**§11 真机验证清单 0 项已做**。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `docs/fork/broadcast-trigger-design.md`（新增） | fork 独有：**广播触发器设计**（用户可自由配置任意广播监听）。含 §3 四条经 AOSP 源码核实的平台约束、§4 配置 schema（`actions` 必填无通配 / `data_schemes` 留空语义反直觉 / `requiredPermissions` 为空改用运行时诊断）、§5 输出变量设计（`extras_json` 不逐键建输出 + 必须有 `truncated`）、§6 与既有触发器的关系（**不取代任何一个**，定位为逃生舱）、§7 **静默失效点 13 条**、§8 决策台账 13 项、§10 未决项 6 条、§11 真机清单 10 项。上游无此文件 | 我方 |
 
 ### 快捷设置磁贴（QS Tile）优化（2026-10-06）—— **仅设计，未实现**
 

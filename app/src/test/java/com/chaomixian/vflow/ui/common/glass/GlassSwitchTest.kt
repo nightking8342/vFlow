@@ -428,6 +428,54 @@ class GlassSwitchTest {
     }
 
     @Test
+    fun `液态玻璃开关必须每次组合都读，不能 remember 缓存`() {
+        // ⚠️⚠️ 用户反馈「玻璃效果似乎没有判断液态玻璃开关是否启用，好像不管启没启用
+        //    都是这个玻璃效果」。真因是 `remember(context) { … }` —— 它只在
+        //    **首次组合**时读一次，之后哪怕设置页把开关关掉，这里拿到的仍是首帧值。
+        //
+        //    `SharedPreferences` 的读是内存缓存，每次组合读一次的代价可忽略。
+        val source = SourceScan.stripped(LIQUID_TOGGLE)
+        val body = SourceScan.functionBody(source, "fun VFlowSwitch(") ?: error("找不到 VFlowSwitch")
+        assertFalse(
+            "VFlowSwitch 里不得对 `isLiquidGlassNavBarEnabled` 做 remember 缓存 —— " +
+                "那会让「关掉液态玻璃」当场不生效",
+            body.contains("remember(context)") ||
+                body.contains("remember {") &&
+                body.contains("isLiquidGlassNavBarEnabled"),
+        )
+        assertTrue(
+            "VFlowSwitch 必须直接调用 AppearanceManager.isLiquidGlassNavBarEnabled(context)",
+            body.contains("AppearanceManager.isLiquidGlassNavBarEnabled(context)"),
+        )
+    }
+
+    @Test
+    fun `开关的手势挂在最外层而不是滑块上`() {
+        // ⚠️⚠️ 用户反馈「点击开关还是会穿透进入到工作流页面」。
+        //    滑块只有 26×20dp，手势挂在它上面时**只覆盖那一小块**，
+        //    点到轨道其余地方事件就冒泡到卡片的 combinedClickable。
+        //    正解：手势挂最外层 + minimumInteractiveComponentSize 抬到 48dp 下限。
+        val source = SourceScan.stripped(LIQUID_TOGGLE)
+        val body = SourceScan.functionBody(source, "internal fun LiquidToggleSwitch(")
+            ?: error("找不到 LiquidToggleSwitch")
+        assertTrue(
+            "最外层 Box 必须挂手势（dampedDragAnimation.modifier）",
+            body.contains("dampedDragAnimation.modifier"),
+        )
+        assertTrue(
+            "必须调 minimumInteractiveComponentSize() —— 轨道只有 24dp 高，" +
+                "裸放达不到 Material 的 48dp 可点下限",
+            body.contains("minimumInteractiveComponentSize()"),
+        )
+        // 手势只能挂一次（挂两处会收到两遍事件、透镜位置跳成两处）
+        assertEquals(
+            "手势只应挂一次",
+            1,
+            SourceScan.countOccurrences(body, "dampedDragAnimation.modifier"),
+        )
+    }
+
+    @Test
     fun `卡片调用点不得给开关传 requiredSize 或 scale`() {
         // ⚠️⚠️ 这条锁的是用户 2026-10-06 反馈的「开启状态时滑块会超出轨道边界」。
         //    真因**不在开关里**，而在调用点传了 `requiredSize(48.dp, 28.dp)`：
@@ -499,18 +547,18 @@ class GlassSwitchTest {
         // ⚠️⚠️ **唯一**的偏离是「整体等比缩小」：轨道 64 → 55，**其余尺寸同乘一个系数**。
         //    只收轨道而让滑块原地不动，会让滑块占比从 62.5% 升到 66.7% ——
         //    关闭态两侧露出的柱位更窄（用户上一版反馈的「看不到槽位」会被放大）。
-        assertEquals("示例 64dp，本项目等比缩到 55dp", 55f, LiquidToggleTokens.TrackWidth.value, 0.001f)
-        assertEquals("示例 28dp", 24f, LiquidToggleTokens.TrackHeight.value, 0.001f)
+        assertEquals("示例 64dp，本项目等比缩到 55dp", 55f, LiquidToggleTokens.defaultTrackWidth.value, 0.001f)
+        assertEquals("示例 28dp", 24f, LiquidToggleTokens.defaultTrackHeight.value, 0.001f)
         // ⚠️⚠️ 滑块宽是**唯一**比「等比缩放」还小的一项：等比应为 34，
         //    而用户 2026-10-06 反馈「滑块应该再小一点」+ 关闭态右侧缝隙太少。
         assertEquals("示例 40dp，本项目收到 26（比等比的 34 还小，见 Token KDoc）",
-            26f, LiquidToggleTokens.ThumbWidth.value, 0.001f)
-        assertEquals("示例 24dp", 20f, LiquidToggleTokens.ThumbHeight.value, 0.001f)
+            26f, LiquidToggleTokens.defaultThumbWidth.value, 0.001f)
+        assertEquals("示例 24dp", 20f, LiquidToggleTokens.defaultThumbHeight.value, 0.001f)
         assertTrue(
             "滑块占轨道的比例应接近 M3 的 46%（24/52）—— 太大则关闭态看不到柱位",
-            LiquidToggleTokens.ThumbWidth.value / LiquidToggleTokens.TrackWidth.value in 0.4f..0.55f,
+            LiquidToggleTokens.defaultThumbWidth.value / LiquidToggleTokens.defaultTrackWidth.value in 0.4f..0.55f,
         )
-        assertEquals("示例 padding = 2f.dp", 2f, LiquidToggleTokens.Padding.value, 0.001f)
+        assertEquals("示例 padding = 2f.dp", 2f, LiquidToggleTokens.paddingDp.value, 0.001f)
         // ⚠️⚠️ **pressedScale 必须照抄 1.5f，不许收回**。它一度被我误判成
         //    「关闭时那个圆变小」的真因而改成 1f，用户随后明确指出：
         //    原版就是「拖动时滑块浮起并变大覆盖掉轨道」—— 那正是本控件的核心观感。
@@ -541,12 +589,12 @@ class GlassSwitchTest {
         // ⚠️ 这条锁的是「等比缩小」这个约定本身 —— 只改其中一两个数值会让
         //    滑块占比漂移，而观感变化（柱位露多少）是**没有报错**的。
         val s = LiquidToggleTokens.Scale
-        assertEquals("轨道高 / 轨道宽 的比例", 28f / 64f, LiquidToggleTokens.TrackHeight.value / LiquidToggleTokens.TrackWidth.value, 0.005f)
+        assertEquals("轨道高 / 轨道宽 的比例", 28f / 64f, LiquidToggleTokens.defaultTrackHeight.value / LiquidToggleTokens.defaultTrackWidth.value, 0.005f)
         // ⚠️ **滑块宽刻意不参与等比** —— 收到 26 让占比降到 47%（近 M3 的 46%），
         //    目的是关闭态两侧各露 27dp、柱位一眼可见。这条断言只锁「别涨回去」。
         assertTrue(
             "滑块占轨道比例应明显低于示例的 62.5%（那是「关闭时看不到柱位」的根源）",
-            LiquidToggleTokens.ThumbWidth.value / LiquidToggleTokens.TrackWidth.value < 0.55f,
+            LiquidToggleTokens.defaultThumbWidth.value / LiquidToggleTokens.defaultTrackWidth.value < 0.55f,
         )
         // ⚠️ 高度方向**做不到精确等比**：24 × 0.859 = 20.63，而 dp 只能取整数
         //    （取 20 ⇒ 比例 0.833，取 21 ⇒ 0.875，都比 0.857 偏）。
@@ -554,7 +602,7 @@ class GlassSwitchTest {
         assertEquals(
             "滑块高 / 轨道高 的比例（20/24 是取整结果，容差按 1dp 粒度给）",
             24f / 28f,
-            LiquidToggleTokens.ThumbHeight.value / LiquidToggleTokens.TrackHeight.value,
+            LiquidToggleTokens.defaultThumbHeight.value / LiquidToggleTokens.defaultTrackHeight.value,
             0.025f,
         )
         assertTrue("缩放系数应小于 1（我们是缩小）", s in 0.5f..1f)
@@ -575,12 +623,12 @@ class GlassSwitchTest {
         assertEquals(
             "于是右边缘 = 27 + 26 = 53dp，距轨道右端恰好也是 padding",
             53f,
-            endX + LiquidToggleTokens.ThumbWidth.value,
+            endX + LiquidToggleTokens.defaultThumbWidth.value,
             0.001f,
         )
         assertTrue(
             "滑块右边缘必须落在轨道内（64dp）",
-            endX + LiquidToggleTokens.ThumbWidth.value <= LiquidToggleTokens.TrackWidth.value + 0.001f,
+            endX + LiquidToggleTokens.defaultThumbWidth.value <= LiquidToggleTokens.defaultTrackWidth.value + 0.001f,
         )
         assertEquals(
             "RTL 下应向左偏移",

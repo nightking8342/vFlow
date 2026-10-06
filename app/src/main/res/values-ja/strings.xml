@@ -253,6 +253,14 @@
     <string name="toast_telemetry_disabled_restart">テレメトリはオフになり、次回開始したときに有効になります。</string>
     <string name="settings_button_export_logs">ログをエクスポート</string>
     <string name="settings_button_export_logs_desc">現在メモリ内にあるデバッグ ログをファイルにエクスポートします。</string>
+    <string name="switch_tuner_hint">スライダーをドラッグすると即時プレビューできます（値はこのプロセス内のみ有効）。</string>
+    <string name="switch_tuner_track_width">トラック幅</string>
+    <string name="switch_tuner_thumb_width">つまみ幅</string>
+    <string name="switch_tuner_thumb_height">つまみ高さ</string>
+    <string name="switch_tuner_derived">移動距離：%1$.0f dp（2 以下だとドラッグ不可）</string>
+    <string name="switch_tuner_reset">既定値に戻す</string>
+    <string name="switch_tuner_current">現在：トラック %1$.0f / つまみ %2$.0f×%3$.0f dp</string>
+    <string name="switch_tuner_entry_title">スイッチ調整</string>
     <string name="settings_button_view_logs">ログを表示</string>
     <string name="settings_button_view_logs_desc">デバッグ ログの全文をその場で表示します。内容は「ログをエクスポート」と同じです。</string>
     <string name="settings_view_logs_refresh">更新</string>

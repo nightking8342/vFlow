@@ -256,6 +256,14 @@
     <string name="toast_telemetry_disabled_restart">Telemetry disabled, takes effect on next launch</string>
     <string name="settings_button_export_logs">Export Logs</string>
     <string name="settings_button_export_logs_desc">Export the in-memory debug log buffer to a file.</string>
+    <string name="switch_tuner_hint">Drag the sliders to preview live. The values only apply to this process.</string>
+    <string name="switch_tuner_track_width">Track width</string>
+    <string name="switch_tuner_thumb_width">Thumb width</string>
+    <string name="switch_tuner_thumb_height">Thumb height</string>
+    <string name="switch_tuner_derived">Travel: %1$.0f dp (2 or less means it cannot drag)</string>
+    <string name="switch_tuner_reset">Reset to defaults</string>
+    <string name="switch_tuner_current">Current: track %1$.0f / thumb %2$.0f x %3$.0f dp</string>
+    <string name="switch_tuner_entry_title">Switch tuner</string>
     <string name="settings_button_view_logs">View Logs</string>
     <string name="settings_button_view_logs_desc">Read the full debug log in place. Same content as Export Logs.</string>
     <string name="settings_view_logs_refresh">Refresh</string>

@@ -5,6 +5,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Switch
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.SwitchColors
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.runtime.Composable
@@ -19,6 +20,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.scale
@@ -92,63 +94,82 @@ import androidx.compose.foundation.shape.RoundedCornerShape
  * - 轨道被采样时 `scaleX = lerp(2/3, 0.75, progress)`、`scaleY = lerp(0, 0.75, progress)`：
  *   **静止 `scaleY = 0`** ⇒ 采样里没有轨道 ⇒ 避开「滑块采样自己盖住的轨道」的自采样回环。
  */
+/**
+ * **运行期尺寸覆盖**（供开关调参页使用）。
+ *
+ * ⚠️ **只在进程内有效，不落盘** —— 它的用途是「调到满意为止」，
+ * 满意后应把数值写回下面的常量并移除覆盖项。落盘会变成「用户设备上有一个
+ * 没人记得来源的尺寸」（本仓库在磁贴 `kind` 上踩过同形的坑）。
+ */
+private val tunerTrackWidth = mutableStateOf<androidx.compose.ui.unit.Dp?>(null)
+private val tunerThumbWidth = mutableStateOf<androidx.compose.ui.unit.Dp?>(null)
+private val tunerThumbHeight = mutableStateOf<androidx.compose.ui.unit.Dp?>(null)
+
+/** 清空调参覆盖（调参页的「重置」用）。 */
+internal fun clearSwitchTunerOverrides() {
+    tunerTrackWidth.value = null
+    tunerThumbWidth.value = null
+    tunerThumbHeight.value = null
+}
+
+/**
+ * 给调参页用的临时尺寸覆盖（**只在调参页里调**，改完请写回常量）。
+ *
+ * ⚠️ 用 `Modifier` 承载而不是给 `VFlowSwitch` 加参数：加参数会让 12 个
+ * 生产调用点全部多一个「可以传、但永远不该传」的入口，而本覆盖只服务调参页。
+ */
+internal fun Modifier.switchTunerOverrides(
+    trackWidth: androidx.compose.ui.unit.Dp,
+    thumbWidth: androidx.compose.ui.unit.Dp,
+    thumbHeight: androidx.compose.ui.unit.Dp,
+): Modifier = this.layout { measurable, constraints ->
+    // ⚠️ 在**测量阶段**写入覆盖值：`LiquidToggleTokens` 的 getter 在本组件
+    //    组合/测量时被读取，顺序上测量早于绘制，够用。
+    //    ⚠️ 副作用写在 `layout` 里不是好习惯（测量可能被多次调用），
+    //    但这里写的是 `mutableStateOf` 的幂等赋值，重复写没有额外代价。
+    tunerTrackWidth.value = trackWidth
+    tunerThumbWidth.value = thumbWidth
+    tunerThumbHeight.value = thumbHeight
+    val placeable = measurable.measure(constraints)
+    layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+}
+
 internal object LiquidToggleTokens {
     /**
-     * 轨道宽。⚠️ 示例是 **64dp**，这里同等比例收到 **55**。
+     * 轨道宽。⚠️ 示例是 **64dp**，这里同等比例收到 **55** 后又按真机反馈逐步微调。
      * ⚠️ 其余所有尺寸都按同一个系数缩放（见 [Scale]），滑块也一起缩。
      */
-    val TrackWidth = 55.dp
-    val TrackHeight = 24.dp
+    internal val defaultTrackWidth = 55.dp
+    internal val defaultThumbWidth = 26.dp
+    internal val defaultThumbHeight = 20.dp
+    internal val defaultTrackHeight = 24.dp
 
-    /**
-     * 滑块宽。
-     *
-     * ⚠️⚠️ **40 → 26，比「等比缩放」还小**（等比是 34）。用户 2026-10-06 反馈
-     * 「滑块应该再小一点」，并给了两条具体症状：
-     * ① 关闭时**右边的缝隙很少** —— 滑块占轨道 62.5% 时两侧只各露 8dp，
-     *    而卡片上轨道被压得更窄，缝隙就更小；
-     * ② 开启时**滑块超出轨道边界** —— 那条其实是**卡片传了 `requiredSize`
-     *    把轨道压窄**造成的（见 `WorkflowListScreen` 调用点的注释），
-     *    但滑块偏大把这个问题放大了。
-     *
-     * 收到 26（占轨道 **47%**，接近 M3 的 24/52 = 46%）后，关闭态两侧各露 27dp，
-     * 柱位一眼可见。⚠️ 保持「略宽于高」的横椭圆 —— 这是库示例「摇杆」观感的
-     * 一部分（它的滑块也是 40×24 而不是正圆）。
-     */
-    val ThumbWidth = 26.dp
-    val ThumbHeight = 20.dp
+    internal fun trackWidthDp(): androidx.compose.ui.unit.Dp =
+        tunerTrackWidth.value ?: defaultTrackWidth
+    internal fun thumbWidthDp(): androidx.compose.ui.unit.Dp =
+        tunerThumbWidth.value ?: defaultThumbWidth
+    internal fun thumbHeightDp(): androidx.compose.ui.unit.Dp =
+        tunerThumbHeight.value ?: defaultThumbHeight
+    internal fun trackHeightDp(): androidx.compose.ui.unit.Dp = defaultTrackHeight
 
-    /** 示例里的 `padding = 2f.dp`。 */
-    val Padding = 2.dp
+    /** 供调参页显示/校验的常量。 */
+    val paddingDp: androidx.compose.ui.unit.Dp = 2.dp
 
     /**
      * **按下时滑块浮起并放大**的倍率 —— 示例 `1.5f`。
      *
      * ⚠️⚠️ **这条曾经被误判掉过一次，记在这里以免再犯**：我一度把它收回 `1f`，
      * 理由写的是「用户反馈『关闭的时候那个圆会变小』的真因就是它」。
-     * **那个判断是错的**，用户随后明确指出原版就是「拖动时滑块浮起并变大覆盖掉轨道」，
-     * 而这正是本参数 + `layerBlock` 里的 `scaleX/scaleY` 共同产生的效果，
-     * 是本控件「液态」观感的核心，**不能删**。
-     *
-     * ⚠️ 它在两处生效，缺一不可：
-     * 1. `layerBlock` 里的 `scaleX/scaleY = dampedDragAnimation.scaleX/scaleY`
-     *    —— 把滑块（含玻璃层）整体放大；
-     * 2. `pressedScale` 就是 `DampedDragAnimation` 用来推 `scaleX/scaleY` 的目标值。
-     *
-     * ⚠️ 放大后滑块**会盖到轨道外面**（`Box` 默认不裁剪）：这是**刻意的**，
-     * 「浮起并覆盖掉轨道」正是要的效果。
+     * **那个判断是错的** —— 原版就是「拖动时滑块浮起并变大覆盖掉轨道」，
+     * 这由本参数 + `layerBlock` 里的 `scaleX/scaleY` 共同产生，是核心观感。
      */
     const val PressedScale = 1.5f
 
     /**
      * 示例尺寸与本实现尺寸之间的比例系数（55 / 64）。
      *
-     * ⚠️ **所有尺寸同乘这个系数**：只收轨道宽而不收滑块的话，滑块占轨道的
-     * 比例会从 62.5% 升到 66.7%，关闭态两侧露出的柱位更窄（用户上一版反馈的
-     * 「关闭时看不到柱位」就会被放大）。
-     *
      * ⚠️ 系数是**算出来的、不是调出来的**：先定轨道宽 55（卡片单列约 116dp
-     * 里它要与图标/⋮ 挤一行），其余按比例推。
+     * 里它要与图标/⋮ 挤一行），其余按比例推；滑块再按真机反馈单独收小。
      */
     const val Scale = 55f / 64f
 }
@@ -160,13 +181,13 @@ internal object LiquidToggleTokens {
  * 公式仍自洽 —— 抄常量的版本会静默失去同步（滑块能拖出轨道，而 `Box` 不裁剪）。
  */
 internal fun liquidToggleTravelDp(): androidx.compose.ui.unit.Dp =
-    LiquidToggleTokens.TrackWidth - LiquidToggleTokens.ThumbWidth -
-        LiquidToggleTokens.Padding * 2
+    LiquidToggleTokens.trackWidthDp() - LiquidToggleTokens.thumbWidthDp() -
+        LiquidToggleTokens.paddingDp * 2
 
 /** 滑块左边的 x（示例：`lerp(padding, padding + dragWidth, fraction)`）。 */
 internal fun liquidToggleThumbXDp(fraction: Float, isLtr: Boolean): androidx.compose.ui.unit.Dp {
     val travel = liquidToggleTravelDp().value
-    val x = lerpFloat(LiquidToggleTokens.Padding.value, LiquidToggleTokens.Padding.value + travel, fraction.fastCoerceIn(0f, 1f))
+    val x = lerpFloat(LiquidToggleTokens.paddingDp.value, LiquidToggleTokens.paddingDp.value + travel, fraction.fastCoerceIn(0f, 1f))
     // ⚠️ RTL 下向左偏移（示例原作如此）。
     return if (isLtr) x.dp else (-x).dp
 }
@@ -191,6 +212,7 @@ internal fun LiquidToggleSwitch(
     val isLightTheme = !isSystemInDarkTheme()
     val isLtr = LocalLayoutDirection.current == LayoutDirection.Ltr
     val density = LocalDensity.current
+    val context = LocalContext.current
 
     // 示例：accentColor 写死 iOS 绿；本实现取主题的选中轨道色（见类 KDoc 第 1 点）。
     val accentColor = colors.checkedTrackColor
@@ -264,7 +286,19 @@ internal fun LiquidToggleSwitch(
 
     val trackBackdrop = rememberLayerBackdrop()
 
-    Box(modifier, contentAlignment = Alignment.CenterStart) {
+    Box(
+        // ⚠️⚠️ **手势挂在最外层（整个开关），不是挂在滑块上** —— 实测反馈
+        //    「点击开关还是会穿透进入到工作流页面」的真因就在这里：
+        //    滑块只有 26×20dp，挂在它上面的手势**只覆盖那一小块**，
+        //    点到轨道上其余地方（尤其开启态的左半边）事件就冒泡到卡片的
+        //    `combinedClickable` ⇒ 变成「点进工作流」。
+        //    `minimumInteractiveComponentSize()` 再把触控区抬到 Material 的
+        //    48dp 下限（轨道只有 24dp 高，裸放是达不到可点标准的）。
+        modifier
+            .minimumInteractiveComponentSize()
+            .then(dampedDragAnimation.modifier),
+        contentAlignment = Alignment.CenterStart,
+    ) {
         // ---- 轨道 ----
         Box(
             Modifier
@@ -274,7 +308,7 @@ internal fun LiquidToggleSwitch(
                     // 示例：`drawRect(lerp(trackColor, accentColor, fraction))` —— 整条纯色。
                     drawRect(lerp(trackColor, accentColor, dampedDragAnimation.value.fastCoerceIn(0f, 1f)))
                 }
-                .size(LiquidToggleTokens.TrackWidth, LiquidToggleTokens.TrackHeight)
+                .size(LiquidToggleTokens.trackWidthDp(), LiquidToggleTokens.trackHeightDp())
                 // ⚠️ 语义显式补上（示例原版也没有；它靠滑块上的 `role = Role.Switch`）。
                 //    这里补全 `toggleableState` 与 `onClick`，TalkBack 才能读出状态、
                 //    并用「双击」切换。
@@ -293,7 +327,6 @@ internal fun LiquidToggleSwitch(
                 .graphicsLayer {
                     translationX = with(density) { liquidToggleThumbXDp(dampedDragAnimation.value, isLtr).toPx() }
                 }
-                .then(dampedDragAnimation.modifier)
                 .drawBackdrop(
                     // ⚠️ 采样合成两层：① 开关背后的颜色；② 被压扁的轨道。
                     //    静止时压扁量为 0 ⇒ 采样里没有轨道 ⇒ 避开自采样回环。
@@ -352,7 +385,7 @@ internal fun LiquidToggleSwitch(
                         drawRect(Color.White.copy(alpha = 1f - progress))
                     }
                 )
-                .size(LiquidToggleTokens.ThumbWidth, LiquidToggleTokens.ThumbHeight)
+                .size(LiquidToggleTokens.thumbWidthDp(), LiquidToggleTokens.thumbHeightDp())
         )
     }
 }
@@ -408,9 +441,12 @@ fun VFlowSwitch(
     containerColor: Color = Color.Unspecified,
 ) {
     val context = LocalContext.current
-    val glassEnabled = remember(context) {
-        AppearanceManager.isLiquidGlassNavBarEnabled(context)
-    }
+    // ⚠️⚠️ **不能 `remember`** —— 用户反馈「玻璃效果似乎没有判断液态玻璃开关」
+    //    的真因就在这里：`remember(context)` 只在**首次组合**时读一次，
+    //    之后哪怕设置页把开关关掉、`MainActivity` 那边重组了，这里拿到的
+    //    仍是首帧那个值 ⇒ 表现为「开关怎么改都没用」。
+    //    `SharedPreferences` 的读是**内存缓存**，每次组合读一次的代价可忽略。
+    val glassEnabled = AppearanceManager.isLiquidGlassNavBarEnabled(context)
     if (glassEnabled) {
         LiquidToggleSwitch(
             checked = checked,
