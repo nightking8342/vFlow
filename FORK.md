@@ -934,13 +934,14 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 | `core/workflow/TileRefreshNotifier.kt`（新增） | fork 独有：把「App 内改了工作流」**推**给 SystemUI（`requestListeningState`），**500ms 去抖** + **内部自己投主线程**（调用方之一在 `Dispatchers.IO` 里）。⚠️ 去抖是必需的：`saveWorkflow` 会被**循环批量调用**（「解散文件夹」是 `.forEach { saveWorkflow(...) }`）⇒ 不去抖就是 N×40 次跨进程调用。⚠️ `dispatchAll` 的**逐个 try/catch** 抽成内部函数以便单测（契约：单个槽抛异常**不能中断整轮**，否则「第一个磁贴没被添加过」会让后面所有磁贴永不刷新）。⚠️ `mainHandler` **必须 `by lazy`** —— 类初始化里调 `Looper.getMainLooper()` 会在纯 JVM 单测里抛 `ExceptionInInitializerError`，让整个类加载失败、`dispatchAll` 一条用例都跑不起来 | 我方 |
 | `ui/tile/BaseWorkflowTileService.kt`（**重写**） | 基类**只做状态渲染 + 图标 + 兜底跳转**，**不再实现 `onClick`**（两池语义完全不同，混在一个函数里分派写错就是「开关型去执行工作流」且不报错）。新增抽象 `tileKind()`（子类**写死常量**而非从索引推 —— 推出来会让「类名叫 Toggle、索引写 0」的错配**自动消失**）+ 池/索引自洽性检查（错配时打 E 日志）。`updateTileState` 按 §4.7 状态表分派；**执行型恒 `STATE_INACTIVE`**（§3：高亮只由 `Tile.state` 决定，与 `TOGGLEABLE_TILE` 元数据无关）；新增**图标**（三形态 + 两条回落：`resolveIconDrawableResOrZero` 返 0 ⇒ 回落 `ic_workflows`；自定义图片解码失败 ⇒ 同样回落）与 **subtitle**。⚠️⚠️ 自定义图片解码**必须包 try/catch**（不只是判 null）—— `BitmapFactory.decodeFile` 对损坏图片**抛异常**（已实测到同类行为），一个损坏的 PNG 就能崩掉 service ⇒ 磁贴永久空白。⚠️ `subtitle` / `icon` **每一格都要显式设置**（`Tile` 对象跨次复用，只在新值非空时赋值会让上次的 subtitle 粘住） | **手动合并**（整文件重写） |
 | `ui/tile/BaseExecuteTileService.kt`（新增） | fork 独有：执行池基类，**闸 3** 的唯一落点（`TileGate.accepts(TileKind.EXECUTE, …)` 不通过 ⇒ 打日志 + Toast + **只 `openApp()`**，不执行）。`executeWorkflow` 沿用既有链（`ShortcutExecutorActivity`），**不在此判权限**（与卡片「立即执行」保持一致） | 我方 |
-| `ui/tile/BaseToggleTileService.kt`（新增） | fork 独有：开关池基类 + **闸 3** + `toggleWorkflowEnabled`（逐字照抄列表页范式：`copy(isEnabled = …, wasEnabledBeforePermissionsLost = false)` + `saveWorkflow` + 开启时异步补权限、仍缺则回弹）。⚠️ **关闭路径同步完成**（纯写盘，`onClick` 返回后 service 可能被回收），开启路径才进协程。⚠️ 关/开后**只刷自己这一个磁贴**（`requestListeningState(this)`）—— 不能用带 500ms 去抖的批量刷新，用户此刻正盯着磁贴看，去抖会让它**看起来没反应** | 我方 |
+| `ui/tile/BaseToggleTileService.kt`（新增） | fork 独有：开关池基类 + **闸 3** + `toggleWorkflowEnabled`（逐字照抄列表页范式：`copy(isEnabled = …, wasEnabledBeforePermissionsLost = false)` + `saveWorkflow` + 开启时异步补权限、仍缺则回弹）。⚠️ **关闭路径同步完成**（纯写盘，`onClick` 返回后 service 可能被回收），开启路径才进协程。⚠️⚠️ **`refreshTile()` 必须做两件事**（真机验收后定稿）：**先就地 `updateTileState()`**（`onClick` 在 `TileService` 生命周期里，此刻改 `qsTile` **立即**生效）、**再** `requestListeningState(this)`。**缺一不可** —— 只做前者会被 SystemUI 自己的缓存覆盖（且不刷新），只做后者是**异步**的、用户会看到「灭一下又亮」。⚠️ **开启路径权限齐全时也必须刷**（早先 `return@launch` 把刷新整个跳过了，而关闭路径在同步分支里调了 ⇒ 两条路径不对称，症状是「关了能亮、开了永远不亮」）。⚠️ 只刷自己这一个（**不用**带 500ms 去抖的批量刷新 —— 用户此刻正盯着磁贴看，去抖会让它看起来没反应） | 我方 |
 | `ui/tile/WorkflowToggleTileServices.kt`（新增） | fork 独有：20 个开关型 service。⚠️ 槽位号写成 `TileSlot.TOGGLE_INDEX_OFFSET + N` 而非裸 `N`（两池的池内槽号都是 0..19，**看起来一样**） | 我方 |
 | `ui/tile/WorkflowTileServices.kt`（改） | 20 个类的**父类**由 `BaseWorkflowTileService` 改为 `BaseExecuteTileService` + KDoc 重写。⚠️⚠️ **类名与槽位号一个字都没动** —— SystemUI 按 `ComponentName` 记住用户已添加的磁贴，改名会让它们**全部消失** | **手动合并**（只换父类 + 注释） |
 | `AndroidManifest.xml`（改） | 磁贴声明 **20 → 40 条**：执行型 20 条改 label（`vFlow Tile N` → **`vFlow Execute N`**）、**去掉** `TOGGLEABLE_TILE`、**新增** `ACTIVE_TILE`；**新增** 20 条开关型（`vFlow Toggle N`，`TOGGLEABLE_TILE` + `ACTIVE_TILE` **两者都有**）。⚠️ label 是**面板里未绑定时显示的名字**，两池不改就等于没区分（`vFlow Tile N` 已零条，有源码扫描断言）。⚠️ 逐条带 `BIND_QUICK_SETTINGS_TILE` 与 `QS_TILE` intent-filter（有断言） | **手动合并**（整块重写，+360/−40） |
 | `ui/workflow_list/WorkflowListScreen.kt`（改） | 两处 `regularMenuActions` 的「添加到控制中心」**一项拆成两项**，各按自己那一池显隐（`TileGate.accepts(TileKind.EXECUTE/TOGGLE, workflow)`）；`WorkflowListScreenActions.onAddToTile` 签名加 `kind`。⚠️⚠️ **判据由 `hasManualTrigger()` 改为 `TileGate` 是一处既有缺陷修复**：「有 auto trigger ⇒ 没有手动触发器」是错的（编辑器新建默认带 manual，用户加自动触发器不会删它 ⇒ 多数工作流**两者都有**、缺陷被掩盖），而 `WorkflowNormalizer.normalize` 在已有任意触发器时**不会**补 manual ⇒ **Agent 建的、外部导入的纯自动工作流根本没有那个菜单项** | **手动合并**（4 处判据 + 1 个签名） |
-| `ui/workflow_list/WorkflowListRoute.kt`（改） | `TileSelectionTarget` 加 `kind`；`onAddToTile` 加 **kind 参数**并在入口**再判一次** `TileGate.accepts`（被拒则 Toast `mismatchMessageRes`，不打开面板）；面板改为 `getAllTilesWithEmpty(target.kind)`（**只列这一池的 20 个槽**）；绑定/解绑写 `kind`、用新增的 `removeTileByWorkflowIdInKind`；Toast 文案由 `%1$d`（绝对索引）改为 `%1$s`（`TileSlot.displayName`）；绑定/解绑后**显式刷磁贴**（这条路径不经过 `saveWorkflow`） | **手动合并** |
+| `ui/workflow_list/WorkflowListRoute.kt`（改） | `TileSelectionTarget` 加 `kind`；`onAddToTile` 加 **kind 参数**并在入口**再判一次** `TileGate.accepts`（被拒则 Toast `mismatchMessageRes`，不打开面板）；面板改为 `getAllTilesWithEmpty(target.kind)`（**只列这一池的 20 个槽**）；绑定/解绑写 `kind`、用新增的 `removeTileByWorkflowIdInKind`；Toast 文案由 `%1$d`（绝对索引）改为 `%1$s`（`TileSlot.displayName`）；绑定/解绑后**显式刷磁贴**（这条路径不经过 `saveWorkflow`）；新增一条 `LaunchedEffect` 订阅 `WorkflowDataChangeBus.changes` → `loadData()` | **手动合并** |
 | `ui/workflow_list/TileSelectionSheet.kt`（改） | `TileSelectionItem` 加 `kind`；标题带池名（`TileGate.poolTitleRes`）；槽位名由 `tile_label + 绝对索引` 改为 `TileSlot.displayName`（与 manifest 同口径）；`key` 由裸 `tileIndex` 改为 `"kind:index"` | **手动合并** |
+| `core/workflow/WorkflowDataChangeBus.kt`（新增） | fork 独有：**「工作流数据在 App 之外被改掉了」的进程内信号**（`MutableSharedFlow<Unit>`，`extraBufferCapacity = 1` + `DROP_OLDEST`）。存在的理由：列表页只在 `ON_RESUME` 与 `isActive` 变化时读盘，而**下拉 QS 面板这两者都不会发生** ⇒ 从开关型磁贴改了 `isEnabled` 后回到列表看到的是旧状态。⚠️ **发布点刻意只在磁贴**（`BaseToggleTileService` 两处：主路径 + 权限回弹），**不在 `WorkflowManager.saveWorkflow`** —— 后者是所有写入路径的汇聚点，在那里发布会让「列表页自己改自己」也绕一圈 `loadData()`（不成环，但每次列表内开关白付一趟读盘 + 一次 `setLoading(true)` 的闪）；有**反向锁**断言。⚠️ **进程内信号而非广播**：磁贴 service 与 App 同进程，而广播多一层 `RECEIVER_EXPORTED/NOT_EXPORTED` 的坑（数据卡切换上踩过，用错会静默收不到） | 我方 |
 | `core/workflow/TileManager.kt`（改） | ① `getAllTiles()` 的返回值过 `TileFieldNormalizer.normalizeAll(...)`（**所有读取路径的共同上游**）；② `getAllTilesWithEmpty()` 范围 20 → 40、未分配槽按 `TileSlot.kindOf` 补 `kind`；③ 新增 `getAllTilesWithEmpty(kind)`（按池过滤）；④ 新增 `removeTileByWorkflowIdInKind(workflowId, kind)`（无差别删会把用户在**另一池**刚绑好的也删掉且无提示） | **手动合并**（追加为主） |
 | `core/workflow/WorkflowManager.kt`（改） | `saveWorkflow` / `deleteWorkflow` 尾部各调一次 `TileRefreshNotifier.requestAll(context)`。⚠️ 必须放在**所有写入路径的汇聚点**（磁贴是「推」模型：加了 `ACTIVE_TILE` 后系统不主动绑）；且必须排在 `notifyWorkflowChanged` **之后**（那条链路会异步改 `isEnabled`） | **手动合并**（追加 2 行） |
 | `ui/settings/BackupRestoreScreen.kt`（改） | `runImport` 里把 `BackupPipeline.import(...)` 的结果提成局部 `outcome`，在**真的写过盘**的两种 outcome（`Done` / `PassphraseRequired`）上刷磁贴。⚠️ 这是**唯一不经过 `saveWorkflow` 的写入路径**（REPLACE 走 `replaceAllWorkflows`、MERGE 走 `saveAllWorkflows`）⇒ 漏了的表现是「导入一份备份后磁贴还是旧的」。⚠️ 该块**在 `Dispatchers.IO` 里**（`withContext` 从上方开始）⇒ `TileRefreshNotifier` 自己投主线程是必需的 | **手动合并**（1 段重构） |
@@ -948,15 +949,36 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 | 三语 `res/values{,-en,-ja}/strings.xml`（改） | 追加 **12 键 ×3 语言**：两池菜单项文案 + 池标题 + 两种不匹配提示 + 未绑定 subtitle + 开关态两档 + 开关失败提示 + 两种越界提示。⚠️ **未绑定的两个池名不在资源里**（manifest 字面量 + `TileSlot.displayName` 同一套口径） | **手动合并**（追加条目） |
 | `test/.../core/workflow/TileSlotTest.kt`、`TileGateTest.kt`、`TileKindBackwardCompatTest.kt`、`CardIconBitmapTest.kt`、`TileRefreshDispatchTest.kt`（均新增） | fork 独有：**纯函数语义 + 兼容性**。重点：两池互斥**逐格验**（含「manual **不是** auto」的反向锁）、`kindOf` 越界返 `null` 而非回落执行池、**两池显示名必须不同**（反向锁）、`serviceClassName` 40 个两两不同、**`kind` 缺键读出 `null` 而非 `EXECUTE`**（实测事实，与直觉相反）、`inSampleSizeFor` 恒 2 的幂且不为 0、`dispatchAll` 单个抛异常不中断整轮 | 我方 |
 | `test/.../core/workflow/TileManifestTest.kt`、`TileWiringTest.kt`（均新增） | fork 独有：**源码扫描型锚定**（设计 §8.2 的六条）。⚠️⚠️ 存在理由：这六处的失败模式**全是静默**的（改了图标磁贴不变 / 执行型继续常亮 / 面板里 40 个名字一样 / 闸 3 缺失导致越界磁贴照跑），**没有一条能被行为测试发现**（要起 Compose 或上真机）。本仓库已三次踩过「纯函数全绿但集成点缺失」。⚠️ 全部**先剥注释**再断言（源码里到处是 `TileGate.accepts` / `hasAutoTriggers()` 的说明文字）。⚠️ 三处**反证已实际做过**：拆掉闸 3 ⇒ 1 条红；菜单判据改回 `hasManualTrigger()` ⇒ 1 条红；manifest 里删一条 ⇒ 1 条红 | 我方 |
+| `test/.../core/workflow/TileStringFormatTest.kt`（新增） | fork 独有：**真机崩溃（`IllegalFormatConversionException: d != java.lang.String`）的回归**。⚠️⚠️ 它**真的用 `String.format` 跑一遍**三语 × 两池 × 两槽的真实格式串 + 真实实参，而**不是**断言「源码里写了 `%1$s`」（那是把要测的东西抄一遍，改坏了也不会红）。⚠️ 这一类错误**编译、`lintVitalRelease` 与既有单测全都拦不住**（`getString` 的 arg 是 `vararg Any`、lint 只查参数个数不查类型、没人真的格式化过它）。另锁：调用点实参必须是 `TileSlot.displayName(...)`、新增的 12 条无参文案**不得含任何 `%`**（多一个会抛 `MissingFormatArgumentException`）、三语键齐全。⚠️ **反证已实际执行**：把 zh 改回 `%1$d` ⇒ 恰好那条变红 | 我方 |
+| `test/.../core/workflow/WorkflowDataChangeWiringTest.kt`（新增） | fork 独有：**「磁贴改数据 ⇒ 列表刷新」两端接线锚定**。⚠️ 两端漏哪一端都是**静默**的（磁贴不发布 / 列表不订阅），症状又特别难自查：磁贴对、数据对、**只有列表那一格是旧的**，而用户切出去再切回来会发现「其实是刷新了」。⚠️ **写它时抓到自己一个弱断言**：第一版只用 `contains` 判「函数体里有 `notifyChanged`」—— 而本函数**有第二处**（权限回弹），把主路径那处删掉测试**照样绿**（已实测确认）。改为锚「**第一次**通知落在 `saveWorkflow` 之后、且在 `if (!enable)` 分支之前」后反证成立（删主发布点 ⇒ **2 条**变红）。另含一条**反向锁**：`WorkflowManager` 不得发布该信号 | 我方 |
 | `test/.../core/backup/scopes/TileScopeTest.kt`（改） | ⚠️⚠️ **一处被本改动搞红的既有测试，按设计文档 §6.4 的指示修**：原断言「导出的键集合恰为 `{tileIndex, workflowId}`」——`kind` 是新增字段，**它变红正是它工作正常的证明**（设计来拦住「模型加了字段但没人意识到备份形状变了」）。**但没有改成「包含」断言**，而是改为断言**存量记录（缺 `kind`）的键集合原样保留两个键** —— `TileScope` 是**文本层**合并、**不解析** `WorkflowTile`，它**不该**替模型补字段；另加两例锁「未知字段原样带走」与「MERGE 判据只有 `tileIndex`、与 `kind` 无关」 | **我方** |
 
-> ⚠️ **真机验证 0 项**（本任务禁止触碰真机）：执行型是否真的不再常亮、自定义照片磁贴在
-> 真机上不崩不空白、开关型点一下是否真的挂/卸触发器、`ACTIVE_TILE` + `requestListeningState`
-> 的**实际刷新时机**、40 个磁贴在「添加磁贴」面板里的表现 —— 均**只有编译 + 单测 + release 打包支撑**。
-> 完整清单见设计文档 §8.3（**那是待办清单，不是已验证清单**）。
-> ✅ 已做的一层验证：`assembleRelease` 产物里 —— 40 条声明齐全（`vFlow Execute` 20 / `vFlow Toggle` 20 /
-> 旧 `vFlow Tile` 0）、`ACTIVE_TILE` 40 处、`TOGGLEABLE_TILE` 恰 20 处（只有开关池）、
-> 两端 service 类（0 与 19 各两池）**都在 dex 里未被 R8 剥掉**。
+> ### ✅ 真机验收通过（用户 2026-10-06，小米 MIX Fold 3 + 2308CPXD0C / Android 17）
+>
+> 执行型不再常亮 / 显示工作流图标、开关型双态高亮且点击真的挂卸触发器、
+> 两池互斥三闸、未绑定槽位的名字与 subtitle、系统面板里能区分两池、
+> 自定义照片作图标（不崩不空白）、**从磁贴改开关后列表页跟着刷新** —— **全部通过**。
+>
+> ✅ 自动化侧另做了一层：`assembleRelease` 产物核对 —— 40 条声明齐全（`vFlow Execute` 20 /
+> `vFlow Toggle` 20 / 旧 `vFlow Tile` 0）、`ACTIVE_TILE` 40 处、`TOGGLEABLE_TILE` 恰 20 处
+> （只有开关池）、两端 service 类（0 与 19 各两池）**都在 dex 里未被 R8 剥掉**。
+
+> ⚠️⚠️ **验收期修掉了三处「文档没预见」的缺陷**（详见设计文档「真机验收期发现并修掉的三处」）：
+> 1. **点「添加到控制中心」直接闪退** —— `IllegalFormatConversionException: d != java.lang.String`。
+>    `tile_added` / `tile_removed` 还是 `%1$d`（原本显示绝对索引），而调用点改传
+>    `TileSlot.displayName(...)`（**字符串**）⇒ 当场抛。**编译、`lintVitalRelease` 与既有单测
+>    都拦不住**（`getString` 的 arg 是 `vararg Any`、lint 只查参数个数不查类型、
+>    没人真的格式化过它）⇒ 补 `TileStringFormatTest`（**真的 `String.format` 跑一遍**三语
+>    × 两池 × 两槽的真实格式串，而不是断言「源码里写了 `%1$s`」）。
+> 2. **开关磁贴状态不刷新** —— 三条根因：开启路径权限齐全时 `return@launch` **漏了刷新**
+>    （关闭路径在同步分支里调了，两条不对称）；只靠 `requestListeningState` 是**异步**的
+>    ⇒ 观感是「灭一下又亮」；`updateTileState` 是 `private` 够不到。⇒ `refreshTile()`
+>    改为**先就地 `updateTileState()` 再请求一次**（两步缺一不可）。
+> 3. **「从磁贴改开关 ⇒ 列表页刷新」**（**验收时用户新提的需求**，本文档原本完全没有这一条）——
+>    列表页只在 `ON_RESUME` 与 `isActive` 变化时读盘，而**下拉 QS 面板两者都不发生**。
+>    ⇒ 新增进程内信号 `WorkflowDataChangeBus`。⚠️ **发布点只在磁贴、不在 `saveWorkflow`**
+>    （后者是全部写入路径的汇聚点，放那里会让「列表页自己改自己」白付一趟读盘 + 一次 loading 闪），
+>    有**反向锁**断言防「顺手统一到汇聚点」。
 
 ---
 
