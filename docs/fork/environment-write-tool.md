@@ -1,11 +1,24 @@
 # 环境写工具（`update_environment`）设计
 
-> **状态**：设计定稿（2026-10-06），**未实现**。本文只做需求、决策与实现约束，不含代码。
+> **状态**：设计定稿（2026-10-06），**已实现（P0）** —— 代码在
+> `feature/environment-write-tool` 分支上，单测 `EnvironmentOperationParseTest`（29 例）+
+> `UpdateEnvironmentWiringTest`（10 例）全绿，`assembleRelease` 通过。
+> ⚠️ **真机验证 0 项**（§10 清单全部未做）⇒ **不得声称可用**，只有编译与单测支撑。
+> **实现登记**：`FORK.md`「环境写工具（`update_environment`，2026-10-06）」一节。
 > **上位文档**：`docs/fork/chat-agent-rearchitecture.md`（工具表）、
 > `docs/fork/workflow-read-write-tools.md`（`folderId` 校验与「名字不作选择目标」原则）。
 > **上游影响**：改动全部落在 fork 已认「手动合并 / 长期分叉」的文件上
 > （`ChatAgentToolRegistry.kt` / `ChatAgentModuleExecutor.kt` / `ChatAgentNativeTooling.kt`），
-> **不新增上游文件的分歧**。登记条目见 §9（**实施时才落 FORK.md**）。
+> **不新增上游文件的分歧**。登记条目见 §9（已落 `FORK.md`）。
+>
+> **与本文档的两处工程形态偏离**（语义、决策、文案一字未改，理由见
+> `.mindfs/tasks/plan-30.md` §2.3）：
+> ① `ChatPreparedToolItem.UpdateEnvironment` **只含 `operation`**，不含本文 §6 写的
+> `plan` / `validationErrors` / `riskLevel` —— `riskLevel` 改为**派生值**
+> （`operation.riskLevel`），这样类型上就不存在「字段与 operation 不一致」这个静默失效模式；
+> 校验失败直接回 `ImmediateResult`（单操作、零副作用，没有理由参与批风险取 max）。
+> ② `buildUpdateEnvironmentResultText` 落在**文件底部的顶层纯函数**
+> `describeEnvironmentOperation(operation, affectedWorkflowCount)`（可纯 JVM 单测）。
 
 ---
 
@@ -419,10 +432,10 @@ truncatable: false   （输出是操作回执，短且**尾部有意义**——�
 
 ---
 
-## 9. FORK.md 登记条目（草稿）
+## 9. FORK.md 登记条目
 
-> ⚠️ **本设计尚未实现，FORK.md 此刻不要写入** —— 登记的是「与上游的分歧」，
-> 而分歧只有落到代码上才存在。实施那一步再逐行加进 `FORK.md` 的对应表。
+> ✅ **已于实现时（2026-10-06）逐行落入 `FORK.md`** 的「环境写工具（`update_environment`，2026-10-06）」
+> 一节（五个文件 / 范围的条目 + 真机验证说明）。下表即该次登记的来源。
 
 | 文件 / 范围 | 分歧内容 | 冲突归属 |
 |---|---|---|
@@ -437,7 +450,9 @@ truncatable: false   （输出是操作回执，短且**尾部有意义**——�
 
 ## 10. 真机验证清单（**全部未做**）
 
-⚠️ 本任务禁止触碰真机，下列均**只有编译与单测支撑，不得声称可用**：
+> ⚠️⚠️ **实现已交付，但本轮 9 项一条都没验**（本任务明确禁止触碰真机）。
+> 下列均**只有编译与单测支撑，不得声称可用** —— 特别是第 6 项
+> （「新建同名变量时用户原有的值有没有被改动」），它是全工具**唯一能静默改坏用户数据**的路径。
 
 1. 新建文件夹后，工作流列表页（返回该页触发 `LaunchedEffect(isActive)` → `loadData`）
    是否**立刻**出现新文件夹；
