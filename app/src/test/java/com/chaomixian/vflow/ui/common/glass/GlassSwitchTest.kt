@@ -428,20 +428,28 @@ class GlassSwitchTest {
     }
 
     @Test
-    fun `VFlowSwitch 的玻璃态走的是 M3 尺寸那版（不是示例版）`() {
-        // ⚠️ 这条锁的是 2026-10-06 的一次**回退决策**：示例版（64×28、滑块占 62.5%）
-        //    在设置页没问题，但在工作流卡片上「关闭时看不到柱位」——
-        //    卡片那格只有约 116dp，64dp 的轨道也太宽。
-        //    改动这一行之前请先确认卡片上的观感（有真机截图记录）。
+    fun `VFlowSwitch 的玻璃态走的是示例版（第三次定版）`() {
+        // ⚠️ 这条锁的是 2026-10-06 的**最终决策**。中间曾回退到
+        //    `GlassSwitch`（M3 尺寸），原因是把三件事混在一起判断了：
+        //    ① 示例轨道偏宽 ② 关闭时柱位看不清 ③ 点不亮/拖不动。
+        //    复核后：② 的真因是 `pressedScale = 1.5f`（不是宽度）、
+        //    ③ 的真因是 `toggleable`（示例原版根本没有它）。
+        //    ⇒ 只保留一处偏离（轨道 64 → 60），其余照抄示例。
         val source = SourceScan.stripped(LIQUID_TOGGLE)
         assertTrue(
-            "VFlowSwitch 的玻璃分支必须调 `GlassSwitch(`（M3 尺寸那版）",
-            source.contains("GlassSwitch("),
-        )
-        assertFalse(
-            "不得把玻璃分支改回 LiquidToggleSwitch —— 它的滑块占轨道 62.5%，" +
-                "关闭时柱位几乎不可见（已实测反馈）",
+            "VFlowSwitch 的玻璃分支必须调 `LiquidToggleSwitch(`（照抄库示例那版）",
             Regex("""if \(glassEnabled\)[\s\S]{0,400}LiquidToggleSwitch\(""").containsMatchIn(source),
+        )
+        // 示例原版**没有** toggleable —— 点击全在 DampedDragAnimation 里判 didDrag。
+        assertFalse(
+            "不得给示例版加回 `toggleable(` —— 它内部的 detectTapAndPress 与拖动" +
+                "抢同一个 down，正是「点不亮、要拖才动」的根因",
+            source.contains("toggleable("),
+        )
+        assertTrue(
+            "轻点分支**不能**用闭包捕获的 `checked`（在 remember 里捕获一次 ⇒ 第二次" +
+                "点击算出的目标与第一次相同 ⇒ 点一次能关、再点开不了）；要用同一帧的 fraction",
+            source.contains("val next = if (fraction >= 0.5f) 0f else 1f"),
         )
     }
 
@@ -449,16 +457,25 @@ class GlassSwitchTest {
     fun `示例版的尺寸与库内示例逐值一致`() {
         // 用户 2026-10-06 明确要求「完全按照库里的示例实现一版」，
         // 这三个尺寸就是那次要求的直接落点，改动即偏离示例。
-        assertEquals("示例 size(64f.dp, 28f.dp)", 64f, LiquidToggleTokens.TrackWidth.value, 0.001f)
-        assertEquals(28f, LiquidToggleTokens.TrackHeight.value, 0.001f)
+        // ⚠️ 轨道宽是**唯一**刻意偏离示例的地方：示例 64dp，我们 60dp
+        //    （用户「示例有些偏宽」+ 卡片单列约 116dp）。
+        assertEquals("示例 64dp，本项目收到 60dp", 60f, LiquidToggleTokens.TrackWidth.value, 0.001f)
+        assertEquals("示例 size(64f.dp, 28f.dp) —— 高度照抄", 28f, LiquidToggleTokens.TrackHeight.value, 0.001f)
         assertEquals("示例 size(40f.dp, 24f.dp)", 40f, LiquidToggleTokens.ThumbWidth.value, 0.001f)
         assertEquals(24f, LiquidToggleTokens.ThumbHeight.value, 0.001f)
         assertEquals("示例 padding = 2f.dp", 2f, LiquidToggleTokens.Padding.value, 0.001f)
-        assertEquals("示例 pressedScale = 1.5f", 1.5f, LiquidToggleTokens.PressedScale, 0.001f)
+        // ⚠️ pressedScale 是**第二处**刻意偏离：示例 1.5f，我们收回 1f。
+        //    用户反馈「关闭的时候那个圆为什么会变小」的真因就是它 ——
+        //    按下整体放大，松手后缩回去读起来像「变小」。
+        assertEquals("示例 1.5f，本项目收回 1f（见 PressedScale 的 KDoc）", 1f, LiquidToggleTokens.PressedScale, 0.001f)
+        assertTrue(
+            "收回 pressedScale 后必须补一条别的按下反馈，否则「按下去没反应」",
+            LiquidToggleTokens.PressedTrackHighlight > 0f,
+        )
     }
 
     @Test
-    fun `滑块可移动距离等于示例写死的 20dp，且改任一尺寸都会红`() {
+    fun `滑块可移动距离与轨道宽同步（收窄轨道后自动变小）`() {
         // ⚠️ 示例里直接写死 `dragWidth = 20f.dp`，而 64 − 40 − 2×2 恰好是 20。
         //    生产代码**按公式算**（不是抄常量），动机是「改尺寸后仍自洽」。
         //
@@ -468,7 +485,8 @@ class GlassSwitchTest {
         //    真正被它抓住的是**改尺寸**：把 `TrackWidth` 改成 52 会让它红
         //    （反证 V 实测 3 条红），而那正是「忘了同步 travel」的后果。
         //    ⇒ 「按公式写」这一层是**约定**，没有机器化守卫（写在这里以免高估它）。
-        assertEquals(20f, liquidToggleTravelDp().value, 0.001f)
+        // 60 − 40 − 2×2 = 16（示例是 64 − 40 − 4 = 20，我们收窄轨道后同步变小）
+        assertEquals(16f, liquidToggleTravelDp().value, 0.001f)
         assertTrue(
             "可移动距离必须为正，否则拖动时分母为 0（fraction 变 NaN 且不报错）",
             liquidToggleTravelDp().value > 0f,
@@ -486,10 +504,10 @@ class GlassSwitchTest {
         // ⚠️ 端点位置 = padding + travel = 2 + 20 = 22dp，**不是** 64 − 40 − 2 = 22
         //    （同一个数，但写成 62 是把「右边缘」当成了「左边距」—— 第一版就这么错的）。
         val endX = liquidToggleThumbXDp(1f, isLtr = true).value
-        assertEquals("fraction=1 时左边距 = padding + travel = 22dp", 22f, endX, 0.001f)
+        assertEquals("fraction=1 时左边距 = padding + travel = 18dp", 18f, endX, 0.001f)
         assertEquals(
-            "于是右边缘 = 22 + 40 = 62dp，距轨道右端恰好也是 padding",
-            62f,
+            "于是右边缘 = 18 + 40 = 58dp，距轨道右端恰好也是 padding",
+            58f,
             endX + LiquidToggleTokens.ThumbWidth.value,
             0.001f,
         )
@@ -515,14 +533,21 @@ class GlassSwitchTest {
         // 示例的三处「运镜」
         assertTrue("示例：滑块的白随 progress 退到 0", s.contains("1f - progress"))
         assertTrue("示例：静止时轨道采样压扁量为 0 的起点", s.contains("THUMB_SAMPLE_SCALE_Y_MAX"))
-        assertTrue("示例：pressedScale = 1.5f 须由常量传入", s.contains("LiquidToggleTokens.PressedScale"))
+        assertTrue("pressedScale 须由常量传入", s.contains("LiquidToggleTokens.PressedScale"))
+        assertTrue("收回 pressedScale 后的替代反馈：按下提亮轨道", s.contains("PressedTrackHighlight"))
         assertTrue(
             "示例：轨道采样横向压扁范围 lerp(2/3, 0.75)",
             s.contains("THUMB_SAMPLE_SCALE_X_MIN") && s.contains("THUMB_SAMPLE_SCALE_X_MAX"),
         )
         // 拖动落位与轻点切换（示例的两条分支）
         assertTrue("拖动结束必须按 targetValue 落位", s.contains("targetValue >= 0.5f"))
-        assertTrue("轻点必须取反当前值", s.contains("if (checked) 0f else 1f"))
+        // ⚠️ 判据不能写 `if (checked) 0f else 1f` —— 那正是**有 bug 的那版**；
+        //    正确写法是用同一帧的 `fraction` 判（闭包捕获的 `checked` 只在
+        //    首次 `remember` 时取到值 ⇒ 第二次点击目标不变）。
+        assertTrue(
+            "轻点必须按同一帧的 fraction 取反（不能用闭包捕获的 checked）",
+            s.contains("val next = if (fraction >= 0.5f) 0f else 1f"),
+        )
     }
 
     @Test

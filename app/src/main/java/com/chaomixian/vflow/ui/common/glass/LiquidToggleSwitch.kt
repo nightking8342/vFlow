@@ -4,7 +4,6 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchColors
 import androidx.compose.material3.SwitchDefaults
@@ -29,6 +28,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.fastCoerceIn
@@ -89,8 +93,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
  *   **静止 `scaleY = 0`** ⇒ 采样里没有轨道 ⇒ 避开「滑块采样自己盖住的轨道」的自采样回环。
  */
 internal object LiquidToggleTokens {
-    /** 示例 `size(64f.dp, 28f.dp)`。 */
-    val TrackWidth = 64.dp
+    /**
+     * 轨道宽。⚠️ 示例是 **64dp**，这里收到 **60**（滑块 40 不变）。
+     *
+     * 用户 2026-10-06 反馈「示例的开关是有些偏宽的」+ 卡片单列只有约 116dp，
+     * ⇒ 只收这 4dp，「摇杆」式的观感（宽矮胶囊 + 宽滑块）**完全保留**。
+     * ⚠️ 连同滑块占轨道的比例从 62.5% 降到 66.7%，**关闭态柱位露出的绝对宽度
+     * 不变（两侧各 8dp）** —— 真正让柱位看不见的原因不是宽度，见 [ThumbHeight] 那条。
+     */
+    val TrackWidth = 60.dp
     val TrackHeight = 28.dp
 
     /** 示例 `size(40f.dp, 24f.dp)`。 */
@@ -100,8 +111,30 @@ internal object LiquidToggleTokens {
     /** 示例里的 `padding = 2f.dp`。 */
     val Padding = 2.dp
 
-    /** 示例 `pressedScale = 1.5f`。 */
-    const val PressedScale = 1.5f
+    /**
+     * 按下时滑块的缩放。
+     *
+     * ⚠️⚠️ **示例是 `1.5f`，这里改成 `1f`** —— 用户 2026-10-06 反馈
+     * 「关闭的时候那个圆为什么会变小呢？原版不是这样的吧」，而根因**不是**
+     * 关闭态变宽/变窄，是**示例把按下放大写在 `pressedScale` 上**：
+     * 它把滑块（含玻璃层）整体放大到 1.5 倍，于是「按下时大、松手后小」，
+     * 在 40dp 的滑块上就是一个非常明显的「缩回去」。
+     *
+     * 示例是在**整屏 demo**里展示的，那个幅度是展示效果的一部分；
+     * 而在列表卡片上它读起来就是「开关在变大小」。
+     * ⇒ 收回 `1f`，同时**给它补一个更含蓄的反馈**：按下时轨道**提亮**
+     * （`pressedTrackHighlight`）+ 按下时滑块**不变形** —— 观感更接近原生。
+     */
+    const val PressedScale = 1f
+
+    /**
+     * 按下时轨道的**提亮**量（0..1）。
+     *
+     * 收回 `pressedScale` 之后需要另一条按下反馈，否则「按下去没反应」。
+     * 用 `lerp(trackColor, Color.White, 该值 * pressProgress)` ——
+     * 玻璃的反馈语言本来就该是**透光变化**而不是尺寸变化（见 `GlassSwitch` 的 KDoc）。
+     */
+    const val PressedTrackHighlight = 0.12f
 }
 
 /**
@@ -152,7 +185,11 @@ internal fun LiquidToggleSwitch(
     }
 
     val animationScope = rememberCoroutineScope()
-    var didDrag by remember { mutableStateOf(false) }
+    // ⚠️ `didDrag` 用 `remember { BooleanArray }` 包一层：回调闭包在
+    //    `remember(animationScope)` 里被捕获**一次**，直接写 `var didDrag by
+    //    remember` 会捕获到**首帧的委托**，后续赋值不生效（Kotlin 委托的
+    //    局部变量被 lambda 捕获时的固有陷阱）。数组是引用类型，跨帧共享。
+    val dragState = remember { booleanArrayOf(false) }
     var fraction by remember { mutableFloatStateOf(if (checked) 1f else 0f) }
 
     val dampedDragAnimation = remember(animationScope) {
@@ -167,18 +204,22 @@ internal fun LiquidToggleSwitch(
             pressedScale = LiquidToggleTokens.PressedScale,
             onDragStarted = {},
             onDragStopped = {
-                if (didDrag) {
+                if (dragState[0]) {
                     fraction = if (targetValue >= 0.5f) 1f else 0f
                     onCheckedChange?.invoke(fraction == 1f)
-                    didDrag = false
+                    dragState[0] = false
                 } else {
-                    // 轻点：取反当前值（与示例一致）
-                    fraction = if (checked) 0f else 1f
-                    onCheckedChange?.invoke(fraction == 1f)
+                    // 轻点：取反当前值。⚠️ 不能用闭包里的 `checked` —— 它在
+                    // `remember(animationScope)` 里被捕获一次，之后永远是最初那个值
+                    // ⇒ 第二次点击算出来的目标与第一次相同 ⇒ **点一次开、再点开不了**。
+                    // 用 `fraction`（同一帧的当前进度）判，它由 `LaunchedEffect` 持续同步。
+                    val next = if (fraction >= 0.5f) 0f else 1f
+                    fraction = next
+                    onCheckedChange?.invoke(next == 1f)
                 }
             },
             onDrag = { _, dragAmount ->
-                if (!didDrag) didDrag = dragAmount.x != 0f
+                if (!dragState[0]) dragState[0] = dragAmount.x != 0f
                 val travelPx = with(density) { liquidToggleTravelDp().toPx() }
                 if (travelPx > 0f) {
                     val delta = dragAmount.x / travelPx
@@ -215,23 +256,22 @@ internal fun LiquidToggleSwitch(
                 .clip(TOGGLE_CAPSULE)
                 .drawBehind {
                     // 示例：`drawRect(lerp(trackColor, accentColor, fraction))` —— 整条纯色。
-                    drawRect(lerp(trackColor, accentColor, dampedDragAnimation.value.fastCoerceIn(0f, 1f)))
+                    val base = lerp(trackColor, accentColor, dampedDragAnimation.value.fastCoerceIn(0f, 1f))
+                    // ⚠️ 按下提亮：代替被收回的 `pressedScale = 1.5f`（见 [PressedScale]）。
+                    val pressed = dampedDragAnimation.pressProgress * LiquidToggleTokens.PressedTrackHighlight
+                    drawRect(lerp(base, Color.White, pressed.fastCoerceIn(0f, 1f)))
                 }
                 .size(LiquidToggleTokens.TrackWidth, LiquidToggleTokens.TrackHeight)
-                .then(
+                // ⚠️ 语义显式补上（示例原版也没有；它靠滑块上的 `role = Role.Switch`）。
+                //    这里补全 `toggleableState` 与 `onClick`，TalkBack 才能读出状态、
+                //    并用「双击」切换。
+                .semantics {
+                    role = Role.Switch
+                    toggleableState = if (checked) ToggleableState.On else ToggleableState.Off
                     if (onCheckedChange != null) {
-                        Modifier.toggleable(
-                            value = checked,
-                            onValueChange = onCheckedChange,
-                            enabled = enabled,
-                            role = Role.Switch,
-                            interactionSource = interactionSource ?: remember { MutableInteractionSource() },
-                            indication = null,
-                        )
-                    } else {
-                        Modifier
+                        onClick(label = "切换", action = { onCheckedChange(!checked); true })
                     }
-                )
+                }
         )
 
         // ---- 滑块（示例：位置左对齐插值，宽度恒定）----
@@ -315,13 +355,23 @@ private const val THUMB_SAMPLE_SCALE_X_MAX = 0.75f
 private const val THUMB_SAMPLE_SCALE_Y_MAX = 0.75f
 
 /**
- * **全 App 统一的开关**：按液态玻璃开关决定走 [GlassSwitch] 还是 M3 `Switch`。
+ * **全 App 统一的开关**：按液态玻璃开关决定走 [LiquidToggleSwitch] 还是 M3 `Switch`。
  *
- * ⚠️ **2026-10-06 换回过 M3 尺寸那版**：本文件里的 [LiquidToggleSwitch]（照抄库示例）
- * 在设置页里没问题，但**工作流卡片上不成立** —— 卡片那格只有约 116dp 宽、
- * 开关要与图标/⋮ 挤在一行，64dp 的轨道在那里显得又宽又扁；更要命的是
- * 它的滑块占轨道 62.5%，关闭时柱位几乎看不见（用户原话「关闭的时候都看不到
- * 底下的槽位了」）。⇒ 玻璃态改回 [GlassSwitch]，本文件保留示例版实现备查。
+ * ⚠️ **2026-10-06 第三次定版**：玻璃态终于用回**照抄库示例**的那版。
+ * 中间曾被改回 [GlassSwitch]（M3 尺寸），原因是当时把三件事混在一起判断了：
+ * ① 示例轨道偏宽（64dp）、② 关闭时柱位看不清、③ 点不亮/拖不动。
+ * 复核后确认：
+ * - **② 的真因不是宽度** —— 是 `pressedScale = 1.5f`（按下整体放大）让滑块
+ *   在松手后「缩回去」，读起来像「关闭时变小」；宽度只是把这个问题放大了。
+ * - **③ 的真因是 `toggleable`** —— 它内部的 `detectTapAndPress` 与拖动抢同一个
+ *   down；示例原版**根本没有 `toggleable`**（点击全在 `DampedDragAnimation`
+ *   的 `onDragStopped` 里判 `didDrag`）。
+ * ⇒ 只保留一处真正的偏离：**轨道宽 64 → 60**（用户「示例有些偏宽」的原话），
+ * 其余全部照抄示例（含宽滑块、「摇杆」式左对齐位移、折射链路）。
+ *
+ * ⚠️ 另修掉示例原版在**我们这里**才会暴露的一只 bug：`onDragStopped` 的
+ * 轻点分支用闭包捕获的 `checked`（在 `remember` 里捕获**一次**）⇒ 第二次点击
+ * 算出的目标与第一次相同 ⇒「点一次能关、再点开不了」。改用同一帧的 `fraction` 判。
  *
  * ⚠️⚠️ **参数与 M3 `Switch` 逐一对应（含顺序）** —— 调用点只需把 `Switch(`
  * 换成 `VFlowSwitch(`，**一个参数都不用加**。
@@ -349,7 +399,7 @@ fun VFlowSwitch(
         AppearanceManager.isLiquidGlassNavBarEnabled(context)
     }
     if (glassEnabled) {
-        GlassSwitch(
+        LiquidToggleSwitch(
             checked = checked,
             onCheckedChange = onCheckedChange,
             modifier = modifier,

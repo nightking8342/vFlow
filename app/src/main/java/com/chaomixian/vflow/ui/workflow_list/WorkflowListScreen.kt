@@ -82,7 +82,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
@@ -1569,15 +1568,18 @@ private fun WorkflowCompactCard(
                     VFlowSwitch(
                         checked = workflow.isEnabled,
                         onCheckedChange = onToggleEnabled,
-                        // ⚠️ 间距加大后单列只有约 116dp（手机）/ 153dp（展开），
-                        //    而 `Switch` 的固有宽度是 **52dp** —— 不缩的话它一枚就吃掉
-                        //    头行的三分之一，图标与它的间距会被压没。
-                        //    `Modifier.scale` 等比缩整块（内部 thumb/track 不会错位），
-                        //    再用 `requiredSize` 把布局占位也收掉 —— 只 scale 不改尺寸
-                        //    的话布局仍按 52dp 算，视觉上缩了但位置照旧偏右。
+                        // ⚠️⚠️ **只缩布局占位、不缩放内容**。
+                        //
+                        // 原先（M3 尺寸时代）写的是 `scale(0.85f)` —— 那时用
+                        // `VFlowSwitch` 的 M3 分支，`scale` 缩的是**真实控件**。
+                        // 换到玻璃态后 `scale` 缩的是**玻璃层**：`drawBackdrop`
+                        // 按 graphicsLayer 的坐标采样，缩放会让采样区与绘制区错位，
+                        // 表现是「折射位置偏移 / 边缘发虚」。
+                        //
+                        // 现在玻璃开关自己就是按卡片空间设计的尺寸（轨道 60dp），
+                        // 占位收到 `requiredSize` 即可，**内容保持原样**。
                         modifier = Modifier
-                            .requiredSize(44.dp, 28.dp)
-                            .scale(0.85f),
+                            .requiredSize(48.dp, 28.dp),
                         colors = workflowSwitchColors(
                             colorfulCardsEnabled = colorfulCardsEnabled,
                             visualColors = visualColors
