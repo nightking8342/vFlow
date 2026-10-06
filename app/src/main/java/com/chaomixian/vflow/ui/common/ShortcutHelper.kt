@@ -8,6 +8,7 @@ import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.core.graphics.drawable.IconCompat
 import com.chaomixian.vflow.R
+import com.chaomixian.vflow.core.workflow.CardIconBitmap
 import com.chaomixian.vflow.core.workflow.WorkflowManager
 import com.chaomixian.vflow.core.workflow.model.Workflow
 
@@ -143,73 +144,11 @@ object ShortcutHelper {
 
     /**
      * 加载并裁剪图片为正方形（中心裁剪），然后缩放到目标尺寸
+     *
+     * ⚠️ 实现已**抽到** `core/workflow/CardIconBitmap.kt` —— 快捷设置磁贴也要同一份解码逻辑，
+     * 而**复制一份**的代价不是「多几行」而是「改一处忘另一处」（本仓库在 logcat 上记过
+     * 完全同形的缺陷）。此处只是委托，**行为与抽取前逐字一致**。
      */
-    private fun loadCenterCroppedBitmap(filePath: String): android.graphics.Bitmap? {
-        // 先获取图片尺寸
-        val options = android.graphics.BitmapFactory.Options().apply {
-            inJustDecodeBounds = true
-        }
-        android.graphics.BitmapFactory.decodeFile(filePath, options)
-
-        if (options.outWidth <= 0 || options.outHeight <= 0) {
-            return null
-        }
-
-        // 计算正方形边长（取宽高的较小值）
-        val squareSize = minOf(options.outWidth, options.outHeight)
-
-        // 计算采样率，使加载后的图片不超过目标尺寸的2倍（为了更好的质量）
-        val targetSize = 192
-        var inSampleSize = 1
-        if (squareSize > targetSize * 2) {
-            inSampleSize = squareSize / (targetSize * 2)
-            // 确保是2的幂次方
-            inSampleSize = Integer.highestOneBit(inSampleSize)
-        }
-
-        // 加载缩放后的图片
-        val decodeOptions = android.graphics.BitmapFactory.Options().apply {
-            inSampleSize = inSampleSize
-        }
-        val fullBitmap = android.graphics.BitmapFactory.decodeFile(filePath, decodeOptions) ?: return null
-
-        try {
-            // 计算裁剪区域（中心正方形）
-            val scaledWidth = fullBitmap.width
-            val scaledHeight = fullBitmap.height
-            val cropSize = minOf(scaledWidth, scaledHeight)
-            val x = (scaledWidth - cropSize) / 2
-            val y = (scaledHeight - cropSize) / 2
-
-            // 裁剪出中心正方形
-            val croppedBitmap = android.graphics.Bitmap.createBitmap(
-                fullBitmap,
-                x, y, cropSize, cropSize
-            )
-
-            // 如果裁剪后的图片不等于原图，回收原图
-            if (croppedBitmap != fullBitmap) {
-                fullBitmap.recycle()
-            }
-
-            // 缩放到目标尺寸
-            val finalBitmap = android.graphics.Bitmap.createScaledBitmap(
-                croppedBitmap,
-                targetSize,
-                targetSize,
-                true
-            )
-
-            // 如果缩放后的图片不等于裁剪图片，回收裁剪图片
-            if (finalBitmap != croppedBitmap) {
-                croppedBitmap.recycle()
-            }
-
-            return finalBitmap
-        } catch (e: Exception) {
-            fullBitmap.recycle()
-            android.util.Log.e("ShortcutHelper", "Failed to crop bitmap", e)
-            return null
-        }
-    }
+    private fun loadCenterCroppedBitmap(filePath: String): android.graphics.Bitmap? =
+        CardIconBitmap.loadCenterCroppedBitmap(filePath)
 }

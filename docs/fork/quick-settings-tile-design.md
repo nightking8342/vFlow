@@ -1,9 +1,163 @@
 # 快捷设置磁贴（QS Tile）优化设计
 
-**状态**：设计定稿，待实现 ｜ **日期**：2026-10-06
+**状态**：**已实现并真机验收通过**（`@dev`，2026-10-06）｜ **日期**：2026-10-06
 **上位背景**：用户 2026-10-05 提出，2026-10-06 补齐核心要点（见 §1）。
 **相关**：`surveys/trigger-system-overview.md`（触发器体系）、`backup-webdav-design.md` §TileScope（备份语义）。
 上游无此文件的对应物。
+
+**提交**：`5333676c`（主体）→ `de139d4e`（文档回写）→ `bb7acbbf`（真机崩溃修复）
+→ `f6dc2422`（开关磁贴刷新三条根因）→ `7a1b09e5`（通知列表页刷新）。
+
+---
+
+## 实现状态（2026-10-06）
+
+**代码已落地、真机验收通过、合入 `dev`。** 逐项对照：
+
+| § | 内容 | 状态 |
+|---|---|---|
+| §4.1 | 两池显式 `kind` 字段 | ✅ 但**形状与本文档写的不一样** —— 见下「实现期的三处偏离」① |
+| §4.2 | 槽位分配 / 类名不得改 | ✅ `WorkflowTileService0..19` 类名一字未动；新池 `WorkflowToggleTileService0..19` |
+| §4.3 | 图标三形态 + 两条回落 | ✅ `CardIconBitmap`（从 `ShortcutHelper` 抽出复用，未复制） |
+| §4.4 | 刷新时机 | ✅ `TileRefreshNotifier`（500ms 去抖），四处调用点全部接上 |
+| §4.5 | 点击行为 | ✅ 执行型 / 开关型各一个基类，`onClick` 不下沉到公共基类 |
+| §4.6 | 三道闸 | ✅ 三闸**全部**调 `TileGate`；闸 3 在两个子类的 `onClick` 里 |
+| §4.7 | 状态表 / 两池默认名 | ✅ manifest 40 条 + `TileSlot.displayName` 同一口径 |
+| §6.3 | 新增文案 | ✅ 12 键 ×3 语言 |
+| §8.1 | 纯函数单测 | ✅ 7 个文件 |
+| §8.2 | 源码扫描锚定 | ✅ 4 个文件（`TileManifestTest` / `TileWiringTest` / `TileStringFormatTest` / `WorkflowDataChangeWiringTest`），**5 条反证已实际执行** |
+| §8.3 | 真机验证 | ✅ **用户 2026-10-06 验收通过**（小米 MIX Fold 3 / 2308CPXD0C / Android 17）；逐项清单见下 |
+| §6.4 | `TileScopeTest` 会被搞红 | ⚠️ **实际没有变红** —— 见下「实现期的三处偏离」② |
+| **§ 未预见** | **「从磁贴改数据 ⇒ 列表页刷新」** | ✅ 本文档没有这一条（§4.4 只管磁贴自己的刷新），真机验收后补做 —— 见下「**真机验收期发现并修掉的三处**」③ |
+
+**自动化证据超出 §8 的部分**：`assembleRelease` 产物核对 —— 40 条声明齐全
+（`vFlow Execute` 20 / `vFlow Toggle` 20 / 旧 `vFlow Tile` **0**）、`ACTIVE_TILE` 40 处、
+`TOGGLEABLE_TILE` 恰 20 处（只有开关池）、两端 service 类（0 与 19，两池）**都在 dex 里
+未被 R8 剥掉**。
+
+### ✅ §8.3 真机验收结论（用户 2026-10-06，小米 MIX Fold 3 + 2308CPXD0C / Android 17）
+
+| 项 | 结果 |
+|---|---|
+| 执行型不再常亮 / 显示工作流图标 | ✅ 通过 |
+| 开关型双态高亮 + 点击真的挂/卸触发器 | ✅ 通过（**修完下面 ③ 之后**） |
+| 两池互斥三闸（菜单 / 面板 / service 兜底） | ✅ 通过 |
+| 未绑定槽位的名字与 subtitle | ✅ 通过（`vFlow Execute N` / `vFlow Toggle N`） |
+| 系统「添加磁贴」面板里能区分两池 | ✅ 通过 |
+| 自定义照片作磁贴图标 | ✅ 通过（不崩、不空白） |
+| 从磁贴改开关后**列表页跟着刷新** | ✅ 通过（**这是验收时新加的需求**，见 ③） |
+
+### ⚠️ 真机验收期发现并修掉的三处（**都是文档没预见的**）
+
+**① 点「添加到控制中心」直接闪退 —— `IllegalFormatConversionException: d != java.lang.String`**
+（commit `bb7acbbf`）
+
+`tile_added` / `tile_removed` 两条字符串**原本显示绝对索引**（`%1$d`），
+而本次改动把调用点改成了传 `TileSlot.displayName(kind, slot)`（**字符串**）。
+`%1$d` 收到 `String` ⇒ 当场抛，崩在主线程的点击回调里。
+
+⚠️⚠️ **为什么编译、`lintVitalRelease` 与既有单测都拦不住**：
+`getString(res, arg)` 的 `arg` 是 `vararg Any`（**类型不匹配编译得过**）、
+lint 只查「资源引用的参数个数」**不查类型**、而从来没有人**真的把那两条字符串格式化一遍**。
+
+⇒ 补了 `TileStringFormatTest`：它**真的用 `String.format` 跑一遍**三语 × 两池 × 两槽的真实
+格式串 + 真实实参，而不是断言「源码里写了 `%1$s`」（那是把要测的东西抄一遍，
+改坏了也不会红）。**反证已执行**：把 zh 改回 `%1$d` ⇒ 恰好那条变红。
+
+**② 开关磁贴状态不刷新 —— 两条不对称的路径**（commit `f6dc2422`）
+
+真机现象：
+- 绑定时工作流是**开启**的 ⇒ 磁贴常亮；点一下变「关」时**灭一下又立刻亮回来**（实际切换成功了）
+- 绑定时工作流是**关闭**的 ⇒ 磁贴始终灭；点击**实际能开关，但永远不亮**
+
+三条根因：
+
+| # | 根因 | 为什么表现成那样 |
+|---|---|---|
+| a | **开启路径漏了刷新**：`scope.launch` 里权限齐全时直接 `return@launch`，把 `refreshTile()` 整个跳过 —— 而**关闭路径在同步分支里调了它** | 两条路径不对称 ⇒ 症状 2 的「关了能亮、开了不亮」 |
+| b | **只靠 `requestListeningState` 是被动的**：它是**异步**的，用户点完到 SystemUI 真正重绘之间会先看到旧状态 | 症状 1 的「灭一下又亮」 |
+| c | `updateTileState` 是 `private`，子类**够不到**，没法定向就地重绘 | b 的前提 |
+
+⇒ `refreshTile()` 改为**先就地 `updateTileState()`**（`onClick` 在 `TileService`
+生命周期里，此刻改 `qsTile` **立即**生效）、**再**请求一次 `onStartListening`
+与 SystemUI 一致化。**两步缺一不可**：只做前者会被 SystemUI 自己的缓存覆盖，
+只做后者就是症状 1。
+
+**③ 「从磁贴改开关 ⇒ 列表页刷新」—— 验收时用户新提的需求**（commit `7a1b09e5`）
+
+⚠️ 这个需求**本文档完全没有覆盖**：§4.4 只管「磁贴自己怎么刷新」，
+没想过「列表页要不要跟着变」。
+
+根因：列表页只在两个时机读盘 —— `ON_RESUME`（lifecycle 观察者）与 `isActive` 变化。
+而**下拉 QS 面板这两者都不会发生**（Activity 不重启、`isActive` 不变）
+⇒ 用户从开关型磁贴改了 `isEnabled` 后回到列表，看到的还是旧状态，
+必须切出去再切回来才刷新 —— 界面与实际不一致里最难自查的一种。
+
+做法：新增进程内信号 `WorkflowDataChangeBus`（`MutableSharedFlow<Unit>`，
+`extraBufferCapacity = 1` + `DROP_OLDEST`）。磁贴写完盘发信号，列表订阅后 `loadData()`。
+
+⚠️ **发布点刻意只在磁贴，不在 `WorkflowManager.saveWorkflow`** ——
+后者是**所有**写入路径的汇聚点（列表页自己的开关、编辑器、AI、导入……），
+在那里发布会让「列表页自己改自己」也绕一圈重新 `loadData()`：
+不会成环（`loadData` 会 cancel 上一个 job），但**每次列表内开关都白付一趟读盘
++ 一次 `setLoading(true)` 的闪**。有**反向锁**断言防止将来「顺手统一到汇聚点」。
+
+⚠️ 用**进程内信号而不是广播**：磁贴 service 与 App 同进程（manifest 未声明
+`android:process`），而广播还多一层 `RECEIVER_EXPORTED` / `NOT_EXPORTED` 的坑
+（本仓库在数据卡切换上踩过 —— 用错那个 flag 会**静默收不到**）。
+
+⚠️ 写 `WorkflowDataChangeWiringTest` 时抓到**自己一个弱断言**：第一版只用
+`contains` 判「函数体里有 `notifyChanged`」—— 而本函数**有第二处**（权限回弹），
+把主路径那处删掉测试**照样绿**（已实测确认）。改为锚「**第一次**通知落在
+`saveWorkflow` 之后、且在 `if (!enable)` 分支之前」后，反证成立
+（删主发布点 ⇒ **2 条**变红）。
+
+### ⚠️ 实现期的三处偏离（都是本文档写错或没写清，按实际情况落地）
+
+### ⚠️ 实现期的三处偏离（都是本文档写错或没写清，按实际情况落地）
+
+**① `WorkflowTile.kind` 必须是可空的，Gson 不填 Kotlin 默认值。**
+
+本文档 §4.1 写的是 `val kind: TileKind = TileKind.EXECUTE`，并断言「旧记录落默认值
+`EXECUTE`，零迁移」。**实测（`TileKindBackwardCompatTest`）证明这个断言是错的**：
+
+Gson 用 `Unsafe.allocateInstance` 构造对象、**绕过 Kotlin 构造函数** ⇒ 缺键时读出的是
+**`null`**（枚举字段的 Java 默认值），不是 `EXECUTE`。而 `null` 赋给**非空** `val` 后，
+**第一次读取**才抛 `NullPointerException`，被 `TileManager.getAllTiles()` 的
+`catch (e: Exception)` **吞成 `emptyList()`** ⇒ 表现是「用户 20 个磁贴绑定全部消失」，
+且**没有任何报错**。
+
+⇒ 落地为 `val kind: TileKind? = null` + 新增 `TileFieldNormalizer.normalize(...)`
+（按**槽位**归一，不是一律 `EXECUTE` —— 槽位 20..39 属于开关池），
+在 `TileManager.getAllTiles()`（**所有读取路径的共同上游**）统一施加。
+这是本仓库对 Gson 默认值的**既有口径**（先例：`WorkflowLogLevel.fromStoredValue`）。
+`TileGate.isOutOfKind` 也**自己再容一次 `null`**，不依赖调用方先归一。
+
+**② `TileScope` 是文本层合并 ⇒ 它不该认识 `kind`，`TileScopeTest` 也不该断言三个键。**
+
+本文档 §6.4 预判那条断言会变红、要求「把期望集合改成三个键」。**实际没有变红**，
+因为该测试用的是**手工构造的、与 `TileManager` 同形状的** JSON，而那份 JSON 是
+测试自己写的（没写 `kind`）—— 它测的一直是「本 scope 忠实地搬运它拿到的形状」。
+
+而 `TileScope` 的实现（`mergeValue`）做的是**纯文本层** JSON 合并、**刻意不解析**
+`WorkflowTile`（解析会引入 android 依赖、破坏纯度扫描）。⇒ 正确的处置不是
+「改成三个键」，而是**改为断言真正有意义的语义**：存量记录（缺 `kind`）在往返里
+**键集合原样保留**、未知字段**原样带走**、MERGE 的判据**只有 `tileIndex`、与 `kind` 无关**。
+
+⚠️ **§6.4 的判据（「改成三个键而不是 containsAll」）方向是对的**，
+错的是它假设了「这条测试会看到新字段」—— 它看不到。已在测试里注明。
+
+**③ 新增了三处本文档没预见的保护。**
+
+| 保护 | 为什么必须有 |
+|---|---|
+| 自定义图片解码**包 try/catch**（不只是判 `null`） | `BitmapFactory.decodeFile` 对**损坏的图片**会**抛** `RuntimeException`（文档明写；单测里也实测到同类行为）。一个损坏的 PNG 就能崩掉 `onStartListening` ⇒ 磁贴永久空白 |
+| 执行型 `onClick` / 开关型 `onClick` **各自**判闸 3 | 两池的「被拒」文案与后续动作不同；放进公共基类就得先判 kind 再分派，写错就是「开关型去执行工作流」且不报错 |
+| `WorkflowTileServiceN` 的**父类改动 + 类名不动** | 父类由 `BaseWorkflowTileService` 换成 `BaseExecuteTileService`；**类名与槽位号一字未动**（SystemUI 按 `ComponentName` 记已添加的磁贴） |
+
+另有**一条被落实为「刻意不做」**：开关型磁贴**只刷自己那一个**（`requestListeningState(this)`），
+**不走** `TileRefreshNotifier` 的批量 —— 后者带 500ms 去抖，而用户此刻正盯着磁贴看，
+去抖会让它**看起来没反应**。
 
 ---
 

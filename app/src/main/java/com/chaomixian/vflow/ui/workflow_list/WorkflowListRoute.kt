@@ -37,8 +37,13 @@ import com.chaomixian.vflow.core.execution.ExecutionStateBus
 import com.chaomixian.vflow.core.execution.WorkflowExecutor
 import com.chaomixian.vflow.core.workflow.FolderManager
 import com.chaomixian.vflow.core.workflow.TileManager
+import com.chaomixian.vflow.core.workflow.TileGate
+import com.chaomixian.vflow.core.workflow.TileRefreshNotifier
+import com.chaomixian.vflow.core.workflow.TileSlot
+import com.chaomixian.vflow.core.workflow.model.TileKind
 import com.chaomixian.vflow.core.workflow.TriggerExecutionCoordinator
 import com.chaomixian.vflow.core.workflow.WorkflowBatchEnumMigrationPreview
+import com.chaomixian.vflow.core.workflow.WorkflowDataChangeBus
 import com.chaomixian.vflow.core.workflow.WorkflowEnumMigration
 import com.chaomixian.vflow.core.workflow.WorkflowManager
 import com.chaomixian.vflow.core.workflow.WorkflowPermissionRecovery
@@ -78,6 +83,13 @@ import java.util.UUID
 private const val PREF_WORKFLOW_SORT_MODE = "workflow_sort_mode"
 private data class TileSelectionTarget(
     val workflowId: String,
+    /**
+     * 用户是从哪一个池的菜单项进来的（§4.6 闸 2）。
+     *
+     * ⚠️ **必须带 `kind`** —— 面板只列这一池的槽位。不带的话两池的 0..19 会一起列出来，
+     * 用户点错池**不会**失败（槽位合法），只是行为完全不同（一个执行、一个开关）。
+     */
+    val kind: TileKind,
 )
 
 @Composable
@@ -399,6 +411,28 @@ fun WorkflowListRoute(
         }
     }
 
+    // fork（2026-10-06）：工作流数据**在 App 之外**被改掉时重新读盘。
+    //
+    // ⚠️⚠️ **这是本次唯一新增的读盘触发点，不能省。** 列表页原本只在这两处读盘：
+    //   · `ON_RESUME`（`DisposableEffect` 里的 lifecycle 观察者）
+    //   · `isActive` 变化（`LaunchedEffect(isActive)`）
+    //   而**下拉 QS 面板这两者都不会发生**（Activity 不重启、`isActive` 不变）
+    //   ⇒ 从**开关型磁贴**改了 `isEnabled` 之后回到列表，看到的还是旧状态，
+    //   必须切出去再切回来才刷新 —— 界面与实际不一致里最难自查的一种。
+    //
+    // ⚠️ 发布点在磁贴（`BaseToggleTileService`）而**不在** `WorkflowManager.saveWorkflow`：
+    //   后者是**所有**写入路径的汇聚点，在那里发布会让「列表页自己开关」也绕一圈
+    //   重新 `loadData()`（不会成环 —— `loadData` 会 cancel 上一个 job ——
+    //   但每次列表内开关都白付一趟读盘 + 一次 `setLoading(true)` 的闪）。
+    //
+    // ⚠️ `loadData()` 自带 `loadDataJob?.cancel()`，连发多次不会打架；
+    //   而 SharedFlow 的 `extraBufferCapacity = 1` 也把连发揉成一次。
+    LaunchedEffect(Unit) {
+        WorkflowDataChangeBus.changes.collect {
+            loadData()
+        }
+    }
+
     DisposableEffect(lifecycleOwner, context) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
@@ -621,8 +655,20 @@ fun WorkflowListRoute(
             onAddShortcut = { workflow ->
                 ShortcutHelper.requestPinnedShortcut(context, workflow)
             },
-            onAddToTile = { workflow ->
-                tileSelectionTarget = TileSelectionTarget(workflowId = workflow.id)
+            onAddToTile = { workflow, kind ->
+                // ⚠️⚠️ 闸 1 已把不该出现的菜单项藏起来了，但**这里再判一次**：
+                //    `shouldShowMenu` 的判据与这里可能因重组时序失配（菜单弹出后用户
+                //    在别处改了触发器再回来点），而绑定一次错误的池会**静默**产生
+                //    一个行为完全不对的磁贴（§4.6 闸 3 同理，两处判据都走 TileGate）。
+                if (!TileGate.accepts(kind, workflow)) {
+                    Toast.makeText(
+                        context,
+                        context.getString(TileGate.mismatchMessageRes(kind)),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    return@WorkflowListScreenActions
+                }
+                tileSelectionTarget = TileSelectionTarget(workflowId = workflow.id, kind = kind)
             },
             onCopyWorkflowId = { workflow ->
                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -661,14 +707,17 @@ fun WorkflowListRoute(
     )
 
     tileSelectionTarget?.let { target ->
-        val tileItems = remember(target.workflowId, tileSelectionVersion, uiState.executionStateVersion) {
-            tileManager.getAllTilesWithEmpty().map { tile ->
+        val tileItems = remember(target.workflowId, target.kind, tileSelectionVersion, uiState.executionStateVersion) {
+            // ⚠️ 只列**这一池**的槽位（§4.6 闸 2）。`getAllTilesWithEmpty(kind)` 与
+            //    `TileSlot` 的区间定义同源，不会出现「面板显示 20 个但其中几个属于另一池」。
+            tileManager.getAllTilesWithEmpty(target.kind).map { tile ->
                 TileSelectionItem(
                     tileIndex = tile.tileIndex,
                     assignedWorkflowName = tile.workflowId?.let { workflowId ->
                         workflowManager.getWorkflow(workflowId)?.name
                     },
                     isSelected = tile.workflowId == target.workflowId,
+                    kind = target.kind,
                 )
             }
         }
@@ -680,25 +729,47 @@ fun WorkflowListRoute(
         ) {
             TileSelectionSheet(
                 items = tileItems,
+                kind = target.kind,
                 onSelect = { item ->
+                    val slot = TileSlot.indexInKind(item.tileIndex) ?: item.tileIndex
                     if (item.isSelected) {
                         tileManager.removeTile(item.tileIndex)
                         Toast.makeText(
                             context,
-                            context.getString(R.string.tile_removed, item.tileIndex + 1),
+                            context.getString(
+                                R.string.tile_removed,
+                                TileSlot.displayName(target.kind, slot)
+                            ),
                             Toast.LENGTH_SHORT
                         ).show()
                         tileSelectionVersion++
                     } else {
-                        tileManager.removeTileByWorkflowId(target.workflowId)
-                        tileManager.saveTile(WorkflowTile(item.tileIndex, target.workflowId))
+                        // ⚠️ 解绑时**按 (workflowId, kind) 删**，不是无差别删 ——
+                        //    两池互斥后同一工作流不会同时在两池，但「先在执行池解绑、
+                        //    再去开关池绑定」之间若用无差别删，会把用户刚在另一池
+                        //    绑好的也一起删掉（无提示）。
+                        tileManager.removeTileByWorkflowIdInKind(target.workflowId, target.kind)
+                        tileManager.saveTile(
+                            WorkflowTile(
+                                tileIndex = item.tileIndex,
+                                workflowId = target.workflowId,
+                                kind = target.kind,
+                            )
+                        )
                         Toast.makeText(
                             context,
-                            context.getString(R.string.tile_added, item.tileIndex + 1),
+                            context.getString(
+                                R.string.tile_added,
+                                TileSlot.displayName(target.kind, slot)
+                            ),
                             Toast.LENGTH_SHORT
                         ).show()
                         tileSelectionVersion++
                     }
+                    // ⚠️ 绑定/解绑**不经过** `WorkflowManager.saveWorkflow`，故不会自动
+                    //    触发 `TileRefreshNotifier` —— 必须显式刷一次，否则磁贴要等
+                    //    下次下拉面板才知道自己换了工作流（§4.4 第四处调用点）。
+                    TileRefreshNotifier.requestAll(context)
                 }
             )
         }

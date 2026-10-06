@@ -48,6 +48,7 @@ import androidx.compose.material.icons.outlined.DashboardCustomize
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.DriveFileRenameOutline
+import androidx.compose.material.icons.outlined.ToggleOn
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
@@ -97,7 +98,9 @@ import androidx.compose.ui.unit.dp
 import com.chaomixian.vflow.R
 import com.chaomixian.vflow.core.execution.WorkflowExecutor
 import com.chaomixian.vflow.core.module.ModuleRegistry
+import com.chaomixian.vflow.core.workflow.TileGate
 import com.chaomixian.vflow.core.workflow.WorkflowVisuals
+import com.chaomixian.vflow.core.workflow.model.TileKind
 import com.chaomixian.vflow.core.workflow.model.Workflow
 import com.chaomixian.vflow.core.workflow.model.WorkflowFolder
 import com.chaomixian.vflow.permissions.PermissionManager
@@ -127,7 +130,15 @@ data class WorkflowListScreenActions(
     val onExecuteWorkflow: (Workflow) -> Unit,
     val onExecuteWorkflowDelayed: (Workflow, Long) -> Unit,
     val onAddShortcut: (Workflow) -> Unit,
-    val onAddToTile: (Workflow) -> Unit,
+    /**
+     * fork（2026-10-06）：磁贴拆成**两个池**，故本回调带上 `kind`。
+     *
+     * ⚠️ 两个池的菜单项**显隐判据由调用点各自传 `TileGate.accepts(...)` 决定**，
+     * 这里只负责把「哪一池」带到下一步（`WorkflowListRoute` 据此分段列槽位）。
+     * ⚠️ 判据必须只有一处（`TileGate`）—— 各写各的会出现
+     * 「菜单项显示着、点了却被拒绝」（§4.6 闸 1 vs 闸 3 不一致）。
+     */
+    val onAddToTile: (Workflow, TileKind) -> Unit,
     val onCopyWorkflowId: (Workflow) -> Unit,
     val onMoveWorkflowToFolder: (Workflow) -> Unit,
     /**
@@ -519,12 +530,25 @@ fun WorkflowListScreen(
                                         onClick = { actions.onCopyWorkflowId(workflow) }
                                     )
                                 )
-                                if (workflow.hasManualTrigger()) {
+                                // ⚠️ 两个池**各自按自己那一池判**，且判据只有 TileGate 一处。
+                                //    此前这里只有一个菜单项、判据是 hasManualTrigger() ——
+                                //    那会让「Agent 建的纯自动工作流」没有入口（它没有 manual
+                                //    trigger），而多数工作流同时有 manual+auto、缺陷被掩盖着。
+                                if (TileGate.accepts(TileKind.EXECUTE, workflow)) {
                                     add(
                                         WorkflowMenuItemAction(
-                                            textRes = R.string.workflow_item_menu_add_to_tile,
+                                            textRes = R.string.workflow_item_menu_add_to_execute_tile,
                                             icon = Icons.Outlined.DashboardCustomize,
-                                            onClick = { actions.onAddToTile(workflow) }
+                                            onClick = { actions.onAddToTile(workflow, TileKind.EXECUTE) }
+                                        )
+                                    )
+                                }
+                                if (TileGate.accepts(TileKind.TOGGLE, workflow)) {
+                                    add(
+                                        WorkflowMenuItemAction(
+                                            textRes = R.string.workflow_item_menu_add_to_toggle_tile,
+                                            icon = Icons.Outlined.ToggleOn,
+                                            onClick = { actions.onAddToTile(workflow, TileKind.TOGGLE) }
                                         )
                                     )
                                 }
@@ -1248,12 +1272,22 @@ private fun WorkflowCompactGridContent(
                                     onClick = { actions.onCopyWorkflowId(workflow) }
                                 )
                             )
-                            if (workflow.hasManualTrigger()) {
+                            // ⚠️ 同列表模式的注释：两个池各按自己那一池判，判据只有 TileGate 一处。
+                            if (TileGate.accepts(TileKind.EXECUTE, workflow)) {
                                 add(
                                     WorkflowMenuItemAction(
-                                        textRes = R.string.workflow_item_menu_add_to_tile,
+                                        textRes = R.string.workflow_item_menu_add_to_execute_tile,
                                         icon = Icons.Outlined.DashboardCustomize,
-                                        onClick = { actions.onAddToTile(workflow) }
+                                        onClick = { actions.onAddToTile(workflow, TileKind.EXECUTE) }
+                                    )
+                                )
+                            }
+                            if (TileGate.accepts(TileKind.TOGGLE, workflow)) {
+                                add(
+                                    WorkflowMenuItemAction(
+                                        textRes = R.string.workflow_item_menu_add_to_toggle_tile,
+                                        icon = Icons.Outlined.ToggleOn,
+                                        onClick = { actions.onAddToTile(workflow, TileKind.TOGGLE) }
                                     )
                                 )
                             }

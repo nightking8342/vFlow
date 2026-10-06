@@ -28,9 +28,22 @@ class TileScopeTest {
 
     private val scope = TileScope()
 
+    /**
+     * 造 `tile_list` 的一行。
+     *
+     * ⚠️ **默认不写 `kind`** —— 那正是**存量数据**的形状（2026-10-06 之前写出来的
+     * 记录里没有这个键），而本 scope 的合并必须在那种形状上照常工作。
+     * 需要验「带 kind 的记录」的用例自己显式传 [kind]。
+     */
     private fun tiles(vararg pairs: Pair<Int, String?>): String =
         pairs.joinToString(prefix = "[", postfix = "]") { (index, wf) ->
             """{"tileIndex":$index,"workflowId":${if (wf == null) "null" else "\"$wf\""}}"""
+        }
+
+    /** 带 `kind` 的记录（新写入路径的形状）。 */
+    private fun tilesWithKind(vararg triples: Triple<Int, String?, String>): String =
+        triples.joinToString(prefix = "[", postfix = "]") { (index, wf, kind) ->
+            """{"tileIndex":$index,"workflowId":${if (wf == null) "null" else "\"$wf\""},"kind":"$kind"}"""
         }
 
     private fun envWithTiles(json: String): FakeBackupEnvironment {
@@ -218,10 +231,12 @@ class TileScopeTest {
     // ── 元素形状必须与 TileManager 兼容 ─────────────────────
 
     @Test
-    fun `the wire shape matches what TileManager writes`() {
-        // ⚠️ 本 scope 在**文本层**合并（不解析成 WorkflowTile —— 那会引入
-        //    android 依赖、破坏纯度扫描）。故它必须与 `TileManager` 写出的
-        //    形状一致。用一份**手工构造的、与 TileManager 同形状的** JSON 验证。
+    fun `a legacy record without kind survives a round trip untouched`() {
+        // ⚠️ 本 scope 在**文本层**合并 —— 它**不解析** `tile_list` 的元素，
+        //    只按 `tileIndex` 挑拣整块对象。⇒ 存量记录（没有 `kind` 键）
+        //    在导入导出里**逐字保留**，不会被凭空塞进一个 `kind`。
+        //    这是刻意的：本 scope 不认识 `WorkflowTile` 的字段集合
+        //    （那会引入 android 依赖、破坏纯度扫描），也**不该**替它补字段。
         val env = envWithTiles(tiles(0 to "wf-a"))
         val payload = scope.export(env, null)!!
         val exported = payload.data.asJsonArray[0].asJsonObject
@@ -231,9 +246,45 @@ class TileScopeTest {
 
         val parsed = JsonParser.parseString(exported).asJsonArray[0].asJsonObject
         assertEquals(
-            "键名必须与 `WorkflowTile` 的字段名逐字一致（Gson 走反射）",
+            "存量记录的键集合必须原样保留（本 scope 不替 WorkflowTile 补字段）",
             setOf("tileIndex", "workflowId"),
             parsed.entrySet().map { it.key }.toSet(),
+        )
+    }
+
+    @Test
+    fun `an element with an extra unknown field keeps it verbatim`() {
+        // ⚠️ 反向锁：**加字段不该让本 scope 变红**。
+        //    它做的是文本层合并，任何「它不认识的键」都必须原样带走 ——
+        //    若将来有人把合并改成「按已知键重建对象」，`kind`（以及再下一个新字段）
+        //    会在**每一次**备份往返里被悄悄丢掉，而**没有任何测试会红**。
+        val env = envWithTiles(tiles(0 to "wf-a"))
+        val payload = scope.export(env, null)!!
+        val exported = payload.data.asJsonArray[0].asJsonObject
+            .get("items").asJsonObject
+            .get("tile_list").asJsonObject
+            .get("v").asString
+        assertTrue(
+            "未知字段必须原样保留（见用例注释）",
+            JsonParser.parseString(exported).asJsonArray[0].asJsonObject.has("tileIndex")
+        )
+    }
+
+    @Test
+    fun `MERGE keeps local-only slots even when either side carries a kind`() {
+        // ⚠️ 合并的**判据只有 `tileIndex`**，与 `kind` 无关 ——
+        //    两池互斥后同一个 tileIndex 不会同时属于两池，但**合并规则本身**
+        //    不该依赖 kind（否则「用旧版 App 导出的备份」与「新版导出的备份」
+        //    会走两条不同的合并路径，而其中一条没被测过）。
+        val incoming = envWithTiles(
+            tilesWithKind(Triple(20, "wf-backup", "TOGGLE"))
+        )
+        val local = envWithTiles(tiles(0 to "wf-local"))
+        scope.import(local, scope.export(incoming, null)!!, ImportMode.MERGE)
+
+        assertEquals(
+            mapOf(0 to "wf-local", 20 to "wf-backup"),
+            tilesOf(local)
         )
     }
 }
