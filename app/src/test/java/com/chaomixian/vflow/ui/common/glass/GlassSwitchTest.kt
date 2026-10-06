@@ -389,6 +389,63 @@ class GlassSwitchTest {
     // ------------------------------------------------------------------
 
     @Test
+    fun `轻点由手势层处理并消费，不再用 toggleable`() {
+        // ⚠️⚠️ 这条锁的是「关闭状态下点开关，很大几率点进工作流内部」那只 bug。
+        //    根因是**两个手势检测器抢同一个 down**：`toggleable` 内部的
+        //    `detectTapAndPress` 会消费它 ⇒ 拖动侧饿死；而当 `toggleable`
+        //    判断「这次算点击」时又未必消费干净 ⇒ 事件冒泡到卡片的
+        //    `combinedClickable`。
+        //    ⇒ 正解是**一处承担**：手势层自己判「有没有拖过」，且抬手一律消费。
+        val switchSrc = SourceScan.stripped(GLASS_SWITCH)
+        assertFalse(
+            "GlassSwitch 不得再用 `toggleable(` —— 它的 detectTapAndPress 会消费 down，" +
+                "把拖动侧饿死，而点击又可能冒泡进卡片",
+            switchSrc.contains("toggleable("),
+        )
+        assertTrue(
+            "无障碍语义要显式补上（原来由 toggleable 自带）：Role.Switch + toggleableState + onClick",
+            switchSrc.contains("Role.Switch") &&
+                switchSrc.contains("toggleableState") &&
+                switchSrc.contains("onClick("),
+        )
+
+        val dragSrc = SourceScan.stripped(SWITCH_DRAG_ANIMATION)
+        val body = SourceScan.functionBody(dragSrc, "private suspend fun PointerInputScope.inspectPressDragGestures")
+            ?: error("找不到手势循环")
+        // ⚠️⚠️ 判据必须锚**抬手那个分支体内**，不能只断言「body 里有 `change.consume()`」——
+        //    拖动分支里本来就有一处 `consume()`，所以把抬手那处删掉后
+        //    弱断言**照样绿**（反证 Y 实测确认）。
+        val upBranch = body.substringAfter("if (!change.pressed)", "")
+            .substringBefore("val delta")
+        assertTrue(
+            "抬手时必须无条件 `change.consume()` —— 轻点不消费会冒泡到宿主卡片",
+            upBranch.contains("change.consume()"),
+        )
+        assertTrue(
+            "没拖过时应回调 `onTap(`（轻点切换由手势层驱动）",
+            dragSrc.contains("onTap("),
+        )
+    }
+
+    @Test
+    fun `VFlowSwitch 的玻璃态走的是 M3 尺寸那版（不是示例版）`() {
+        // ⚠️ 这条锁的是 2026-10-06 的一次**回退决策**：示例版（64×28、滑块占 62.5%）
+        //    在设置页没问题，但在工作流卡片上「关闭时看不到柱位」——
+        //    卡片那格只有约 116dp，64dp 的轨道也太宽。
+        //    改动这一行之前请先确认卡片上的观感（有真机截图记录）。
+        val source = SourceScan.stripped(LIQUID_TOGGLE)
+        assertTrue(
+            "VFlowSwitch 的玻璃分支必须调 `GlassSwitch(`（M3 尺寸那版）",
+            source.contains("GlassSwitch("),
+        )
+        assertFalse(
+            "不得把玻璃分支改回 LiquidToggleSwitch —— 它的滑块占轨道 62.5%，" +
+                "关闭时柱位几乎不可见（已实测反馈）",
+            Regex("""if \(glassEnabled\)[\s\S]{0,400}LiquidToggleSwitch\(""").containsMatchIn(source),
+        )
+    }
+
+    @Test
     fun `示例版的尺寸与库内示例逐值一致`() {
         // 用户 2026-10-06 明确要求「完全按照库里的示例实现一版」，
         // 这三个尺寸就是那次要求的直接落点，改动即偏离示例。

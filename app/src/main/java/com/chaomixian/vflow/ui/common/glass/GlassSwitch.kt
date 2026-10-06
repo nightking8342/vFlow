@@ -31,6 +31,11 @@ import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.lerp
@@ -202,7 +207,6 @@ internal fun glassThumbXDp(fraction: Float, widthDp: Dp): Dp {
  * 可点性没有降低：`toggleable` + `Role.Switch` 保留全部无障碍语义与点击热区，
  * 手势层也不消费纵向位移（设置页是 `LazyColumn`，消费了会**滚不动**）。
  */
-@Suppress("unused") // fork: 保留 M3 形态那份实现；对外入口见 LiquidToggleSwitch.kt 的 VFlowSwitch
 @Composable
 internal fun GlassSwitch(
     checked: Boolean,
@@ -236,9 +240,13 @@ internal fun GlassSwitch(
             initialFraction = if (checked) 1f else 0f,
             dragWidthPx = { with(density) { dragWidthDp(checked).toPx() } },
             onSettled = { nowChecked ->
-                // 拖动落位：`checked` 由宿主更新；宿主若没接（onCheckedChange 为 null）
-                // 也不能让滑块停在半路 —— 所以先本地对齐一次。
-                if (onCheckedChange != null) onCheckedChange(nowChecked)
+                // 拖动落位：`checked` 由宿主更新。
+                onCheckedChange?.invoke(nowChecked)
+            },
+            onTap = {
+                // ⚠️ 轻点 = 取反当前值。**必须由手势层驱动**，不能用 `toggleable`
+                //    （它会消费 down、饿死拖动），也不能不消费（会冒泡进卡片）。
+                onCheckedChange?.invoke(!checked)
             },
         )
     }
@@ -297,23 +305,23 @@ internal fun GlassSwitch(
     Box(
         modifier
             .size(GlassSwitchTokens.TrackWidth, GlassSwitchTokens.TrackHeight)
-            // ⚠️ `toggleable` 的 `onValueChange` 非空，而 M3 `Switch` 的可空
-            //    （null = 「只显示、由别处控制」）。调用点有传 null 的。
-            .then(
+            // ⚠️⚠️ **不能用 `toggleable` 做点击** —— 它内部的 `detectTapAndPress`
+            //    会**消费掉 down 事件**，而拖动与点击是同一个手指按下开始的两条分支：
+            //    被消费之后拖动侧再也收不到位移。实测反馈是「关闭状态下点开关
+            //    很大几率点进工作流内部」（点击没被消费 ⇒ 冒泡到卡片的 `combinedClickable`）。
+            //
+            //    现在点击/拖动**全由手势层一处承担**（见 `SwitchDragAnimation`）：
+            //    没产生过水平位移 ⇒ 轻点 ⇒ 取反；产生过 ⇒ 拖动 ⇒ 按停留侧落位。
+            //
+            //    ⚠️ 无障碍语义要**显式补上**（原来由 `toggleable` 自带）——
+            //    漏了的话 TalkBack 读不出这是个开关、也没法用「双击」切换。
+            .semantics {
+                role = Role.Switch
+                toggleableState = if (checked) ToggleableState.On else ToggleableState.Off
                 if (onCheckedChange != null) {
-                    Modifier.toggleable(
-                        value = checked,
-                        onValueChange = onCheckedChange,
-                        enabled = enabled,
-                        role = Role.Switch,
-                        interactionSource = source,
-                        indication = null,
-                    )
-                } else {
-                    Modifier
+                    onClick(label = "切换", action = { onCheckedChange(!checked); true })
                 }
-            )
-            // 手势层：按下起拖、水平跟手、抬手落位。
+            }
             .then(if (enabled && onCheckedChange != null) animation.modifier else Modifier),
         contentAlignment = Alignment.CenterStart,
     ) {

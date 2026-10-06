@@ -315,7 +315,13 @@ private const val THUMB_SAMPLE_SCALE_X_MAX = 0.75f
 private const val THUMB_SAMPLE_SCALE_Y_MAX = 0.75f
 
 /**
- * **全 App 统一的开关**：按液态玻璃开关决定走 [LiquidToggleSwitch] 还是 M3 `Switch`。
+ * **全 App 统一的开关**：按液态玻璃开关决定走 [GlassSwitch] 还是 M3 `Switch`。
+ *
+ * ⚠️ **2026-10-06 换回过 M3 尺寸那版**：本文件里的 [LiquidToggleSwitch]（照抄库示例）
+ * 在设置页里没问题，但**工作流卡片上不成立** —— 卡片那格只有约 116dp 宽、
+ * 开关要与图标/⋮ 挤在一行，64dp 的轨道在那里显得又宽又扁；更要命的是
+ * 它的滑块占轨道 62.5%，关闭时柱位几乎看不见（用户原话「关闭的时候都看不到
+ * 底下的槽位了」）。⇒ 玻璃态改回 [GlassSwitch]，本文件保留示例版实现备查。
  *
  * ⚠️⚠️ **参数与 M3 `Switch` 逐一对应（含顺序）** —— 调用点只需把 `Switch(`
  * 换成 `VFlowSwitch(`，**一个参数都不用加**。
@@ -343,7 +349,7 @@ fun VFlowSwitch(
         AppearanceManager.isLiquidGlassNavBarEnabled(context)
     }
     if (glassEnabled) {
-        LiquidToggleSwitch(
+        GlassSwitch(
             checked = checked,
             onCheckedChange = onCheckedChange,
             modifier = modifier,

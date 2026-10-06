@@ -50,6 +50,15 @@ internal class SwitchDragAnimation(
     private val dragWidthPx: () -> Float,
     /** 拖动落位后把最终值回调出去 —— 「滑块停右边但 `checked` 还是 false」会状态脱节。 */
     private val onSettled: (Boolean) -> Unit = {},
+    /**
+     * **轻点**（按下后没产生过水平位移）。
+     *
+     * ⚠️⚠️ 必须由手势层自己判，**不能靠外层的 `toggleable`** —— 后者的
+     * `detectTapAndPress` 会消费掉 down 事件，把拖动侧饿死；而没被消费的点击
+     * 会**冒泡到宿主**（工作流卡片的 `combinedClickable`）⇒ 表现是
+     * 「关闭状态下点开关，很大几率点进工作流内部」。这两件事是同一个根因。
+     */
+    private val onTap: () -> Unit = {},
 ) {
     private val fractionAnimation = Animatable(initialFraction)
     private val pressAnimation = Animatable(0f)
@@ -133,6 +142,8 @@ internal class SwitchDragAnimation(
                     val target = if (fraction >= 0.5f) 1f else 0f
                     settleTo(target)
                     onSettled(target == 1f)
+                } else {
+                    onTap()
                 }
             },
         )
@@ -196,7 +207,10 @@ private suspend fun PointerInputScope.inspectPressDragGestures(
             val event = awaitPointerEvent()
             val change = event.changes.fastFirstOrNull { it.id == pointer } ?: break
             if (!change.pressed) {
-                if (dragged) change.consume()
+                // ⚠️ **抬手时一律消费**（不管有没有拖过）—— 轻点若不消费，
+                //    事件会冒泡到宿主（工作流卡片的 `combinedClickable`），
+                //    于是「点开关」变成「点进工作流」。这是实测反馈的那只 bug。
+                change.consume()
                 break
             }
             val delta = change.positionChangeIgnoreConsumed()
