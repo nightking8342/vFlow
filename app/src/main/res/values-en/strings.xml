@@ -311,8 +311,8 @@
     <string name="tile_selection_hint">Tap a tile position. Assigned tiles will show the workflow name.</string>
     <string name="tile_label">Tile %1$d</string>
     <string name="tile_empty">Unassigned</string>
-    <string name="tile_added">Added to Tile %1$d</string>
-    <string name="tile_removed">Removed from Tile %1$d</string>
+    <string name="tile_added">Added to %1$s</string>
+    <string name="tile_removed">Removed from %1$s</string>
     <string name="workflow_item_menu_add_to_execute_tile">Add to Control Center (Run)</string>
     <string name="workflow_item_menu_add_to_toggle_tile">Add to Control Center (Toggle)</string>
     <string name="tile_execute_pool_title">Run tiles</string>

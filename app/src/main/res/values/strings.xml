@@ -313,8 +313,8 @@
     <string name="tile_selection_hint">点击选择 Tile 位置，已分配的会显示工作流名称。</string>
     <string name="tile_label">Tile %1$d</string>
     <string name="tile_empty">未分配</string>
-    <string name="tile_added">已添加到Tile %1$d</string>
-    <string name="tile_removed">已从Tile %1$d移除</string>
+    <string name="tile_added">已添加到 %1$s</string>
+    <string name="tile_removed">已从 %1$s 移除</string>
     <string name="workflow_item_menu_add_to_execute_tile">添加到控制中心（执行）</string>
     <string name="workflow_item_menu_add_to_toggle_tile">添加到控制中心（开关）</string>
     <string name="tile_execute_pool_title">执行磁贴</string>

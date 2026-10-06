@@ -304,8 +304,8 @@
     <string name="tile_selection_hint">Tile の場所をクリックして選択すると、割り当てられたワークフロー名が表示されます。</string>
     <string name="tile_label">Tile %1$d</string>
     <string name="tile_empty">割り当てられていません</string>
-    <string name="tile_added">Tile %1$d に追加</string>
-    <string name="tile_removed">Tile %1$d から削除されました</string>
+    <string name="tile_added">%1$s に追加</string>
+    <string name="tile_removed">%1$s から削除されました</string>
     <string name="workflow_item_menu_add_to_execute_tile">コントロールセンターに追加（実行）</string>
     <string name="workflow_item_menu_add_to_toggle_tile">コントロールセンターに追加（スイッチ）</string>
     <string name="tile_execute_pool_title">実行タイル</string>
