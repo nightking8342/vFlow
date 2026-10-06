@@ -1,42 +1,74 @@
 package com.chaomixian.vflow.ui.common.glass
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchColors
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawWithCache
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.chaomixian.vflow.ui.common.AppearanceManager
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberBackdrop
+import com.kyant.backdrop.backdrops.rememberCanvasBackdrop
+import com.kyant.backdrop.backdrops.rememberCombinedBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.kyant.backdrop.drawBackdrop
+import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.lens
+import com.kyant.backdrop.highlight.Highlight
+import com.kyant.backdrop.shadow.InnerShadow
+import com.kyant.backdrop.shadow.Shadow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
+
+/**
+ * 开关的胶囊形状。
+ *
+ * ⚠️ **不用 kyant 的 `com.kyant.shapes.Capsule`** —— 那个库只是 `backdrop` 的
+ * **运行期**传递依赖，**不在编译类路径上**（`./gradlew :app:dependencies` 实测），
+ * 直接 import 编译不过。要用它得往 `app/build.gradle.kts` 显式加一条
+ * `implementation("io.github.kyant0:shapes:1.2.0")`，为了一颗滑块改构建依赖
+ * 不划算（本仓库「控制 diff 面积」的原则）。
+ *
+ * `RoundedCornerShape(percent = 50)` 在非正方形盒子上渲染出的就是**标准的胶囊**
+ * （两端半圆），与 kyant 那颗在 24dp 尺度上肉眼无差 ——
+ * 两者的差别只在「连续曲率 vs 圆角」，那个差别要到几十 dp 的圆角半径才看得出来。
+ */
+private val SWITCH_CAPSULE = RoundedCornerShape(percent = 50)
 
 /**
  * 开关的**尺寸规格** —— ⚠️ **数值原样取自 Material 3 的 `SwitchTokens`**。
  *
- * 这一条是本组件「保留 M3 形态」承诺的落实方式：玻璃化**只换材质、不换形态**，
- * 所以每一个尺寸都必须与 M3 逐值对齐，而不是「看着差不多」。
- *
- * ⚠️ 数值是从 `material3` 的字节码里读出来的（`javap` 解 `SwitchTokens` 的
- * 静态初始化块），不是照文档抄的 —— 文档写的是 dp 整数、而 token 里存的是
- * `Dp` inline value，两者的换算偶有出入。核对方式见 `GlassSwitchTokensTest`。
+ * 这一条是「保留 M3 形态」承诺的落实方式：玻璃化**只换材质、不换形态**。
+ * 数值从 `material3` 字节码里 `javap` 解 `SwitchTokens` 的静态初始化块读出，
+ * 不是照文档抄的（文档写 dp 整数、token 存 `Dp` inline value）。
  */
 internal object GlassSwitchTokens {
     /** `SwitchTokens.TrackWidth`。 */
@@ -51,23 +83,16 @@ internal object GlassSwitchTokens {
     /** `SwitchTokens.UnselectedHandleWidth`。 */
     val UncheckedThumbDiameter = 16.dp
 
-    /** `SwitchTokens.TrackHeight − SelectedHandleWidth) / 2`。 */
+    /** `(TrackHeight − SelectedHandleWidth) / 2`。 */
     val ThumbPadding = 4.dp
 
-    /**
-     * 按下时滑块的**额外宽度**（只在宽的方向扩，高度不变）。
-     *
-     * ⚠️ 与 M3 的 `PressedHandleWidth = 28dp` 不是同一个概念：M3 按下时
-     * 滑块会朝**手势推进的方向**撑开（左右不对称），那需要接手势的拖动量；
-     * 这里取「宽度 +4dp、按选中态锚定一侧」的简化版 —— 观感一致（都表现为
-     * 「按下去滑块胖了一点」），但不需要跟踪手势。
-     */
-    val PressGrowth = 4.dp
+    /** `SwitchTokens.TrackOutlineWidth`。 */
+    val TrackOutlineWidth = 2.dp
 
-    /** 轨道的玻璃通透度：底色按这个 alpha 绘制，让卡片/页面底色透出来。 */
+    /** 轨道的玻璃通透度：让背后的卡片底色透出来。 */
     const val TrackGlassAlpha = 0.62f
 
-    /** 禁用态轨道的 alpha（与 M3 的 `DisabledTrackOpacity = 0.12f` 同量级）。 */
+    /** 禁用态轨道的 alpha（对齐 M3 的 `DisabledTrackOpacity`）。 */
     const val DisabledTrackAlpha = 0.16f
 }
 
@@ -75,59 +100,53 @@ internal object GlassSwitchTokens {
 internal fun baseThumbWidthDp(checked: Boolean): Dp =
     if (checked) GlassSwitchTokens.ThumbDiameter else GlassSwitchTokens.UncheckedThumbDiameter
 
-/** 滑块当前宽度：按下时在基准宽度上 +4dp。 */
-internal fun glassThumbWidthDp(checked: Boolean, pressed: Boolean): Dp =
-    baseThumbWidthDp(checked) + if (pressed) GlassSwitchTokens.PressGrowth else 0.dp
-
 /**
- * 滑块左边缘的 x（相对轨道）。
+ * 滑块左下角的 x（相对轨道）。
  *
- * ⚠️ **两侧的锚定方式刻意不同**，因为「按下变宽」往哪边扩是会影响观感的：
- * - **选中**：**右锚定**（滑块的右边紧贴轨道右侧内边距不动，向左长）——
- *   否则按下去滑块会顶出右边缘；
- * - **未选中**：**中心锚定**（左右各长一半）—— 否则会顶出左边缘。
+ * ⚠️ **两侧的锚定方式刻意不同**：选中态**右锚定**（右边贴住内边距不动、
+ * 有宽度富余时向左长），未选中态**中心锚定** —— 统一成一种会顶出轨道边缘，
+ * 而 `Box` 默认**不裁剪**，所以不报错、只是看起来滑块探出来了。
+ *
+ * @param widthPx 滑块**当前**宽度（含按下时的撑开量，由手势层的动画给出）
  */
-internal fun glassThumbXDp(checked: Boolean, pressed: Boolean): Dp {
+internal fun glassThumbXDp(checked: Boolean, widthDp: Dp): Dp {
     val base = baseThumbWidthDp(checked)
-    val width = glassThumbWidthDp(checked, pressed)
     return if (checked) {
-        GlassSwitchTokens.TrackWidth - GlassSwitchTokens.ThumbPadding - width
+        GlassSwitchTokens.TrackWidth - GlassSwitchTokens.ThumbPadding - widthDp
     } else {
-        GlassSwitchTokens.ThumbPadding - (width - base) / 2
+        GlassSwitchTokens.ThumbPadding - (widthDp - base) / 2
     }
 }
 
 /**
- * **玻璃质感**的开关（参考 kyant 的 `LiquidToggle`，形态仍照 M3）。
+ * **液态玻璃**开关（参考 kyant 的 `LiquidToggle`，形态仍照 M3）。
  *
- * ## 它解决的是什么
+ * ## 它到底「玻璃」在哪 —— 三件事，缺一件都看不出效果
  *
- * 液态玻璃开关打开后，全 App 只有底部导航栏与文件夹 Tab 栏是玻璃的，
- * 而开关（29 处）还是 M3 的实色 —— 一屏之内两种材质并存。
+ * 1. **滑块是采样器**（`drawBackdrop`），它采样两样东西的合成：
+ *    - **开关背后是什么颜色**（用调用方 / 主题给的 `containerColor` 画一层
+ *      `CanvasBackdrop`）—— 玻璃得能透出背景；
+ *    - **轨道**（`trackBackdrop`，见第 3 点）。
+ * 2. **按下滑块会「化掉」**：静止时 `onDrawSurface` 用不透明度 1.0 的白把它糊住
+ *    （所以静止看是一颗普通白色圆点），按下时白的不透明度随 `pressProgress`
+ *    退到 0 ⇒ **底下那层被透镜扭曲的轨道色透出来**。这是整个观感里最「液态」的一帧。
+ * 3. **透镜只在按下时吃到轨道**：轨道被 `rememberBackdrop` 包一层、
+ *    用 `scaleY = lerp(0f, 0.75f, progress)` 做**纵向压扁**——
+ *    静止时 `scaleY = 0`（采样里等于没有它，**从而避免「滑块采样自己盖住的轨道」
+ *    这个自采样回环**），按下时才张开。这就是 kyant 原实现的做法。
  *
- * ## ⚠️ 为什么不用「给 M3 `Switch` 换 `SwitchColors`」了事
+ * ⚠️⚠️ **这些效果一个都不能用 `drawBehind` 手画**：第一版就是手画「高光描边 +
+ * 渐变」，用户验收时原话是「完全没有液态玻璃的效果」—— 因为真正让玻璃成立的
+ * 是**折射**（`lens` 的 RuntimeShader）与**库自带的高光/内阴影着色器**，
+ * 描边和渐变只是它们的粗糙模仿。
  *
- * M3 的 `Switch` 只暴露 `SwitchColors`（16 个颜色槽），**没有任何绘制钩子**。
- * 玻璃的关键特征是「**边缘高光**」与「**透视**」——前者要画描边、后者要降透明度，
- * 单靠颜色槽做不出来（`checkedThumbColor` 只能把圆点整体染一个色）。
- * 故本组件自己画，但**尺寸与交互全部照抄 M3**（见 [GlassSwitchTokens]）。
- *
- * ## ⚠️ 两道质感处理，都只动「材质」不动「颜色语义」
- *
- * 1. **轨道**：用调用方给的颜色，但**降到 [GlassSwitchTokens.TrackGlassAlpha]
- *    的透明度**，让卡片底色透出来（这是「玻璃」二字的定义），再叠一层
- *    **垂直渐变描边**当边缘高光、一条底部暗边当内阴影。
- * 2. **滑块**：白色玻璃（半透明白 + 细描边 + 外阴影）——
- *    ⚠️ **这一处刻意不用 `colors.checkedThumbColor`**：玻璃材质的滑块天然是
- *    「白色磨砂块」，而 M3 的滑块是「深色圆点」，这是**材质差异而非配色差异**。
- *    轨道才是「这个开关代表什么」的语义色载体，滑块不是。
+ * ## ⚠️ 尺寸与交互全部照抄 M3（见 [GlassSwitchTokens]）
  *
  * ## ⚠️ 涟漪被刻意关掉（`indication = null`）
  *
- * 涟漪是「实色平面」的反馈语言；玻璃控件的反馈是**形变 + 高光增强**
- * （按下时滑块变宽、描边变亮）。两者叠在一起会互相打架。
- * 按钮的**可点性没有因此降低**：`toggleable` + `Role.Switch` 保留了全部
- * 无障碍语义与点击热区。
+ * 涟漪是「实色平面」的反馈语言；玻璃控件的反馈是**形变 + 折射**。
+ * 可点性没有降低：`toggleable` + `Role.Switch` 保留全部无障碍语义与点击热区，
+ * 手势层也不消费纵向位移（设置页是 `LazyColumn`，消费了会**滚不动**）。
  */
 @Composable
 internal fun GlassSwitch(
@@ -138,11 +157,48 @@ internal fun GlassSwitch(
     colors: SwitchColors = SwitchDefaults.colors(),
     interactionSource: MutableInteractionSource? = null,
     thumbContent: (@Composable () -> Unit)? = null,
+    /** 开关**背后**是什么颜色 —— 玻璃要透出的那层。 */
+    containerColor: Color = Color.Unspecified,
 ) {
+    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    val context = LocalContext.current
     val source = interactionSource ?: remember { MutableInteractionSource() }
-    val pressed by source.collectIsPressedAsState()
-    val isPressed = pressed && enabled
-    val isDark = isSystemInDarkTheme()
+
+    // 玻璃要透出的那层：调用方没给就用主题的表面色。
+    val resolvedContainer = if (containerColor == Color.Unspecified) {
+        androidx.compose.material3.MaterialTheme.colorScheme.surfaceContainerLow
+    } else {
+        containerColor
+    }
+    val containerBackdrop = rememberCanvasBackdrop { drawRect(resolvedContainer) }
+
+    val trackBackdrop = rememberLayerBackdrop()
+
+    val animation = remember(scope) {
+        SwitchDragAnimation(
+            animationScope = scope,
+            initialFraction = if (checked) 1f else 0f,
+            dragWidthPx = {
+                with(density) {
+                    (GlassSwitchTokens.TrackWidth - GlassSwitchTokens.ThumbPadding * 2 -
+                        baseThumbWidthDp(checked)).toPx()
+                }
+            },
+        )
+    }
+
+    // ⚠️ 只跟**外部** checked 的变化：`animation.fraction` 是内部状态，
+    //    拖动过程中它自己就在变，跟着它走会自己打断自己。
+    LaunchedEffect(checked) {
+        val target = if (checked) 1f else 0f
+        if (kotlin.math.abs(animation.fraction - target) > 0.001f) {
+            animation.animateTo(target)
+        }
+    }
+
+    val fraction = animation.fraction
+    val progress = animation.pressProgress
 
     val trackColor = when {
         !enabled && checked -> colors.disabledCheckedTrackColor
@@ -150,24 +206,32 @@ internal fun GlassSwitch(
         checked -> colors.checkedTrackColor
         else -> colors.uncheckedTrackColor
     }
-    // ⚠️ 只在**轨道**上做透明化，不去动调用方传进来的颜色值本身 ——
-    //    这样「同一个强调色在玻璃态与实色态下是同一个色相」。
-    val fillColor = trackColor.copy(
-        alpha = if (enabled) GlassSwitchTokens.TrackGlassAlpha else GlassSwitchTokens.DisabledTrackAlpha
-    )
+    val borderColor = when {
+        !enabled -> colors.disabledUncheckedBorderColor
+        checked -> colors.checkedBorderColor
+        else -> colors.uncheckedBorderColor
+    }
 
-    val thumbWidth = glassThumbWidthDp(checked, isPressed)
-    val thumbHeight = baseThumbWidthDp(checked)
-    val thumbX = glassThumbXDp(checked, isPressed)
+    // 滑块宽度：M3 的两档（16 / 24）之间按 fraction 插值 + 按下时的撑开。
+    val widthPx by animateFloatAsState(
+        targetValue = with(density) { baseThumbWidthDp(checked).toPx() },
+        animationSpec = spring(1f, 1000f, 0.001f),
+        label = "glassSwitchThumbWidth",
+    )
+    val heightPx = with(density) { GlassSwitchTokens.TrackHeight.toPx() } -
+        with(density) { GlassSwitchTokens.ThumbPadding.toPx() } * 2
+    // 按下时横向撑开（「捏扁」的观感来自这里 + `layerBlock` 里的速度挤压）。
+    val pressedExtra = with(density) { 4.dp.toPx() } * progress
+    val thumbWidthPx = widthPx + pressedExtra
+    val thumbWidthDp = with(density) { thumbWidthPx.toDp() }
+
+    val thumbOffsetDp = glassThumbXDp(checked, thumbWidthDp)
 
     Box(
-        modifier = modifier
+        modifier
             .size(GlassSwitchTokens.TrackWidth, GlassSwitchTokens.TrackHeight)
-            // ⚠️ `toggleable` 的 `onValueChange` 是**非空**的，而 M3 `Switch` 的
-            //    `onCheckedChange` 可空（传 null = 「只显示、不可交互」，M3 用它
-            //    表示「这一项由别处控制」）。调用点有传 null 的，故这里让手势
-            //    层**可选**：null 时连 `toggleable` 都不加，但**外观仍是完整开关**
-            //    （不是禁用态 —— 禁用态是 `enabled = false` 的灰化，两件事不同）。
+            // ⚠️ `toggleable` 的 `onValueChange` 非空，而 M3 `Switch` 的可空
+            //    （null = 「只显示、由别处控制」）。调用点有传 null 的。
             .then(
                 if (onCheckedChange != null) {
                     Modifier.toggleable(
@@ -176,99 +240,121 @@ internal fun GlassSwitch(
                         enabled = enabled,
                         role = Role.Switch,
                         interactionSource = source,
-                        // 见 KDoc「涟漪被刻意关掉」。
                         indication = null,
                     )
                 } else {
                     Modifier
                 }
-            ),
+            )
+            // 手势层：按下起拖、水平跟手、抬手落位。
+            .then(if (enabled && onCheckedChange != null) animation.modifier else Modifier),
         contentAlignment = Alignment.CenterStart,
     ) {
         // ---- 轨道 ----
+        // ⚠️ 轨道**不是**玻璃：kyant 的实现里它就是个纯色胶囊，
+        //    `layerBackdrop` 只为了把自己录进 `trackBackdrop` 供滑块采样。
         Box(
             Modifier
                 .matchParentSize()
-                .drawWithCache {
-                    val radius = CornerRadius(size.height / 2f)
-                    val strokePx = 1.dp.toPx()
-                    val highlight = Brush.verticalGradient(
-                        colors = listOf(
-                            Color.White.copy(alpha = if (isDark) 0.38f else 0.60f),
-                            Color.White.copy(alpha = if (isDark) 0.05f else 0.15f),
+                .layerBackdrop(trackBackdrop)
+                .clip(SWITCH_CAPSULE)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            trackColor.copy(alpha = if (enabled) GlassSwitchTokens.TrackGlassAlpha else GlassSwitchTokens.DisabledTrackAlpha),
+                            trackColor.copy(alpha = if (enabled) GlassSwitchTokens.TrackGlassAlpha * 0.82f else GlassSwitchTokens.DisabledTrackAlpha * 0.82f),
                         )
                     )
-                    val innerShadow = Brush.verticalGradient(
-                        colors = listOf(
-                            Color.Transparent,
-                            Color.Black.copy(alpha = if (isDark) 0.20f else 0.10f),
-                        )
-                    )
-                    onDrawBehind {
-                        drawRoundRect(color = fillColor, cornerRadius = radius)
-                        // 内阴影：底部压暗，制造「有厚度」的观感
-                        drawRoundRect(brush = innerShadow, cornerRadius = radius)
-                        // 边缘高光：玻璃最可辨识的特征
-                        drawRoundRect(
-                            brush = highlight,
-                            cornerRadius = radius,
-                            style = Stroke(width = strokePx),
-                        )
-                    }
-                }
-        )
+                )
+        ) {
+            // 描边：M3 的**未选中态**本来就有 2dp 边框（选中态没有）。
+            // 用 `drawBehind` 画在外层，避免再套一层布局节点。
+            if (borderColor != Color.Unspecified) {
+                Box(
+                    Modifier
+                        .matchParentSize()
+                        .drawBehind {
+                            drawRoundRect(
+                                color = borderColor,
+                                cornerRadius = CornerRadius(size.height / 2f),
+                                style = Stroke(width = GlassSwitchTokens.TrackOutlineWidth.toPx()),
+                            )
+                        }
+                )
+            }
+        }
 
-        // ---- 滑块 ----
+        // ---- 滑块（玻璃本体）----
         Box(
             Modifier
-                .offset(x = thumbX)
-                .size(thumbWidth, thumbHeight)
-                .shadow(
-                    elevation = if (isPressed) 4.dp else 2.dp,
-                    shape = androidx.compose.foundation.shape.RoundedCornerShape(percent = 50),
-                    clip = false,
-                )
-                .drawWithCache {
-                    val radius = CornerRadius(size.height / 2f)
-                    val strokePx = 1.dp.toPx()
-                    onDrawBehind {
-                        if (!enabled) {
-                            drawRoundRect(
-                                color = Color.White.copy(alpha = 0.38f),
-                                cornerRadius = radius,
-                            )
-                            return@onDrawBehind
+                .offset(x = thumbOffsetDp)
+                .size(thumbWidthDp, with(density) { heightPx.toDp() })
+                .graphicsLayer {
+                    scaleX = animation.scaleX *
+                        (1f - (animation.velocity * SwitchDragAnimation.VELOCITY_SQUEEZE)
+                            .coerceIn(-0.25f, 0.25f))
+                    scaleY = animation.scaleY
+                }
+                .drawBackdrop(
+                    // ① 开关背后的颜色 + ② 被纵向压扁的轨道（静止时压扁量为 0）
+                    backdrop = rememberCombinedBackdrop(
+                        containerBackdrop,
+                        rememberBackdrop(trackBackdrop) { drawBackdrop ->
+                            val p = animation.pressProgress
+                            val scaleX = kotlin.math.abs(kotlin.math.cos((1f - p) * Math.PI.toFloat() / 2f))
+                                .coerceAtLeast(0.001f)
+                            val scaleY = 0.75f * p
+                            scale(scaleX, scaleY) {
+                                drawBackdrop()
+                            }
                         }
-                        // 白色磨砂玻璃：主体半透明白 + 顶部高光 + 一圈极淡描边
-                        drawRoundRect(
-                            color = Color.White.copy(alpha = if (isPressed) 0.98f else 0.92f),
-                            cornerRadius = radius,
+                    ),
+                    shape = { SWITCH_CAPSULE },
+                    effects = {
+                        val p = animation.pressProgress
+                        // ⚠️ 模糊只在静止时全量、按下时让位给透镜 ——
+                        //    两者叠加会把折射糊掉。
+                        blur(8.dp.toPx() * (1f - p))
+                        lens(
+                            5.dp.toPx() * p,
+                            10.dp.toPx() * p,
+                            chromaticAberration = true,
                         )
-                        drawRoundRect(
-                            brush = Brush.verticalGradient(
-                                colors = listOf(
-                                    Color.White,
-                                    Color.White.copy(alpha = 0.55f),
-                                )
-                            ),
-                            cornerRadius = radius,
+                    },
+                    highlight = {
+                        val p = animation.pressProgress
+                        Highlight.Ambient.copy(
+                            width = Highlight.Ambient.width / 1.5f,
+                            blurRadius = Highlight.Ambient.blurRadius / 1.5f,
+                            alpha = p,
                         )
-                        drawRoundRect(
-                            color = if (isDark) {
-                                Color.White.copy(alpha = 0.55f)
-                            } else {
-                                Color.Black.copy(alpha = 0.06f)
-                            },
-                            cornerRadius = radius,
-                            style = Stroke(width = strokePx),
+                    },
+                    shadow = {
+                        Shadow(
+                            radius = 4.dp,
+                            color = Color.Black.copy(alpha = 0.18f),
+                        )
+                    },
+                    innerShadow = {
+                        val p = animation.pressProgress
+                        InnerShadow(radius = 4.dp * p, alpha = p)
+                    },
+                    layerBlock = {
+                        scaleX = animation.scaleX
+                        scaleY = animation.scaleY
+                    },
+                    onDrawSurface = {
+                        // ⚠️ **按下的核心动画**：白的不透明度随进度退到 0，
+                        //    底下被折射的轨道色才透出来（见类 KDoc 第 2 点）。
+                        val p = animation.pressProgress
+                        drawRect(
+                            Color.White.copy(alpha = if (enabled) 0.95f * (1f - p) else 0.38f)
                         )
                     }
-                },
+                ),
             contentAlignment = Alignment.Center,
         ) {
-            if (thumbContent != null && checked) {
-                thumbContent()
-            }
+            if (thumbContent != null && checked) thumbContent()
         }
     }
 }
@@ -277,15 +363,15 @@ internal fun GlassSwitch(
  * **全 App 统一的开关**：按液态玻璃开关决定走 [GlassSwitch] 还是 M3 `Switch`。
  *
  * ⚠️⚠️ **参数与 M3 `Switch` 逐一对应（含顺序）** —— 调用点只需把 `Switch(`
- * 换成 `VFlowSwitch(`，**一个参数都不用加**。玻璃态需要的强调色直接从同一份
- * [colors] 里读（`checkedTrackColor`），所以「同一个开关在两种材质下的色相一致」。
+ * 换成 `VFlowSwitch(`，**一个参数都不用加**。玻璃态需要的颜色从同一份
+ * [colors] 里读，所以同一个开关在两种材质下色相一致。
  *
- * ⚠️ **开关状态是「读一次」的**（`remember`），与既有的玻璃 Tab 栏同一模式
- * （`WorkflowIconPickerActivity` 也是 `onCreate` 里读一次）。用户改设置后
- * 需要重进页面才生效 —— 这是既有约定的延续，不是本组件新引入的限制。
- * 之所以不在这里做成响应式：`AppearanceManager` 只是一个
- * `SharedPreferences` 读取器、**没有变更通知机制**，要做响应式得先给它加
- * `StateFlow`，那是另一件事（且会波及所有既有读取点）。
+ * @param containerColor 开关**背后**是什么颜色。默认 `Unspecified` ⇒ 用主题的
+ *   `surfaceContainerLow`。⚠️ 卡片上应当传**卡片底色**，否则玻璃会透出一个
+ *   与实际背景不符的颜色（透错色比不透色更假）。
+ *
+ * ⚠️ **开关状态是「读一次」的**（`remember`），与既有玻璃组件同一模式；
+ *    `AppearanceManager` 没有变更通知机制，做响应式得先给它加 `StateFlow`。
  */
 @Composable
 fun VFlowSwitch(
@@ -296,6 +382,7 @@ fun VFlowSwitch(
     enabled: Boolean = true,
     colors: SwitchColors = SwitchDefaults.colors(),
     interactionSource: MutableInteractionSource? = null,
+    containerColor: Color = Color.Unspecified,
 ) {
     val context = LocalContext.current
     val glassEnabled = remember(context) {
@@ -310,6 +397,7 @@ fun VFlowSwitch(
             colors = colors,
             interactionSource = interactionSource,
             thumbContent = thumbContent,
+            containerColor = containerColor,
         )
     } else {
         Switch(
