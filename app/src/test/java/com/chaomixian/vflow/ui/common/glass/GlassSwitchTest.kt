@@ -452,7 +452,7 @@ class GlassSwitchTest {
     @Test
     fun `开关的手势挂在最外层而不是滑块上`() {
         // ⚠️⚠️ 用户反馈「点击开关还是会穿透进入到工作流页面」。
-        //    滑块只有 26×20dp，手势挂在它上面时**只覆盖那一小块**，
+        //    滑块只有 22×21dp，手势挂在它上面时**只覆盖那一小块**，
         //    点到轨道其余地方事件就冒泡到卡片的 combinedClickable。
         //    正解：手势挂最外层 + minimumInteractiveComponentSize 抬到 48dp 下限。
         val source = SourceScan.stripped(LIQUID_TOGGLE)
@@ -472,6 +472,59 @@ class GlassSwitchTest {
             "手势只应挂一次",
             1,
             SourceScan.countOccurrences(body, "dampedDragAnimation.modifier"),
+        )
+    }
+
+    @Test
+    fun `轻点不得冒泡到宿主卡片 —— 抬手那一下必须被消费`() {
+        // ⚠️⚠️ 这条是「点开关却点进了工作流详情页」**真正的**收口断言。
+        //
+        // 前两轮都在改「手势挂在哪」（从滑块挪到最外层），方向对但不够：
+        // 位置只决定**谁收得到**，消费才决定**谁之后还看得到**。而拖动那套
+        // （`inspectDragGestures`）**只在拖动帧里消费** —— 移动分支没拖动时
+        // 根本不会进入，`inspectDragGestures` 更是一个 `consume()` 都没有。
+        // ⇒ 「按下 → 没动 → 抬手」这条最常见路径上没有任何人消费。
+        val source = SourceScan.stripped(LIQUID_TOGGLE)
+
+        val body = SourceScan.functionBody(source, "internal fun LiquidToggleSwitch(")
+            ?: error("找不到 LiquidToggleSwitch")
+        assertTrue(
+            "最外层 Box 必须挂 consumeUpSoHostDoesNotSeeTap() —— 拖动那套在没拖动时不消费，" +
+                "抬手会冒泡到卡片的 combinedClickable（= 点开关变点进工作流）",
+            body.contains(".consumeUpSoHostDoesNotSeeTap()"),
+        )
+        // ⚠️⚠️ 顺序是契约的一部分：消费节点在 Main pass（叶子→根）里必须**晚于**
+        //    拖动节点，否则拖动侧会看到「已被消费」的抬手而拿不到 upEvent。
+        //    修饰符链里 `.consume…().then(dampedDragAnimation.modifier)` 正是这个次序
+        //    （前者更外侧 ⇒ 更晚收到）。
+        val consumerIndex = body.indexOf(".consumeUpSoHostDoesNotSeeTap()")
+        val dragIndex = body.indexOf(".then(dampedDragAnimation.modifier)")
+        assertTrue(
+            "consumed 节点必须在拖动节点**之前**挂（= 更外侧 = 更晚收到抬手），" +
+                "否则拖动侧拿到的是已被消费的抬手",
+            consumerIndex in 0 until dragIndex,
+        )
+
+        val impl = SourceScan.functionBody(source, "private fun Modifier.consumeUpSoHostDoesNotSeeTap()")
+            ?: error("找不到 consumeUpSoHostDoesNotSeeTap 的实现 —— 这条断言会失去依据")
+        assertTrue(
+            "抬手时必须 `consume()`",
+            impl.contains(".consume()"),
+        )
+        assertTrue(
+            "必须是 `!it.pressed` 判抬手（不是 `changedToUp()` —— 后者对**已被消费**的" +
+                "抬手返回 false，而本节点的全部意义就是在别人消费之后仍能收口）",
+            impl.contains("!it.pressed"),
+        )
+        assertTrue(
+            "必须以 `awaitEachGesture` 循环挂载 —— 单个 awaitPointerEvent 只消费一次，" +
+                "之后这个节点再也不收事件（开关会「只灵一次」）",
+            impl.contains("awaitEachGesture"),
+        )
+        assertFalse(
+            "只准看抬手 —— 不许出现 `clickable` / `toggleable` 那一类**在 down 上就竞争**的写法，" +
+                "它们会把拖动侧饿死（「按得亮、拖不动」/「点一次能关、再点开不了」）",
+            impl.contains("detectTapAndPress") || impl.contains("awaitFirstDown(requireUnconsumed = true"),
         )
     }
 
@@ -541,23 +594,19 @@ class GlassSwitchTest {
     }
 
     @Test
-    fun `示例版的尺寸与库内示例逐值一致`() {
-        // 用户 2026-10-06 明确要求「完全按照库里的示例实现一版」，
-        // 这三个尺寸就是那次要求的直接落点，改动即偏离示例。
-        // ⚠️⚠️ **唯一**的偏离是「整体等比缩小」：轨道 64 → 55，**其余尺寸同乘一个系数**。
-        //    只收轨道而让滑块原地不动，会让滑块占比从 62.5% 升到 66.7% ——
-        //    关闭态两侧露出的柱位更窄（用户上一版反馈的「看不到槽位」会被放大）。
-        assertEquals("示例 64dp，本项目等比缩到 55dp", 55f, LiquidToggleTokens.defaultTrackWidth.value, 0.001f)
-        assertEquals("示例 28dp", 24f, LiquidToggleTokens.defaultTrackHeight.value, 0.001f)
-        // ⚠️⚠️ 滑块宽是**唯一**比「等比缩放」还小的一项：等比应为 34，
-        //    而用户 2026-10-06 反馈「滑块应该再小一点」+ 关闭态右侧缝隙太少。
-        assertEquals("示例 40dp，本项目收到 26（比等比的 34 还小，见 Token KDoc）",
-            26f, LiquidToggleTokens.defaultThumbWidth.value, 0.001f)
-        assertEquals("示例 24dp", 20f, LiquidToggleTokens.defaultThumbHeight.value, 0.001f)
-        assertTrue(
-            "滑块占轨道的比例应接近 M3 的 46%（24/52）—— 太大则关闭态看不到柱位",
-            LiquidToggleTokens.defaultThumbWidth.value / LiquidToggleTokens.defaultTrackWidth.value in 0.4f..0.55f,
-        )
+    fun `示例版的尺寸与调参页定稿值逐值一致`() {
+        // ⚠️⚠️ 这四个数是**用户在真机上用开关调参页逐个手调定稿的**
+        //    （2026-10-07：「轨道 44 滑块宽 22 高 21」），**不是**按示例
+        //    等比缩小算出来的 —— 它们之间不成比例，别拿其中一个推另一个。
+        //
+        //    因此本用例是**定稿值的锚**：任何一次「顺手微调」都会红。
+        //    要改先让用户在新一轮调参里定下来，再回来同步这四个数与下面
+        //    三条几何断言（travel / 端点 / 比例）。
+        assertEquals("调参定稿：轨道宽", 44f, LiquidToggleTokens.defaultTrackWidth.value, 0.001f)
+        assertEquals("调参定稿：滑块宽", 22f, LiquidToggleTokens.defaultThumbWidth.value, 0.001f)
+        assertEquals("调参定稿：滑块高", 21f, LiquidToggleTokens.defaultThumbHeight.value, 0.001f)
+        assertEquals("轨道高 24（与示例的 28 同档，未参与本轮调参）",
+            24f, LiquidToggleTokens.defaultTrackHeight.value, 0.001f)
         assertEquals("示例 padding = 2f.dp", 2f, LiquidToggleTokens.paddingDp.value, 0.001f)
         // ⚠️⚠️ **pressedScale 必须照抄 1.5f，不许收回**。它一度被我误判成
         //    「关闭时那个圆变小」的真因而改成 1f，用户随后明确指出：
@@ -576,8 +625,8 @@ class GlassSwitchTest {
         //    真正被它抓住的是**改尺寸**：把 `TrackWidth` 改成 52 会让它红
         //    （反证 V 实测 3 条红），而那正是「忘了同步 travel」的后果。
         //    ⇒ 「按公式写」这一层是**约定**，没有机器化守卫（写在这里以免高估它）。
-        // 55 − 26 − 2×2 = 25（示例是 64 − 40 − 4 = 20）
-        assertEquals(25f, liquidToggleTravelDp().value, 0.001f)
+        // 44 − 22 − 2×2 = 18（示例是 64 − 40 − 4 = 20）
+        assertEquals(18f, liquidToggleTravelDp().value, 0.001f)
         assertTrue(
             "可移动距离必须为正，否则拖动时分母为 0（fraction 变 NaN 且不报错）",
             liquidToggleTravelDp().value > 0f,
@@ -585,27 +634,37 @@ class GlassSwitchTest {
     }
 
     @Test
-    fun `缩放后各尺寸的相对比例与示例一致`() {
-        // ⚠️ 这条锁的是「等比缩小」这个约定本身 —— 只改其中一两个数值会让
-        //    滑块占比漂移，而观感变化（柱位露多少）是**没有报错**的。
-        val s = LiquidToggleTokens.Scale
-        assertEquals("轨道高 / 轨道宽 的比例", 28f / 64f, LiquidToggleTokens.defaultTrackHeight.value / LiquidToggleTokens.defaultTrackWidth.value, 0.005f)
-        // ⚠️ **滑块宽刻意不参与等比** —— 收到 26 让占比降到 47%（近 M3 的 46%），
-        //    目的是关闭态两侧各露 27dp、柱位一眼可见。这条断言只锁「别涨回去」。
+    fun `尺寸之间的相对关系仍在合理区间`() {
+        // ⚠️ **这条不是「锚定示例」**（那件事由上面 `示例版的尺寸与调参页定稿值` 干），
+        //    而是守住四条**几何上必须成立**、且刻意取成**区间**的约束 ——
+        //    区间是刻意的：四个数是手调定稿的，本轮改动会一次次动到它们，
+        //    写死比例只会让每次调参都要改两条断言，而**真正的失效模式是越界**、
+        //    不是「比例与上次不同」。反过来说，区间一旦被突破，那就是观感问题
+        //    （柱位看不见 / 滑块像竖条），而这两件都**不报错**。
+        val track = LiquidToggleTokens.defaultTrackWidth.value
+        val thumbW = LiquidToggleTokens.defaultThumbWidth.value
+        val thumbH = LiquidToggleTokens.defaultThumbHeight.value
+        val trackH = LiquidToggleTokens.defaultTrackHeight.value
+
         assertTrue(
-            "滑块占轨道比例应明显低于示例的 62.5%（那是「关闭时看不到柱位」的根源）",
-            LiquidToggleTokens.defaultThumbWidth.value / LiquidToggleTokens.defaultTrackWidth.value < 0.55f,
+            "滑块占轨道应在 40%..55% 之间（太小像一颗豆、太大则关闭态看不到柱位）——" +
+                "实际 ${"%.1f".format(thumbW / track * 100)}%",
+            thumbW / track in 0.40f..0.55f,
         )
-        // ⚠️ 高度方向**做不到精确等比**：24 × 0.859 = 20.63，而 dp 只能取整数
-        //    （取 20 ⇒ 比例 0.833，取 21 ⇒ 0.875，都比 0.857 偏）。
-        //    容差按这个取值粒度给，不假装它是精确的。
-        assertEquals(
-            "滑块高 / 轨道高 的比例（20/24 是取整结果，容差按 1dp 粒度给）",
-            24f / 28f,
-            LiquidToggleTokens.defaultThumbHeight.value / LiquidToggleTokens.defaultTrackHeight.value,
-            0.025f,
+        assertTrue(
+            "轨道高应大于滑块高，否则滑块上下贴死、没有玻璃边距 —— " +
+                "实际 轨道 $trackH / 滑块 $thumbH",
+            trackH > thumbH,
         )
-        assertTrue("缩放系数应小于 1（我们是缩小）", s in 0.5f..1f)
+        // ⚠️ 滑块**不是正方形**是有意的：调参定稿就是 22×21（示例是 40×24）。
+        //    但差距不能大到看起来像根竖条 —— 那是第一版真正踩过的坑
+        //    （关态渲染出 16×24 的竖条）。
+        assertTrue(
+            "滑块宽高比应落在 0.7..1.4（超出就是「竖条」/「扁片」的观感）——" +
+                "实际 ${"%.2f".format(thumbW / thumbH)}",
+            thumbW / thumbH in 0.7f..1.4f,
+        )
+        assertTrue("可移动距离必须为正", liquidToggleTravelDp().value > 0f)
     }
 
     @Test
@@ -616,18 +675,18 @@ class GlassSwitchTest {
             liquidToggleThumbXDp(0f, isLtr = true).value,
             0.001f,
         )
-        // ⚠️ 端点位置 = padding + travel = 2 + 20 = 22dp，**不是** 64 − 40 − 2 = 22
-        //    （同一个数，但写成 62 是把「右边缘」当成了「左边距」—— 第一版就这么错的）。
+        // ⚠️ 端点位置 = padding + travel = 2 + 18 = 20dp，**不是** 44 − 22 − 2 = 20
+        //    （同一个数，但写成 20 是把「右边缘」当成了「左边距」—— 第一版就这么错的）。
         val endX = liquidToggleThumbXDp(1f, isLtr = true).value
-        assertEquals("fraction=1 时左边距 = padding + travel = 27dp", 27f, endX, 0.001f)
+        assertEquals("fraction=1 时左边距 = padding + travel = 20dp", 20f, endX, 0.001f)
         assertEquals(
-            "于是右边缘 = 27 + 26 = 53dp，距轨道右端恰好也是 padding",
-            53f,
+            "于是右边缘 = 20 + 22 = 42dp，距轨道右端恰好也是 padding",
+            42f,
             endX + LiquidToggleTokens.defaultThumbWidth.value,
             0.001f,
         )
         assertTrue(
-            "滑块右边缘必须落在轨道内（64dp）",
+            "滑块右边缘必须落在轨道内（44dp）",
             endX + LiquidToggleTokens.defaultThumbWidth.value <= LiquidToggleTokens.defaultTrackWidth.value + 0.001f,
         )
         assertEquals(

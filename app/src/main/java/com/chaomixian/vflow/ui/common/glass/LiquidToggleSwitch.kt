@@ -1,5 +1,7 @@
 package com.chaomixian.vflow.ui.common.glass
 
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
@@ -20,12 +22,13 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.layout.layout
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -136,12 +139,16 @@ internal fun Modifier.switchTunerOverrides(
 
 internal object LiquidToggleTokens {
     /**
-     * 轨道宽。⚠️ 示例是 **64dp**，这里同等比例收到 **55** 后又按真机反馈逐步微调。
-     * ⚠️ 其余所有尺寸都按同一个系数缩放（见 [Scale]），滑块也一起缩。
+     * 四个尺寸（轨道 44 / 滑块 22×21 / 轨道高 24）**是 2026-10-07 用户在真机上
+     * 用开关调参页逐个手调定稿的**，不是按系数算出来的 —— 它们之间**不成比例**，
+     * 别拿其中一个去推另一个。
+     *
+     * ⚠️ 示例原值是 64×28 / 滑块 40×24。我们收窄轨道是为了塞进工作流卡片的头行
+     * （单列内容宽约 97dp，开关要和图标、⋮ 挤同一行）。
      */
-    internal val defaultTrackWidth = 55.dp
-    internal val defaultThumbWidth = 26.dp
-    internal val defaultThumbHeight = 20.dp
+    internal val defaultTrackWidth = 44.dp
+    internal val defaultThumbWidth = 22.dp
+    internal val defaultThumbHeight = 21.dp
     internal val defaultTrackHeight = 24.dp
 
     internal fun trackWidthDp(): androidx.compose.ui.unit.Dp =
@@ -164,14 +171,6 @@ internal object LiquidToggleTokens {
      * 这由本参数 + `layerBlock` 里的 `scaleX/scaleY` 共同产生，是核心观感。
      */
     const val PressedScale = 1.5f
-
-    /**
-     * 示例尺寸与本实现尺寸之间的比例系数（55 / 64）。
-     *
-     * ⚠️ 系数是**算出来的、不是调出来的**：先定轨道宽 55（卡片单列约 116dp
-     * 里它要与图标/⋮ 挤一行），其余按比例推；滑块再按真机反馈单独收小。
-     */
-    const val Scale = 55f / 64f
 }
 
 /**
@@ -289,13 +288,20 @@ internal fun LiquidToggleSwitch(
     Box(
         // ⚠️⚠️ **手势挂在最外层（整个开关），不是挂在滑块上** —— 实测反馈
         //    「点击开关还是会穿透进入到工作流页面」的真因就在这里：
-        //    滑块只有 26×20dp，挂在它上面的手势**只覆盖那一小块**，
+        //    滑块只有 22×21dp，挂在它上面的手势**只覆盖那一小块**，
         //    点到轨道上其余地方（尤其开启态的左半边）事件就冒泡到卡片的
         //    `combinedClickable` ⇒ 变成「点进工作流」。
         //    `minimumInteractiveComponentSize()` 再把触控区抬到 Material 的
         //    48dp 下限（轨道只有 24dp 高，裸放是达不到可点标准的）。
+        //
+        // ⚠️⚠️ **光「挂对位置」还不够，抬手那一下必须被消费** —— 见
+        //    [consumeUpSoHostDoesNotSeeTap]。顺序也是契约的一部分：
+        //    消费节点必须排在 `dampedDragAnimation.modifier` **之前**（= 更外侧），
+        //    这样 Main pass（叶子→根）里拖动节点先看到**未被消费**的抬手、
+        //    正常走 `onDragEnd`，随后本节点才消费掉它。
         modifier
             .minimumInteractiveComponentSize()
+            .consumeUpSoHostDoesNotSeeTap()
             .then(dampedDragAnimation.modifier),
         contentAlignment = Alignment.CenterStart,
     ) {
@@ -392,6 +398,50 @@ internal fun LiquidToggleSwitch(
 
 /** 胶囊形状（替代示例的 `com.kyant.shapes.Capsule`，见类 KDoc 第 2 点）。 */
 private val TOGGLE_CAPSULE = RoundedCornerShape(percent = 50)
+
+/**
+ * **把「抬手」这一步消费掉，让宿主的 `clickable` 看不到这次点按。**
+ *
+ * ## 为什么非加不可
+ *
+ * 拖动那套（[com.chaomixian.vflow.ui.main.glass.DampedDragAnimation] →
+ * [com.chaomixian.vflow.ui.main.glass.inspectDragGestures]）**只在拖动帧里消费**：
+ * `DragGestureInspector.kt` 里只有 `inspectLongPressDragGestures` 的移动分支
+ * 调了 `consume()`，而**移动分支在没拖动时根本不会进入**；
+ * [inspectDragGestures] 则一个 `consume()` 都没有。
+ *
+ * ⇒ 于是「按下 → 没动 → 抬手」这条最常见的路径上，**没有任何人消费**，
+ * 事件一路冒泡到工作流卡片的 `combinedClickable` ⇒ 点开关 = 点进工作流详情页。
+ * 这正是用户从 2026-10-06 起反复反馈、而我改了两轮都没修对的那只 bug ——
+ * 前两轮都在改「手势挂在哪」（从滑块挪到最外层），方向对但**不够**：
+ * 位置只决定了**谁收得到**，消费才决定**谁之后还看得到**。
+ *
+ * ## 为什么不是 `clickable` / `toggleable`
+ *
+ * ⚠️ 这两个都会在 **down** 那一刻就参与竞争（`detectTapAndPress` 消费 down），
+ * 而拖动侧也要同一个 down —— 表现是「按得亮、拖不动」或「点一次能关、再点开不了」。
+ * 本节点**只看抬手**：down 与移动一概放行，拖动侧完全不受影响。
+ *
+ * ## 为什么用 `pointerInput` 而不是 `pointerInteropFilter`
+ *
+ * 后者要一个 Android `View`，在 Compose 里会额外插一层宿主。
+ *
+ * ⚠️ **必须是 `awaitEachGesture` 循环**：单个 `awaitPointerEvent` 只消费一次，
+ * 之后这个节点就再也不收事件了（开关会「只灵一次」）。
+ */
+private fun Modifier.consumeUpSoHostDoesNotSeeTap(): Modifier = pointerInput(Unit) {
+    awaitEachGesture {
+        // ⚠️ `requireUnconsumed = false`：若别处（如以后的某个祖先）先消费了 down，
+        //    我们仍要跟完这次手势 —— 否则又漏掉一次抬手消费。
+        awaitFirstDown(requireUnconsumed = false)
+        while (true) {
+            val event = awaitPointerEvent()
+            val up = event.changes.firstOrNull { !it.pressed } ?: continue
+            up.consume()
+            break
+        }
+    }
+}
 
 /** 滑块采样轨道时的横向压扁范围（示例 `lerp(2f / 3f, 0.75f, progress)`）。 */
 private const val THUMB_SAMPLE_SCALE_X_MIN = 2f / 3f
