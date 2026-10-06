@@ -378,6 +378,10 @@ class WireLayerPurityTest {
             "EventQueue.kt",
             "HookConditionWire.kt",
             "ActivityPayload.kt",
+            // ⚠️ extras 编码层（从 `ActivityPayload` 提取）—— 它**同时被 App 侧的
+            // 广播触发器复用**，所以尤其要受本文件的引用面扫描管辖：
+            // 一旦它引了 `android.*` 或 App 侧包，两个引用方都会跟着遭殃。
+            "ExtrasJsonCodec.kt",
             "ActivityChangedSource.kt",
             // ③ 能力调用的契约层（与上面同样是「跑在 system_server 里」的文件，
             // 必须一并受本文件的引用面扫描管辖）

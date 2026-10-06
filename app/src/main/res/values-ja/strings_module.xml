@@ -3249,4 +3249,39 @@
     <string name="sheet_switch_add_default">＋ 既定の分岐を追加</string>
     <string name="sheet_switch_drag_desc">ドラッグして並べ替え</string>
     <string name="sheet_switch_remove_desc">この分岐とその本体を削除</string>
+
+    <!-- ブロードキャストトリガー（vflow.trigger.broadcast、fork 追加） -->
+    <string name="module_vflow_trigger_broadcast_name">ブロードキャストトリガー</string>
+    <string name="module_vflow_trigger_broadcast_desc">指定したブロードキャストを監視し、受信時にワークフローを実行してブロードキャストのデータを後続で参照できます</string>
+    <string name="param_vflow_trigger_broadcast_actions_name">ブロードキャスト Action リスト</string>
+    <string name="param_vflow_trigger_broadcast_data_schemes_name">データ Scheme</string>
+    <string name="param_vflow_trigger_broadcast_categories_name">カテゴリ（Category）</string>
+    <string name="param_vflow_trigger_broadcast_match_mode_name">マッチ方法</string>
+    <string name="param_vflow_trigger_broadcast_cooldown_name">クールダウン（ミリ秒）</string>
+    <string name="option_vflow_trigger_broadcast_exact">完全一致</string>
+    <string name="editor_vflow_trigger_broadcast_actions_title">監視するブロードキャスト</string>
+    <string name="editor_vflow_trigger_broadcast_actions_hint">必須です。com.example.ACTION_X や android.intent.action.MEDIA_MOUNTED のように完全な action 文字列を入力してください。* ワイルドカードには対応しておらず、入力しても発火しません。</string>
+    <string name="editor_vflow_trigger_broadcast_schemes_title">データ Scheme（任意）</string>
+    <string name="editor_vflow_trigger_broadcast_schemes_hint">空欄 = データなしのブロードキャストと、content および file の 2 つ（プラットフォームのハードコードされた例外）を受信します。その他の scheme（package など）を受信するにはここに入力が必要です。注意：一度入力すると content と file の例外は消えるため、必要ならそれらも併記してください。* ワイルドカードには対応していません。</string>
+    <string name="editor_vflow_trigger_broadcast_categories_title">カテゴリ（任意）</string>
+    <string name="editor_vflow_trigger_broadcast_categories_hint">ここに列挙したすべてのカテゴリをブロードキャストが含む場合のみ発火します（いずれかではありません）。空欄なら制限なし。</string>
+    <string name="editor_vflow_trigger_broadcast_sticky_hint">スティッキーブロードキャスト（バッテリー変化など）を監視する場合、登録時に一度だけ即座に発火します。</string>
+    <string name="editor_vflow_trigger_broadcast_add_action">ブロードキャストを追加</string>
+    <string name="editor_vflow_trigger_broadcast_add_scheme">Scheme を追加</string>
+    <string name="editor_vflow_trigger_broadcast_add_category">カテゴリを追加</string>
+    <string name="summary_vflow_trigger_broadcast_none">ブロードキャスト未設定</string>
+    <string name="summary_vflow_trigger_broadcast_prefix">監視</string>
+    <string name="summary_vflow_trigger_broadcast_more">%1$s など %2$d 件のブロードキャスト</string>
+    <string name="summary_vflow_trigger_broadcast_scheme">（scheme: %1$s）</string>
+    <string name="output_vflow_trigger_broadcast_action">ブロードキャスト Action</string>
+    <string name="output_vflow_trigger_broadcast_data_uri">データ URI</string>
+    <string name="output_vflow_trigger_broadcast_scheme">データ Scheme</string>
+    <string name="output_vflow_trigger_broadcast_mime_type">MIME タイプ</string>
+    <string name="output_vflow_trigger_broadcast_categories">カテゴリ</string>
+    <string name="output_vflow_trigger_broadcast_extras_json">付加データ（JSON）</string>
+    <string name="output_vflow_trigger_broadcast_flags">Flags</string>
+    <string name="output_vflow_trigger_broadcast_truncated">付加データが切り詰められたか</string>
+    <string name="error_vflow_trigger_broadcast_no_action">ブロードキャスト Action を最低 1 つ入力してください：このトリガーは「空欄 = すべて監視」に対応していません</string>
+    <string name="error_vflow_trigger_broadcast_wildcard">ブロードキャスト Action はワイルドカード * に対応していません。完全な action 文字列を入力してください</string>
+    <string name="msg_vflow_trigger_broadcast_ready">ブロードキャストトリガーの準備ができました</string>
 </resources>

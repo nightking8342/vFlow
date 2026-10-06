@@ -1,10 +1,13 @@
 # 广播触发器设计 —— 用户可自由配置的任意广播监听
 
-> 版本：v1.0
-> 状态：**设计阶段，尚未实现**（本文件只有设计与核实结论，没有一行代码）
+> 版本：v1.1（2026-10-07 回写实现状态）
+> 状态：**已实现（未真机验证）** —— 代码已合入 `feature/broadcast-trigger` 分支；
+> ⚠️ **§11 的真机验证清单 0 项已做**，全部结论仍是【源码】级，不是【实测】级。
 > 目录归属：**fork 独有**（冲突归我方），上游无此文件
 > 关联：`core/workflow/module/triggers/`（模块声明）+ `.../triggers/handlers/`（Handler）
 > 上位文档：`docs/fork/surveys/trigger-system-overview.md`（触发器体系现状）
+>
+> 实现方案的偏差记录见 §9–§12；交付说明（文件清单 / 反证 / 遗留问题）在提交信息与 `FORK.md`。
 
 ---
 
@@ -342,6 +345,29 @@ extras 的**键不可枚举**（任何应用都能塞任意键），因此只给
 ⇒ **定位**：本模块是**逃生舱**——覆盖那些「既有触发器没覆盖到、且不值得单独做一个模块」的广播
 （如某个第三方 App 的自定义 action、`ACTION_MEDIA_MOUNTED`、`ACTION_HEADSET_PLUG` 等）。
 
+### 6.1 与既有 10 个广播型触发器的逐条对照（实现期实测，2026-10-07）
+
+上面那张表是定性描述。实现期逐 Handler 读了 `IntentFilter` 构造，这里是**逐字**的 action 集合：
+
+| 既有触发器 | 监听的 action（逐字取自 Handler） | 本模块能否替代 |
+|---|---|---|
+| `app_package` | `ACTION_PACKAGE_ADDED` / `_REMOVED` / `_REPLACED` + `addDataScheme("package")` | ✅ 能（但要自己填 scheme=`package` + 自己解析 `data.schemeSpecificPart` + 自己判 `EXTRA_REPLACING`） |
+| `battery` | `ACTION_BATTERY_CHANGED`（**sticky**，注册即回调一次） | ✅ 能（但要自己算百分比与跨阈值方向） |
+| `bluetooth` | `ACTION_STATE_CHANGED` / `ACTION_ACL_CONNECTED` / `ACTION_ACL_DISCONNECTED` | ✅ 能 |
+| `call` | `ACTION_PHONE_STATE_CHANGED` | ✅ 能（但要自己解 `EXTRA_STATE` 三态） |
+| `do_not_disturb` | `ACTION_INTERRUPTION_FILTER_CHANGED` | ✅ 能（但要自己读 `NotificationManager` 判方向） |
+| `power` | `ACTION_POWER_CONNECTED` / `_DISCONNECTED` | ✅ 能 |
+| `screen` | `ACTION_SCREEN_ON` / `_OFF` / `ACTION_USER_PRESENT` | ✅ 能 |
+| `sms` | `SMS_RECEIVED_ACTION` | ⚠️ 形式上能，但**需要 `RECEIVE_SMS` 权限**，而本模块 `requiredPermissions` 为空 ⇒ 配了也收不到（这正是 §4.3「无法静态推导权限」的代价） |
+| `wifi` | `WIFI_STATE_CHANGED_ACTION` | ✅ 能（但要自己解 `EXTRA_WIFI_STATE` 四态） |
+| `sim_data_switch` | `ACTION_DEFAULT_DATA_SUBSCRIPTION_CHANGED` | ✅ 能（但要自己解 subId、自己映射卡槽） |
+
+⇒ **本模块在能力上确是这 10 个的超集**，但**每一个替代都需要用户在下游重写该触发器已内置的解析逻辑**
+（方向判定 / 枚举归一 / 权限 / sticky 基线）。这就是「不取代」的**量化依据**，也是
+`FORK.md` 只能写「不取代」而不能写「可替代」的原因。
+
+⚠️ **存量工作流里没有任何东西需要迁移** —— 本模块是纯新增，既有 10 个 Handler **一行都不动**。
+
 ---
 
 ## 7. 静默失效点清单（**逐条核对，这是本文档最有价值的部分**）
@@ -388,19 +414,52 @@ extras 的**键不可枚举**（任何应用都能塞任意键），因此只给
 
 | # | 文件 | 内容 | 状态 |
 |---|---|---|---|
-| 1 | `core/workflow/module/triggers/BroadcastTriggerModule.kt` | 模块定义 + schema + outputs | ⬜ |
-| 2 | `core/workflow/module/triggers/BroadcastTriggerData.kt` | `@Parcelize` 载荷 | ⬜ |
-| 3 | `core/workflow/module/triggers/handlers/BroadcastTriggerHandler.kt` | 动态注册 + 过滤 + 冷却 | ⬜ |
-| 4 | `core/workflow/module/triggers/BroadcastTriggerUIProvider.kt` | action / scheme 列表编辑 | ⬜ |
-| 5 | `core/.../triggers/handlers/TriggerHandlerRegistry.kt` | **追加一行**注册（不重排） | ⬜ |
-| 6 | `core/workflow/module/ModuleRegistry.kt` | **追加一行**注册（不重排） | ⬜ |
-| 7 | 三语 `strings_module.xml` | 模块名/描述/参数名/选项/hints/输出名/摘要/错误 | ⬜ |
+| 1 | `core/workflow/module/triggers/BroadcastTriggerModule.kt` | 模块定义 + schema + outputs | ✅ |
+| 2 | `core/workflow/module/triggers/BroadcastTriggerData.kt` | `@Parcelize` 载荷 | ✅ |
+| 3 | `core/workflow/module/triggers/handlers/BroadcastTriggerHandler.kt` | 动态注册 + 过滤 + 冷却 | ✅ |
+| 4 | `core/workflow/module/triggers/BroadcastTriggerUIProvider.kt` | action / scheme 列表编辑 | ✅ |
+| 5 | `core/.../triggers/handlers/TriggerHandlerRegistry.kt` | **追加一行**注册（不重排） | ✅ |
+| 6 | `core/workflow/module/ModuleRegistry.kt` | **追加一行**注册（不重排） | ✅ |
+| 7 | 三语 `strings_module.xml` | 模块名/描述/参数名/选项/hints/输出名/摘要/错误 | ✅（33 键 ×3 语言） |
 | 8 | `res/drawable/rounded_settings_input_antenna_24.xml` | 已存在（`MaterialSymbolNames` 全量库里有） | ✅ |
-| 9 | `test/.../triggers/BroadcastTriggerModuleTest.kt` | 声明体检（形态照 `ActivityChangedTriggerModuleTest`） | ⬜ |
-| 10 | `test/.../triggers/BroadcastTriggerHandlerTest.kt` | 过滤/冷却/归一化语义 | ⬜ |
-| 11 | 纯函数层单测 | 「`"*"` 必须被拒绝」「空 action 必须拒绝」等反向锁 | ⬜ |
-| 12 | **`FORK.md` 登记** | 新增文件 + 两处注册行 | ⬜ |
-| 13 | 自检按钮（可选，P2） | 配好后点一下，用 `sendBroadcast` 自发一条自测广播，确认链路通 | ⬜ |
+| 9 | `test/.../triggers/BroadcastTriggerModuleTest.kt` | 声明体检（形态照 `ActivityChangedTriggerModuleTest`） | ✅（24 例） |
+| 10 | `test/.../triggers/BroadcastTriggerHandlerTest.kt` | 过滤/冷却/归一化语义 | ✅（21 例） |
+| 11 | 纯函数层单测 | 「`"*"` 必须被拒绝」「空 action 必须拒绝」等反向锁 | ✅（22 例） |
+| 12 | **`FORK.md` 登记** | 新增文件 + 两处注册行 | ✅ |
+| 13 | 自检按钮（可选，P2） | 配好后点一下，用 `sendBroadcast` 自发一条自测广播，确认链路通 | ❌ **未做**（见下） |
+
+### 9.0 实施期新增的（设计文档原清单里没有的）四类文件
+
+| 文件 | 内容 | 例数 |
+|---|---|---|
+| `core/workflow/module/triggers/BroadcastTriggerSupport.kt` | **纯函数层**（归一化 / 校验 / 列表解构）。无 Android 依赖，可纯 JVM 单测 | — |
+| `res/layout/partial_broadcast_trigger_editor.xml` | UIProvider 的三段式布局（三个 RecyclerView + 三个添加按钮 + 提示） | — |
+| `test/.../triggers/BroadcastTriggerSupportTest.kt` | 上述纯函数的单测（含四类坑的反向锁） | 22 |
+| `test/.../triggers/BroadcastTriggerWiringTest.kt` | **源码扫描型接线锚定**（注册行 / EXPORTED / 空 actions 不注册 / 委托未留第二份实现 / 预算未被改回 48 KiB） | 13 |
+| `test/.../xposed/ExtrasJsonCodecTest.kt` | 提取出来的编码层单测（从 `ActivityPayloadTest` 平移 + 直调 `ExtrasJsonCodec`） | 15 |
+| `xposed/wire/ExtrasJsonCodec.kt` | **提取**自 `ActivityPayload` 的 extras 编码层（见 §10.1 的决定） | — |
+
+**第 13 项（自检按钮）为什么不做**：它需要额外的自测 action + 一套 UI 入口，
+会显著扩大 diff 面积；而它要解决的「配好了却不知道通不通」有一个**零 UI 的等价物** ——
+`registerFor` 成功时打 INFO 日志（含 action / scheme / category 三个数量），
+失败时打 ERROR（含 actions 列表与异常）。用户可在设置页「查看日志」里自查。
+⇒ 用日志替代自检按钮。
+
+### 9.1 ⚠️ 实施期发现：`validate()` 的真实作用面（比设计时以为的窄）
+
+实测全仓 `module.validate(...)` 的调用点共 **5 处**：
+
+| 位置 | 覆盖触发器？ | 说明 |
+|---|---|---|
+| `ui/workflow_editor/ActionEditorSheet.kt` | ✅ | `showTriggerEditor` 用的就是这个 sheet ⇒ **在触发器卡片上保存时会拦** |
+| `ui/workflow_editor/WorkflowEditorActivity.kt`（`saveWorkflow`） | ❌ | 循环的是 `actionSteps`，`triggerSteps` 是另一个列表、**一个都不校验** |
+| `ui/chat/ChatAgentModuleExecutor.kt`（`temporary_workflow`） | ✅ | |
+| `ui/chat/ChatAgentModuleExecutor.kt`（`save_workflow`） | ✅ | |
+| `ui/chat/ChatAgentModuleExecutor.kt`（`update_workflow`） | ✅ | `allSteps = updated.triggers + updated.steps` |
+
+⇒ 兑现「actions 必填」的**第二道防线**是 Handler 的 `filterSpecOf()` 返回 null
+（**不注册 receiver** + WARN 日志），那一道覆盖所有路径（含 JSON 导入与直接改 prefs）。
+**本批不改 `WorkflowEditorActivity.saveWorkflow`**（那会动既有保存路径、扩大 diff 面积）。
 
 ### 9.1 建议的纯函数层（可纯 JVM 单测）
 
@@ -421,32 +480,67 @@ object BroadcastTriggerSupport {
 
 **这些是「改错了不报错、只静默变差」的地方，必须有测试 + 反证。**
 
+#### 9.1.1 实施期对这段骨架的三处调整（都是「纯函数层不该依赖 Android 资源」）
+
+1. `validateActions` 的返回类型由 `BroadcastValidation` 改为**纯枚举**
+   `ActionsValidation { OK, EMPTY, WILDCARD }` —— 文案由模块层翻，纯函数层不认识 Android 资源。
+2. 新增 `stringListOf(raw: Any?)` —— `parameters` 里存的是 `Any?`，
+   可能是 `List<*>` / 单个 `String` / `null`（JSON 导入与 AI 写入会给不同形状）。
+   ⚠️ `List<*>` 里的**非 String 元素被丢弃而不是 `toString()`**：
+   把 `123` 变成 `"123"` 会造出一个**永远不会匹配**的 action，而用户看到列表里那一项「长得没问题」。
+3. `stripBlank` **不丢弃 `"*"`**（与 `normalizeActions` 分工）——
+   编辑期要留给 `validateActions` 拦并给出文案。若在 `stripBlank` 里悄悄丢掉，
+   用户输入 `"*"` 后点保存会看到那一项**凭空消失**、既没报错也不知道为什么。
+
+⚠️ 另核：`trim()` 必须用 **Kotlin 默认语义**（`Char.isWhitespace()`，覆盖全角空格 U+3000）。
+用 `trim(' ')` 会漏掉全角空格 ⇒ 保存出一个「看起来没填、实际是 `"　"`」的项，
+而它在 `IntentFilter` 里是个合法字面量（永不命中、无报错）。有测试锁住。
+
 ---
 
-## 10. 未决项
+## 10. 未决项（**六条全部已定案**，2026-10-07）
 
-| # | 问题 | 影响 | 倾向 |
+| # | 问题 | 影响 | **决定** |
 |---|---|---|---|
-| 1 | `extras` 编码层与 `ActivityPayload` 如何共享 | ⚠️ **已核实（读 `WireLayerPurityTest.kt`）**：wire 层白名单只有 `org.json.` / `java.` / `kotlin.` / `com.chaomixian.vflow.xposed.`，且有 `FORBIDDEN_SUBSTRINGS` 拦全限定名。⇒ `ActivityPayload` **不能**依赖 App 侧代码；只能 App 侧反向依赖它 | **未定**，三个候选（见下） |
-| 2 | 是否需要「按 extras 键值过滤」 | 会显著复杂化 schema（嵌套的可增删键值对） | 倾向**不做**，让用户在下游用 `If` + `parse_json` 自己判（第一版） |
-| 3 | 自检按钮的形态 | 需要一个不打扰用户的自测广播 action | 待定（P2） |
-| 4 | `categories` 是否值得暴露 | 用得少，但白白增加一个输入 | 倾向保留（`IntentFilter` 原生支持，成本极低） |
-| 5 | sticky 广播 | `isInitialStickyBroadcast()` 在注册时会**立刻回调一次**（如 `ACTION_BATTERY_CHANGED`）。本设计**不主动注册 sticky 广播**，但用户若配了会踩到「注册瞬间触发一次」 | 倾向在文档/UI 里提示，代码上不做特殊处理 |
-| 6 | 是否需要「进程重启后恢复」 | 动态注册依赖 `TriggerService` 存活；服务重启后由既有链路重新 `addTrigger` | 复用既有链路，不额外做 |
+| 1 | `extras` 编码层与 `ActivityPayload` 如何共享 | ⚠️ **已核实（读 `WireLayerPurityTest.kt`）**：wire 层白名单只有 `org.json.` / `java.` / `kotlin.` / `com.chaomixian.vflow.xposed.`，且有 `FORBIDDEN_SUBSTRINGS` 拦全限定名。⇒ `ActivityPayload` **不能**依赖 App 侧代码；只能 App 侧反向依赖它 | ✅ **候选甲**：新文件 `xposed/wire/ExtrasJsonCodec.kt`，`ActivityPayload` 改为委托它。乙被白名单排除（wire 层不能 import `core.*`）、丙违反仓库「不重复」纪律。见 §10.1 |
+| 2 | 是否需要「按 extras 键值过滤」 | 会显著复杂化 schema（嵌套的可增删键值对） | ✅ **不做**。用户在下游用 `If` + `vflow.data.parse_json`（`ParseJsonModule` 已存在）自己判即可 |
+| 3 | 自检按钮的形态 | 需要一个不打扰用户的自测广播 action | ✅ **不做**（P2 之外）。替代：`registerFor` 成功打 INFO（含三个数量）、失败打 ERROR（含 actions 与异常），用户在「查看日志」里自查 —— **零额外 UI** |
+| 4 | `categories` 是否值得暴露 | 用得少，但白白增加一个输入 | ✅ **保留**。成本极低（一个列表参数 + 一个 `addCategory` 循环），且是排除噪声的实用手段 |
+| 5 | sticky 广播 | `isInitialStickyBroadcast()` 在注册时会**立刻回调一次**（如 `ACTION_BATTERY_CHANGED`）。本设计**不主动注册 sticky 广播**，但用户若配了会踩到「注册瞬间触发一次」 | ✅ **代码不做特殊处理，仅 UI hint 提示**（`editor_vflow_trigger_broadcast_sticky_hint`）。⚠️ 用 `ContextCompat.registerReceiver` 四参形式（有 flag 参数、能声明 EXPORTED；平台两参形式做不到） |
+| 6 | 是否需要「进程重启后恢复」 | 动态注册依赖 `TriggerService` 存活；服务重启后由既有链路重新 `addTrigger` | ✅ **复用既有链路，不额外做**。真实链路：`TriggerService.onCreate` → `TriggerHandlerRegistry.initialize()` → `registerAndStartHandlers()` → 逐个 `addTrigger` → 我们的 `registerFor` 重建 receiver |
 
-### 10.1 未决项 1 的三个候选落点
+### 10.1 未决项 1 的三个候选落点（**已选甲**）
 
 | 候选 | 优点 | 缺点 |
 |---|---|---|
-| **甲**：把纯函数提取到 `com.chaomixian.vflow.xposed.wire.` 下新文件（如 `JsonValueCodec.kt`），广播触发器 import 它 | 改动最小；`ActivityPayload` 保持纯度测试通过 | ⚠️ **语义别扭**：App 层的广播触发器要 import `xposed.wire.*`，与「xposed 包只服务 hook 层」的既有认知相悖，后来者会困惑 |
+| **甲**：把纯函数提取到 `com.chaomixian.vflow.xposed.wire.` 下新文件（实现时命名 `ExtrasJsonCodec.kt`），广播触发器 import 它 | 改动最小；`ActivityPayload` 保持纯度测试通过 | ⚠️ **语义别扭**：App 层的广播触发器要 import `xposed.wire.*`，与「xposed 包只服务 hook 层」的既有认知相悖，后来者会困惑 |
 | **乙**：新建一个与两者都无关的纯 JVM 工具包（如 `core/util/JsonBundleCodec.kt`），两处都依赖它 | 语义最干净（名实相符） | ⚠️ `ActivityPayload` **不能** import 它（白名单不允许 `core.`）⇒ **必须把 `ActivityPayload` 里的实现改成调用它**，而 `ActivityPayload` 本身在 wire 白名单下 ⇒ **行不通**，除非同时把该工具包放进白名单（等于放宽约束） |
 | **丙**：**各写一份**（广播触发器自己实现 extras 编码） | 零约束冲突，改动面最小 | ⚠️ 本仓库**明确记过**「双份实现」的代价（`FORK.md` logcat 条：「语义改动必须同时改两处，不一致的表现是调试工具能匹配而触发器匹配不到」） |
 
-**当前倾向：甲**，并在新文件的 KDoc 里写明「它被 App 侧的广播触发器复用，不是 hook 专用」，
-把「语义别扭」这件事**在代码里解释掉**，而不是留给后来者猜。
+**✅ 决定：选甲**（2026-10-07 定案）。新文件 `ExtrasJsonCodec.kt` 的 KDoc 首段就把
+「它被 App 侧的广播触发器复用，不是 hook 专用」写清楚，把「语义别扭」**在代码里解释掉**。
 
-⚠️ 无论选哪个，**都必须补一条「两处行为一致」的测试**（或源码扫描断言），
-否则就是本仓库反复踩过的那类静默漂移。
+**先例（不是首创）**：`core/xposed/HookChannelController.kt`、
+`core/workflow/module/triggers/handlers/ActivityChangedTriggerHandler.kt`
+都已经在 import `xposed.wire.*` —— wire → App 的单向引用本就是本仓库既有常态。
+
+**搬迁纪律（实现时逐条核过）**：
+1. `encodeExtras` 的函数体一字不改搬进 `ExtrasJsonCodec.encode`，
+   只把 `MAX_EXTRAS_JSON_BYTES` 换成 `maxBytes` 参数；
+2. `ActivityPayload.encodeExtras(extras)` 保留为**委托**（返回类型改为 `ExtrasJsonCodec.Result`）；
+3. `ActivityPayload.encode` 里的 `truncateToBytes(...)` 改 `ExtrasJsonCodec.truncateToBytes(...)`；
+4. 被搬走的两个 `private` 实现与 `internal data class ExtrasResult` **不得留残影**；
+5. `MAX_INTENT_URI_BYTES` / `MAX_EXTRAS_JSON_BYTES` **原地保留**
+   （`ActivityPayloadTest` 引用了它们，搬走会让测试编译失败、扩大 diff）。
+   ⚠️ 另外给 `MAX_EXTRAS_JSON_BYTES` 补了一句 KDoc：「它的依据是 Binder oneway 半缓冲，
+   **不要套到同进程传递的场景上**」—— 正是这个数值被误用过一次（见 §12.1）；
+6. `WireLayerPurityTest` 的文件存在性清单追加 `ExtrasJsonCodec.kt`。
+
+⚠️ 设计时写的「**无论选哪个，都必须补一条「两处行为一致」的测试**」——
+**选甲之后不需要**那条测试：两处**共用同一份实现**，行为**结构上不可能漂移**。
+（那条要求是给候选丙准备的。）改为一条**源码扫描断言**：`ActivityPayload` 必须
+委托 `ExtrasJsonCodec`、且不得留下第二份 `putTyped` / `truncateToBytes` ——
+盖住的是「提取之后有人把实现拷回来」这一种回退路径。已实现在 `BroadcastTriggerWiringTest`。
 
 ---
 
@@ -459,7 +553,9 @@ object BroadcastTriggerSupport {
 |---|---|---|
 | 1 | 自定义 action 广播能收到 | 用 `am broadcast -a com.test.XXX` 触发 |
 | 2 | **第三方应用**发的广播能收到（证明 `EXPORTED` 必要） | 用一个独立 App 发；对照 `NOT_EXPORTED` 必须收不到 |
-| 3 | 带 data 的广播：不填 scheme 收不到 | `am broadcast -a X -d "test://a"` |
+| 3 | 带 data 的广播：不填 scheme 收不到（`test://` 这种非例外 scheme） | `am broadcast -a X -d "test://a"` |
+| 3b | ⭐ **`content://` / `file://` 是例外，不填 scheme 也收得到** | `am broadcast -a X -d "content://a/b"` 与 `-d "file:///sdcard/x"` 都应触发（§3.2 源码核实的例外，见下方「未验证」提醒） |
+| 3c | ⭐ **显式填了 scheme 之后，例外消失** | 把 3b 的触发器 `data_schemes` 改成 `["content"]` ⇒ `content://` 仍触发、**`file://` 变成收不到**（`{"content"}.contains("file")` = false） |
 | 4 | 带 data 的广播：填了正确 scheme 能收到 | 同上 + `addDataScheme("test")` |
 | 5 | `addAction("*")` 确实收不到 | 反向验证 §3.1 |
 | 6 | `ACTION_PACKAGE_ADDED` + `scheme=package` 能收到 | 装一个 APK |
@@ -468,13 +564,59 @@ object BroadcastTriggerSupport {
 | 9 | 关闭后台服务通知后失效（既有缺陷） | 复现 §7-7 |
 | 10 | 冷却窗口内高频广播不刷爆 | 循环发 100 条 |
 
+**实现期（2026-10-07）新增的 4 项**：
+
+| # | 验证项 | 判据 |
+|---|---|---|
+| 11 | `match_mode` 的中文/日文显示是否正确（**低成本确认**） | 编辑器里「匹配方式」应显示「精确匹配」，**不是**裸常量 `exact`。已核我们的模块走的是**会传 `optionsStringRes`** 的那条渲染路径（`ActionEditorSheet` 的 CHIP_GROUP 分支），此条只是确认；真的显示裸常量时的处置是**把这个参数从 schema 里去掉**（它只有唯一取值），**不是**换 `inputStyle` |
+| 12 | UIProvider 三个列表的增删/编辑真的能落盘 | 加 3 条 action → 保存 → 重开编辑器回显一致；删一条 → 保存 → 回显一致；确认 `ListItemAdapter` 的 RecyclerView 复用后**输入框文本没写错行** |
+| 13 | **两个广播触发器并存时不互相干扰** | 触发器 A 配 `ACT_A` + scheme `test`，触发器 B 配 `ACT_B`（无 scheme）；`am broadcast -a ACT_A -d test://x` 只触发 A；`am broadcast -a ACT_B` 只触发 B。⚠️ **本条验的是「各管各的」**，价值在于**确认 `registerFor` 的重建逻辑没有串台**（增删改各触发器后 filter 仍与各自参数对应） |
+| 14 | **空 `actions` 的存量触发器不误触发** | 手工往工作流 JSON 塞一个 `actions: []` 的广播触发器 → 后台**不应**对任意无 action 广播触发（日志里应有 `未配置有效 action，已跳过注册` 的 WARN）。⚠️ 编辑器路径保存不出这种配置（`validate()` 拦了），只有导入/AI 路径能造出来 |
+
+⚠️⚠️ **上面第 3b / 3c 两项的证据等级是【源码逐行读】，不是【实测】**（实现期无设备）。
+按本仓库「写进文档的库行为断言先实跑再落笔」的教训，
+**在真机上跑过之前，`content`/`file` 例外不得当成已证实**。
+
 ---
 
 ## 12. 引用前须知
 
+### 12.1 ⚠️ extras 预算定为 **8 KiB**（而非照抄 `ActivityPayload` 的 48 KiB）
+
+**这是实现期改动本设计原始意图的唯一一处**，留痕在此。
+
+设计文档 §5.2 只说「照 `ActivityPayload` 的经验」，**没写具体数值**。实现初版照抄了它的
+`MAX_EXTRAS_JSON_BYTES = 48 KiB`，理由是「那条值已实测标定」。**该理由不成立**：
+
+| | `ActivityPayload`（hook 链路） | 广播触发器 |
+|---|---|---|
+| 传输方式 | **跨进程**（hook 层在 system_server，App 在应用进程） | **同进程**（`executeTrigger` → `Parcelable` → `ExecutionContext`） |
+| 经过 Binder 吗 | ✅ 经过 | ❌ **不经过**（唯一经 PendingIntent/AMS 的是种子输出那一笔，内容是几十字节的 `triggerId`） |
+| 48 KiB 的依据 | Binder **oneway 半缓冲 ≈508 KiB**，留足余量 | **没有对应物** |
+
+⇒ 48 KiB 是**为一个不存在的上限**付的代价：用户看不到后半段 extras，而收益为零。
+
+**但仍然必须设上限**（与 Binder 无关的两条，这两条才是真正成立的）：
+1. extras 是**第三方应用可完全控制**的内容 —— 不设限就是让外部决定我们的内存占用；
+2. 它会进 `VString` → `executionLogs` → **`SharedPreferences`**，
+   而这个 App **没有版本历史、没有撤销**（`FORK.md` 记过卸载即全灭）。
+
+**取值 8 KiB 的依据**：这类广播的 extras 通常就是几个毫秒级时间戳 + 少量 key/value
+（实测远小于 1 KiB）。超出走 `truncated = true`，用户能看出来，不会被误当成「那个应用没传」。
+
+⚠️ **只改广播触发器这一处**：`ActivityPayload.MAX_EXTRAS_JSON_BYTES` **不动**
+（那条是跨进程传输，48 KiB 有实测依据）。同时在它的 KDoc 里补了一句
+「它的依据是 Binder oneway 半缓冲，**不要套到同进程传递的场景上**」——
+防的正是这次的误用被下一个人重演。
+
+⚠️ 有**源码扫描反向锁**（`BroadcastTriggerWiringTest`）：广播 Handler 的**代码里**
+不得出现 `48 * 1024`，且 `MAX_EXTRAS_JSON_BYTES` 的 KDoc 必须写着「不经过 Binder」。
+
 - **所有源码引用基于 2026-10-07 的 AOSP `main` 分支**（`IntentFilter.java` /
   `BroadcastReceiver.java` / `BroadcastOptions.java` / `BroadcastController.java`），
   行号会漂移，**引用前以源码为准**。
-- **无真机验证**（§11）。文档里凡标【源码】【官方文档】的是核实过的；
-  标【推断】【待验证】的**不得当成结论使用**。
-- **本文不含实现**。实施前请连同 §7 静默失效点清单一起过一遍。
+- **本文档已于 2026-10-07 回写实现状态**（v1.1）：§6.1 / §9 / §9.0 / §9.1 / §10 / §11 / §12.1
+  是实现期补的。**设计部分（§0–§8）未改**，仍是原始的判断依据。
+- **实现已完成但无真机验证**（§11 的 14 项全部待做）。文档里凡标【源码】【官方文档】的
+  是核实过的；标【推断】【待验证】的**不得当成结论使用**。
+- 实施时请连同 §7 静默失效点清单一起过一遍。

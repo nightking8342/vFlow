@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  广播触发器（vflow.trigger.broadcast）的自绘编辑器布局。
+
+  ⚠️ 三个 RecyclerView 的 id **必须各不相同**（`rv_broadcast_actions` /
+  `rv_broadcast_schemes` / `rv_broadcast_categories`）——
+  不能照抄 `partial_list_editor.xml` 的 `recycler_view_list`：同一个布局里
+  三处同名会让 `findViewById` 全部拿到第一个。
+  （`ListItemAdapter` 内部找的是 `item_list_item.xml` 的 id，与宿主无关，
+  所以宿主这边可以自由命名。）
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <!-- ═══ ① 广播 Action（必填） ═══ -->
+    <TextView
+        android:id="@+id/text_broadcast_actions_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/editor_vflow_trigger_broadcast_actions_title"
+        android:textAppearance="?attr/textAppearanceTitleSmall" />
+
+    <TextView
+        android:id="@+id/text_broadcast_actions_hint"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:text="@string/editor_vflow_trigger_broadcast_actions_hint"
+        android:textAppearance="?attr/textAppearanceBodySmall"
+        android:textColor="?android:attr/textColorSecondary" />
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/rv_broadcast_actions"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:nestedScrollingEnabled="false" />
+
+    <Button
+        android:id="@+id/button_broadcast_add_action"
+        style="@style/Widget.Material3.Button.TextButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="end"
+        android:text="@string/editor_vflow_trigger_broadcast_add_action"
+        app:icon="@drawable/ic_add" />
+
+    <!-- ═══ ② 数据 Scheme（可选） ═══ -->
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:layout_marginTop="8dp"
+        android:background="?android:attr/listDivider" />
+
+    <TextView
+        android:id="@+id/text_broadcast_schemes_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:text="@string/editor_vflow_trigger_broadcast_schemes_title"
+        android:textAppearance="?attr/textAppearanceTitleSmall" />
+
+    <TextView
+        android:id="@+id/text_broadcast_schemes_hint"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:text="@string/editor_vflow_trigger_broadcast_schemes_hint"
+        android:textAppearance="?attr/textAppearanceBodySmall"
+        android:textColor="?android:attr/textColorSecondary" />
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/rv_broadcast_schemes"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:nestedScrollingEnabled="false" />
+
+    <Button
+        android:id="@+id/button_broadcast_add_scheme"
+        style="@style/Widget.Material3.Button.TextButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="end"
+        android:text="@string/editor_vflow_trigger_broadcast_add_scheme"
+        app:icon="@drawable/ic_add" />
+
+    <!-- ═══ ③ 分类 Category（可选） ═══ -->
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:layout_marginTop="8dp"
+        android:background="?android:attr/listDivider" />
+
+    <TextView
+        android:id="@+id/text_broadcast_categories_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:text="@string/editor_vflow_trigger_broadcast_categories_title"
+        android:textAppearance="?attr/textAppearanceTitleSmall" />
+
+    <TextView
+        android:id="@+id/text_broadcast_categories_hint"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:text="@string/editor_vflow_trigger_broadcast_categories_hint"
+        android:textAppearance="?attr/textAppearanceBodySmall"
+        android:textColor="?android:attr/textColorSecondary" />
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/rv_broadcast_categories"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:nestedScrollingEnabled="false" />
+
+    <Button
+        android:id="@+id/button_broadcast_add_category"
+        style="@style/Widget.Material3.Button.TextButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="end"
+        android:text="@string/editor_vflow_trigger_broadcast_add_category"
+        app:icon="@drawable/ic_add" />
+
+    <!-- ═══ 平台提示（sticky 广播） ═══ -->
+    <TextView
+        android:id="@+id/text_broadcast_sticky_hint"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:text="@string/editor_vflow_trigger_broadcast_sticky_hint"
+        android:textAppearance="?attr/textAppearanceBodySmall"
+        android:textColor="?android:attr/textColorSecondary" />
+
+</LinearLayout>

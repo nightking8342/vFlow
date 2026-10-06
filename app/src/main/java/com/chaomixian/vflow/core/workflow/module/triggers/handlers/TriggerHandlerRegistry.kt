@@ -57,6 +57,10 @@ object TriggerHandlerRegistry {
         // ListeningTriggerHandler —— 后者四个方法全 final、只在「空↔非空」边界触发，
         // 会导致「已有 1 个时再加第 2 个」条件永远下不去
         register(ActivityChangedTriggerModule().id) { ActivityChangedTriggerHandler() }
+        // 广播触发器（fork 新增）。注意它继承 BaseTriggerHandler 而非
+        // ListeningTriggerHandler（同上），且**每个触发器各注册一个 receiver**
+        // —— 因为 filter 随触发器参数变化，不能靠并集 + 二次判定
+        register(BroadcastTriggerModule().id) { BroadcastTriggerHandler() }
 
     }
 
