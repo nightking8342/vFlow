@@ -34,9 +34,16 @@ class GlassSwitchTest {
 
     private val trackWidth: Dp get() = GlassSwitchTokens.TrackWidth
 
-    /** 滑块宽度在给定状态下的取值（与组件里的算法同源：两档 + 按下撑开）。 */
-    private fun thumbWidth(checked: Boolean, pressed: Boolean): Dp =
-        baseThumbWidthDp(checked) + if (pressed) PRESS_EXTRA else 0.dp
+    /**
+     * 滑块宽度 = **生产代码的**直径函数 + 按下撑开。
+     *
+     * ⚠️ 直径那一半**必须直接调 `thumbDiameterDp`**，不能在这里复刻插值公式 ——
+     * 本仓库在 `ScallopedBadgeShapeTest` 上踩过：测试自己抄一份公式，
+     * 把生产代码改坏时**测试照绿**（抄的那份没变）。
+     */
+    private fun thumbWidth(fraction: Float, pressed: Boolean): Dp =
+        thumbDiameterDp(fraction) +
+            if (pressed) GlassSwitchTokens.ThumbPressGrowth else 0.dp
 
     // ------------------------------------------------------------------
     // 一、尺寸锚定 M3 的 SwitchTokens
@@ -77,12 +84,12 @@ class GlassSwitchTest {
 
     @Test
     fun `按下撑开量必须小于两侧内边距之和`() {
-        // 未选中态是**中心锚定**：滑块左右各扩 extra/2。若 extra/2 > ThumbPadding，
-        // 左边缘会跑到轨道外面 —— 本文件里最容易踩的一个约束。
+        // 关态滑块左边距只有 ThumbPadding = 4dp，撑开量的一半从中心往外扩。
+        // 超过它就顶出左端 —— 本文件里最容易踩的一个约束。
         assertTrue(
-            "PRESS_EXTRA/2 = ${PRESS_EXTRA.value / 2} 必须 ≤ ThumbPadding = " +
-                "${GlassSwitchTokens.ThumbPadding.value}",
-            PRESS_EXTRA / 2 <= GlassSwitchTokens.ThumbPadding,
+            "ThumbPressGrowth/2 = ${GlassSwitchTokens.ThumbPressGrowth.value / 2} 必须 ≤ " +
+                "ThumbPadding = ${GlassSwitchTokens.ThumbPadding.value}",
+            GlassSwitchTokens.ThumbPressGrowth / 2 <= GlassSwitchTokens.ThumbPadding,
         )
     }
 
@@ -91,34 +98,55 @@ class GlassSwitchTest {
     // ------------------------------------------------------------------
 
     @Test
-    fun `未选中未按下时滑块左边距等于 M3 的内边距`() {
+    fun `三个静止锚点与 M3 逐值一致`() {
+        // M3 的滑块中心：关 = 4 + 16/2 = 12，开 = 52 − 4 − 24/2 = 36。
+        // 这两个数直接来自 SwitchTokens，改任一个都要重算。
+        val off = glassThumbXDp(0f, baseThumbWidthDp(false))
+        assertEquals("关态左边距 = ThumbPadding = 4dp", 4f, off.value, 0.001f)
+
+        val onW = baseThumbWidthDp(true)
+        val onX = glassThumbXDp(1f, onW)
         assertEquals(
-            4f,
-            glassThumbXDp(checked = false, widthDp = baseThumbWidthDp(false)).value,
+            "开态右边缘 = TrackWidth − ThumbPadding = 48dp",
+            48f,
+            (onX + onW).value,
+            0.001f,
+        )
+
+        // ⚠️ 中间态：这是老写法（if checked 右对齐 else 左对齐）唯一塌掉的地方 ——
+        //    它会算出中心 12dp（等于关态），即滑块在动画中途往左弹一下。
+        val midW = thumbWidth(0.5f, pressed = false)
+        val midX = glassThumbXDp(0.5f, midW)
+        assertEquals(
+            "中间态中心应落在 (12 + 36) / 2 = 24dp —— 线性插值的中点",
+            24f,
+            (midX + midW / 2).value,
             0.001f,
         )
     }
 
     @Test
-    fun `选中未按下时滑块右边缘贴住 M3 的内边距`() {
-        val w = baseThumbWidthDp(true)
-        val x = glassThumbXDp(checked = true, widthDp = w)
-        assertEquals(
-            "右边缘应落在 TrackWidth − ThumbPadding = 48dp（52 − 4）",
-            (trackWidth - GlassSwitchTokens.ThumbPadding).value,
-            (x + w).value,
-            0.001f,
-        )
+    fun `位置关于 fraction 单调不减`() {
+        // 反向锁：滑块**不能**在动画中途往回走。老写法在 0.5 处回退到 12dp
+        // 就是这条会红的地方。
+        var prev = Float.NEGATIVE_INFINITY
+        for (i in 0..40) {
+            val f = i / 40f
+            val x = glassThumbXDp(f, thumbWidth(f, pressed = false))
+            assertTrue("fraction=$f 时滑块位置 $x 比上一帧 $prev 更靠左", x.value >= prev - 0.001f)
+            prev = x.value
+        }
     }
 
     @Test
     fun `任意状态下滑块都完整落在轨道内`() {
-        // ⚠️ 「按下变宽」最容易出事的地方：`Box` 默认不裁剪，
+        // ⚠️ 按下撑开最容易出事的地方：`Box` 默认不裁剪，
         //    滑块探出边缘不会报错、也不会被切，只是看起来不对。
         for (checked in listOf(false, true)) {
             for (pressed in listOf(false, true)) {
-                val w = thumbWidth(checked, pressed)
-                val x = glassThumbXDp(checked, w)
+                val f = if (checked) 1f else 0f
+                val w = thumbWidth(f, pressed)
+                val x = glassThumbXDp(f, w)
                 assertTrue(
                     "checked=$checked pressed=$pressed: 左边缘 ${x.value} 越过了轨道左端",
                     x.value >= -0.001f,
@@ -133,25 +161,55 @@ class GlassSwitchTest {
     }
 
     @Test
-    fun `按下时选中态右边缘不动、未选中态中心不动`() {
-        // 这是「往哪边扩」的判据，也是 glassThumbXDp 里唯一需要解释的决策。
-        val restChecked = baseThumbWidthDp(true)
-        val pressedChecked = thumbWidth(true, true)
-        assertEquals(
-            "选中态按下时**右边缘不动**（向左长），否则会顶出右边缘",
-            (glassThumbXDp(true, restChecked) + restChecked).value,
-            (glassThumbXDp(true, pressedChecked) + pressedChecked).value,
-            0.001f,
-        )
+    fun `按下撑开从中心均分到两侧`() {
+        for (f in listOf(0f, 0.5f, 1f)) {
+            val rest = thumbWidth(f, pressed = false)
+            val pressedW = thumbWidth(f, pressed = true)
+            val centerRest = glassThumbXDp(f, rest) + rest / 2
+            val centerPressed = glassThumbXDp(f, pressedW) + pressedW / 2
+            assertEquals(
+                "fraction=$f 按下时中心不应移动（撑开量左右各一半）",
+                centerRest.value,
+                centerPressed.value,
+                0.001f,
+            )
+        }
+    }
 
-        val restUnchecked = baseThumbWidthDp(false)
-        val pressedUnchecked = thumbWidth(false, true)
-        assertEquals(
-            "未选中态按下时**中心不动**（左右各长一半）",
-            (glassThumbXDp(false, restUnchecked) + restUnchecked / 2).value,
-            (glassThumbXDp(false, pressedUnchecked) + pressedUnchecked / 2).value,
-            0.001f,
+    @Test
+    fun `滑块宽高由同一个值驱动 —— 不会出现竖条`() {
+        // ⚠️ 这条锁的是用户实测反馈过的那只 bug：「关闭时中间那个圆的白的
+        //    东西都不贴合」。当时的实现只动宽度、高度写死成轨道内高，
+        //    关态渲染出 16×24 的竖条。
+        for (i in 0..20) {
+            val f = i / 20f
+            val d = thumbDiameterDp(f)
+            assertTrue(
+                "fraction=$f 时直径 ${d.value} 应落在两档之间（16..24）",
+                d.value >= 16f - 0.001f && d.value <= 24f + 0.001f,
+            )
+        }
+        assertEquals("fraction=0 应是未选中档", 16f, thumbDiameterDp(0f).value, 0.001f)
+        assertEquals("fraction=1 应是选中档", 24f, thumbDiameterDp(1f).value, 0.001f)
+        // 关态滑块的高度必须**小于**轨道内高（32 − 4×2 = 24），否则就是竖条。
+        assertTrue(
+            "关态直径 16dp 必须小于轨道内高 24dp —— 相等正是那只竖条 bug",
+            thumbDiameterDp(0f) < GlassSwitchTokens.TrackHeight - GlassSwitchTokens.ThumbPadding * 2,
         )
+    }
+
+    @Test
+    fun `拖动参考宽度为正且小于轨道宽`() {
+        // 分母为 0 会让 `fraction + dx/0` 变成 Infinity/NaN（滑块瞬移到边上且不报错）。
+        for (checked in listOf(false, true)) {
+            val w = dragWidthDp(checked)
+            assertTrue("checked=$checked 的拖动参考宽度必须为正，实际 ${w.value}", w.value > 0f)
+            assertTrue(
+                "拖动参考宽度应当**小于**轨道宽（它扣掉了两侧内边距与滑块）—— " +
+                    "等于轨道宽会让跟手感发飘",
+                w < GlassSwitchTokens.TrackWidth,
+            )
+        }
     }
 
     @Test
@@ -219,6 +277,60 @@ class GlassSwitchTest {
         )
     }
 
+    @Test
+    fun `抬手必须落位到 0 或 1，不能停在中间`() {
+        // ⚠️ 这条锁的是「按得亮、拖不动」那条反馈的另一半：光把 `fraction`
+        //    跟着手指移、抬手后不落位，滑块会**停在半路**（看起来就像没拖动）。
+        //    拖动落位是 `onEnd` 里那两行，用源码扫描锚定 ——
+        //    手势回调在纯 JVM 里起不来，只能扫。
+        val s = SourceScan.stripped(SWITCH_DRAG_ANIMATION)
+        // ⚠️ 判据分两处，不能混：**落位**发生在 `modifier` 属性的
+        //    `onEnd` lambda 里（不在手势循环函数体内），而**手势原语**
+        //    在手势循环函数体内。第一版两条都往函数体里找，`settleTo`
+        //    永远找不到 —— 而这会让人以为是生产代码漏了落位。
+        // ⚠️⚠️ **必须锚抬手回调的体内，不能只断言「源码里有 `settleTo(`」** ——
+        //    `settleTo` 的方法**定义**本身就含这个字符串，于是把唯一那处**调用**
+        //    删掉之后断言照样绿（实测确认，反证不变红）。这正是本仓库
+        //    「断言要经过调用点」那条教训的又一例。
+        val onEnd = SourceScan.functionBody(s, "onEnd = { dragged ->")
+            ?: error("找不到抬手回调 —— 这条断言会失去依据")
+        assertTrue(
+            "拖过之后必须调 `settleTo(` 把值落到 0 或 1；缺了它滑块会停在半路",
+            onEnd.contains("settleTo("),
+        )
+        assertTrue(
+            "落位方向必须按 fraction 与 0.5 的关系判",
+            onEnd.contains("0.5f"),
+        )
+        assertTrue(
+            "落位后必须回调 `onSettled(` —— 否则滑块停右边而 `checked` 还是 false（状态脱节）",
+            onEnd.contains("onSettled("),
+        )
+        assertTrue(
+            "抬手必须调 `release()`（速度/按压缩放归位）",
+            s.contains("release()"),
+        )
+        assertTrue(
+            "`settleTo` 必须清速度 —— 不清的话滑块会永远保持上一次拖动末尾的挤压形变",
+            s.contains("velocityAnimation.snapTo(0f)"),
+        )
+
+        val body = SourceScan.functionBody(s, "private suspend fun PointerInputScope.inspectPressDragGestures")
+            ?: error("找不到手势循环 —— 手势原语那几条断言会失去依据")
+
+        // 手势层必须用本仓库已验证的原语（见 DragGestureInspector 的实测记录）
+        for (required in listOf(
+            "positionChangeIgnoreConsumed()",
+            "PointerEventPass.Initial",
+            "consume()",
+        )) {
+            assertTrue(
+                "手势循环里必须出现 `$required` —— 缺它会让「按得亮、拖不动」复发",
+                body.contains(required),
+            )
+        }
+    }
+
     // ------------------------------------------------------------------
     // 四、全项目接线（源码扫描）
     // ------------------------------------------------------------------
@@ -274,8 +386,7 @@ class GlassSwitchTest {
         const val GLASS_SWITCH = "src/main/java/com/chaomixian/vflow/ui/common/glass/GlassSwitch.kt"
         const val WORKFLOW_LIST_SCREEN =
             "src/main/java/com/chaomixian/vflow/ui/workflow_list/WorkflowListScreen.kt"
-
-        /** 按下时滑块横向撑开的量。⚠️ 与组件里的 `pressedExtra` 是同一个数。 */
-        val PRESS_EXTRA = 4.dp
+        const val SWITCH_DRAG_ANIMATION =
+            "src/main/java/com/chaomixian/vflow/ui/common/glass/SwitchDragAnimation.kt"
     }
 }

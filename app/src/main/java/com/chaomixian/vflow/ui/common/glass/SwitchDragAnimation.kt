@@ -6,7 +6,10 @@ import androidx.compose.foundation.MutatorMutex
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerInputScope
+import androidx.compose.ui.input.pointer.positionChangeIgnoreConsumed
+import androidx.compose.ui.util.fastFirstOrNull
 import androidx.compose.ui.input.pointer.pointerInput
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -45,6 +48,8 @@ internal class SwitchDragAnimation(
     private val animationScope: CoroutineScope,
     initialFraction: Float,
     private val dragWidthPx: () -> Float,
+    /** 拖动落位后把最终值回调出去 —— 「滑块停右边但 `checked` 还是 false」会状态脱节。 */
+    private val onSettled: (Boolean) -> Unit = {},
 ) {
     private val fractionAnimation = Animatable(initialFraction)
     private val pressAnimation = Animatable(0f)
@@ -109,6 +114,11 @@ internal class SwitchDragAnimation(
      * ⚠️ **不消费纵向位移**：开关会被放进可滚动列表（设置页就是 `LazyColumn`），
      * 无差别消费会让**列表滚不动**（表现是「手指按在开关上时整页卡住」）。
      * 这里只在**水平位移占优**时才消费并驱动滑块，纵向一律放行给滚动容器。
+     *
+     * ⚠️⚠️ **`onEnd(dragged)` 必须在拖动过的情况下把「落位」也做掉** ——
+     *    这正是「按得亮、拖不动」那条反馈里被忽略的一半：光把 `fraction`
+     *    跟着手指移，抬手后**没人把它落到 0 或 1**，滑块会停在半路
+     *    （看起来就像「没拖成功」）。落位方向按 `fraction >= 0.5` 判。
      */
     val modifier: Modifier = Modifier.pointerInput(Unit) {
         inspectPressDragGestures(
@@ -117,7 +127,14 @@ internal class SwitchDragAnimation(
                 val width = dragWidthPx()
                 if (width > 0f) dragTo(fraction + dx / width)
             },
-            onEnd = { dragged -> if (dragged) release() else release() },
+            onEnd = { dragged ->
+                release()
+                if (dragged) {
+                    val target = if (fraction >= 0.5f) 1f else 0f
+                    settleTo(target)
+                    onSettled(target == 1f)
+                }
+            },
         )
     }
 
@@ -150,7 +167,15 @@ internal class SwitchDragAnimation(
  * 那个有长按门槛（为了与横向滚动共存），开关在设置行里**没有可滚动的手势
  * 与之竞争**，加门槛只会让「轻点」变得迟钝。
  *
- * ⚠️ **只消费水平位移**（见 [SwitchDragAnimation.modifier] 的说明）。
+ * ## ⚠️ 三处照抄本仓库已验证的实现（`DragGestureInspector`）
+ *
+ * 1. **`awaitFirstDown(false, Pass.Initial)`** —— 在 Initial 通道上拿 down，
+ *    保证早于任何祖先（`toggleable`、`LazyColumn` 的 `scrollable`）。
+ * 2. **位移一律用 `positionChangeIgnoreConsumed()`** —— `positionChange()`
+ *    在事件**已被消费**时返回 `Offset.Zero`（`DragGestureInspector` 有实测记录）。
+ *    第一版是手算 `position - previousPosition`，看似等价、实则绕开了这条纪律，
+ *    一旦别处消费过就再也拿不到位移（表现正是「按得亮、拖不动」）。
+ * 3. **只有水平占优才 `consume()`** —— 无差别消费会让**列表滚不动**。
  */
 private suspend fun PointerInputScope.inspectPressDragGestures(
     onStart: () -> Unit,
@@ -158,27 +183,33 @@ private suspend fun PointerInputScope.inspectPressDragGestures(
     onEnd: (dragged: Boolean) -> Unit,
 ) {
     awaitEachGesture {
+        val initialDown = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
         val down = awaitFirstDown(requireUnconsumed = false)
         onStart()
+
         var dragged = false
-        var accumulatedX = 0f
-        var accumulatedY = 0f
+        var totalX = 0f
+        var totalY = 0f
+        var pointer = initialDown.id
+
         while (true) {
             val event = awaitPointerEvent()
-            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+            val change = event.changes.fastFirstOrNull { it.id == pointer } ?: break
             if (!change.pressed) {
                 if (dragged) change.consume()
                 break
             }
-            val dx = change.position.x - change.previousPosition.x
-            val dy = change.position.y - change.previousPosition.y
-            accumulatedX += dx
-            accumulatedY += dy
-            if (abs(accumulatedX) > 1f && abs(accumulatedX) > abs(accumulatedY)) {
-                if (!dragged) dragged = true
-                change.consume()
-                onDrag(dx)
+            val delta = change.positionChangeIgnoreConsumed()
+            totalX += delta.x
+            totalY += delta.y
+            if (totalX != 0f || totalY != 0f) {
+                if (abs(totalX) > abs(totalY) && abs(totalX) > 1f) {
+                    dragged = true
+                    change.consume()
+                    onDrag(delta.x)
+                }
             }
+            pointer = change.id
         }
         onEnd(dragged)
     }

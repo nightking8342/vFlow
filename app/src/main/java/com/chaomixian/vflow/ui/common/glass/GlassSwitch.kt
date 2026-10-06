@@ -33,6 +33,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.util.lerp
 import com.chaomixian.vflow.ui.common.AppearanceManager
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberBackdrop
@@ -89,6 +90,14 @@ internal object GlassSwitchTokens {
     /** `SwitchTokens.TrackOutlineWidth`。 */
     val TrackOutlineWidth = 2.dp
 
+    /**
+     * 按下时滑块横向撑开的量。
+     *
+     * ⚠️ **必须 ≤ 两侧内边距之和**（本文件有断言）：未选中态是中心锚定，
+     * 撑开量的一半会跑到左边，超过内边距就会顶出轨道左端。
+     */
+    val ThumbPressGrowth = 4.dp
+
     /** 轨道的玻璃通透度：让背后的卡片底色透出来。 */
     const val TrackGlassAlpha = 0.62f
 
@@ -96,26 +105,72 @@ internal object GlassSwitchTokens {
     const val DisabledTrackAlpha = 0.16f
 }
 
+/**
+ * 滑块**直径**（两维同步）：在 16dp 与 24dp 之间按 `fraction` 插值。
+ *
+ * ⚠️⚠️ **宽高必须由同一个值驱动**。第一版把高度写死成轨道内高（24dp）、
+ * 只让宽度在两档之间动 —— 关态就渲染出 16×24 的**竖条**，而它的圆角是
+ * 胶囊形（半径 = 高/2 = 12dp > 宽的一半 = 8dp）⇒ 圆角被夹取，
+ * 形状既不圆也不方。用户验收原话是「关闭时中间那个圆的白的东西都不贴合」，
+ * 实测截图量出来正是 **17.6dp × 26.8dp**。
+ *
+ * ⚠️ 也不能用 `animateFloatAsState(checked)` —— 它只在整条 `Switch` 重组时
+ * 被激活（`checked` 一变就跳到目标值），而位置早就由 `fraction` 平滑驱动了
+ * ⇒ 表现是「位置滑过去、尺寸啪一下换掉」。
+ */
+internal fun thumbDiameterDp(fraction: Float): Dp =
+    lerp(
+        GlassSwitchTokens.UncheckedThumbDiameter.value,
+        GlassSwitchTokens.ThumbDiameter.value,
+        fraction.coerceIn(0f, 1f),
+    ).dp
+
+/**
+ * 拖动时「走完一整条轨道」对应的横向像素数。
+ *
+ * ⚠️ 取的是**可移动距离**（轨道宽 − 两侧内边距 − 滑块直径）而非轨道宽：
+ * 用手指走完 52dp 轨道只对应 fraction 0→1 的话，跟手感会明显「发飘」
+ * （走了很远滑块才动一点）。
+ */
+internal fun dragWidthDp(checked: Boolean): Dp =
+    GlassSwitchTokens.TrackWidth - GlassSwitchTokens.ThumbPadding * 2 -
+        baseThumbWidthDp(checked)
+
 /** 滑块在**未按下**时的基准宽度（选中 24dp / 未选中 16dp）。 */
 internal fun baseThumbWidthDp(checked: Boolean): Dp =
     if (checked) GlassSwitchTokens.ThumbDiameter else GlassSwitchTokens.UncheckedThumbDiameter
 
 /**
- * 滑块左下角的 x（相对轨道）。
+ * 滑块左边的 x（相对轨道）。
  *
- * ⚠️ **两侧的锚定方式刻意不同**：选中态**右锚定**（右边贴住内边距不动、
- * 有宽度富余时向左长），未选中态**中心锚定** —— 统一成一种会顶出轨道边缘，
- * 而 `Box` 默认**不裁剪**，所以不报错、只是看起来滑块探出来了。
+ * ## ⚠️ 用「**中心点**插值」而不是「两端各写一支分支」
  *
- * @param widthPx 滑块**当前**宽度（含按下时的撑开量，由手势层的动画给出）
+ * 推导（`TrackWidth 52 / ThumbPadding 4 / 直径 16→24`）：
+ * ```
+ * centerX = lerp(4 + 16/2, 52 − 4 − 24/2, fraction) = lerp(12, 36, fraction)
+ * x       = centerX − width / 2
+ * ```
+ * 这个写法在 **fraction = 0 / 0.5 / 1 三处都逐值等于 M3**（12 / 24 / 36 三个中心点）。
+ *
+ * ⚠️ 最早的写法是 `if (checked) 右对齐 else 左对齐` —— 两端静止位置也对，
+ *    但**中间态会塌**：fraction = 0.5 时它算出中心 12dp（等于关态的位置），
+ *    滑块会在动画中途往左弹一下再过去。根因是它只在两端正确，
+ *    而「按下撑开」恰恰发生在中间态。
+ *
+ * ⚠️ 按下撑开量从中心**均分到两侧**（`− width/2` 里已经含了），
+ * 左端最紧的情形（fraction = 0 + 全撑开）算出来是 2dp ≥ 0，不会越界。
+ *
+ * @param fraction 0..1 的连续进度（不是 `checked`）
+ * @param widthDp 滑块**当前**宽度（含按下时的撑开量）
  */
-internal fun glassThumbXDp(checked: Boolean, widthDp: Dp): Dp {
-    val base = baseThumbWidthDp(checked)
-    return if (checked) {
-        GlassSwitchTokens.TrackWidth - GlassSwitchTokens.ThumbPadding - widthDp
-    } else {
-        GlassSwitchTokens.ThumbPadding - (widthDp - base) / 2
-    }
+internal fun glassThumbXDp(fraction: Float, widthDp: Dp): Dp {
+    val f = fraction.coerceIn(0f, 1f)
+    val minCenter = GlassSwitchTokens.ThumbPadding +
+        GlassSwitchTokens.UncheckedThumbDiameter / 2
+    val maxCenter = GlassSwitchTokens.TrackWidth - GlassSwitchTokens.ThumbPadding -
+        GlassSwitchTokens.ThumbDiameter / 2
+    val center = lerp(minCenter.value, maxCenter.value, f)
+    return (center - widthDp.value / 2).dp
 }
 
 /**
@@ -179,11 +234,11 @@ internal fun GlassSwitch(
         SwitchDragAnimation(
             animationScope = scope,
             initialFraction = if (checked) 1f else 0f,
-            dragWidthPx = {
-                with(density) {
-                    (GlassSwitchTokens.TrackWidth - GlassSwitchTokens.ThumbPadding * 2 -
-                        baseThumbWidthDp(checked)).toPx()
-                }
+            dragWidthPx = { with(density) { dragWidthDp(checked).toPx() } },
+            onSettled = { nowChecked ->
+                // 拖动落位：`checked` 由宿主更新；宿主若没接（onCheckedChange 为 null）
+                // 也不能让滑块停在半路 —— 所以先本地对齐一次。
+                if (onCheckedChange != null) onCheckedChange(nowChecked)
             },
         )
     }
@@ -200,32 +255,44 @@ internal fun GlassSwitch(
     val fraction = animation.fraction
     val progress = animation.pressProgress
 
-    val trackColor = when {
-        !enabled && checked -> colors.disabledCheckedTrackColor
-        !enabled -> colors.disabledUncheckedTrackColor
-        checked -> colors.checkedTrackColor
-        else -> colors.uncheckedTrackColor
-    }
-    val borderColor = when {
-        !enabled -> colors.disabledUncheckedBorderColor
-        checked -> colors.checkedBorderColor
-        else -> colors.uncheckedBorderColor
-    }
+    // ⚠️⚠️ **轨道色与边框色也必须跟着 `fraction` 插值，不能用 `checked` 硬切**。
+    //    跟 `fraction` 走之后，「点一下」的全过程才是连贯的：
+    //    滑块滑过去的同时轨道由灰渐变蓝、边框由 2dp 渐隐到 0
+    //    （M3 的选中态本来就没有边框）。用 `checked` 的话颜色会在动画第一帧
+    //    就跳到终态 —— 用户 2026-10-06 反馈「点击切换时根本没什么动画，很生硬」，
+    //    一半的原因在这里（另一半是尺寸那处 `animateFloatAsState` 瞬移）。
+    val trackColor = lerpTrackColor(colors, enabled, checked ?: false, fraction)
+    val borderColor = lerpBorderColor(colors, enabled, checked ?: false, fraction)
+    val trackAlpha = if (enabled) GlassSwitchTokens.TrackGlassAlpha else GlassSwitchTokens.DisabledTrackAlpha
 
-    // 滑块宽度：M3 的两档（16 / 24）之间按 fraction 插值 + 按下时的撑开。
-    val widthPx by animateFloatAsState(
-        targetValue = with(density) { baseThumbWidthDp(checked).toPx() },
-        animationSpec = spring(1f, 1000f, 0.001f),
-        label = "glassSwitchThumbWidth",
-    )
-    val heightPx = with(density) { GlassSwitchTokens.TrackHeight.toPx() } -
-        with(density) { GlassSwitchTokens.ThumbPadding.toPx() } * 2
+    // ⚠️⚠️ **宽度与高度必须由同一个值驱动，且必须跟着 `fraction` 走**。
+    //
+    // 两条都是实测抓出来的（用户 2026-10-06 反馈「关闭时中间那个圆的白的东西
+    // 不贴合」）：
+    //
+    // ① **只动宽不动高会得到一个纵向拉长的胶囊** —— M3 的 16/24 是**两维同步**的
+    //    （`UnselectedHandle{Width,Height} = 16`、`Selected = 24`，`javap` 解出）。
+    //    原实现把高度写死成轨道的内高（24dp）⇒ 关闭态渲染出 16×24 的竖条，
+    //    而它的圆角是 `Capsule`（半径 = 高/2 = 12dp > 宽的一半 = 8dp）⇒
+    //    圆角被夹取，形状**既不圆也不方**、四边不贴合。实测截图里那个滑块
+    //    量出来就是 **17.6dp 宽 × 26.8dp 高**。
+    //
+    // ② **用 `animateFloatAsState(checked)` 会「瞬移」** —— 它只在**整条
+    //    `Switch` 重组**时才被激活（`checked` 一变就立刻跳到目标值），
+    //    而玻璃滑块的位移早就由 `fraction` 平滑动画驱动了 ⇒ 表现是
+    //    「位置滑过去、尺寸啪一下换掉」。改为从**同一个** `animation.fraction`
+    //    插值，尺寸与位置才同步。
+    val thumbSizePx = with(density) { thumbDiameterDp(fraction).toPx() }
     // 按下时横向撑开（「捏扁」的观感来自这里 + `layerBlock` 里的速度挤压）。
-    val pressedExtra = with(density) { 4.dp.toPx() } * progress
-    val thumbWidthPx = widthPx + pressedExtra
+    val pressedExtra = with(density) { GlassSwitchTokens.ThumbPressGrowth.toPx() } * progress
+    val thumbWidthPx = thumbSizePx + pressedExtra
+    val thumbHeightPx = thumbSizePx
     val thumbWidthDp = with(density) { thumbWidthPx.toDp() }
+    val thumbHeightDp = with(density) { thumbHeightPx.toDp() }
 
-    val thumbOffsetDp = glassThumbXDp(checked, thumbWidthDp)
+    // ⚠️ 位置与尺寸用**同一个** `thumbWidthDp` 算 —— 两处各算一遍的话，
+    //    「按下撑开」那一刻位置与宽度会各自插值、对不上（滑块会先动再长）。
+    val thumbOffsetDp = glassThumbXDp(fraction, thumbWidthDp)
 
     Box(
         modifier
@@ -261,8 +328,8 @@ internal fun GlassSwitch(
                 .background(
                     Brush.verticalGradient(
                         listOf(
-                            trackColor.copy(alpha = if (enabled) GlassSwitchTokens.TrackGlassAlpha else GlassSwitchTokens.DisabledTrackAlpha),
-                            trackColor.copy(alpha = if (enabled) GlassSwitchTokens.TrackGlassAlpha * 0.82f else GlassSwitchTokens.DisabledTrackAlpha * 0.82f),
+                            trackColor.copy(alpha = trackAlpha),
+                            trackColor.copy(alpha = trackAlpha * 0.82f),
                         )
                     )
                 )
@@ -288,7 +355,7 @@ internal fun GlassSwitch(
         Box(
             Modifier
                 .offset(x = thumbOffsetDp)
-                .size(thumbWidthDp, with(density) { heightPx.toDp() })
+                .size(thumbWidthDp, thumbHeightDp)
                 .graphicsLayer {
                     scaleX = animation.scaleX *
                         (1f - (animation.velocity * SwitchDragAnimation.VELOCITY_SQUEEZE)
@@ -411,3 +478,51 @@ fun VFlowSwitch(
         )
     }
 }
+
+/**
+ * 按 `fraction` 在「关 / 开」两种轨道色之间插值。
+ *
+ * ⚠️ 三个判断的**优先级**是定死的：禁用态 > 目标态 > 当前进度 ——
+ * 把禁用态排在后面会让禁用开关在切换时闪一下彩色。
+ */
+private fun lerpTrackColor(
+    colors: SwitchColors,
+    enabled: Boolean,
+    checked: Boolean,
+    fraction: Float,
+): Color {
+    if (!enabled) {
+        return if (checked) colors.disabledCheckedTrackColor else colors.disabledUncheckedTrackColor
+    }
+    return lerp(
+        colors.uncheckedTrackColor,
+        colors.checkedTrackColor,
+        fraction.coerceIn(0f, 1f),
+    )
+}
+
+/**
+ * 边框色插值 —— ⚠️ **含 alpha 一起插**。
+ *
+ * M3 里边框是**未选中态独有**的视觉（`checkedBorderColor` 默认全透明），
+ * 所以「选中」这个动作本身包含「边框淡出」。若只插 RGB 不插 alpha，
+ * 打开后会留下一圈实色描边 —— 而它看起来「也挺像玻璃的边缘高光」，
+ * 很容易被当成有意为之、没人会去查。
+ */
+private fun lerpBorderColor(
+    colors: SwitchColors,
+    enabled: Boolean,
+    checked: Boolean,
+    fraction: Float,
+): Color {
+    if (!enabled) return colors.disabledUncheckedBorderColor
+    return lerp(
+        colors.uncheckedBorderColor,
+        colors.checkedBorderColor.copy(alpha = 0f),
+        fraction.coerceIn(0f, 1f),
+    )
+}
+
+/** 颜色空间的 `lerp`（与 `androidx.compose.ui.util.lerp` 同名，靠参数类型区分）。 */
+private fun lerp(start: Color, stop: Color, fraction: Float): Color =
+    androidx.compose.ui.graphics.lerp(start, stop, fraction)
