@@ -864,6 +864,28 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 > （`aapt2 dump resources` 数 8310 —— `keep.xml` 的白名单就是为它写的，
 > 但**注释里的双连字符陷阱**曾让整份文件静默失效，值得单独跑一次）。
 
+### 环境写工具（`update_environment`，2026-10-06）
+
+> 设计文档：`docs/fork/environment-write-tool.md`（2026-10-06 定稿，八项决策）。
+> 一句话：给 Chat Agent 补上**写**文件夹（建 / 改名 / 解散）与全局变量（建 / 删）的能力，
+> **同时修掉一条断掉的引用链** —— `save_workflow` / `update_workflow` 的 `folderId`
+> 与 `update_environment` 的 `folder_id` **只收 id**，而模型此前唯一的文件夹信息来源
+> `get_environment` 只输出名字 ⇒「把工作流放进文件夹」这条需求根本走不通。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `ui/chat/ChatAgentToolRegistry.kt`（改） | 新增 `update_environment` 工具（1 个常量对 + `buildUpdateEnvironmentToolDefinition()` + `buildUpdateEnvironmentSchema()` + `toolsByName` 注册 1 项）：文件夹建 / 改名 / **解散** + 全局变量建 / 删，一次调用**一个** operation。⚠️ **三处刻意不暴露**：① 没有「连同工作流一起删文件夹」的 operation（本项目**没有版本历史、没有撤销**，让 AI 一次抹掉用户全部工作流与「用户自己点两次确认」不是同一风险量级）；② schema 里**没有 `parent_id`**（本 App 不存在嵌套文件夹）；③ 不提供改名 / 修改全局变量的值。⚠️ description 写死了三件模型不被告知就一定会猜错的事：写文件夹要的是 **id 不是名字**、删全局变量会**静默**打断 `{{global.x}}` 引用、文件夹**不能重名**（忽略大小写）。⚠️ 顺带改正同文件里那行过时注释：「常驻工具表 = 4 个工作流工具 + 3 个按需入口 + 11 个屏幕 helper」写的是 **18**，实测本批后为 **21** | **我方**（认长期分叉） |
+| `ui/chat/ChatAgentToolRegistry.kt`（改，`get_environment` 描述） | 补一段：文件夹条目**带 `id`**，那个 id（不是名字）才是 `folderId` / `folder_id` 要的；而 `list_workflows` 的 `folder` 参数是**名字筛选**。落实设计 §5 第 6 条（两条读路径口径不一致必须写明）。⚠️ **刻意不改** `list_workflows` 自己的 `folder` 参数描述（不在本批范围） | **手动合并** |
+| `ui/chat/ChatAgentNativeTooling.kt`（改） | `ChatAgentToolBackend` 追加 `UPDATE_ENVIRONMENT`（1 行） | **手动合并**（追加枚举值） |
+| `ui/chat/ChatAgentModuleExecutor.kt`（改） | `ChatPreparedToolItem` 追加 `UpdateEnvironment` 子类（**刻意不含 `validationErrors`**：校验失败一律直接回 `ImmediateResult`，见下）+ 补齐 6 处穷尽 `when`（编译器强制）+ `prepareToolCall` 加分流 + `prepareUpdateEnvironment` / `executeUpdateEnvironment` 两个类成员 + 文件底部纯函数层（`EnvironmentOperation` / `EnvironmentPlan` / `parseEnvironmentOperation` / `describeEnvironmentOperation`）。⚠️⚠️ **写操作绝不能落到 prepare 阶段**：`prepareBatch` 会被 `ChatViewModel.shouldAutoApproveToolCalls` 在**用户点批准之前**调用，写在那里等于**审批形同虚设**。prepare 只允许两个**读**调用（`getAllFolders()` / `GlobalVariableStore.getAll()`），由 `UpdateEnvironmentWiringTest` 源码扫描机器化锁住。⚠️ **风险等级按 operation 派生**（`item.operation.riskLevel`）而不是存字段：LOW = 建文件夹 / 改名 / 建变量，STANDARD = 解散 / 删变量——**都不是 HIGH**（标 HIGH 等于「除非开 ALL 否则永远弹窗」，本仓库在 `LogModule` 上记过同样的教训） | **手动合并** |
+| `ui/chat/ChatAgentModuleExecutor.kt`（改，`get_environment` 输出） | folders 段补 `folder.id`、**删掉** `under <父文件夹>` 那三行（决策 2/3）。⚠️ **理由不是可读性**：`save_workflow` / `update_workflow` 的 `folderId` 只收 id，而此前这里是模型唯一的文件夹信息来源、且只有名字 ⇒「把工作流放进文件夹」这条需求**走不通** | **手动合并**（1 段字符串拼接） |
+| `test/.../ui/chat/EnvironmentOperationParseTest.kt`、`UpdateEnvironmentWiringTest.kt`（均新增） | fork 独有：**29 + 10 例**。纯函数语义（键白名单拦 `parent_id`、同名拒绝且**忽略大小写**、改名**排除自己**、子文件夹拒绝、`type` 越界、`number`/`boolean` 解析失败）+ **源码扫描型接线锚定**（锁「写不在 prepare 阶段」、五个写调用只在 execute、`get_environment` 含 id 不含 `parentId`、工具真的注册进了 `toolsByName`）。⚠️ 三条重点反向锁：`create_global_variable` **绝不能**在名字已存在时回成功（`GlobalVariableStore.put` 是 upsert，是本工具**唯一能静默改坏用户数据**的路径）、`rename_folder` 改自己当前名 / 仅大小写**必须放行**、`boolean` 必须显式比对 `true`/`false`（`String.toBoolean()` 对 `"yes"` **静默返回 false**）。⚠️ **接线测试的判据刻意不用裸 `folder.id`** —— 同函数体改造前就有 `workflows.count { it.folderId == folder.id }`，裸标识符断言**改前改后都绿**、反证也变不红；改为锚新增的 `append(folder.id)` | **我方** |
+
+> ⚠️ **真机验证 0 项**（本任务禁止触碰真机）：新建 / 改名 / 解散文件夹在列表页的实际表现、
+> 审批弹窗分档（LOW 不弹 / STANDARD 弹）、模型传 `parent_id` 的实际拒绝、
+> 「新建同名变量时用户原有的值是否被改动」—— 均**只有编译与单测支撑，不得声称可用**。
+> 完整清单见 `docs/fork/environment-write-tool.md` §10。
+
 ---
 
 ## 暂未分歧、但日后改动时须登记的敏感点

@@ -37,6 +37,7 @@ enum class ChatAgentToolBackend {
     TEMPORARY_WORKFLOW,
     SAVED_WORKFLOW,
     UPDATE_WORKFLOW,
+    UPDATE_ENVIRONMENT,
 }
 
 enum class ChatAgentNativeHelperId {
