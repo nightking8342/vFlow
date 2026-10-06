@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -1568,18 +1567,21 @@ private fun WorkflowCompactCard(
                     VFlowSwitch(
                         checked = workflow.isEnabled,
                         onCheckedChange = onToggleEnabled,
-                        // ⚠️⚠️ **只缩布局占位、不缩放内容**。
+                        // ⚠️⚠️ **不要再传 `requiredSize` / `scale`** —— 两者都会
+                        // 把开关**压变形**，而且症状很难联想到原因：
                         //
-                        // 原先（M3 尺寸时代）写的是 `scale(0.85f)` —— 那时用
-                        // `VFlowSwitch` 的 M3 分支，`scale` 缩的是**真实控件**。
-                        // 换到玻璃态后 `scale` 缩的是**玻璃层**：`drawBackdrop`
-                        // 按 graphicsLayer 的坐标采样，缩放会让采样区与绘制区错位，
-                        // 表现是「折射位置偏移 / 边缘发虚」。
+                        // 1. `requiredSize(48.dp, …)` 会**覆盖父约束**：轨道画出来是
+                        //    48dp 宽，但滑块的位移与宽度仍按常量的 55dp 算
+                        //    ⇒ 开启态滑块的右边缘跑到轨道**外面**（55 的算法 + 48 的
+                        //    画布），关闭态右侧缝隙也被挤掉。这正是用户 2026-10-06
+                        //    反馈「开启时滑块超出轨道边界」的真因。
+                        // 2. `scale(0.85f)` 缩的是**玻璃层**：`drawBackdrop` 按
+                        //    graphicsLayer 的坐标采样，缩放会让采样区与绘制区错位
+                        //    （M3 时代缩的是真实控件，换玻璃后语义变了）。
                         //
-                        // 现在玻璃开关自己就是按卡片空间设计的尺寸（轨道 60dp），
-                        // 占位收到 `requiredSize` 即可，**内容保持原样**。
-                        modifier = Modifier
-                            .requiredSize(48.dp, 28.dp),
+                        // 玻璃开关自己就是按卡片空间设计的尺寸（轨道 55dp，
+                        // 手机单列内容宽约 97dp 里放得下），**原样使用**。
+
                         colors = workflowSwitchColors(
                             colorfulCardsEnabled = colorfulCardsEnabled,
                             visualColors = visualColors

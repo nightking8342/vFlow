@@ -428,6 +428,45 @@ class GlassSwitchTest {
     }
 
     @Test
+    fun `卡片调用点不得给开关传 requiredSize 或 scale`() {
+        // ⚠️⚠️ 这条锁的是用户 2026-10-06 反馈的「开启状态时滑块会超出轨道边界」。
+        //    真因**不在开关里**，而在调用点传了 `requiredSize(48.dp, 28.dp)`：
+        //    它覆盖父约束，轨道画出来是 48dp，而滑块的位移/宽度仍按常量的
+        //    55dp 算 ⇒ 右边缘跑到轨道外面；关闭态的右侧缝隙也被挤掉。
+        //
+        //    `scale` 同样不能传：它缩的是**玻璃层**，会让 `drawBackdrop`
+        //    的采样区与绘制区错位（M3 时代缩的是真实控件，换玻璃后语义变了）。
+        val source = SourceScan.stripped(WORKFLOW_LIST_SCREEN)
+        val calls = Regex("""VFlowSwitch\(""").findAll(source)
+        var checked = 0
+        calls.forEach { m ->
+            // 取到本调用的右括号
+            var i = m.range.last + 1
+            var depth = 1
+            while (i < source.length && depth > 0) {
+                when (source[i]) {
+                    '(' -> depth++
+                    ')' -> depth--
+                }
+                i++
+            }
+            val block = source.substring(m.range.first, i)
+            assertFalse(
+                "工作流卡片上的 VFlowSwitch 不得传 requiredSize —— 它会覆盖父约束，" +
+                    "而滑块的位移/宽度仍按常量算 ⇒ 开启态滑块超出轨道边界",
+                block.contains("requiredSize"),
+            )
+            assertFalse(
+                "工作流卡片上的 VFlowSwitch 不得传 scale —— 它缩的是玻璃层，" +
+                    "会让 drawBackdrop 的采样区与绘制区错位",
+                block.contains(".scale("),
+            )
+            checked++
+        }
+        assertTrue("应至少扫到 2 个卡片调用点（列表模式 + 瀑布流），实际 $checked", checked >= 2)
+    }
+
+    @Test
     fun `VFlowSwitch 的玻璃态走的是示例版（第三次定版）`() {
         // ⚠️ 这条锁的是 2026-10-06 的**最终决策**。中间曾回退到
         //    `GlassSwitch`（M3 尺寸），原因是把三件事混在一起判断了：
@@ -462,8 +501,15 @@ class GlassSwitchTest {
         //    关闭态两侧露出的柱位更窄（用户上一版反馈的「看不到槽位」会被放大）。
         assertEquals("示例 64dp，本项目等比缩到 55dp", 55f, LiquidToggleTokens.TrackWidth.value, 0.001f)
         assertEquals("示例 28dp", 24f, LiquidToggleTokens.TrackHeight.value, 0.001f)
-        assertEquals("示例 40dp", 34f, LiquidToggleTokens.ThumbWidth.value, 0.001f)
+        // ⚠️⚠️ 滑块宽是**唯一**比「等比缩放」还小的一项：等比应为 34，
+        //    而用户 2026-10-06 反馈「滑块应该再小一点」+ 关闭态右侧缝隙太少。
+        assertEquals("示例 40dp，本项目收到 26（比等比的 34 还小，见 Token KDoc）",
+            26f, LiquidToggleTokens.ThumbWidth.value, 0.001f)
         assertEquals("示例 24dp", 20f, LiquidToggleTokens.ThumbHeight.value, 0.001f)
+        assertTrue(
+            "滑块占轨道的比例应接近 M3 的 46%（24/52）—— 太大则关闭态看不到柱位",
+            LiquidToggleTokens.ThumbWidth.value / LiquidToggleTokens.TrackWidth.value in 0.4f..0.55f,
+        )
         assertEquals("示例 padding = 2f.dp", 2f, LiquidToggleTokens.Padding.value, 0.001f)
         // ⚠️⚠️ **pressedScale 必须照抄 1.5f，不许收回**。它一度被我误判成
         //    「关闭时那个圆变小」的真因而改成 1f，用户随后明确指出：
@@ -482,8 +528,8 @@ class GlassSwitchTest {
         //    真正被它抓住的是**改尺寸**：把 `TrackWidth` 改成 52 会让它红
         //    （反证 V 实测 3 条红），而那正是「忘了同步 travel」的后果。
         //    ⇒ 「按公式写」这一层是**约定**，没有机器化守卫（写在这里以免高估它）。
-        // 55 − 34 − 2×2 = 17（示例是 64 − 40 − 4 = 20，等比缩小后同步变小）
-        assertEquals(17f, liquidToggleTravelDp().value, 0.001f)
+        // 55 − 26 − 2×2 = 25（示例是 64 − 40 − 4 = 20）
+        assertEquals(25f, liquidToggleTravelDp().value, 0.001f)
         assertTrue(
             "可移动距离必须为正，否则拖动时分母为 0（fraction 变 NaN 且不报错）",
             liquidToggleTravelDp().value > 0f,
@@ -496,7 +542,12 @@ class GlassSwitchTest {
         //    滑块占比漂移，而观感变化（柱位露多少）是**没有报错**的。
         val s = LiquidToggleTokens.Scale
         assertEquals("轨道高 / 轨道宽 的比例", 28f / 64f, LiquidToggleTokens.TrackHeight.value / LiquidToggleTokens.TrackWidth.value, 0.005f)
-        assertEquals("滑块宽 / 轨道宽 的比例（示例 40/64 = 62.5%）", 40f / 64f, LiquidToggleTokens.ThumbWidth.value / LiquidToggleTokens.TrackWidth.value, 0.01f)
+        // ⚠️ **滑块宽刻意不参与等比** —— 收到 26 让占比降到 47%（近 M3 的 46%），
+        //    目的是关闭态两侧各露 27dp、柱位一眼可见。这条断言只锁「别涨回去」。
+        assertTrue(
+            "滑块占轨道比例应明显低于示例的 62.5%（那是「关闭时看不到柱位」的根源）",
+            LiquidToggleTokens.ThumbWidth.value / LiquidToggleTokens.TrackWidth.value < 0.55f,
+        )
         // ⚠️ 高度方向**做不到精确等比**：24 × 0.859 = 20.63，而 dp 只能取整数
         //    （取 20 ⇒ 比例 0.833，取 21 ⇒ 0.875，都比 0.857 偏）。
         //    容差按这个取值粒度给，不假装它是精确的。
@@ -520,9 +571,9 @@ class GlassSwitchTest {
         // ⚠️ 端点位置 = padding + travel = 2 + 20 = 22dp，**不是** 64 − 40 − 2 = 22
         //    （同一个数，但写成 62 是把「右边缘」当成了「左边距」—— 第一版就这么错的）。
         val endX = liquidToggleThumbXDp(1f, isLtr = true).value
-        assertEquals("fraction=1 时左边距 = padding + travel = 19dp", 19f, endX, 0.001f)
+        assertEquals("fraction=1 时左边距 = padding + travel = 27dp", 27f, endX, 0.001f)
         assertEquals(
-            "于是右边缘 = 19 + 34 = 53dp，距轨道右端恰好也是 padding",
+            "于是右边缘 = 27 + 26 = 53dp，距轨道右端恰好也是 padding",
             53f,
             endX + LiquidToggleTokens.ThumbWidth.value,
             0.001f,
