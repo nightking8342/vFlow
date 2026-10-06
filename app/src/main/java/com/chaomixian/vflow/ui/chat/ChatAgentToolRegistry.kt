@@ -135,6 +135,24 @@ internal const val CHAT_GET_WORKFLOW_MODULE_ID = "vflow.agent.get_workflow"
 internal const val CHAT_UPDATE_WORKFLOW_TOOL_NAME = "vflow_agent_update_workflow"
 internal const val CHAT_UPDATE_WORKFLOW_MODULE_ID = "vflow.agent.update_workflow"
 
+/**
+ * 修改用户**环境**的工具名：文件夹建 / 改名 / 解散 + 全局变量建 / 删。
+ *
+ * 与 [CHAT_GET_ENVIRONMENT_TOOL_NAME] 成对：那个读、这个写。
+ * **一次调用只做一个操作**（靠 `operation` 分派），与 `update_workflow` 同形——
+ * 单操作让校验、错误定位、审批粒度都简单一档。
+ *
+ * ⚠️ 三处**刻意不暴露**（设计文档决策 1/4/8）：
+ * - **没有**「文件夹连同工作流一起删」的 operation（只有「解散」：工作流回根目录）——
+ *   本项目没有版本历史、没有撤销，让 AI 一次抹掉全部工作流与「用户自己点两次确认」
+ *   不是同一个风险量级；
+ * - **不出现 `parent_id`**：本 App 不存在嵌套文件夹，相关键由执行层**显式拒绝**
+ *   （不是静默忽略）；
+ * - **不提供** `rename_global_variable` / 改全局变量的值（同名已存在 ⇒ 拒绝）。
+ */
+internal const val CHAT_UPDATE_ENVIRONMENT_TOOL_NAME = "vflow_agent_update_environment"
+internal const val CHAT_UPDATE_ENVIRONMENT_MODULE_ID = "vflow.agent.update_environment"
+
 internal fun chatToolNameFromModuleId(moduleId: String): String {
     val normalized = moduleId
         .lowercase()
@@ -154,7 +172,7 @@ internal class ChatAgentToolRegistry(context: Context) {
         ModuleRegistry.initialize(appContext)
         temporaryWorkflowModuleIds = buildTemporaryWorkflowModuleIds()
         savedWorkflowModuleIds = buildSavedWorkflowModuleIds()
-        // 常驻工具表 = 4 个工作流工具 + 3 个按需入口 + 11 个屏幕 helper。
+        // 常驻工具表 = 4 个工作流工具 + 3 个按需入口 + 3 个环境与数据工具 + 11 个屏幕 helper = **21**。
         //
         // **59 个模块工具已撤出**（P1-1c）：它们不再进 `tools` 数组，
         // 改用 `query_module_schema` 查字段 + `call_module` 执行。
@@ -174,6 +192,7 @@ internal class ChatAgentToolRegistry(context: Context) {
                 buildCallModuleToolDefinition(),
                 buildListWorkflowsToolDefinition(),
                 buildGetEnvironmentToolDefinition(),
+                buildUpdateEnvironmentToolDefinition(),
             ) +
                 ChatAgentNativeToolExecutor.buildDefinitions(appContext)
             ).associateBy { it.name }
@@ -494,6 +513,13 @@ internal class ChatAgentToolRegistry(context: Context) {
                 append("Global variables are shared across workflows; reference one in a module parameter as ")
                 append("`{{global.<name>}}`. Use this before writing a step that reads or writes a global variable, ")
                 append("so you use a name that actually exists. ")
+                // ⚠️ 落实设计文档 §5 第 6 条：补上 id 之后，两条读路径的口径就不一致了
+                // （这里给 id、`list_workflows` 的 `folder` 是**名字**筛选），必须写明，
+                // 否则模型会拿 `list_workflows` 输出里的名字去填 `folderId`、撞上硬报错。
+                append("Folder entries include the folder `id`. That id — not the folder name — is what ")
+                append("`folderId` wants in `$CHAT_SAVE_WORKFLOW_TOOL_NAME` / `$CHAT_UPDATE_WORKFLOW_TOOL_NAME`, ")
+                append("and what `folder_id` wants in `$CHAT_UPDATE_ENVIRONMENT_TOOL_NAME`. ")
+                append("Note that `$CHAT_LIST_WORKFLOWS_TOOL_NAME`'s `folder` argument is a NAME filter, not an id. ")
                 append("This is a local lookup with no side effects.")
             },
             moduleId = CHAT_GET_ENVIRONMENT_MODULE_ID,
@@ -508,6 +534,129 @@ internal class ChatAgentToolRegistry(context: Context) {
             usageScopes = setOf(ChatAgentToolUsageScope.DIRECT_TOOL),
             truncatable = false,
         )
+    }
+
+    /**
+     * `update_environment`：文件夹与全局变量的写操作。
+     *
+     * ⚠️ 这里声明的 `riskLevel` 是**占位值** —— 实际审批走
+     * `ChatAgentModuleExecutor.riskLevelOf` 读的 `item.operation.riskLevel`（设计 §4.4 按 operation 分档）。
+     * 与 `call_module` / `update_workflow` 同款：静态字段装不下「按运行时参数分档」的信息。
+     *
+     * description 里写死了三件模型不被告知就一定会猜错的事：写文件夹要的是 id（不是名字）、
+     * 删全局变量会**静默**打断既有引用、文件夹不能重名。
+     */
+    private fun buildUpdateEnvironmentToolDefinition(): ChatAgentToolDefinition {
+        return ChatAgentToolDefinition(
+            name = CHAT_UPDATE_ENVIRONMENT_TOOL_NAME,
+            title = "修改用户环境",
+            description = buildString {
+                append("Create/rename/dissolve workflow folders, and create/delete global variables. ")
+                append("One call performs exactly ONE operation.")
+                append("\n\nFolders are addressed by `folder_id`: the id from `")
+                append(CHAT_GET_ENVIRONMENT_TOOL_NAME).append("` output. ")
+                append("A folder NAME is never accepted as a target. ")
+                append("`").append(CHAT_LIST_WORKFLOWS_TOOL_NAME).append("`'s `folder` argument is a NAME filter, ")
+                append("not an id — do not pass that name here. ")
+                append("`dissolve_folder` deletes the folder only: the workflows inside are moved to the root and are ")
+                append("NEVER deleted. There is no operation that deletes a folder together with its workflows, ")
+                append("and there are no nested folders.")
+                append("\n\n`create_folder` and `rename_folder` reject a name that is already used by another folder ")
+                append("(the check ignores case), so you can never end up with duplicates.")
+                append("\n\n`create_global_variable` never overwrites: if the name already exists the call is rejected. ")
+                append("`value` is a literal — `{{...}}` templates are NOT resolved at runtime. ")
+                append("`delete_global_variable` breaks existing `{{global.<name>}}` references in workflows: ")
+                append("they silently stop resolving. Warn the user before deleting one.")
+                append("\n\nEvery operation is applied immediately and cannot be undone.")
+            },
+            moduleId = CHAT_UPDATE_ENVIRONMENT_MODULE_ID,
+            moduleDisplayName = "修改用户环境",
+            routingHints = setOf(
+                "文件夹", "新建文件夹", "删除文件夹", "全局变量",
+                "environment", "folder", "global variable",
+            ),
+            inputSchema = buildUpdateEnvironmentSchema(),
+            // 本工具不需要任何权限（不改工作流步骤、不碰系统能力）。
+            permissionNames = emptyList(),
+            // ⚠️ 占位值，真实审批取 prepared item 的 `operation.riskLevel`。
+            riskLevel = ChatAgentToolRiskLevel.STANDARD,
+            usageScopes = setOf(ChatAgentToolUsageScope.DIRECT_TOOL),
+            backend = ChatAgentToolBackend.UPDATE_ENVIRONMENT,
+            // 回执短，且**尾部有意义**（操作名、id、受影响条数都在末行）。
+            truncatable = false,
+        )
+    }
+
+    private fun buildUpdateEnvironmentSchema(): JsonObject {
+        return buildJsonObject {
+            put("type", "object")
+            put("additionalProperties", JsonPrimitive(false))
+            put(
+                "properties",
+                buildJsonObject {
+                    put("operation", buildJsonObject {
+                        put("type", "string")
+                        put(
+                            "enum",
+                            JsonArray(
+                                listOf(
+                                    "create_folder",
+                                    "rename_folder",
+                                    "dissolve_folder",
+                                    "create_global_variable",
+                                    "delete_global_variable",
+                                ).map(::JsonPrimitive)
+                            )
+                        )
+                        put("description", "Which single operation to perform.")
+                    })
+                    put("name", buildJsonObject {
+                        put("type", "string")
+                        put(
+                            "description",
+                            "New folder name (create_folder) or global variable name " +
+                                "(create_global_variable / delete_global_variable). Must be non-blank."
+                        )
+                    })
+                    put("folder_id", buildJsonObject {
+                        put("type", "string")
+                        put(
+                            "description",
+                            "Folder id from `$CHAT_GET_ENVIRONMENT_TOOL_NAME` (rename_folder / dissolve_folder). " +
+                                "This is the id, NOT the folder name."
+                        )
+                    })
+                    put("new_name", buildJsonObject {
+                        put("type", "string")
+                        put(
+                            "description",
+                            "New folder name (rename_folder). Must be non-blank and not used by another " +
+                                "folder (case-insensitive)."
+                        )
+                    })
+                    put("value", buildJsonObject {
+                        put("type", "string")
+                        put(
+                            "description",
+                            "Initial value (create_global_variable), as a literal. `{{...}}` templates are NOT resolved."
+                        )
+                    })
+                    put("type", buildJsonObject {
+                        put("type", "string")
+                        put("enum", JsonArray(listOf("string", "number", "boolean").map(::JsonPrimitive)))
+                        put(
+                            "description",
+                            "Value type (create_global_variable). Required — no default. " +
+                                "`number` needs a numeric value; `boolean` needs exactly `true` or `false`."
+                        )
+                        // ⚠️ 刻意**不给 `default`**：给了它会倾向于省略，而省略时
+                        //    「它想要什么类型」无从判断，只能我方替它猜一个。
+                    })
+                }
+            )
+            // 其余字段的必填性**按 operation 判断**（真必填，而不是「声明成必填」）。
+            put("required", buildJsonArray { add(JsonPrimitive("operation")) })
+        }
     }
 
     private fun buildCallModuleToolDefinition(): ChatAgentToolDefinition {

@@ -364,24 +364,32 @@ query_module_schema(moduleId, operator?) → {
 
 ### 4.0 工具数量总览
 
-**改造前 72 个 → 改造后 18 个。**
+**改造前 72 个 → 改造后 21 个。**
 
 | 类别 | 改造前 | 改造后 | 说明 |
 |---|---|---|---|
 | 原生 helper | 11 | **11** | 不变（与模块工具集合独立，见 §3.5） |
-| 工作流工具 | 2 | **2** | `save_workflow` / `run_temporary_workflow` |
+| 工作流工具 | 2 | **4** | `save_workflow` / `run_temporary_workflow` + 此后新增的 `get_workflow` / `update_workflow` |
 | 模块工具（`DIRECT_TOOL`） | **59** | **0** | **全部撤出 `tools` 数组**，改由 `query` + `call_module` 按需 |
 | `load_skill` | — | **1** | 新增（P0-2）。**技能目录现已清空**，机制保留待后续加技能 |
 | `query_module_schema` | — | **1** | 新增（P1-1）——回答「模块长什么样」（形状） |
 | `call_module` | — | **1** | 新增（P1-1b） |
 | `list_workflows` | — | **1** | 新增（v1.5.5）——回答「用户有哪些工作流」（数据） |
 | `get_environment` | — | **1** | 新增（v1.5.5）——文件夹 + 全局变量 |
+| `update_environment` | — | **1** | 新增（2026-10-06）——文件夹建/改名/解散 + 全局变量建/删 |
 | `search_tools` | — | （0） | 默认不做（P1-3C） |
-| **合计** | **72** | **18** | 低于 CCB `CORE_TOOLS`（28） |
+| **合计** | **72** | **21** | 仍低于 CCB `CORE_TOOLS`（28） |
+
+> ⚠️ **「18」是 v1.5.5 的口径**，此后又加了三个工具才到 21：
+> `get_workflow` / `update_workflow`（工作流读写，见 `docs/fork/workflow-read-write-tools.md`）、
+> `update_environment`（2026-10-06，见 `docs/fork/environment-write-tool.md`）。
+> 表格里「工作流工具 2 → 4」与合计 21 是**本批一并改正**的实测口径
+> （`ChatAgentToolRegistry.toolsByName` 的 `listOf(...)` 9 项 + `buildDefinitions` 11 项 + 1 项 = 21）。
+> 实施新工具时**以这个实测口径为准**，不要沿用旧数再加一。
 
 **收益**：
 
-1. **工具数进入被验证过的区间**（18，低于 CCB 的 28、OpenCode 内建 ~15 同量级）
+1. **工具数进入被验证过的区间**（21，仍低于 CCB 的 28、OpenCode 内建 ~15 同量级）
 2. **token 大降**——两个工作流工具的 description 从数万字符降到约 6,000 字符（清单只留 moduleId）
 3. **消除"技能=可见性开关"**——不再需要手写 `moduleIds` 白名单
 

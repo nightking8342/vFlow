@@ -192,6 +192,23 @@ internal sealed interface ChatPreparedToolItem {
         val missingPermissions: List<Permission>,
         val riskLevel: ChatAgentToolRiskLevel,
     ) : ChatPreparedToolItem
+
+    /**
+     * `update_environment`：文件夹 + 全局变量的写操作。
+     *
+     * ⚠️ **不含 `validationErrors`**（与 [UpdateWorkflow] 不同）—— 校验失败一律在
+     * `prepareUpdateEnvironment` 里直接返回 `ImmediateResult(ERROR, riskLevel = READ_ONLY)`：
+     * 本工具**单操作、错误单一**，且失败的调用**没有任何副作用**
+     * ⇒ 没有理由把它算进批风险去弹审批（那会让用户批准一个必然失败的操作）。
+     *
+     * ⚠️ **刻意不单独存 `riskLevel` 字段** —— 用 `item.operation.riskLevel`。这样在类型上
+     * 就不可能出现「字段与 operation 不一致」这个静默失效模式。
+     */
+    data class UpdateEnvironment(
+        override val toolCall: ChatToolCall,
+        val definition: ChatAgentToolDefinition,
+        val operation: EnvironmentOperation,
+    ) : ChatPreparedToolItem
 }
 
 internal data class ChatPreparedToolBatch(
@@ -221,6 +238,8 @@ internal class ChatAgentModuleExecutor(
                     is ChatPreparedToolItem.TemporaryWorkflow -> item.missingPermissions
                     is ChatPreparedToolItem.SaveWorkflow -> emptyList()
                     is ChatPreparedToolItem.UpdateWorkflow -> emptyList()
+                    // 本工具不需要任何权限（不改工作流步骤、不碰系统能力）。
+                    is ChatPreparedToolItem.UpdateEnvironment -> emptyList()
                     is ChatPreparedToolItem.ImmediateResult -> emptyList()
                 }
             }
@@ -254,6 +273,7 @@ internal class ChatAgentModuleExecutor(
                 is ChatPreparedToolItem.TemporaryWorkflow -> executeTemporaryWorkflow(item, artifactStore)
                 is ChatPreparedToolItem.SaveWorkflow -> executeSaveWorkflow(item)
                 is ChatPreparedToolItem.UpdateWorkflow -> executeUpdateWorkflow(item)
+                is ChatPreparedToolItem.UpdateEnvironment -> executeUpdateEnvironment(item)
             }.also { result ->
                 DebugLogger.i(
                     LOG_TAG,
@@ -368,6 +388,20 @@ internal class ChatAgentModuleExecutor(
                         ),
                     )
                 }
+                // 用户**拒绝**审批时走这里（`ChatViewModel.onToolPermissionResult` 的 else 分支）。
+                // 本工具不声明权限，所以「缺权限」永远不成立——这条分支的实际含义是「被拒绝了」。
+                is ChatPreparedToolItem.UpdateEnvironment -> {
+                    ChatToolResult(
+                        callId = item.toolCall.id,
+                        name = item.toolCall.name,
+                        status = ChatToolResultStatus.PERMISSION_REQUIRED,
+                        summary = item.definition.title,
+                        outputText = chatAgentAppendNextStep(
+                            baseMessage = "The environment change was not applied because the user did not approve it. Nothing was changed.",
+                            nextStep = "do not retry the same call on your own; explain what you wanted to change and let the user decide.",
+                        ),
+                    )
+                }
                 is ChatPreparedToolItem.TemporaryWorkflow -> {
                     val permissionNames = item.missingPermissions
                         .map { it.getLocalizedName(appContext) }
@@ -409,6 +443,9 @@ internal class ChatAgentModuleExecutor(
             is ChatPreparedToolItem.TemporaryWorkflow -> item.riskLevel
             is ChatPreparedToolItem.SaveWorkflow -> item.riskLevel
             is ChatPreparedToolItem.UpdateWorkflow -> item.riskLevel
+            // 从 operation **派生**，不读 item 上的字段：字段与 operation 之间没有
+            // 可漂移的余地（设计 §4.4 的风险表按 operation 分档）。
+            is ChatPreparedToolItem.UpdateEnvironment -> item.operation.riskLevel
             is ChatPreparedToolItem.ImmediateResult -> item.riskLevel
         }
     }
@@ -465,6 +502,11 @@ internal class ChatAgentModuleExecutor(
         }
         if (toolCall.name == CHAT_UPDATE_WORKFLOW_TOOL_NAME) {
             return prepareUpdateWorkflow(toolCall, artifactStore)
+        }
+        // ⚠️ 必须早返回：本工具的 `moduleId`（`vflow.agent.update_environment`）**不是注册模块**，
+        // 落到下面会命中「未注册」分支（与其余 `vflow.agent.*` 工具同款处理）。
+        if (toolCall.name == CHAT_UPDATE_ENVIRONMENT_TOOL_NAME) {
+            return prepareUpdateEnvironment(toolCall)
         }
 
         val definition = toolRegistry.getTool(toolCall.name)
@@ -677,6 +719,15 @@ internal class ChatAgentModuleExecutor(
                         status = ChatToolResultStatus.ERROR,
                         summary = definition.title,
                         outputText = "Updating a workflow from inside a temporary workflow is not supported.",
+                    )
+                    // 环境写不在临时工作流的白名单里（prepareModuleStep 也不可能产出它），
+                    // 这条只为 sealed 穷尽；与上面两条同形，措辞保持一致。
+                    is ChatPreparedToolItem.UpdateEnvironment -> validationErrors += ChatToolResult(
+                        callId = preparedToolCall.id,
+                        name = preparedToolCall.name,
+                        status = ChatToolResultStatus.ERROR,
+                        summary = definition.title,
+                        outputText = "Environment changes cannot be embedded inside temporary workflows.",
                     )
                 }
             }
@@ -1921,6 +1972,136 @@ internal class ChatAgentModuleExecutor(
         }.trim()
     }
 
+    /**
+     * 处理 `update_environment`：**只做校验 + 组装，绝不落盘**。
+     *
+     * ⚠️⚠️ **这里绝不能有任何写操作** —— [prepareBatch] 会被
+     * `ChatViewModel.shouldAutoApproveToolCalls` 在**用户点批准之前**调用
+     * （`ChatViewModel` 里 `prepareBatch(toolCalls, artifactStore)` 那一处），
+     * 写在 prepare 阶段等于**审批形同虚设**。
+     *
+     * 本函数只允许两个**读**调用：`FolderManager.getAllFolders()` 与 `GlobalVariableStore.getAll()`。
+     * 这条由 `UpdateEnvironmentWiringTest` 的源码扫描机器化锁住。
+     */
+    private fun prepareUpdateEnvironment(toolCall: ChatToolCall): ChatPreparedToolItem {
+        val definition = toolRegistry.getTool(toolCall.name)
+            ?: return ChatPreparedToolItem.ImmediateResult(
+                toolCall = toolCall,
+                result = ChatToolResult(
+                    callId = toolCall.id,
+                    name = toolCall.name,
+                    status = ChatToolResultStatus.ERROR,
+                    summary = toolCall.name,
+                    outputText = "Unknown environment tool `${toolCall.name}`.",
+                )
+            )
+
+        // 只读数据（供纯函数层校验），不写任何东西。
+        // 读失败按「没有既有数据」处理：那只会让「同名/不存在」的校验少一层保护，
+        // 而写路径（execute）自己会失败，不会静默写坏 —— 与把整个调用判失败相比，
+        // 后者会让一次临时的读异常变成「什么都做不了」。
+        val folders = runCatching { FolderManager(appContext).getAllFolders() }
+            .getOrDefault(emptyList())
+        val globalNames = runCatching { GlobalVariableStore.getAll(appContext).keys }
+            .getOrDefault(emptySet())
+
+        return when (val plan = parseEnvironmentOperation(toolCall.argumentsJson, folders, globalNames)) {
+            is EnvironmentPlan.Rejected -> ChatPreparedToolItem.ImmediateResult(
+                toolCall = toolCall,
+                result = ChatToolResult(
+                    callId = toolCall.id,
+                    name = toolCall.name,
+                    status = ChatToolResultStatus.ERROR,
+                    summary = definition.title,
+                    outputText = chatAgentAppendNextStep(
+                        baseMessage = plan.message,
+                        nextStep = "fix the arguments and call the tool again; nothing was changed.",
+                    ),
+                ),
+                // ⚠️ READ_ONLY：一个必然失败的调用不该弹审批（它没有任何副作用）。
+                // 沿用 ImmediateResult 的默认 HIGH 会让「模型拼错一个参数」也弹窗。
+                riskLevel = ChatAgentToolRiskLevel.READ_ONLY,
+            )
+
+            is EnvironmentPlan.Planned -> ChatPreparedToolItem.UpdateEnvironment(
+                toolCall = toolCall,
+                definition = definition,
+                operation = plan.operation,
+            )
+        }
+    }
+
+    /**
+     * 落盘。只有校验通过（[ChatPreparedToolItem.UpdateEnvironment]）才会走到这里。
+     *
+     * ⚠️ 本函数不可单测（依赖 Android `Context`），「写操作真的在这里、而不在 prepare」
+     * 由 `UpdateEnvironmentWiringTest` 的源码扫描锁住。
+     */
+    private fun executeUpdateEnvironment(item: ChatPreparedToolItem.UpdateEnvironment): ChatToolResult {
+        val operation = item.operation
+        return try {
+            val affectedWorkflows = when (operation) {
+                is EnvironmentOperation.CreateFolder -> {
+                    FolderManager(appContext).saveFolder(operation.folder)
+                    0
+                }
+
+                // `saveFolder` 按 id 覆盖（upsert），正是改名要的语义：id 不变、引用不断。
+                is EnvironmentOperation.RenameFolder -> {
+                    FolderManager(appContext).saveFolder(operation.folder)
+                    0
+                }
+
+                is EnvironmentOperation.DissolveFolder -> {
+                    val manager = WorkflowManager(appContext)
+                    val affected = manager.getAllWorkflows().filter { it.folderId == operation.folderId }
+                    // ⚠️ 顺序不可反：**先**把工作流移出、**再**删文件夹。
+                    // 反过来的话中途崩溃会留下「文件夹没了、工作流还指着它」——
+                    // 那些工作流会从列表上消失（`WorkflowListRoute` 只认「命中已存在文件夹」与 null）。
+                    affected.forEach { manager.saveWorkflow(it.copy(folderId = null)) }
+                    FolderManager(appContext).deleteFolder(operation.folderId)
+                    affected.size
+                }
+
+                is EnvironmentOperation.CreateGlobalVariable -> {
+                    GlobalVariableStore.put(appContext, operation.name, operation.value)
+                    0
+                }
+
+                is EnvironmentOperation.DeleteGlobalVariable -> {
+                    GlobalVariableStore.remove(appContext, operation.name)
+                    0
+                }
+            }
+
+            ChatToolResult(
+                callId = item.toolCall.id,
+                name = item.toolCall.name,
+                status = ChatToolResultStatus.SUCCESS,
+                summary = item.definition.title,
+                outputText = describeEnvironmentOperation(operation, affectedWorkflows),
+            )
+        } catch (throwable: Throwable) {
+            // ⚠️ **不做回滚**（与 UI 的 `showDissolveFolderConfirmationDialog` 一致 —— 它也不回滚）：
+            // 回滚本身也会失败，而半完成状态**可见且可自愈**（用 get_environment 复查即可）。
+            // 代价是必须把「可能只完成了一部分」说出来，否则用户会以为「什么都没发生」。
+            ChatToolResult(
+                callId = item.toolCall.id,
+                name = item.toolCall.name,
+                status = ChatToolResultStatus.ERROR,
+                summary = item.definition.title,
+                outputText = buildString {
+                    append("The environment change failed; nothing was reported as done.")
+                    throwable.message?.takeIf { it.isNotBlank() }?.let { append("\n").append(it) }
+                    if (operation is EnvironmentOperation.DissolveFolder) {
+                        append("\n\n⚠️ `dissolve_folder` is not atomic — some workflows may already have been ")
+                        append("moved out of the folder. Check with `$CHAT_GET_ENVIRONMENT_TOOL_NAME` before retrying.")
+                    }
+                }.trim(),
+            )
+        }
+    }
+
     private fun buildSavedWorkflowResultText(workflow: ChatPreparedToolItem.SaveWorkflow): String {
         return buildString {
             append("Workflow `${workflow.workflow.name}` was saved successfully.")
@@ -2243,6 +2424,8 @@ internal class ChatAgentModuleExecutor(
             is ChatPreparedToolItem.SaveWorkflow -> "save_workflow name=${toolCall.name} workflow=${workflow.name}"
             is ChatPreparedToolItem.UpdateWorkflow ->
                 "update_workflow name=${toolCall.name} id=${workflowId} warnings=${warnings.size} errors=${validationErrors.size}"
+            is ChatPreparedToolItem.UpdateEnvironment ->
+                "update_environment name=${toolCall.name} op=${operation::class.simpleName} risk=${operation.riskLevel}"
             is ChatPreparedToolItem.TemporaryWorkflow -> "temporary_workflow name=${toolCall.name} workflow=${workflow.name}"
         }
     }
@@ -2485,6 +2668,11 @@ internal class ChatAgentModuleExecutor(
      *
      * 全局变量**只给名字与类型**：模型引用 `{{global.x}}` 不需要知道当前值（执行时取值），
      * 而值可能是长 JSON 或用户敏感数据，无谓地进上下文。
+     *
+     * 文件夹**必须给 id**（决策 2）—— 三条写路径（`save_workflow.folderId` /
+     * `update_workflow.metadata.folderId` / `update_environment.folder_id`）全都只收 id，
+     * 而这里是模型唯一的文件夹信息来源。**不给 `parentId` / 「under 父文件夹」**
+     * （决策 3）：本 App 没有嵌套文件夹，展示它是把不存在的概念摆到模型面前。
      */
     private fun prepareGetEnvironment(toolCall: ChatToolCall): ChatToolResult {
         val folders = runCatching { FolderManager(appContext).getAllFolders() }
@@ -2506,10 +2694,12 @@ internal class ChatAgentModuleExecutor(
                 } else {
                     folders.sortedBy { it.order }.forEach { folder ->
                         val count = workflows.count { it.folderId == folder.id }
-                        append("  - ").append(folder.name).append(" (").append(count).append(" workflows)")
-                        folder.parentId?.let { parent ->
-                            folders.firstOrNull { it.id == parent }?.let { append(" under ").append(it.name) }
-                        }
+                        // ⚠️ 必须带上 `id`：`save_workflow` / `update_workflow` 的 `folderId`
+                        //    与 `update_environment` 的 `folder_id` **只收 id**，
+                        //    而此前这里是模型拿到文件夹信息的**唯一**来源、且只有名字
+                        //    ⇒「把工作流放进文件夹」这条需求根本走不通（决策 2）。
+                        append("  - ").append(folder.name).append(" (id: ").append(folder.id).append(", ")
+                            .append(count).append(" workflows)")
                         appendLine()
                     }
                 }
@@ -3120,4 +3310,364 @@ internal fun visibleInputsForAgent(
         // 这才是与 AI 相关的语义。
         input.visibility?.isVisible(stepParameters) ?: true
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 环境写工具（`vflow_agent_update_environment`）的纯函数层
+//
+// 设计文档：`docs/fork/environment-write-tool.md`。三层分工：
+//   ① [parseEnvironmentOperation] —— 键白名单 + 按 operation 的必填/存在性/同名/类型校验，**纯函数**；
+//   ② `ChatAgentModuleExecutor.prepareUpdateEnvironment` —— 只读数据喂给 ①，**不落盘**；
+//   ③ `ChatAgentModuleExecutor.executeUpdateEnvironment` —— 落盘（不可单测，靠源码扫描型接线测试锁）。
+//
+// ⚠️ ① 入参是**原始 JSON 字符串**而不是 `Map<String, Any?>`：本仓库记过
+//    「测试夹具的类型必须等于生产数据的类型」的教训（`itemsFromLossless` 恒空那个真机缺陷），
+//    而 `Map` 形状要靠人手工对齐、JSON 字符串天然就是生产形状。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 一次「环境写」操作 —— **校验通过之后**的形态，含落盘所需的全部数据。
+ *
+ * ⚠️ **刻意不含 `validationErrors` 字段**（`ChatPreparedToolItem.UpdateWorkflow` 有）：
+ * 本工具**单操作、错误单一**，校验失败一律直接回 `ImmediateResult` 并标 `READ_ONLY`，
+ * 不带着错误往下走 —— 带着走会让它参与批风险取 max，于是用户要为一个
+ * **必然失败、零副作用**的调用点批准（方案 §6 取舍 5）。
+ *
+ * ⚠️ [riskLevel] 是**派生值**而不是构造参数：这样在类型上就不可能存在
+ * 「item 上存的字段与 operation 不一致」这个静默失效模式。
+ */
+internal sealed interface EnvironmentOperation {
+    /** 该操作的审批风险等级（设计文档 §4.4）。 */
+    val riskLevel: ChatAgentToolRiskLevel
+
+    /** `create_folder`：`folder` 是**尚未落盘**的新对象（id 已在解析期生成）。 */
+    data class CreateFolder(val folder: WorkflowFolder) : EnvironmentOperation {
+        override val riskLevel: ChatAgentToolRiskLevel get() = ChatAgentToolRiskLevel.LOW
+    }
+
+    /**
+     * `rename_folder`：`folder` 是 `copy(name = newName)` 之后的完整对象（**id 不变**）。
+     *
+     * ⚠️ 必须报出 [oldName]：模型可能在多轮之间改了别的文件夹，
+     * 回执里只有新名它无法确认改的是哪一个。
+     */
+    data class RenameFolder(val folder: WorkflowFolder, val oldName: String) : EnvironmentOperation {
+        override val riskLevel: ChatAgentToolRiskLevel get() = ChatAgentToolRiskLevel.LOW
+    }
+
+    /** `dissolve_folder`：只删文件夹本身，里面的工作流 `folderId = null` 回到根目录。 */
+    data class DissolveFolder(val folderId: String, val folderName: String) : EnvironmentOperation {
+        override val riskLevel: ChatAgentToolRiskLevel get() = ChatAgentToolRiskLevel.STANDARD
+    }
+
+    /** `create_global_variable`：`value` 是已按 `type` 构造好的 VObject（类型在解析期已校验）。 */
+    data class CreateGlobalVariable(val name: String, val value: VObject) : EnvironmentOperation {
+        override val riskLevel: ChatAgentToolRiskLevel get() = ChatAgentToolRiskLevel.LOW
+    }
+
+    /** `delete_global_variable`。 */
+    data class DeleteGlobalVariable(val name: String) : EnvironmentOperation {
+        override val riskLevel: ChatAgentToolRiskLevel get() = ChatAgentToolRiskLevel.STANDARD
+    }
+}
+
+/** [parseEnvironmentOperation] 的结果。 */
+internal sealed interface EnvironmentPlan {
+    data class Planned(val operation: EnvironmentOperation) : EnvironmentPlan
+
+    /**
+     * 校验失败。
+     *
+     * `message` 是**给模型看的自愈文案** —— 应当含真实 id / 名字列表 / 明确的出路，
+     * 让模型下一次调用能自己改对；只回一句「拒绝了」等于让它原地重试。
+     */
+    data class Rejected(val message: String) : EnvironmentPlan
+}
+
+/**
+ * 每个 operation 允许出现的键（**显式白名单**）。
+ *
+ * ⚠️⚠️ **schema 里的 `additionalProperties: false` 只是给模型的建议，不是执行层的屏障** ——
+ * 手写 JSON 的模型照样能塞 `parent_id`。没有这张表，多给的键会被**静默忽略**，
+ * 而模型以为嵌套建成了（静默失效点 5）。
+ *
+ * 顺序即 [parseEnvironmentOperation] 报「合法 operation」时的展示顺序（`linkedMapOf`）。
+ */
+private val ENVIRONMENT_OPERATION_KEYS: Map<String, Set<String>> = linkedMapOf(
+    "create_folder" to setOf("operation", "name"),
+    "rename_folder" to setOf("operation", "folder_id", "new_name"),
+    "dissolve_folder" to setOf("operation", "folder_id"),
+    "create_global_variable" to setOf("operation", "name", "value", "type"),
+    "delete_global_variable" to setOf("operation", "name"),
+)
+
+/**
+ * 解析 `update_environment` 的入参并完成**全部校验**（键白名单、按 operation 的必填、
+ * 存在性、同名、子文件夹、类型转换）。
+ *
+ * **纯函数**：食入数据、不碰 `FolderManager` / `GlobalVariableStore`、不落盘、无 Android 依赖。
+ *
+ * @param argumentsJson 工具调用原样带来的 JSON 文本
+ * @param existingFolders 来自 `FolderManager.getAllFolders()`
+ * @param existingGlobalNames 来自 `GlobalVariableStore.getAll(context).keys`
+ */
+internal fun parseEnvironmentOperation(
+    argumentsJson: String,
+    existingFolders: List<WorkflowFolder>,
+    existingGlobalNames: Set<String>,
+): EnvironmentPlan {
+    val root = runCatching { Json.parseToJsonElement(argumentsJson) }.getOrNull() as? JsonObject
+        ?: return EnvironmentPlan.Rejected(
+            "`$CHAT_UPDATE_ENVIRONMENT_TOOL_NAME` arguments must be a JSON object."
+        )
+
+    val operationId = root.environmentTrimmed("operation")
+    val allowedKeys = ENVIRONMENT_OPERATION_KEYS[operationId]
+    if (allowedKeys != null) {
+        val unexpected = root.keys.filterNot { it in allowedKeys }
+        if (unexpected.isNotEmpty()) {
+            return EnvironmentPlan.Rejected(
+                "Unexpected key(s) for `$operationId`: ${unexpected.joinToString(", ") { "`$it`" }}. " +
+                    "Accepted keys: ${allowedKeys.joinToString(", ") { "`$it`" }}. " +
+                    "vFlow folders are flat: there is no `parent_id` and nesting is not supported."
+            )
+        }
+    }
+
+    return when (operationId) {
+        "create_folder" -> planCreateFolder(root, existingFolders)
+        "rename_folder" -> planRenameFolder(root, existingFolders)
+        "dissolve_folder" -> planDissolveFolder(root, existingFolders)
+        "create_global_variable" -> planCreateGlobalVariable(root, existingGlobalNames)
+        "delete_global_variable" -> planDeleteGlobalVariable(root, existingGlobalNames)
+        else -> EnvironmentPlan.Rejected(
+            "Unknown `operation` " +
+                (if (operationId.isBlank()) "(missing)" else "`$operationId`") +
+                ". Valid operations: " +
+                ENVIRONMENT_OPERATION_KEYS.keys.joinToString(", ") { "`$it`" } + "."
+        )
+    }
+}
+
+/**
+ * 操作回执文本（纯函数，可单测）。
+ *
+ * @param affectedWorkflowCount 只有 `dissolve_folder` 用得到。
+ */
+internal fun describeEnvironmentOperation(
+    operation: EnvironmentOperation,
+    affectedWorkflowCount: Int = 0,
+): String = when (operation) {
+    is EnvironmentOperation.CreateFolder ->
+        "Created folder \"${operation.folder.name}\" (id: ${operation.folder.id})."
+
+    is EnvironmentOperation.RenameFolder ->
+        "Renamed folder \"${operation.oldName}\" -> \"${operation.folder.name}\"."
+
+    is EnvironmentOperation.DissolveFolder ->
+        "Dissolved folder \"${operation.folderName}\". $affectedWorkflowCount workflow(s) moved to the root."
+
+    // 类型**按实际写入的那个报**，不写死 string —— 模型据此核对它要的类型有没有落对。
+    is EnvironmentOperation.CreateGlobalVariable ->
+        "Created global variable \"${operation.name}\" (${environmentVariableTypeName(operation.value)})."
+
+    // ⚠️ 这句是 P0 的「不静默」保证：本批**没有**做引用扫描（设计文档 §4.5 定 P1），
+    //    故文案只说「将不再解析」，**不得**声称扫过、不得报出条数。
+    is EnvironmentOperation.DeleteGlobalVariable ->
+        "Deleted global variable \"${operation.name}\". " +
+            "Existing {{global.${operation.name}}} references in workflows will no longer resolve."
+}
+
+private fun planCreateFolder(
+    root: JsonObject,
+    existingFolders: List<WorkflowFolder>,
+): EnvironmentPlan {
+    val name = root.environmentTrimmed("name")
+    if (name.isBlank()) {
+        return EnvironmentPlan.Rejected("`name` must not be blank — pass the new folder name.")
+    }
+    // ⚠️ 忽略大小写：`list_workflows` 的 `folder` 筛选是 `equals(folder, ignoreCase = true)`
+    //    （ChatAgentModuleExecutor 里那条），同名会让该路径变歧义。
+    val duplicate = existingFolders.firstOrNull { it.name.equals(name, ignoreCase = true) }
+    if (duplicate != null) {
+        return EnvironmentPlan.Rejected(
+            "A folder named \"$name\" already exists (id: ${duplicate.id}). " +
+                "Folder names must be unique (this check ignores case). " +
+                "Use that folder, or pick a different name. " +
+                "Existing folders: ${describeKnownFolders(existingFolders)}."
+        )
+    }
+    return EnvironmentPlan.Planned(
+        EnvironmentOperation.CreateFolder(WorkflowFolder(name = name))
+    )
+}
+
+private fun planRenameFolder(
+    root: JsonObject,
+    existingFolders: List<WorkflowFolder>,
+): EnvironmentPlan {
+    val folderId = root.environmentTrimmed("folder_id")
+    if (folderId.isBlank()) {
+        return EnvironmentPlan.Rejected(
+            "`folder_id` is required for `rename_folder`. " +
+                "Pass the folder **id** from `$CHAT_GET_ENVIRONMENT_TOOL_NAME`, not the folder name."
+        )
+    }
+    val target = existingFolders.firstOrNull { it.id == folderId }
+        ?: return EnvironmentPlan.Rejected(
+            "`folder_id: $folderId` is not an existing folder. Pass a folder **id**, not its name. " +
+                "Existing folders: ${describeKnownFolders(existingFolders)}."
+        )
+
+    val newName = root.environmentTrimmed("new_name")
+    if (newName.isBlank()) {
+        return EnvironmentPlan.Rejected("`new_name` must not be blank — pass the new folder name.")
+    }
+
+    // ⚠️⚠️ 判据必须**排除自己**（`it.id != folderId`）：写成 `any { it.name.equals(newName, true) }`
+    //    会让「把名字改成自己当前的名字」被**自己**挡住，报错说「名字已存在」—— 指向错误方向。
+    //    判据的两半方向相反，合起来才有那个「看起来矛盾」的正确行为：
+    //    既有 {A} 时，新建 "a" ⇒ 拒绝；把 A 改名成 "a" ⇒ **允许**（用户修大小写是合理需求）。
+    val conflict = existingFolders.firstOrNull { it.id != folderId && it.name.equals(newName, ignoreCase = true) }
+    if (conflict != null) {
+        return EnvironmentPlan.Rejected(
+            "Another folder is already named \"$newName\" (id: ${conflict.id}). " +
+                "Folder names must be unique (this check ignores case). Pick a different name."
+        )
+    }
+
+    // 只改 name：id / parentId / order / createdAt 全部保留（`copy` 的默认行为）。
+    return EnvironmentPlan.Planned(
+        EnvironmentOperation.RenameFolder(folder = target.copy(name = newName), oldName = target.name)
+    )
+}
+
+private fun planDissolveFolder(
+    root: JsonObject,
+    existingFolders: List<WorkflowFolder>,
+): EnvironmentPlan {
+    val folderId = root.environmentTrimmed("folder_id")
+    if (folderId.isBlank()) {
+        return EnvironmentPlan.Rejected(
+            "`folder_id` is required for `dissolve_folder`. " +
+                "Pass the folder **id** from `$CHAT_GET_ENVIRONMENT_TOOL_NAME`, not the folder name."
+        )
+    }
+    val target = existingFolders.firstOrNull { it.id == folderId }
+        ?: return EnvironmentPlan.Rejected(
+            "`folder_id: $folderId` is not an existing folder. Pass a folder **id**, not its name. " +
+                "Existing folders: ${describeKnownFolders(existingFolders)}."
+        )
+
+    // ⚠️ **防御性**检查，不是缺陷修复：本 App 不存在嵌套文件夹（决策 8），
+    //    `parentId` 只是一个为未来留的、当前恒为 null 的字段。
+    //    正常数据永不命中；命中了说明数据被外部改过，此时「解散」会留下悬空的 parentId。
+    val child = existingFolders.firstOrNull { it.parentId == folderId }
+    if (child != null) {
+        return EnvironmentPlan.Rejected(
+            "Folder \"${target.name}\" still contains the child folder \"${child.name}\", " +
+                "so dissolving it would leave that folder pointing at a missing parent. " +
+                "Dissolve the child folders first."
+        )
+    }
+
+    return EnvironmentPlan.Planned(
+        EnvironmentOperation.DissolveFolder(folderId = folderId, folderName = target.name)
+    )
+}
+
+private fun planCreateGlobalVariable(
+    root: JsonObject,
+    existingGlobalNames: Set<String>,
+): EnvironmentPlan {
+    val name = root.environmentTrimmed("name")
+    if (name.isBlank()) {
+        return EnvironmentPlan.Rejected("`name` must not be blank — pass the global variable name.")
+    }
+
+    // ⚠️⚠️ **本工具唯一能静默改坏用户数据的路径**：`GlobalVariableStore.put` 是 upsert，
+    //    同名会被**静默覆盖**且返回 success。必须显式查存在性并拒绝。
+    //    判据**区分大小写**：与设置页的重复检查（GlobalVariableConfigActivity 的 `it.name == normalizedName`）
+    //    以及 `{{global.<name>}}` 的键**精确**取值一致。（设计文档只规定了文件夹侧忽略大小写，
+    //    本条是实施推导，已登记在方案 §4.4 细则 3。）
+    if (name in existingGlobalNames) {
+        return EnvironmentPlan.Rejected(
+            "A global variable named \"$name\" already exists, and this tool never overwrites an existing value. " +
+                "Delete it first with `delete_global_variable` and create it again, " +
+                "or ask the user to edit it in the app's global variable settings. " +
+                "Existing global variables: ${describeKnownGlobalNames(existingGlobalNames)}."
+        )
+    }
+
+    // ⚠️ 值走**原始**取值、不 trim（首尾空格是用户可能真的想存的东西）。
+    val valueText = root.environmentRaw("value")
+    val type = root.environmentTrimmed("type").lowercase()
+    val value = when (type) {
+        "string" -> VString(valueText)
+
+        "number" -> valueText.toDoubleOrNull()?.let { VNumber(it) }
+            ?: return EnvironmentPlan.Rejected(
+                "`value` must be a number when `type` is `number`, but got \"$valueText\"."
+            )
+
+        // ⚠️⚠️ **不能用 `String.toBoolean()`**：`"abc".toBoolean()` **静默返回 false**、
+        //    不抛异常 ⇒「模型传了 value: "yes"」会变成「静默存成 false 并回 success」。
+        "boolean" -> when {
+            valueText.equals("true", ignoreCase = true) -> VBoolean(true)
+            valueText.equals("false", ignoreCase = true) -> VBoolean(false)
+            else -> return EnvironmentPlan.Rejected(
+                "`value` must be exactly `true` or `false` when `type` is `boolean`, but got \"$valueText\"."
+            )
+        }
+
+        else -> return EnvironmentPlan.Rejected(
+            "`type` is required for `create_global_variable` and must be one of " +
+                "`string`, `number`, `boolean`" +
+                (if (type.isBlank()) "." else ", but got \"$type\".")
+        )
+    }
+
+    return EnvironmentPlan.Planned(
+        EnvironmentOperation.CreateGlobalVariable(name = name, value = value)
+    )
+}
+
+private fun planDeleteGlobalVariable(
+    root: JsonObject,
+    existingGlobalNames: Set<String>,
+): EnvironmentPlan {
+    val name = root.environmentTrimmed("name")
+    if (name.isBlank()) {
+        return EnvironmentPlan.Rejected(
+            "`name` must not be blank — pass the global variable name from `$CHAT_GET_ENVIRONMENT_TOOL_NAME`."
+        )
+    }
+    if (name !in existingGlobalNames) {
+        return EnvironmentPlan.Rejected(
+            "No global variable named \"$name\" exists. " +
+                "Existing global variables: ${describeKnownGlobalNames(existingGlobalNames)}."
+        )
+    }
+    return EnvironmentPlan.Planned(EnvironmentOperation.DeleteGlobalVariable(name))
+}
+
+/** 取一个**去掉首尾空白**的字符串字段；缺失 / `null` / 非字符串字面量一律得空串。 */
+private fun JsonObject.environmentTrimmed(key: String): String = environmentRaw(key).trim()
+
+/** 取一个**原样**的字符串字段（值语义的字段不能 trim）。 */
+private fun JsonObject.environmentRaw(key: String): String =
+    (this[key] as? JsonPrimitive)?.contentOrNull.orEmpty()
+
+private fun describeKnownFolders(folders: List<WorkflowFolder>): String =
+    folders.joinToString(", ") { "${it.name}(${it.id})" }.ifBlank { "none" }
+
+private fun describeKnownGlobalNames(names: Set<String>): String =
+    names.sorted().joinToString(", ").ifBlank { "none" }
+
+/** VObject 的存储层类型名（`GlobalVariableStore` 只认这三种）。 */
+private fun environmentVariableTypeName(value: VObject): String = when (value) {
+    is VString -> "string"
+    is VNumber -> "number"
+    is VBoolean -> "boolean"
+    else -> "string"
 }
