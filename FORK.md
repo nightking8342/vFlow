@@ -832,6 +832,38 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 > ⚠️ **原型第 12 项不在本批范围**：`switch-module-ui.html` 里「空值 Case 的 pill 显示 `（空 · 会匹配一切）`」
 > 是**卡片摘要渲染**（core 层 `getSummary`）的行为，本批只保证 `validateBranches` 硬拦。
 
+### 图标选择器（Material Symbols 全量，2026-10-06）
+
+> 一句话：工作流卡片的图标从「18 个写死的注册表项」换成 **Material Symbols 全量 4150 个**
+> （线框 + 填充两种风格，选择器里交替排列共 8310 项）。
+> ⚠️ 本批是**全仓 diff 面积最大的一次**（8316 文件 / +94690 行），但其中 **8175 个是新增
+> drawable**，代码层只有 16 个新文件 + 20 处上游文件改动。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `core/workflow/MaterialSymbolNames.kt`（新增，4180 行，**脚本生成**） | 图标名的**全量权威清单**（`val ALL: List<String>`，4150 项）。⚠️⚠️ **名字必须能在 `res/drawable` 里找到对应资源**（线框 `rounded_<name>_24` / 填充 `rounded_<name>_fill_24`），有测试逐条核对 —— 防的是「清单与资源脱节」，脱节的表现是**选择器里点一下静默什么都不发生**。⚠️⚠️ **这份清单存在的理由**：图标按**字符串名**经 `getIdentifier` 查找，R8 的 `shrinkResources` **看不见这种引用**，会把没人用 `R.drawable.` 引用的图标当死资源剥掉（**本批之前已实际发生**：`rounded_download_24` 在选择器里可选、release 包里却不存在）。⚠️ 文件头注释里**刻意不写通配**：`*` 紧跟 `/` 会在 Kotlin 块注释里提前闭合注释、编译报 `Unclosed comment`（第一版就是这么挂的） | 我方 |
+| `core/workflow/MaterialSymbolCategories.kt`（新增，4420 行，脚本生成 + **手写归并表**） | 11 个**面向使用场景**的内容分类 + `POPULAR`（120 项）+ `groupOf(iconName)` 反查。⚠️⚠️ **上游的分类是两套并存且互斥的体系**（实测：旧 Material Icons 全小写 1982 个 / 新 Material Symbols TitleCase 2055 个 / 无分类 113 个），原样展示会得到 33 个分类项、`action` 与 `Actions` 并列 —— 用户无法理解为什么有两个「操作」。⚠️ **归并表是手写的**（上游没有这一层）。⚠️ `POPULAR` 的 id **不在 `ALL` 里** —— `ALL` 是「内容分类」，「常用」是一个**视图**（同一批图标还会出现在各自分类里），合在一起会让「其他」组少掉一半。⚠️ `groupOf` 未知时返回 `"misc"` 而非 null（上游有 113 个图标无分类） | 我方 |
+| `core/workflow/WorkflowIconValue.kt`（新增，纯函数） | `Workflow.cardIconRes` 的**取值判定**（内置资源名 / 绝对路径 / `file://` **三态**）+ 官方标签生成。⚠️ **判定必须集中在这里**：卡片图标有**五个**消费点，各写各的漏一处 = 「列表上显示图片、编辑器预览里显示默认图标」。⚠️ 判定顺序**先看 `file://` 再看到 `/` 开头** —— `file://` 不以 `/` 开头，漏判会让它落到资源名路径、`getIdentifier` 必然返回 0。⚠️ 剥前缀用 `removePrefix` 而非 `substring(7)` —— 后者在「不是 file:// 但以 / 开头」的分支上会**切掉路径开头 7 个字符**且不报错。⚠️⚠️ **`isFilledVariant` 不能只看后缀 `_fill_24`** —— 全库有一个图标**名字本身就以 `_fill` 结尾**（`format_color_fill`，画的是一只填色桶）⇒ 光看后缀会把它的**线框版**判成填充版，标签说谎且不报错。判据是**查名单**，查不到才回退字符串规则。⚠️ `displayLabelOf` 的 `" · fill"` 后缀**是必需的不是美化**：两种风格的官方名字**逐字相同**，不加后缀用户会以为图标库里有重复项 | 我方 |
+| `ui/workflow_editor/WorkflowIconPickerActivity.kt`（新增） | 图标选择页宿主（Toolbar + 搜索 + Compose 分类栏 + 网格），`exported="false"`。⚠️⚠️ **列数曾两次写死、每次都在真机上暴露一种问题**：固定 5 在手机正常、折叠展开态每格 174dp（见白）；改 `floor(宽/60)` 后又变 14 列太密。现用 `computeGridSpan`（四舍五入到目标宽 84dp，钳 `[3, 10]`）。⚠️ **列数必须跟着宽度走**（主力机型是折叠屏），且**判等再设** —— `spanCount` 的 setter 会重新触发布局，不判等就是「布局 → 回调 → 布局」死循环（页面卡死、无报错）。⚠️ 宽度**不能拿 `displayMetrics.widthPixels`**（`GridLayoutManager` 按内容区等分，两边口径必须一致），且首次布局前 `width` 恒为 0 要退回估算。⚠️ 「全部」取 `MaterialSymbolNames.ALL` 而**非** `MaterialSymbolCategories.ALL.flatMap`——两者今天相等，但后者多一层可出错的手，漏分组的图标会从「全部」里**静默消失** | 我方 |
+| `ui/workflow_editor/IconCategoryBar.kt`（新增） | 图标页的分类栏，复用工作流页的 `WorkflowFolderTabBarSwitch`。⚠️⚠️ **必须传 `showFolderMenu = false`** —— 组件的菜单判据是「`folderId != ALL` 就当真实文件夹」，而这里传的是**分类 id** ⇒ 长按会弹出「重命名 / 导出 / **解散** / **删除**」，点了就是数据全没（无撤销）。传空 lambda **不够**（菜单照样弹、只是点了没反应，更困惑）。⚠️ 哨兵 id 带 `vflow.icon.category.` 前缀（与真分类 id 不可能撞车）。⚠️ 本页宿主是 Android `LinearLayout`（`clipChildren` 默认 true）⇒ 必须给 `verticalSlack`，否则指示块放大 1.39 倍时被上下**切平** | 我方 |
+| `ui/workflow_editor/IconSearchFilter.kt`（新增，纯函数） | 搜索规则：去前后缀 / `-` ≡ `_` / 忽略大小写。⚠️ `-`≡`_` 是**必须的**：用户在 fonts.google.com 看到的是连字符版本，会照着敲，不做等价转换则**从官网抄来的名字搜不到**。⚠️ `officialNameOf` **先剥 `_fill_24` 再剥 `_24`**，顺序反了会把 `xxx_fill` 当图标名。⚠️ **刻意不做模糊匹配**（编辑距离会让「搜 home 出现 chrome_reader_mode」，用户对「为什么这个出来了」没有解释能力）。⚠️ 空查询返回**同一份列表的引用**（8310 项的 filter 是高频动作） | 我方 |
+| `ui/workflow_list/WorkflowCardIcon.kt`（新增） | 卡片图标三分支渲染（内置 tint / 自定义图片 / 回退）。⚠️ **自定义图片不能 tint** —— 内置图标是单色矢量，而用户选的图片是彩色的，套 tint 会整张染成一色（`Icon` 默认就会这么做，两条分支不能共用一个 `Icon`）。⚠️ 自定义图片走 Coil `AsyncImage`（列表会快速滚过几百项，需内存/磁盘缓存与滚出屏幕自动取消） | 我方 |
+| `core/workflow/WorkflowVisuals.kt`（改，**改的是既有函数的语义**） | ① `availableIconResNames` **不再返回 `iconRegistry.keys`**（原先只 18 个），改为全量 4150；② 新增 `availableFilledIconResNames`；③ 新增 `iconPickerCandidates()` —— 线框与填充**交替**排列。⚠️⚠️ **交替（而不是「先 4150 线框再 4150 填充」）是用户可发现性的要求**：顺序排列的话想找「填充版的 home」得先滚过 4150 项；交替后同一图标的两种风格相邻。⚠️⚠️ 原实现的解析路径是 `iconRegistry[名字] ?: 默认图标`，**非注册名字会被静默回落到默认图标** ⇒ 把「用户选了 A、显示成 B」变成一个**不报错的日常事件**（这是换成全量清单的直接动因）。⚠️ `iconRegistry` 本身仍作**快速路径**用，**不要当死代码删**；④ 新增 `resolveIconDrawableResOrZero`。⚠️⚠️ **它的返回值可能是 0，调用方必须处理** —— 输入是**用户数据**（老工作流里存着的图标名、从别处导入的工作流），把 0 交给 `setImageResource` / `painterResource` 会抛 `Resources.NotFoundException` | **手动合并**（该文件已有 fork 改动） |
+| `res/raw/keep.xml`（新增） | **shrinkResources 白名单**：`tools:keep="@drawable/rounded_*_24,@drawable/rounded_*_fill_24,@drawable/ic_shortcut_play"`。⚠️⚠️ **一个踩过的坑：XML 注释里不能出现双连字符** —— 结果是**整份文件非法**，而 **AAPT2 不报错、直接忽略**，「明明写了白名单，图标还是一个都不进包」。排查手法：用任意 XML 解析器 parse 一下本文件。⚠️ **验证必须以「clean 后的全新建包」为准**，增量构建会让 `aapt2 dump` 读到上一版 APK、看起来「什么都没变」。⚠️ `WorkflowVisuals` 里那张图标表**不需要**在这里列（那条路径用 `R.drawable.` 静态引用，shrinker 自己看得见） | 我方 |
+| `res/drawable/rounded_*.xml`（**新增 8175 个 / 修改 104 个**） | 4150 个图标 × 线框 + 填充两种风格。⚠️ 修改的那 104 个是**批量规范化**：`android:tint="#000000"` → `?attr/colorControlNormal`（硬编码黑色在深色主题下不可见），矢量头属性重排。⚠️ 另有 2 个**辅助**底图（`bg_icon_grid_circle{,_selected}.xml`）：圆形底 + 描边，用 `shape="oval"` —— ⚠️ **选中态必须整体换资源，不能单独 `setBackgroundColor`**，那会把圆形底覆盖成**方形色块**且不报错 | 我方 |
+| `res/layout/item_icon_selector.xml`（改） + `ui/shortcut/IconSelectorAdapter.kt`（改） + `ui/workflow_editor/WorkflowIconPickerAdapter.kt`（改） | 布局根从 `MaterialCardView` 改为 `LinearLayout`（CardView 的 `cardCornerRadius` 做不出正圆）。⚠️⚠️ **两个 Adapter 里的 `itemView as MaterialCardView` 会 `ClassCastException`** —— 而且**只在打开快捷方式配置页时才炸**，图标选择页（另一个 Adapter）看着一切正常。⚠️ 选中态由「`strokeColor` + `setBackgroundColor` 两处分开设」改为**整体切背景资源**（圆底与描边都画在 shape drawable 里）。⚠️ `WorkflowIconPickerAdapter` 的选中态用 `indexOfFirst` 而非 `indexOf` —— 后者**区分不出「没找到」与「首项」**，而 8310 项里「当前选中不在过滤结果里」是**常态**（用户搜了别的词） | **手动合并** |
+| `ui/workflow_editor/WorkflowEditorActivity.kt`（改） | 新增 `pickCardIconViaPickerPage` / `pickCardIconImage` 两个入口与各自的 launcher。⚠️ **回调是一次性的**：`pendingCardIconCallback` 消费后必须清空 —— 否则 Activity 实例复用时会有**上一次的回调**被触发，把图片设到错误的工作流上。⚠️ **两个 launcher 刻意分开注册**：选图标必然返回合法值，选图片可能因权限/空间/损坏失败，失败时不该把回调当成「选了张图」往下传。⚠️ 选中的图片**复制进应用私有目录**（`files/card_icons/`）而非保存 `content://` URI（后者只在本次授权内有效，重启后读不到） | **手动合并** |
+| `app/build.gradle.kts`（改） | 追加 `implementation("io.coil-kt:coil-compose:2.7.0")` —— 原来只有 `coil`（Java/Kotlin API），而卡片图标现在要能在**列表卡片（Compose）**里显示用户选的图片。见「敏感点」段的构建工具链条目 | **手动合并** |
+| `AndroidManifest.xml`（改） | 追加 `WorkflowIconPickerActivity` 声明（`exported="false"` + `parentActivityName`） | **手动合并**（追加声明） |
+| 三语 `res/values{,-en,-ja}/strings.xml`（改） | 追加 **21 键 ×3 语言**：图标库 14（`icon_category_*` 13 个 + `workflow_card_icon_picker_*`）+ 卡片图标交互 7。⚠️ 三语键名集合逐字一致 | **手动合并**（追加条目） |
+| `scripts/assets/import_material_symbols.py` + `import_material_symbol_categories.py`（新增） | fork 独有：图标资源与清单的**生成脚本**（从上游元数据出发）。⚠️ 生成的 `MaterialSymbolNames.kt` / `MaterialSymbolCategories.kt` **不要手改**，改图标库请重跑脚本 | 我方 |
+| `test/.../MaterialSymbolNamesTest.kt`、`MaterialSymbolCategoriesTest.kt`、`WorkflowIconValueTest.kt`、`IconSearchFilterTest.kt`、`IconGridSpanTest.kt`（**均新增**） | fork 独有：**5 个测试文件**。⚠️ 关键断言：清单里每个名字都必须有对应 drawable（防「清单与资源脱节」）、`MaterialSymbolNames.ALL.size == MaterialSymbolCategories.ALL.flatMap{}.size`、`displayLabelOf` 的 8310 条标签**两两不同**（防两种风格被当成同一格）、列数分档边界、`isFilledVariant` 对 `format_color_fill` 的**反向锁**（它是唯一名字本身以 `_fill` 结尾的图标） | 我方 |
+
+> ⚠️ **本批的真机验证**：图标选择器（小米 MIX Fold 3 / Android 17）—— 选择页可打开、
+> 搜索与分类筛选可用、选中后卡片图标确实变化。**未验证**：release 包里图标是否完整
+> （`aapt2 dump resources` 数 8310 —— `keep.xml` 的白名单就是为它写的，
+> 但**注释里的双连字符陷阱**曾让整份文件静默失效，值得单独跑一次）。
+
 ---
 
 ## 暂未分歧、但日后改动时须登记的敏感点
