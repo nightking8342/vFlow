@@ -201,13 +201,25 @@ class UpdateEnvironmentWiringTest {
         val body = bodyOf(EXECUTOR_PATH, "private fun prepareToolCall(")
         // ⚠️ 必须早返回：本工具的 moduleId 不是注册模块，落到后面的通用分支会命中
         //    「未注册」错误（`Unknown tool` / `not registered` 那条）。
-        assertTrue(
-            "prepareToolCall 必须有 CHAT_UPDATE_ENVIRONMENT_TOOL_NAME 的分流",
-            body.contains("CHAT_UPDATE_ENVIRONMENT_TOOL_NAME"),
+        //
+        // ⚠️⚠️ **判据不能是「函数体里出现过这两个字符串」** —— 验收实测过：把分流临时改成
+        //    `if (false && toolCall.name == ...)` 时，两个标识符都还在、**断言照绿**，
+        //    可那个分流已**永远不可达**（等于分流被删）。故必须锚**完整的条件 + 调用**：
+        //    中间只允许空白，`&&` / `false` / 换行改写都会把 `.*` 打断（`DotMatchesAll` 默认关）。
+        //
+        //    诚实说明这条判据的**边界**：它保证「分流写成了可用的形状」，
+        //    但**证不了运行期真的命中**（那需要起 Android 环境）。
+        //    若将来 `prepareToolCall` 里出现第二条同名分支，`Regex` 会各自匹配一条 ——
+        //    配合上面 bodyOf 的防空转断言，仍是安全的。
+        val routing = Regex(
+            """if\s*\(\s*toolCall\.name\s*==\s*CHAT_UPDATE_ENVIRONMENT_TOOL_NAME\s*\)""" +
+                """\s*\{?\s*return\s+prepareUpdateEnvironment\(toolCall\)\s*\}?""",
+            RegexOption.DOT_MATCHES_ALL,
         )
         assertTrue(
-            "分流必须指向 prepareUpdateEnvironment",
-            body.contains("prepareUpdateEnvironment(toolCall)"),
+            "prepareToolCall 必须有 `if (toolCall.name == CHAT_UPDATE_ENVIRONMENT_TOOL_NAME) " +
+                "return prepareUpdateEnvironment(toolCall)` 形态的早返回分流",
+            routing.containsMatchIn(body),
         )
     }
 
