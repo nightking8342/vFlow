@@ -257,3 +257,11 @@
 #    找到的」才需要 keep（入口类、AIDL、provider）。
 #    ⚠️ 但 wire 层被两端共享，且**不允许**被 inline 成 App 侧依赖，故保留类名。
 -keepnames class com.chaomixian.vflow.xposed.wire.**
+
+# ---------------------------------------------------------------------------
+# fork: ui/common/glass/LiquidToggleSwitch.kt
+# ---------------------------------------------------------------------------
+# ⚠️ `DampedDragAnimation` 是**跨包**直接调用（`ui.main.glass` → 本文件），
+# 不是反射调用，R8 对它没有额外要求；但 `VFlowSwitch` 是本 App 的**对外入口**
+# （被 12 个调用点使用），保留名字便于按名字排查真机问题。
+-keepnames class com.chaomixian.vflow.ui.common.glass.LiquidToggleSwitchKt

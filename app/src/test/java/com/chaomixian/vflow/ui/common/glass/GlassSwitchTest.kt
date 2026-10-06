@@ -345,8 +345,10 @@ class GlassSwitchTest {
             //    （解释「为什么不给 M3 Switch 换颜色槽」），不剥的话恒红。
             val s = SourceScan.stripCommentsPreservingStructure(f.readText())
             Regex("(?<![\\w.])(?<!VFlow)Switch\\(").findAll(s).forEach { m ->
-                // 唯一合法的例外：组件自己文件里的 M3 回退分支。
-                if (f.name != "GlassSwitch.kt") {
+                // 合法例外：**两个**玻璃开关实现文件里各自的 M3 回退分支。
+                // ⚠️ 漏了新增的那个（LiquidToggleSwitch.kt）会让这条恒红，
+                //    而恒红的断言会被下一个实现者直接删掉。
+                if (f.name != "GlassSwitch.kt" && f.name != "LiquidToggleSwitch.kt") {
                     offenders += "${f.path}:${s.take(m.range.first).count { it == '\n' } + 1}"
                 }
             }
@@ -382,8 +384,112 @@ class GlassSwitchTest {
         assertTrue("全项目应至少有一批 VFlowSwitch 调用点，实际 $total", total >= 10)
     }
 
+    // ------------------------------------------------------------------
+    // 五、照抄库示例的那一版（LiquidToggleSwitch）
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `示例版的尺寸与库内示例逐值一致`() {
+        // 用户 2026-10-06 明确要求「完全按照库里的示例实现一版」，
+        // 这三个尺寸就是那次要求的直接落点，改动即偏离示例。
+        assertEquals("示例 size(64f.dp, 28f.dp)", 64f, LiquidToggleTokens.TrackWidth.value, 0.001f)
+        assertEquals(28f, LiquidToggleTokens.TrackHeight.value, 0.001f)
+        assertEquals("示例 size(40f.dp, 24f.dp)", 40f, LiquidToggleTokens.ThumbWidth.value, 0.001f)
+        assertEquals(24f, LiquidToggleTokens.ThumbHeight.value, 0.001f)
+        assertEquals("示例 padding = 2f.dp", 2f, LiquidToggleTokens.Padding.value, 0.001f)
+        assertEquals("示例 pressedScale = 1.5f", 1.5f, LiquidToggleTokens.PressedScale, 0.001f)
+    }
+
+    @Test
+    fun `滑块可移动距离等于示例写死的 20dp，且改任一尺寸都会红`() {
+        // ⚠️ 示例里直接写死 `dragWidth = 20f.dp`，而 64 − 40 − 2×2 恰好是 20。
+        //    生产代码**按公式算**（不是抄常量），动机是「改尺寸后仍自洽」。
+        //
+        // ⚠️⚠️ **必须说清这条断言的强度**：它锁的是**数值**（= 20），
+        //    而不是「是否按公式算」—— 实测把实现换成硬编码 `20.dp` 时
+        //    这条**照样绿**（两者等价，反证 T 已实际做过）。
+        //    真正被它抓住的是**改尺寸**：把 `TrackWidth` 改成 52 会让它红
+        //    （反证 V 实测 3 条红），而那正是「忘了同步 travel」的后果。
+        //    ⇒ 「按公式写」这一层是**约定**，没有机器化守卫（写在这里以免高估它）。
+        assertEquals(20f, liquidToggleTravelDp().value, 0.001f)
+        assertTrue(
+            "可移动距离必须为正，否则拖动时分母为 0（fraction 变 NaN 且不报错）",
+            liquidToggleTravelDp().value > 0f,
+        )
+    }
+
+    @Test
+    fun `滑块位置在两端恰好贴合且不越界`() {
+        assertEquals(
+            "fraction=0 时滑块左边距 = padding = 2dp",
+            2f,
+            liquidToggleThumbXDp(0f, isLtr = true).value,
+            0.001f,
+        )
+        // ⚠️ 端点位置 = padding + travel = 2 + 20 = 22dp，**不是** 64 − 40 − 2 = 22
+        //    （同一个数，但写成 62 是把「右边缘」当成了「左边距」—— 第一版就这么错的）。
+        val endX = liquidToggleThumbXDp(1f, isLtr = true).value
+        assertEquals("fraction=1 时左边距 = padding + travel = 22dp", 22f, endX, 0.001f)
+        assertEquals(
+            "于是右边缘 = 22 + 40 = 62dp，距轨道右端恰好也是 padding",
+            62f,
+            endX + LiquidToggleTokens.ThumbWidth.value,
+            0.001f,
+        )
+        assertTrue(
+            "滑块右边缘必须落在轨道内（64dp）",
+            endX + LiquidToggleTokens.ThumbWidth.value <= LiquidToggleTokens.TrackWidth.value + 0.001f,
+        )
+        assertEquals(
+            "RTL 下应向左偏移",
+            -liquidToggleThumbXDp(0.5f, isLtr = true).value,
+            liquidToggleThumbXDp(0.5f, isLtr = false).value,
+            0.001f,
+        )
+    }
+
+    @Test
+    fun `示例版必须真的用上折射链路与示例的三个关键参数`() {
+        val s = SourceScan.stripped(LIQUID_TOGGLE)
+        // 折射链路（与第一版手画高光的区别就在这几个符号上）
+        for (required in listOf("drawBackdrop(", "lens(", "Highlight.Ambient", "InnerShadow(", "chromaticAberration = true")) {
+            assertTrue("示例版实现里必须出现 `$required`", s.contains(required))
+        }
+        // 示例的三处「运镜」
+        assertTrue("示例：滑块的白随 progress 退到 0", s.contains("1f - progress"))
+        assertTrue("示例：静止时轨道采样压扁量为 0 的起点", s.contains("THUMB_SAMPLE_SCALE_Y_MAX"))
+        assertTrue("示例：pressedScale = 1.5f 须由常量传入", s.contains("LiquidToggleTokens.PressedScale"))
+        assertTrue(
+            "示例：轨道采样横向压扁范围 lerp(2/3, 0.75)",
+            s.contains("THUMB_SAMPLE_SCALE_X_MIN") && s.contains("THUMB_SAMPLE_SCALE_X_MAX"),
+        )
+        // 拖动落位与轻点切换（示例的两条分支）
+        assertTrue("拖动结束必须按 targetValue 落位", s.contains("targetValue >= 0.5f"))
+        assertTrue("轻点必须取反当前值", s.contains("if (checked) 0f else 1f"))
+    }
+
+    @Test
+    fun `对外入口只有一个 VFlowSwitch（避免同名重载歧义）`() {
+        // ⚠️ 上一版把 `VFlowSwitch` 写在 GlassSwitch.kt 里，本版写在
+        //    LiquidToggleSwitch.kt 里 —— 两个同签名顶层函数会直接编译失败
+        //    （Conflicting overloads）。这条断言把它变成一条清晰的失败信息。
+        var count = 0
+        val root = File("src/main/java/com/chaomixian/vflow/ui/common/glass")
+        root.listFiles()?.filter { it.extension == "kt" }?.forEach { f ->
+            val s = SourceScan.stripCommentsPreservingStructure(f.readText())
+            count += Regex("""(?<![\w.])fun VFlowSwitch\(""").findAll(s).count()
+        }
+        assertEquals("`fun VFlowSwitch(` 应恰好定义一次", 1, count)
+        assertTrue(
+            "定义应在 LiquidToggleSwitch.kt（示例版）里",
+            SourceScan.stripped(LIQUID_TOGGLE).contains("fun VFlowSwitch("),
+        )
+    }
+
     private companion object {
         const val GLASS_SWITCH = "src/main/java/com/chaomixian/vflow/ui/common/glass/GlassSwitch.kt"
+        const val LIQUID_TOGGLE =
+            "src/main/java/com/chaomixian/vflow/ui/common/glass/LiquidToggleSwitch.kt"
         const val WORKFLOW_LIST_SCREEN =
             "src/main/java/com/chaomixian/vflow/ui/workflow_list/WorkflowListScreen.kt"
         const val SWITCH_DRAG_ANIMATION =

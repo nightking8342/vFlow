@@ -34,7 +34,6 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.lerp
-import com.chaomixian.vflow.ui.common.AppearanceManager
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberBackdrop
 import com.kyant.backdrop.backdrops.rememberCanvasBackdrop
@@ -203,6 +202,7 @@ internal fun glassThumbXDp(fraction: Float, widthDp: Dp): Dp {
  * 可点性没有降低：`toggleable` + `Role.Switch` 保留全部无障碍语义与点击热区，
  * 手势层也不消费纵向位移（设置页是 `LazyColumn`，消费了会**滚不动**）。
  */
+@Suppress("unused") // fork: 保留 M3 形态那份实现；对外入口见 LiquidToggleSwitch.kt 的 VFlowSwitch
 @Composable
 internal fun GlassSwitch(
     checked: Boolean,
@@ -427,59 +427,6 @@ internal fun GlassSwitch(
 }
 
 /**
- * **全 App 统一的开关**：按液态玻璃开关决定走 [GlassSwitch] 还是 M3 `Switch`。
- *
- * ⚠️⚠️ **参数与 M3 `Switch` 逐一对应（含顺序）** —— 调用点只需把 `Switch(`
- * 换成 `VFlowSwitch(`，**一个参数都不用加**。玻璃态需要的颜色从同一份
- * [colors] 里读，所以同一个开关在两种材质下色相一致。
- *
- * @param containerColor 开关**背后**是什么颜色。默认 `Unspecified` ⇒ 用主题的
- *   `surfaceContainerLow`。⚠️ 卡片上应当传**卡片底色**，否则玻璃会透出一个
- *   与实际背景不符的颜色（透错色比不透色更假）。
- *
- * ⚠️ **开关状态是「读一次」的**（`remember`），与既有玻璃组件同一模式；
- *    `AppearanceManager` 没有变更通知机制，做响应式得先给它加 `StateFlow`。
- */
-@Composable
-fun VFlowSwitch(
-    checked: Boolean,
-    onCheckedChange: ((Boolean) -> Unit)?,
-    modifier: Modifier = Modifier,
-    thumbContent: (@Composable () -> Unit)? = null,
-    enabled: Boolean = true,
-    colors: SwitchColors = SwitchDefaults.colors(),
-    interactionSource: MutableInteractionSource? = null,
-    containerColor: Color = Color.Unspecified,
-) {
-    val context = LocalContext.current
-    val glassEnabled = remember(context) {
-        AppearanceManager.isLiquidGlassNavBarEnabled(context)
-    }
-    if (glassEnabled) {
-        GlassSwitch(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
-            modifier = modifier,
-            enabled = enabled,
-            colors = colors,
-            interactionSource = interactionSource,
-            thumbContent = thumbContent,
-            containerColor = containerColor,
-        )
-    } else {
-        Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
-            modifier = modifier,
-            thumbContent = thumbContent,
-            enabled = enabled,
-            colors = colors,
-            interactionSource = interactionSource,
-        )
-    }
-}
-
-/**
  * 按 `fraction` 在「关 / 开」两种轨道色之间插值。
  *
  * ⚠️ 三个判断的**优先级**是定死的：禁用态 > 目标态 > 当前进度 ——
@@ -494,7 +441,7 @@ private fun lerpTrackColor(
     if (!enabled) {
         return if (checked) colors.disabledCheckedTrackColor else colors.disabledUncheckedTrackColor
     }
-    return lerp(
+    return androidx.compose.ui.graphics.lerp(
         colors.uncheckedTrackColor,
         colors.checkedTrackColor,
         fraction.coerceIn(0f, 1f),
@@ -516,13 +463,9 @@ private fun lerpBorderColor(
     fraction: Float,
 ): Color {
     if (!enabled) return colors.disabledUncheckedBorderColor
-    return lerp(
+    return androidx.compose.ui.graphics.lerp(
         colors.uncheckedBorderColor,
         colors.checkedBorderColor.copy(alpha = 0f),
         fraction.coerceIn(0f, 1f),
     )
 }
-
-/** 颜色空间的 `lerp`（与 `androidx.compose.ui.util.lerp` 同名，靠参数类型区分）。 */
-private fun lerp(start: Color, stop: Color, fraction: Float): Color =
-    androidx.compose.ui.graphics.lerp(start, stop, fraction)
