@@ -436,6 +436,16 @@ extras 的**键不可枚举**（任何应用都能塞任意键），因此只给
 | `res/layout/partial_broadcast_trigger_editor.xml` | UIProvider 的三段式布局（三个 RecyclerView + 三个添加按钮 + 提示） | — |
 | `test/.../triggers/BroadcastTriggerSupportTest.kt` | 上述纯函数的单测（含四类坑的反向锁） | 22 |
 | `test/.../triggers/BroadcastTriggerWiringTest.kt` | **源码扫描型接线锚定**（注册行 / EXPORTED / 空 actions 不注册 / 委托未留第二份实现 / 预算未被改回 48 KiB） | 13 |
+
+> ⚠️ **2026-10-07 独立复核后的收紧**：`BroadcastTriggerWiringTest` 里那条
+> `the module overrides validate so empty actions cannot be saved` 原本**只断言**
+> 「源码里有 `override fun validate(` 且两个错误文案键在文件里」—— 实测把 `validate()` 的
+> 两处 `ValidationResult(false, …)` 改成 `true`，**全部 95 例新测试照旧全绿**。
+> 现追加逐分支断言（截取 `ValidationResult(` 之后的实参、断言第一个实参是 `false`），
+> 三条反证（EMPTY 改 true / WILDCARD 改 true / 删掉 override 断言）**均确认变红**。
+> ⚠️ 行为测试（直接调 `validate()` 断言 `isValid`）在**纯 JVM 里做不到**：
+> 错误分支要读 `appContext.getString(...)`，而 `Context.getString` 是 `final`、
+> `Resources` 构造器要 package-private 的 `AssetManager`、本项目无 Robolectric/mockito。
 | `test/.../xposed/ExtrasJsonCodecTest.kt` | 提取出来的编码层单测（从 `ActivityPayloadTest` 平移 + 直调 `ExtrasJsonCodec`） | 15 |
 | `xposed/wire/ExtrasJsonCodec.kt` | **提取**自 `ActivityPayload` 的 extras 编码层（见 §10.1 的决定） | — |
 
@@ -461,7 +471,7 @@ extras 的**键不可枚举**（任何应用都能塞任意键），因此只给
 （**不注册 receiver** + WARN 日志），那一道覆盖所有路径（含 JSON 导入与直接改 prefs）。
 **本批不改 `WorkflowEditorActivity.saveWorkflow`**（那会动既有保存路径、扩大 diff 面积）。
 
-### 9.1 建议的纯函数层（可纯 JVM 单测）
+### 9.2 建议的纯函数层（可纯 JVM 单测）
 
 照本项目「把易错的语义提成纯函数」的惯例（`FoldStateResolver` / `SimDataSwitchMath`）：
 
@@ -480,7 +490,7 @@ object BroadcastTriggerSupport {
 
 **这些是「改错了不报错、只静默变差」的地方，必须有测试 + 反证。**
 
-#### 9.1.1 实施期对这段骨架的三处调整（都是「纯函数层不该依赖 Android 资源」）
+#### 9.2.1 实施期对这段骨架的三处调整（都是「纯函数层不该依赖 Android 资源」）
 
 1. `validateActions` 的返回类型由 `BroadcastValidation` 改为**纯枚举**
    `ActionsValidation { OK, EMPTY, WILDCARD }` —— 文案由模块层翻，纯函数层不认识 Android 资源。
@@ -615,7 +625,7 @@ object BroadcastTriggerSupport {
 - **所有源码引用基于 2026-10-07 的 AOSP `main` 分支**（`IntentFilter.java` /
   `BroadcastReceiver.java` / `BroadcastOptions.java` / `BroadcastController.java`），
   行号会漂移，**引用前以源码为准**。
-- **本文档已于 2026-10-07 回写实现状态**（v1.1）：§6.1 / §9 / §9.0 / §9.1 / §10 / §11 / §12.1
+- **本文档已于 2026-10-07 回写实现状态**（v1.1）：§6.1 / §9 / §9.0 / §9.1 / §9.2 / §10 / §11 / §12.1
   是实现期补的。**设计部分（§0–§8）未改**，仍是原始的判断依据。
 - **实现已完成但无真机验证**（§11 的 14 项全部待做）。文档里凡标【源码】【官方文档】的
   是核实过的；标【推断】【待验证】的**不得当成结论使用**。

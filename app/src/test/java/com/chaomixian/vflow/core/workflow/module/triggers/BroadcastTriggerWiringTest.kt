@@ -248,6 +248,44 @@ class BroadcastTriggerWiringTest {
         // 两个报错分支都要接上（否则拦下来了但没说原因）
         assertTrue(src.contains("error_vflow_trigger_broadcast_no_action"))
         assertTrue(src.contains("error_vflow_trigger_broadcast_wildcard"))
+
+        // ⚠️⚠️ **必须断言 `false`** —— 独立复核实测：把两处 `ValidationResult(false, …)`
+        // 改成 `true`，**全部 95 例新测试照旧全绿**（旧版只断言「字符串在文件里」，
+        // 那只能证明「写了」，证明不了「真的会拒绝」）。
+        //
+        // 试过写行为测试直接调 `validate()` 断言 `isValid`，**纯 JVM 里做不到**：
+        // 错误分支要读 `appContext.getString(...)`，而 `Context.getString` 是
+        // `final`（无法覆写）、`Resources` 的构造器要一个 package-private 的
+        // `AssetManager`（造不出来）、本项目没有 Robolectric / mockito
+        // （`app/build.gradle.kts` 的 testImplementation 只有 junit / json / mockwebserver）。
+        //
+        // ⇒ 退回源码层，但**把判据收紧到「拒绝」本身**：逐分支截取
+        // `ValidationResult(` 之后的一小段，断言第一个实参是 `false`。
+        // 这比 `contains("validate(")` 强得多 —— 改 `false` → `true` 必然变红。
+        val body = SourceScan.functionBody(src, "override fun validate(")
+        assertTrue("没找到 validate 的函数体，断言在空转", body != null)
+
+        for (marker in listOf("ActionsValidation.EMPTY", "ActionsValidation.WILDCARD")) {
+            val idx = body!!.indexOf(marker)
+            assertTrue("validate 里缺少 $marker 分支", idx >= 0)
+
+            val after = body.substring(idx)
+            val resIdx = after.indexOf("ValidationResult(")
+            assertTrue("$marker 分支没有构造 ValidationResult", resIdx >= 0)
+
+            // ⚠️ 必须**折叠空白**再比：`SourceScan.stripped` 保留换行与缩进结构
+            // （那是它做大括号配对的前提），所以真实源码里 `ValidationResult(` 与
+            // `false` 之间是一个换行 + 12 个空格 —— 直接 `contains("ValidationResult(false")`
+            // 恒不命中（实现期实际踩到）。
+            val args = after.substring(resIdx, minOf(resIdx + 40, after.length))
+                .replace(Regex("\\s+"), " ")
+            assertTrue(
+                "⚠️ $marker 分支必须返回 ValidationResult(false, …) —— " +
+                    "改成 true 等于「拦下来了但放行」，而源码扫描之外没有任何东西会发现。" +
+                    "实参片段：$args",
+                args.contains("ValidationResult( false"),
+            )
+        }
     }
 
     @Test
