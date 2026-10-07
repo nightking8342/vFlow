@@ -705,8 +705,16 @@ com.ghisler.android.TotalCommander   com.mixplorer   com.estrongs.android.pop �
 > 而 dat 残缺的那批（美团/微信/淘宝/抖音…）**恰恰不实现它**。两个集合**几乎不相交**。
 > 这也说明 ShortX 的列表里**根本没有**美团扫一扫这类快捷方式。
 
-**结论：不引入该路径。** 收益 4/100 远不值得一条新交互链路（两级跳转 + 状态同步）。
+**结论：不引入该路径**（指**把 `CREATE_SHORTCUT` 当作 vFlow 的读取源**）。收益 4/100 远不值得一条新交互链路（两级跳转 + 状态同步）。
 附带确认：vFlow 自身也不响应 `CREATE_SHORTCUT`（无妨，其快捷方式走 `cmp` 形态，dumpsys 路径正常）。
+
+> ⚠️ **2026-10-07 补充（结论不变，但多了一句）**：本节的「不引入」说的是
+> **vFlow 作为消费者**。**反方向**（vFlow 作为**被取用方**）已另行实现 ——
+> 见 `FORK.md` 的「响应第三方 App 的『创建快捷方式』请求」条目：
+> 新增 `ui/shortcut/CreateShortcutActivity` 响应 `ACTION_CREATE_SHORTCUT`，
+> 让 ShortX 这类手势工具能把 vFlow 的工作流当成可绑定的快捷方式
+> （**判据是「有手动触发器即可」**，与磁贴两池的判据不同）。
+> 两者互不影响：本节否决的是「拿别人的快捷方式」，新实现是「把自己的交出去」。
 
 **⚠️ 但要补一句 v1.2 的更正**：本节标题原写作「两路合并」，暗示 `dumpsys + CREATE_SHORTCUT` 就是 ShortX 的全部。
 **实际 ShortX 还有第二个入口（「固定的快捷方式」，走 Xposed 采集，§5.4）**——见 §7.5。

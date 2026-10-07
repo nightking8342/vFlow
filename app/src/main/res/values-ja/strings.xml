@@ -1701,4 +1701,7 @@
     <!-- fork: 工作流列表 —— 文件夹 Tab 栏 -->
     <string name="workflow_tab_all">すべて</string>
     <string name="workflow_item_menu_favorite">お気に入り</string>
+    <!-- fork: 响应第三方 App 的 CREATE_SHORTCUT 请求 -->
+    <string name="create_shortcut_title">ワークフローを選択</string>
+    <string name="create_shortcut_no_workflows">ショートカットにできるワークフローがありません（手動トリガーが必要です）</string>
 </resources>

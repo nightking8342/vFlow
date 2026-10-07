@@ -1042,6 +1042,39 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 
 ---
 
+### 响应第三方 App 的「创建快捷方式」请求（`CREATE_SHORTCUT`，2026-10-07）
+
+> 起因：用户在第三方手势工具（ShortX 的「应用快捷方式」入口）里看到条目为
+> `tornaco.apps.shortx/.ui.shortcut.CreateShortcutActivity` —— 那是**对端自己的响应页**。
+> 对方用 `ACTION_CREATE_SHORTCUT` 枚举候选 App，再以**目标 App 的 Activity 为 component**
+> 发起 `startActivityForResult`，由目标 App 自己给出快捷方式（完整的 `Intent` **对象**）。
+> vFlow 此前**不响应**这个 action ⇒ 在那些工具里看不到 vFlow，第三方也拿不到 vFlow 的快捷方式。
+>
+> ⚠️ **本改动只加「被第三方取走快捷方式」的能力**，与既有的「添加到主屏幕」
+> （`requestPinShortcut`，只对默认桌面有效）是**同一件事的两半**，共用同一条执行链路。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `ui/shortcut/CreateShortcutSupport.kt`（新增） | fork 独有：**纯函数层**（可纯 JVM 单测）。两个函数：`pickableWorkflows(all)`（判据 + 中文 Collator 排序）与 `shortcutLabelOf(workflow)`（自定义名优先、**空串按未设置处理**）。⚠️ **判据是「有手动触发器即可」（用户 2026-10-07 定案）**，**不是** `!hasAutoTriggers()` —— 后者是磁贴 `TileGate` 的判据，语义不同：磁贴执行池排斥自动工作流（自动工作流在磁贴上该是个**开关**），而快捷方式只是**给用户一个手动点火入口**，挂了定时触发器的工作流照样能手动跑。函数工作流**照列**（只要它带手动触发器） | 我方 |
+| `ui/shortcut/CreateShortcutActivity.kt`（新增） | fork 独有：响应 `android.intent.action.CREATE_SHORTCUT` 的透明宿主页。复用 `SearchableWorkflowDialog`（带搜索）而非新造列表 UI；选中后 `setResult(RESULT_OK, {EXTRA_SHORTCUT_INTENT, EXTRA_SHORTCUT_NAME})`。⚠️⚠️ **这两个 extra 是跨 App 协议、且在新 SDK 里被标 deprecated —— 必须继续用它们**（ShortX 读的就是 `"android.intent.extra.shortcut.INTENT"`），换成新 API 会让对端**什么都读不到**且只表现为「用户取消了」。⚠️ **不调 `ShortcutManager.createShortcutResultIntent`**（ShortX 调它再加 icon，vFlow 的图标走既有链路，少一次系统调用少一层耦合）。⚠️ 本页是 `AppCompatActivity` 而非 `BaseActivity` —— 基类 `onCreate` 会设 `setDecorFitsSystemWindows(false)`（沉浸式），而本页是浮动小窗，内容会顶到状态栏下面；语言与显示缩放照基类 `attachBaseContext` 逐行复刻。⚠️ 判据为空时**必须在本侧给 Toast**（对端只会看到 `RESULT_CANCELED`，不给原因用户会以为是第三方工具坏了） | 我方 |
+| `ui/common/ShortcutHelper.kt`（改） | 抽出 **`executionIntent(context, workflow)`**（原先内联在 `createShortcutInfo` 里）+ 显示名改调 `CreateShortcutSupport.shortcutLabelOf`。⚠️ **两条路造出的 Intent 与名字必须同源**：各写一份一旦漂移，表现是「从桌面图标点能跑、从第三方手势工具点不跑」，而那是**静默**的。⚠️ `FLAG_ACTIVITY_CLEAR_TASK` **不能删**（`ShortcutExecutorActivity` 在 `onCreate` 就 `finish()`，复用实例会让第二次点击毫无反应） | **手动合并**（抽出方法 + 1 处替换） |
+| `AndroidManifest.xml`（改） | 追加 `CreateShortcutActivity` 声明（`exported="true"` + `CREATE_SHORTCUT` intent-filter + `parentActivityName` 无、`Theme.vFlow.Transparent.Default` + `noHistory`/`excludeFromRecents`/`taskAffinity=""`，形态照 `ShortcutExecutorActivity` / `ShareReceiverActivity`） | **手动合并**（追加声明） |
+| 三语 `values{,-en,-ja}/strings.xml`（改） | 追加 2 条 ×3 语言：`create_shortcut_title` / `create_shortcut_no_workflows` | **手动合并**（追加条目） |
+| `test/.../ui/shortcut/CreateShortcutSupportTest.kt`（新增，15 例） | fork 独有：**判据逐格**（手动可列 / **手动+自动仍可列**（与 `TileGate` 刻意相反的那一格）/ 仅自动不列 / 无触发器不列 / **函数工作流要列**）+ 中文排序稳定性 + **显示名三条**（自定义名优先、null 回落、**空串回落**）+ **源码扫描型接线锚定**（manifest 有声明与 intent-filter；两个 extra 与 `RESULT_OK` **剥注释后**仍在；两条路共用 `executionIntent` / `shortcutLabelOf`）。⚠️ **三条反证已实际做过、均确认变红**：判据换成 `!hasAutoTriggers()` ⇒ 2 条红；`RESULT_OK` 换成 `RESULT_CANCELED` ⇒ 1 条红；`ShortcutHelper` 的显示名退回 `workflow.name` ⇒ 1 条红 | 我方 |
+
+> ✅ **已真机验证（用户 2026-10-07）**：本条正是由用户**先发现现象**（第三方工具里出现
+> `tornaco.apps.shortx/...CreateShortcutActivity`，日志里可查）才立项的 ——
+> 对端读的键、两级跳的形态都由该现象确定。
+> ⚠️ **本仓库侧的验证只到「编译 + 全量单测 + release 打包」这一层**：
+> `./gradlew test` 共 **2755 例、1 例失败**（失败的是 `agents` 已登记的既有缺陷
+> `VObjectPropertyTest > test VFile properties from absolute path`，与本次无关）；
+> release 产物核对已做（`aapt2 dump xmltree` 确认 activity 与 `CREATE_SHORTCUT`
+> intent-filter 都在，`dexdump` 确认类未被 R8 剥掉）。
+> **未做**：vFlow 自己作为被调用方、在真实第三方工具里走完两级跳（选 App → vFlow 弹框 →
+> 回来 → 点击执行）。该路径**只有编译与单测支撑，不得声称可用**。
+
+---
+
 ## 暂未分歧、但日后改动时须登记的敏感点
 
 以下是上游的核心区。目前 fork **尚未改动**它们；一旦改动（尤其是结构性改动），必须在上表登记，并评估合并成本：

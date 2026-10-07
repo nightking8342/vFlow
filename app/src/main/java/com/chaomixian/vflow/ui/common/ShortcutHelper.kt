@@ -75,20 +75,35 @@ object ShortcutHelper {
     }
 
     /**
-     * 内部辅助方法：构建 ShortcutInfoCompat 对象。
+     * 「点击快捷方式 → 执行该工作流」的 Intent。
+     *
+     * ⚠️ **抽出来共用**（2026-10-07）：`CreateShortcutActivity`（响应第三方 App 的
+     * `ACTION_CREATE_SHORTCUT`）也要交出一个**一模一样的** Intent 给调用方。
+     * 各写一份的代价不是「多几行」——两条路造出的 Intent 一旦漂移（少个 extra、
+     * 少个 flag），表现是「从桌面图标点能跑、从第三方手势工具点不跑」，而那是**静默**的。
+     *
+     * ⚠️ `FLAG_ACTIVITY_CLEAR_TASK` **不能删**：它确保每次执行都开一个新任务栈，
+     * 否则连续点击会复用同一个 Activity 实例（`ShortcutExecutorActivity` 在
+     * `onCreate` 里就 `finish()`，复用会让第二次点击没有任何反应）。
      */
-    private fun createShortcutInfo(context: Context, workflow: Workflow): ShortcutInfoCompat {
-        // 创建点击快捷方式时触发的 Intent
-        val intent = Intent(context, ShortcutExecutorActivity::class.java).apply {
+    fun executionIntent(context: Context, workflow: Workflow): Intent =
+        Intent(context, ShortcutExecutorActivity::class.java).apply {
             action = ShortcutExecutorActivity.ACTION_EXECUTE_WORKFLOW
             putExtra(ShortcutExecutorActivity.EXTRA_WORKFLOW_ID, workflow.id)
-            // 添加 FLAG_ACTIVITY_CLEAR_TASK 以确保每次都创建一个新的任务栈
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
         }
 
-        // 获取自定义名称，如果没有则使用工作流名称
-        val shortLabel = workflow.shortcutName?.takeIf { it.isNotEmpty() } ?: workflow.name
-        val longLabel = workflow.shortcutName?.takeIf { it.isNotEmpty() } ?: workflow.name
+    /**
+     * 内部辅助方法：构建 ShortcutInfoCompat 对象。
+     */
+    private fun createShortcutInfo(context: Context, workflow: Workflow): ShortcutInfoCompat {
+        val intent = executionIntent(context, workflow)
+
+        // 获取自定义名称，如果没有则使用工作流名称。
+        // ⚠️ 规则只有一处 —— `CreateShortcutSupport.shortcutLabelOf`（见其 KDoc：
+        //    同一个工作流在两处显示不同名字会被当成两个东西）。
+        val shortLabel = com.chaomixian.vflow.ui.shortcut.CreateShortcutSupport.shortcutLabelOf(workflow)
+        val longLabel = shortLabel
 
         // 获取自定义图标，如果没有则使用默认图标
         val iconCompat = workflow.shortcutIconRes?.let { iconRes ->

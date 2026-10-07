@@ -178,6 +178,25 @@
             </intent-filter>
         </activity>
 
+        <!-- fork: 响应第三方 App 的「创建快捷方式」请求（ShortX 等手势工具的「应用快捷方式」入口）。
+             ⚠️ theme 必须是透明主题：CREATE_SHORTCUT 是两级跳（第三方 App → 本页 → 回到对方），
+                不透明主题会让整个屏幕闪一下。运行期还会 setTheme 拿动态取色（照 OverlayUIActivity）。
+             ⚠️ 本 Activity 只做一件事：弹选择框 → setResult 一个带 EXTRA_SHORTCUT_INTENT 的结果。
+                它不落盘、不改任何数据。 -->
+        <activity
+            android:name=".ui.shortcut.CreateShortcutActivity"
+            android:theme="@style/Theme.vFlow.Transparent.Default"
+            android:exported="true"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:label="@string/create_shortcut_title">
+            <intent-filter>
+                <action android:name="android.intent.action.CREATE_SHORTCUT" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
         <activity android:name=".ui.common.ShareReceiverActivity"
             android:theme="@style/Theme.vFlow.Transparent.Default"
             android:label="@string/share_to_vflow"
