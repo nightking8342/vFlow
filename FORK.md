@@ -887,7 +887,7 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 > （`aapt2 dump resources` 数 8310 —— `keep.xml` 的白名单就是为它写的，
 > 但**注释里的双连字符陷阱**曾让整份文件静默失效，值得单独跑一次）。
 
-### 广播触发器（`vflow.trigger.broadcast`，2026-10-07）—— **已实现（未真机验证）**
+### 广播触发器（`vflow.trigger.broadcast`，2026-10-07）—— **已实现 + 首轮真机验证通过**
 
 > 设计文档：`docs/fork/broadcast-trigger-design.md`（v1.0）。
 > 一句话：让用户**自由配置若干 action**，动态注册一个 `RECEIVER_EXPORTED` 的
@@ -926,7 +926,17 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 > 搬到新文件 `ExtrasJsonCodec.kt`，原文件改为委托，**公开常量与 `encode`/`decode`
 > 签名不变** —— 这是广播触发器与 hook 链路**共用同一份实现**的代价，
 > 换来的是不需要维护两份行为一致的代码）；④ `WireLayerPurityTest` 的文件清单追加 1 行。
-> ⚠️ **真机验证 0 项**（设计文档 §11 的 10 项 + 实现方案新增的 4 项全部待做）。
+> ✅ **首轮真机验证通过 4 项**（2026-10-07，用户手工）：自定义 action 能收到、
+> extras 的 String/Int 保持原类型、冷却窗口内只触发一次（内容取先到的那条）、
+> action 不匹配不触发。⚠️ **其余 10 项待做**（§11 清单）。
+>
+> ⚠️ 首轮报告里有一条「`truncated` 标志不可靠」的疑似 bug —— **已实跑证伪**：
+> 报告称「5000 字节的 extras 只留了约 1000 字符却 `truncated=false`」，
+> 而 5000 字节 < 8192 预算**本来就不该截断**（实跑 `n=5000 → bytes=5010 truncated=false`；
+> `n=8190 → truncated=true` 如实置位）。那 1000 字符来自**它的观测通道** ——
+> `SendNotificationModule` 用 `setContentText` 且**没有 `BigTextStyle`**，
+> 通知正文只显示开头一屏。**被砍的是展示，不是数据。**
+> 教训入册：**不能用有损的展示层当数据的证据**，判据是字节、且必须做对照项。
 
 | 文件 / 范围 | 分歧内容 | 冲突归属 |
 |---|---|---|

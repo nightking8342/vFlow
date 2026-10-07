@@ -1,8 +1,8 @@
 # 广播触发器设计 —— 用户可自由配置的任意广播监听
 
-> 版本：v1.1（2026-10-07 回写实现状态）
-> 状态：**已实现（未真机验证）** —— 代码已合入 `feature/broadcast-trigger` 分支；
-> ⚠️ **§11 的真机验证清单 0 项已做**，全部结论仍是【源码】级，不是【实测】级。
+> 版本：v1.2（2026-10-07 回写实现状态 + 首轮真机验证）
+> 状态：**已实现 + 首轮真机验证通过（14 项里 4 项已做，见 §11.1）** —— 代码已合入 `dev`；
+> ⚠️ 其余各项的结论仍是【源码】级，不是【实测】级。
 > 目录归属：**fork 独有**（冲突归我方），上游无此文件
 > 关联：`core/workflow/module/triggers/`（模块声明）+ `.../triggers/handlers/`（Handler）
 > 上位文档：`docs/fork/surveys/trigger-system-overview.md`（触发器体系现状）
@@ -554,14 +554,14 @@ object BroadcastTriggerSupport {
 
 ---
 
-## 11. 真机验证清单（**当前 0 项已做**）
+## 11. 真机验证清单（**4 项已做 / 10 项待做**）
 
-⚠️ **本设计的全部平台行为结论来自源码 / 官方文档核实，尚无真机验证**。
-上机时逐项确认：
+⚠️ **本设计的全部平台行为结论来自源码 / 官方文档核实**。
+**2026-10-07 首轮真机验证（用户手工）已过 4 项**，见 §11.1；其余各项仍待上机确认。
 
 | # | 验证项 | 判据 |
 |---|---|---|
-| 1 | 自定义 action 广播能收到 | 用 `am broadcast -a com.test.XXX` 触发 |
+| 1 | 自定义 action 广播能收到 | 用 `am broadcast -a com.test.XXX` 触发 | ✅ **已做**（§11.1） |
 | 2 | **第三方应用**发的广播能收到（证明 `EXPORTED` 必要） | 用一个独立 App 发；对照 `NOT_EXPORTED` 必须收不到 |
 | 3 | 带 data 的广播：不填 scheme 收不到（`test://` 这种非例外 scheme） | `am broadcast -a X -d "test://a"` |
 | 3b | ⭐ **`content://` / `file://` 是例外，不填 scheme 也收得到** | `am broadcast -a X -d "content://a/b"` 与 `-d "file:///sdcard/x"` 都应触发（§3.2 源码核实的例外，见下方「未验证」提醒） |
@@ -569,10 +569,10 @@ object BroadcastTriggerSupport {
 | 4 | 带 data 的广播：填了正确 scheme 能收到 | 同上 + `addDataScheme("test")` |
 | 5 | `addAction("*")` 确实收不到 | 反向验证 §3.1 |
 | 6 | `ACTION_PACKAGE_ADDED` + `scheme=package` 能收到 | 装一个 APK |
-| 7 | extras 各类型（String/Int/Bool/List/Parcelable）编码正确 | `extras_json` 解回来逐类型核对 |
+| 7 | extras 各类型（String/Int/Bool/List/Parcelable）编码正确 | `extras_json` 解回来逐类型核对 | ⚠️ **部分已做**：String / Int 已验（逐类型正确）；Bool / List / Parcelable **未验** |
 | 8 | 超大 extras 被截断且 `truncated=true` | 塞一个 60 KiB 的 String |
 | 9 | 关闭后台服务通知后失效（既有缺陷） | 复现 §7-7 |
-| 10 | 冷却窗口内高频广播不刷爆 | 循环发 100 条 |
+| 10 | 冷却窗口内高频广播不刷爆 | 循环发 100 条 | ⚠️ **部分已做**：1 秒内连发 2 条只触发一次、内容是先到的那条 ⇒ **窗口内命中不记账**的语义成立；「循环 100 条」未做 |
 
 **实现期（2026-10-07）新增的 4 项**：
 
@@ -582,6 +582,47 @@ object BroadcastTriggerSupport {
 | 12 | UIProvider 三个列表的增删/编辑真的能落盘 | 加 3 条 action → 保存 → 重开编辑器回显一致；删一条 → 保存 → 回显一致；确认 `ListItemAdapter` 的 RecyclerView 复用后**输入框文本没写错行** |
 | 13 | **两个广播触发器并存时不互相干扰** | 触发器 A 配 `ACT_A` + scheme `test`，触发器 B 配 `ACT_B`（无 scheme）；`am broadcast -a ACT_A -d test://x` 只触发 A；`am broadcast -a ACT_B` 只触发 B。⚠️ **本条验的是「各管各的」**，价值在于**确认 `registerFor` 的重建逻辑没有串台**（增删改各触发器后 filter 仍与各自参数对应） |
 | 14 | **空 `actions` 的存量触发器不误触发** | 手工往工作流 JSON 塞一个 `actions: []` 的广播触发器 → 后台**不应**对任意无 action 广播触发（日志里应有 `未配置有效 action，已跳过注册` 的 WARN）。⚠️ 编辑器路径保存不出这种配置（`validate()` 拦了），只有导入/AI 路径能造出来 |
+
+### 11.1 2026-10-07 首轮真机验证结果（用户手工）
+
+| # | 用例 | 结果 | 证据 |
+|---|---|---|---|
+| 1 | 正常触发 + extras 传递 | ✅ | `am broadcast -a com.vflow.TEST_BROADCAST --es msg hello --ei num 42` ⇒ 命中并触发，`extras_json={"msg":"hello","num":42}`，**字符串与整型都保持原类型**（未被猜成同一类型 —— 这正是 `ExtrasJsonCodec.putTyped` 要防的，对照 `dumpsys` 那条有损链路） |
+| — | action 不匹配 | ✅ | 发 `com.vflow.OTHER_ACTION` **完全不触发** ⇒ filter 的 action 维度生效 |
+| 10（部分） | 冷却 | ✅ | 1 秒内连发 aaa / bbb，只触发一次且内容是 **aaa**（先到的） ⇒「窗口内命中不记账（窗口不滑动）」的语义在真机成立 |
+| 7（部分） | extras 类型 | ⚠️ 部分 | 仅 String / Int 验过；Bool / List / Parcelable 未验 |
+
+#### ⚠️ 首轮报告里「`truncated` 标志不可靠」的疑似 bug —— **已实跑证伪，不是缺陷**
+
+报告称「发 5000 字节的 `--es big`，`extras_json` 只留了约 1000 字符但 `truncated=false`」。
+按它给的参数在 `ExtrasJsonCodec.encode`（8 KiB 预算）上实跑：
+
+```
+n=5000  → bytes=5010  truncated=false   ← 报告里的用例
+n=8170  → bytes=8180  truncated=false
+n=8190  → bytes=2     truncated=true    ← 越过预算，如实置位
+n=20000 → bytes=2     truncated=true
+```
+
+⇒ **5000 字节本来就没超 8192 的预算**，`truncated=false` **是正确的**；
+`JSONObject(r.json).getString("big").length == 5000`，值完整。
+
+报告看到的「约 1000 字符」来自**它的观测通道**：`SendNotificationModule` 用的是
+`NotificationCompat.setContentText(message)` 且**没有 `setStyle(BigTextStyle)`**
+⇒ **通知正文本身就只显示开头一屏**。被砍的是**展示**，不是数据；
+而 `truncated` 反映的是**数据**完整性，与通知能显示多少无关。
+
+⚠️ 顺带记一处**非缺陷**的既定行为：**单键超预算时该键被整体丢弃**、`extras_json` 变 `{}`
+（「逐键累加、超限就停」，保证截断后仍是**合法 JSON** —— 先拼好再砍会得到半截 JSON、
+下游 `JSONObject()` 抛 ⇒ **整条 extras 都拿不到**）。`truncated=true` 正确反映了它。
+
+⚠️ **方法论教训（比结论本身更值得记）**：**不能用有损的展示层当数据的证据** ——
+「通知只显示 1000 字」推不出「数据只有 1000 字」。判据是**字节**（8192），
+而 5000 字符的 ASCII 是 5010 字节、远未越线；报告既没量字节、也没做对照项
+（补发一条 9000 字节会立刻看到 `truncated=true`）。这正是 `FORK.md` 记过的
+「`null`/`false`/异常必须先做对照项框范围再下结论」。
+
+---
 
 ⚠️⚠️ **上面第 3b / 3c 两项的证据等级是【源码逐行读】，不是【实测】**（实现期无设备）。
 按本仓库「写进文档的库行为断言先实跑再落笔」的教训，
@@ -627,6 +668,6 @@ object BroadcastTriggerSupport {
   行号会漂移，**引用前以源码为准**。
 - **本文档已于 2026-10-07 回写实现状态**（v1.1）：§6.1 / §9 / §9.0 / §9.1 / §9.2 / §10 / §11 / §12.1
   是实现期补的。**设计部分（§0–§8）未改**，仍是原始的判断依据。
-- **实现已完成但无真机验证**（§11 的 14 项全部待做）。文档里凡标【源码】【官方文档】的
-  是核实过的；标【推断】【待验证】的**不得当成结论使用**。
+- **实现已完成；首轮真机验证过了 4 项**（§11.1），其余各项见 §11 的待做清单。
+  文档里凡标【源码】【官方文档】的是核实过的；标【推断】【待验证】的**不得当成结论使用**。
 - 实施时请连同 §7 静默失效点清单一起过一遍。
