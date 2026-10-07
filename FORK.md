@@ -887,10 +887,9 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 > （`aapt2 dump resources` 数 8310 —— `keep.xml` 的白名单就是为它写的，
 > 但**注释里的双连字符陷阱**曾让整份文件静默失效，值得单独跑一次）。
 
-### 广播触发器（`vflow.trigger.broadcast`，2026-10-07）—— **仅设计，未实现**
+### 广播触发器（`vflow.trigger.broadcast`，2026-10-07）—— **已实现（未真机验证）**
 
 > 设计文档：`docs/fork/broadcast-trigger-design.md`（v1.0）。
-> ⚠️ **本批只有一份文档，没有一行代码。**
 > 一句话：让用户**自由配置若干 action**，动态注册一个 `RECEIVER_EXPORTED` 的
 > `BroadcastReceiver`，把 `action / data / extras` 打包给下游引用。
 >
@@ -919,10 +918,27 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 >
 > **§7 静默失效点 13 条**、**§10 未决项 6 条**（含 `extras` 编码层与 `ActivityPayload`
 > 如何共享的三个候选落点）、**§11 真机验证清单 0 项已做**。
+>
+> ✅ **2026-10-07 已实现**：新增 7 个源文件（6 个 Kotlin + 1 个布局）+ 5 个测试文件。
+> **全部为新增或纯追加**，共 5 处触及既有文件，**无一处重排既有代码**：
+> ① 两个注册表各追加 1 行；② 三语 `strings_module.xml` 追加文案（33 键 ×3）；
+> ③ `xposed/wire/ActivityPayload.kt` 做**提取**（把 extras 编码的三个私有纯函数
+> 搬到新文件 `ExtrasJsonCodec.kt`，原文件改为委托，**公开常量与 `encode`/`decode`
+> 签名不变** —— 这是广播触发器与 hook 链路**共用同一份实现**的代价，
+> 换来的是不需要维护两份行为一致的代码）；④ `WireLayerPurityTest` 的文件清单追加 1 行。
+> ⚠️ **真机验证 0 项**（设计文档 §11 的 10 项 + 实现方案新增的 4 项全部待做）。
 
 | 文件 / 范围 | 分歧内容 | 冲突归属 |
 |---|---|---|
-| `docs/fork/broadcast-trigger-design.md`（新增） | fork 独有：**广播触发器设计**（用户可自由配置任意广播监听）。含 §3 四条经 AOSP 源码核实的平台约束、§4 配置 schema（`actions` 必填无通配 / `data_schemes` 留空语义反直觉 / `requiredPermissions` 为空改用运行时诊断）、§5 输出变量设计（`extras_json` 不逐键建输出 + 必须有 `truncated`）、§6 与既有触发器的关系（**不取代任何一个**，定位为逃生舱）、§7 **静默失效点 13 条**、§8 决策台账 13 项、§10 未决项 6 条、§11 真机清单 10 项。上游无此文件 | 我方 |
+| `core/workflow/module/triggers/BroadcastTrigger{Module,Data,Support,UIProvider}.kt` + `handlers/BroadcastTriggerHandler.kt` + `res/layout/partial_broadcast_trigger_editor.xml`（均新增） | fork 独有：**广播触发器**（用户自由配置任意 action 的逃生舱）。⚠️⚠️ **每个触发器各注册一个 `BroadcastReceiver`**（不是照 `ActivityChangedTriggerHandler` 的「单 receiver + 并集 filter」）—— **理由不是「并集做不到」**（`addDataScheme("")` 能把「无 data」那条腿补回来，并集在功能上完全做得到），而是：① **让 `IntentFilter` 成为唯一判定点** —— 并集方案必须把每个触发器的 actions/schemes/categories 再判一遍，而平台匹配语义不平凡（三类条件规则各异、`scheme == null` 折成 `""`、未声明 scheme 时有 `content`/`file` 两个硬编码例外、data 还有四层匹配），复刻一次就有漂移风险，而两者一旦不一致「收到了却不触发」**没有任何日志**；② `actions` 为空的「不注册」分支**只有精确注册才做得出**（并集下 filter 永远非空 ⇒ 只能白注册一个 `EXPORTED` receiver、白接管一堆广播）。⚠️ `actions` **必填且无通配**（`addAction("*")` 无效；不声明 action 只匹配「无 action 的 intent」）⇒ **不沿用本仓库「留空 = 任意」的惯例**；归一化时丢弃 `"*"`、空列表时**不注册** receiver（WARN 日志）。⚠️ 一律 `RECEIVER_EXPORTED`（用户会配第三方应用 action），**理由与 `SimDataSwitchTriggerHandler` 不同**，不要把这条推广到 DND/Power/Screen。⚠️ `requiredPermissions` 刻意为空 + 运行时诊断（`registerReceiver` 的 try/catch + ERROR 日志，含 actions 列表）。⚠️ 不做 token / 鉴权 / `sender_package` 输出（`getSentFromPackage` 是 API 34+ 且默认 null）。⚠️ 必须继承 `BaseTriggerHandler`（`ListeningTriggerHandler` 四方法 final ⇒ 第 2 个触发器静默不注册）。⚠️ extras 读取包 `try/catch(Throwable)`（自定义 Parcelable 类不可见会抛 `BadParcelableException`），失败时 `truncated=true` 而非静默 `"{}"`。⚠️ UIProvider 用三个独立 RecyclerView（**id 必须各不相同** —— 同布局三处同名会让 `findViewById` 全拿到第一个）+ `ListItemAdapter(showMagicControls = false)`；`readFromEditor` 用 `stripBlank` 而**不做运行时归一化**（留着 `"*"` 让 `validate()` 给文案，否则用户输入会静默消失） | 我方 |
+| `core/workflow/module/ModuleRegistry.kt`（改） | 触发器段末尾追加 1 行 `register(BroadcastTriggerModule(), context)`（不重排既有注册） | **手动合并**（追加一行） |
+| `core/.../triggers/handlers/TriggerHandlerRegistry.kt`（改） | `initialize()` 末尾追加 1 行（不重排既有注册） | **手动合并**（追加一行） |
+| `xposed/wire/ExtrasJsonCodec.kt`（新增）+ `xposed/wire/ActivityPayload.kt`（改） | ⚠️ **本批唯一的既有文件改动**：把 `ActivityPayload` 里 `private` 的 `putTyped` / `truncateToBytes` 与 `internal` 的 `encodeExtras` / `ExtrasResult` **提取**到新文件 `ExtrasJsonCodec.kt`（广播触发器与 `ActivityPayload` **共用一份**，避免仓库反复踩过的「双份实现静默漂移」——`FORK.md` 已记过 logcat 双份的代价）。⚠️ 公开常量 `MAX_INTENT_URI_BYTES` / `MAX_EXTRAS_JSON_BYTES` **原地保留**（`ActivityPayloadTest` 引用它们），`encodeExtras` 的签名与 `encode` 的签名**不变**。⚠️ 新文件**必须保持 wire 层纯度**（不得 import 任何 `android.*`，入参刻意用 `Map<String, Any?>` —— 连 `Bundle` 都不行）。⚠️ `MAX_EXTRAS_JSON_BYTES` 的 KDoc 补了一句「它的依据是 Binder oneway 半缓冲，**不要套到同进程传递的场景上**」 | **手动合并**（提取 + 委托） |
+| `core/workflow/module/triggers/handlers/BroadcastTriggerHandler.kt`（改，**extras 预算比 ActivityPayload 小**，见设计文档 §12.1） | ⚠️ 初版把 `MAX_EXTRAS_JSON_BYTES` 定为 48 KiB（照 `ActivityPayload`，理由是「那条值已实测标定」）。**该理由不成立**：`ActivityPayload` 的预算是为 **Binder oneway 半缓冲（≈508 KiB）** 标定的，而广播载荷是**同进程**传的（`executeTrigger` → `Parcelable` → `ExecutionContext`），**不经过 Binder**（只有种子输出那一笔会经 PendingIntent/AMS，内容是几十字节的 `triggerId`）。⇒ 48 KiB 是**为一个不存在的上限**付的代价（用户看不到后半段 extras），且它还会进 `VString` → `executionLogs` → `SharedPreferences`。现收到 **8 KiB**：仍足以覆盖正常广播（这类广播的 extras JSON 通常 < 1 KiB），超出的走 `truncated=true` 如实告知。⚠️ 只影响**新收到的**广播；`ActivityPayload.MAX_EXTRAS_JSON_BYTES` **不动**（那条是跨进程传输，48 KiB 有实测依据）。有源码扫描反向锁（`BroadcastTriggerWiringTest` 断言代码里不得出现 `48 * 1024`、且 KDoc 必须写明「不经过 Binder」） | **我方** |
+| `test/.../xposed/WireLayerPurityTest.kt`（改） | 文件存在性硬编码清单追加 `ExtrasJsonCodec.kt`（1 行） | **手动合并**（1 行） |
+| `test/.../triggers/BroadcastTriggerWiringTest.kt`（改，**独立复核收紧一条断言**，2026-10-07） | ⚠️⚠️ 原 `the module overrides validate so empty actions cannot be saved` **只断言「`override fun validate(` 与两个错误文案键在文件里」** —— 独立复核实测：把 `validate()` 的两处 `ValidationResult(false, …)` 改成 `true`，**全部 95 例新测试照旧全绿**（扫描断言只能证明「写了」，证明不了「真的会拒绝」，与 `CoreDexFingerprint` 那次「纯函数全绿但集成点缺失」同形）。现追加**逐分支**断言：截取 `ActionsValidation.EMPTY` / `.WILDCARD` 各自分支里 `ValidationResult(` 之后的实参片段（**必须折叠空白再比** —— `SourceScan.stripped` 保留换行缩进，直接 `contains("ValidationResult(false")` 恒不命中），断言第一个实参是 `false`。⚠️ **行为测试试过、纯 JVM 里做不到**：错误分支要读 `appContext.getString(...)`，而 `Context.getString` 是 `final`（无法覆写）、`Resources` 的构造器要一个 package-private 的 `AssetManager`、本项目没有 Robolectric/mockito（`app/build.gradle.kts` 的 testImplementation 只有 junit / json / mockwebserver）。**反证已实际做过（3 条，均确认变红）**：`EMPTY` 分支改 `true`、`WILDCARD` 分支改 `true`、去掉 `override fun validate(` 断言 | **我方** |
+| 三语 `res/values{,-en,-ja}/strings_module.xml`（改） | 追加广播触发器文案 **33 条 ×3 语言**（模块名/描述、5 个参数名、1 个选项名、3 个区块标题 + 3 个 hint + 1 个 sticky 提示、3 个添加按钮、4 个摘要文案、8 个输出名、2 个报错文案、1 个进度消息） | **手动合并**（追加条目） |
+| `docs/fork/broadcast-trigger-design.md`（改） | 回写实现状态：文件头状态行、§9 实施清单打勾（第 13 行「自检按钮」标为未做）、§10 六条未决项标为「已定案」并补决定、§11 追加第 11/12/13/14 项、**新增 §12.1（extras 预算定为 8 KiB 的理由）**。⚠️ 该文件**在 git 里**（随本分支走），行尾是 **CRLF** ⇒ 逐处 `Edit`、不要整文件重写 | **我方** |
 
 ### 快捷设置磁贴（QS Tile）优化（2026-10-06）—— **仅设计，未实现**
 

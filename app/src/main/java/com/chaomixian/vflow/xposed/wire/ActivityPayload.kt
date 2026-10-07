@@ -58,6 +58,10 @@ object ActivityPayload {
      *
      * ⚠️ 它**不是**「拼好之后砍到这里」——是累加时的预算上限（见 [encodeExtras]）。
      *
+     * ⚠️ **取值依据是 Binder oneway 半缓冲（≈508 KiB）** —— 本载荷正是跨进程传的。
+     * **不要**把这个数值套到「同进程传递」的场景上：广播触发器的载荷同进程传递、
+     * 不过 Binder，它用的是自己的 8 KiB 常量（理由见 `BroadcastTriggerHandler`）。
+     *
      * ## ⚠️⚠️ 为什么单位必须是字节（这是一处已修的既有缺陷）
      *
      * 原实现按**字符**计（`MAX_INTENT_URI_CHARS = 64K` / `MAX_EXTRAS_JSON_CHARS = 128K`，
@@ -105,7 +109,7 @@ object ActivityPayload {
         val safeUri = intentUri ?: ""
         val finalUri = if (ResultBudget.byteSizeOf(safeUri) > MAX_INTENT_URI_BYTES) {
             truncated = true
-            truncateToBytes(safeUri, MAX_INTENT_URI_BYTES)
+            ExtrasJsonCodec.truncateToBytes(safeUri, MAX_INTENT_URI_BYTES)
         } else {
             safeUri
         }
@@ -161,182 +165,18 @@ object ActivityPayload {
     /**
      * 把 extras 编码成 JSON —— **逐键累加，超预算即停**。
      *
-     * 为什么不是「拼好再截」：截断后的 JSON 不合法，下游 `JSONObject(...)` 会抛，
-     * 于是**整条 extras 都拿不到**，而不是「少几个键」。逐键累加能保证
-     * 拿到的部分始终是可解析的。
+     * ⚠️ 实现已**提取**到 [ExtrasJsonCodec]（广播触发器与 hook 链路共用一份，
+     * 避免仓库反复踩过的「双份实现静默漂移」）。这里保留同名入口只是为了
+     * 不改变本文件的对外契约 —— 预算仍是 [MAX_EXTRAS_JSON_BYTES]。
      *
-     * @return 编码结果 + 是否发生截断
+     * 那一段的实现语义（为什么不能「拼好再截」、为什么按字节计）写在
+     * [ExtrasJsonCodec.encode] 的 KDoc 里，与本处同步维护。
      */
-    internal fun encodeExtras(extras: Map<String, Any?>): ExtrasResult {
-        val obj = JSONObject()
-        var used = 2 // "{}"
-        var truncated = false
-        var added = 0
-
-        for ((key, value) in extras) {
-            // 先编码单个键，再判断加上它会不会超预算 ——
-            // 这样「超了就停」不会留下半截 JSON
-            val probe = JSONObject()
-            if (!putTyped(probe, key, value)) {
-                // 该键无法编码（如自定义 Parcelable）⇒ 记类型名，不丢键
-                if (!putTyped(probe, key, "<unencodable:${value?.javaClass?.name ?: "null"}>")) {
-                    continue
-                }
-                truncated = true
-            }
-
-            val probeStr = probe.toString()
-            // 每个键在整对象里占 "key":value 加上分隔逗号。
-            //
-            // ⚠️ 必须是**字节**数（原实现是 `probeStr.length`，即字符数）——
-            // 全 CJK 时字符数只是真实体积的三分之一，会静默超限。
-            // 用 ResultBudget.byteSizeOf 保证与契约、与 intent_uri 的判据同源。
-            val cost = ResultBudget.byteSizeOf(probeStr) - 2 + if (added > 0) 1 else 0
-
-            if (used + cost > MAX_EXTRAS_JSON_BYTES) {
-                truncated = true
-                break
-            }
-
-            try {
-                obj.put(key, probe.get(key))
-            } catch (_: Exception) {
-                truncated = true
-                continue
-            }
-            used += cost
-            added++
-        }
-
-        return ExtrasResult(obj.toString(), truncated)
-    }
-
-    /**
-     * 按**真实类型**写入。返回 false 表示该类型无法安全编码（调用方改存类型名）。
-     *
-     * ⚠️ 这里就是「不猜类型」的落实点：
-     * `String "1"` 写成 JSON 字符串 `"1"`，`Int 1` 写成 JSON 数字 `1` ——
-     * 两者在 JSON 层可区分，下游不会像 `dumpsys` 那样把字符串猜成数字。
-     */
-    private fun putTyped(target: JSONObject, key: String, value: Any?): Boolean = try {
-        when (value) {
-            null -> {
-                // ⚠️ 用 JSONObject.NULL 而不是 Kotlin null ——
-                // 后者在 org.json 里是「删掉这个键」的意思
-                target.put(key, JSONObject.NULL)
-                true
-            }
-            is String, is CharSequence -> {
-                target.put(key, value.toString())
-                true
-            }
-            is Boolean -> {
-                target.put(key, value)
-                true
-            }
-            is Int, is Long, is Short, is Byte -> {
-                target.put(key, (value as Number).toLong())
-                true
-            }
-            is Float, is Double -> {
-                val d = (value as Number).toDouble()
-                // NaN / Infinity 不是合法 JSON，org.json 会把它们写成字符串
-                // 破坏类型语义，故显式拒绝
-                if (d.isNaN() || d.isInfinite()) false else {
-                    target.put(key, d)
-                    true
-                }
-            }
-            is Array<*> -> {
-                // 数组逐元素降级为字符串（保留「有几个元素」，不保证元素类型）
-                val arr = org.json.JSONArray()
-                for (e in value) arr.put(e?.toString() ?: JSONObject.NULL)
-                target.put(key, arr)
-                true
-            }
-            is BooleanArray -> {
-                val arr = org.json.JSONArray()
-                for (e in value) arr.put(e)
-                target.put(key, arr)
-                true
-            }
-            is IntArray -> {
-                val arr = org.json.JSONArray()
-                for (e in value) arr.put(e)
-                target.put(key, arr)
-                true
-            }
-            is LongArray -> {
-                val arr = org.json.JSONArray()
-                for (e in value) arr.put(e)
-                target.put(key, arr)
-                true
-            }
-            is DoubleArray -> {
-                val arr = org.json.JSONArray()
-                for (e in value) arr.put(e)
-                target.put(key, arr)
-                true
-            }
-            else -> false
-        }
-    } catch (_: Throwable) {
-        false
-    }
-
-    /**
-     * 按**字节**截断字符串，且**绝不切碎一个 UTF-8 字符**。
-     *
-     * ⚠️ 为什么要单独写：`String.take(n)` 是按**字符**取的，
-     * 而我们要的是「不超过 n 个字节」。若直接 `take(maxBytes)`，
-     * CJK 场景下会取到约 3 倍预算的字节数 —— 等于没截。
-     *
-     * ⚠️ 也**不能**简单按字节数组切：从中间切开一个多字节字符会产出
-     * 非法的 UTF-8 序列，下游解析时得到替换字符（`�`）甚至解析失败。
-     *
-     * ⚠️⚠️ **必须按「码点」推进，不能按 `Char` 推进**（2026-09-29 独立验收发现）。
-     *
-     * 初版写的是 `for (ch in text)` + `byteSizeOf(ch.toString())`，看似正确，
-     * 但对**补充平面**字符（emoji、部分 CJK 扩展）是错的：它们在 Kotlin 里是
-     * 一对代理 `Char`，而**单个代理 Char 编码成 UTF-8 只有 1 字节**
-     * （孤立代理退化成替换符，`String.toByteArray` 照样编得出来、不抛异常）。
-     *
-     * ⇒ 一个 4 字节的 emoji 被算成 `1 + 1 = 2` 字节，**预算低估一半**。
-     * 实测（`limit = MAX_INTENT_URI_BYTES = 16384`，载荷为重复 emoji）：
-     * **截断后实际 32768 字节，正好 2 倍上限** —— 即**截断完全没生效**，
-     * 而它是静默的（不抛异常、`contains('�')` 也是 false，因为两个代理
-     * 连着一起被 `break` 掉了，反而是**侥幸**没切碎的）。
-     *
-     * ⚠️ 这也说明**「按 Char 切会切碎」这个担心本身是次生问题**：
-     * 真正的后果是**上限形同虚设**，正是 §3.6 要防的「静默超限」。
-     *
-     * ⚠️ 与之配套：`ActivityPayloadTest` 的「不得切碎多字节字符」用例
-     * **此前用「中」做载荷，而它在 BMP 内只占一个 Char，恰好绕过本 bug**。
-     * 已改为 emoji，否则修完也无法反证。
-     */
-    private fun truncateToBytes(text: String, maxBytes: Int): String {
-        var used = 0
-        val sb = StringBuilder()
-        var i = 0
-        while (i < text.length) {
-            val cp = text.codePointAt(i)
-            val charCount = Character.charCount(cp)
-            // 用整码点一次性算字节数 —— 与 ResultBudget 的口径同源，
-            // 且对代理对得到的是真实 UTF-8 长度（emoji = 4），不是 1 + 1。
-            val size = ResultBudget.byteSizeOf(String(text.toCharArray(i, i + charCount)))
-            if (used + size > maxBytes) break
-            sb.appendCodePoint(cp)
-            used += size
-            i += charCount
-        }
-        return sb.toString()
-    }
+    internal fun encodeExtras(extras: Map<String, Any?>): ExtrasJsonCodec.Result =
+        ExtrasJsonCodec.encode(extras, MAX_EXTRAS_JSON_BYTES)
 
     private fun escape(s: String): String =
         s.replace("\\", "\\\\").replace("\"", "\\\"")
-
-    /** [encodeExtras] 的结果。 */
-    internal data class ExtrasResult(val json: String, val truncated: Boolean)
 }
 
 /**

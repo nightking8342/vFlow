@@ -3635,4 +3635,39 @@
     <string name="sheet_switch_add_default">＋ 添加默认分支</string>
     <string name="sheet_switch_drag_desc">拖动排序</string>
     <string name="sheet_switch_remove_desc">删除该分支及其分支体</string>
+
+    <!-- 广播触发器（vflow.trigger.broadcast，fork 新增） -->
+    <string name="module_vflow_trigger_broadcast_name">广播触发</string>
+    <string name="module_vflow_trigger_broadcast_desc">监听指定的广播，收到时触发工作流并可引用广播携带的数据</string>
+    <string name="param_vflow_trigger_broadcast_actions_name">广播 Action 列表</string>
+    <string name="param_vflow_trigger_broadcast_data_schemes_name">数据 Scheme</string>
+    <string name="param_vflow_trigger_broadcast_categories_name">分类（Category）</string>
+    <string name="param_vflow_trigger_broadcast_match_mode_name">匹配方式</string>
+    <string name="param_vflow_trigger_broadcast_cooldown_name">冷却时间（毫秒）</string>
+    <string name="option_vflow_trigger_broadcast_exact">精确匹配</string>
+    <string name="editor_vflow_trigger_broadcast_actions_title">要监听的广播</string>
+    <string name="editor_vflow_trigger_broadcast_actions_hint">必填。填写完整的 action 字符串，如 com.example.ACTION_X 或 android.intent.action.MEDIA_MOUNTED。不支持 * 通配 —— 填了不会触发。</string>
+    <string name="editor_vflow_trigger_broadcast_schemes_title">数据 Scheme（可选）</string>
+    <string name="editor_vflow_trigger_broadcast_schemes_hint">留空 = 接收不带数据的广播，以及 content 与 file 两种（平台的硬编码例外）。要接收其它 scheme 的广播（如 package），必须在此填写。注意：一旦填了，content 与 file 的例外就没了 —— 此时连它们也要一并列出。不支持 * 通配。</string>
+    <string name="editor_vflow_trigger_broadcast_categories_title">分类（可选）</string>
+    <string name="editor_vflow_trigger_broadcast_categories_hint">广播必须同时包含这里列出的全部分类才会触发（不是任一）。留空则不限制。</string>
+    <string name="editor_vflow_trigger_broadcast_sticky_hint">若监听粘性广播（如电量变化），注册时会立刻触发一次。</string>
+    <string name="editor_vflow_trigger_broadcast_add_action">添加广播</string>
+    <string name="editor_vflow_trigger_broadcast_add_scheme">添加 Scheme</string>
+    <string name="editor_vflow_trigger_broadcast_add_category">添加分类</string>
+    <string name="summary_vflow_trigger_broadcast_none">未配置广播</string>
+    <string name="summary_vflow_trigger_broadcast_prefix">监听</string>
+    <string name="summary_vflow_trigger_broadcast_more">%1$s 等 %2$d 个广播</string>
+    <string name="summary_vflow_trigger_broadcast_scheme">（scheme: %1$s）</string>
+    <string name="output_vflow_trigger_broadcast_action">广播 Action</string>
+    <string name="output_vflow_trigger_broadcast_data_uri">数据 URI</string>
+    <string name="output_vflow_trigger_broadcast_scheme">数据 Scheme</string>
+    <string name="output_vflow_trigger_broadcast_mime_type">MIME 类型</string>
+    <string name="output_vflow_trigger_broadcast_categories">分类</string>
+    <string name="output_vflow_trigger_broadcast_extras_json">附加数据（JSON）</string>
+    <string name="output_vflow_trigger_broadcast_flags">Flags</string>
+    <string name="output_vflow_trigger_broadcast_truncated">附加数据是否被截断</string>
+    <string name="error_vflow_trigger_broadcast_no_action">请至少填写一个广播 Action：广播触发器不支持「留空 = 监听全部」</string>
+    <string name="error_vflow_trigger_broadcast_wildcard">广播 Action 不支持通配符 *，请填写完整的 action 字符串</string>
+    <string name="msg_vflow_trigger_broadcast_ready">广播触发器已就绪</string>
 </resources>

@@ -3629,4 +3629,39 @@
     <string name="sheet_switch_add_default">＋ Add default branch</string>
     <string name="sheet_switch_drag_desc">Drag to reorder</string>
     <string name="sheet_switch_remove_desc">Delete this branch and its body</string>
+
+    <!-- Broadcast trigger (vflow.trigger.broadcast, fork) -->
+    <string name="module_vflow_trigger_broadcast_name">Broadcast Trigger</string>
+    <string name="module_vflow_trigger_broadcast_desc">Listen for specified broadcasts and trigger the workflow when one arrives, with the broadcast payload available downstream</string>
+    <string name="param_vflow_trigger_broadcast_actions_name">Broadcast Action list</string>
+    <string name="param_vflow_trigger_broadcast_data_schemes_name">Data Scheme</string>
+    <string name="param_vflow_trigger_broadcast_categories_name">Categories</string>
+    <string name="param_vflow_trigger_broadcast_match_mode_name">Match mode</string>
+    <string name="param_vflow_trigger_broadcast_cooldown_name">Cooldown (ms)</string>
+    <string name="option_vflow_trigger_broadcast_exact">Exact match</string>
+    <string name="editor_vflow_trigger_broadcast_actions_title">Broadcasts to listen for</string>
+    <string name="editor_vflow_trigger_broadcast_actions_hint">Required. Enter the full action string, e.g. com.example.ACTION_X or android.intent.action.MEDIA_MOUNTED. The * wildcard is not supported and will never match.</string>
+    <string name="editor_vflow_trigger_broadcast_schemes_title">Data Scheme (optional)</string>
+    <string name="editor_vflow_trigger_broadcast_schemes_hint">Left empty = receive broadcasts without data, plus the two hardcoded exceptions content and file. To receive broadcasts with other schemes (e.g. package) you must list them here. Note: once you list any scheme, the content and file exceptions disappear, so list them too if you need them. The * wildcard is not supported.</string>
+    <string name="editor_vflow_trigger_broadcast_categories_title">Categories (optional)</string>
+    <string name="editor_vflow_trigger_broadcast_categories_hint">The broadcast must contain ALL categories listed here to trigger (not any of them). Leave empty for no restriction.</string>
+    <string name="editor_vflow_trigger_broadcast_sticky_hint">If you listen for a sticky broadcast (such as battery changes), it fires once immediately upon registration.</string>
+    <string name="editor_vflow_trigger_broadcast_add_action">Add broadcast</string>
+    <string name="editor_vflow_trigger_broadcast_add_scheme">Add scheme</string>
+    <string name="editor_vflow_trigger_broadcast_add_category">Add category</string>
+    <string name="summary_vflow_trigger_broadcast_none">No broadcast configured</string>
+    <string name="summary_vflow_trigger_broadcast_prefix">Listening to</string>
+    <string name="summary_vflow_trigger_broadcast_more">%1$s and %2$d broadcasts</string>
+    <string name="summary_vflow_trigger_broadcast_scheme">(scheme: %1$s)</string>
+    <string name="output_vflow_trigger_broadcast_action">Broadcast Action</string>
+    <string name="output_vflow_trigger_broadcast_data_uri">Data URI</string>
+    <string name="output_vflow_trigger_broadcast_scheme">Data Scheme</string>
+    <string name="output_vflow_trigger_broadcast_mime_type">MIME type</string>
+    <string name="output_vflow_trigger_broadcast_categories">Categories</string>
+    <string name="output_vflow_trigger_broadcast_extras_json">Extras (JSON)</string>
+    <string name="output_vflow_trigger_broadcast_flags">Flags</string>
+    <string name="output_vflow_trigger_broadcast_truncated">Whether extras were truncated</string>
+    <string name="error_vflow_trigger_broadcast_no_action">Enter at least one broadcast Action: this trigger does not support leaving it empty to listen for everything</string>
+    <string name="error_vflow_trigger_broadcast_wildcard">The * wildcard is not supported for broadcast Actions; enter the full action string</string>
+    <string name="msg_vflow_trigger_broadcast_ready">Broadcast trigger ready</string>
 </resources>

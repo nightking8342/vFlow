@@ -96,6 +96,10 @@ object ModuleRegistry {
         register(SimDataSwitchTriggerModule(), context)
         // Activity 切换触发器（fork 新增，走 Xposed 通道）
         register(ActivityChangedTriggerModule(), context)
+        // 广播触发器（fork 新增，走 App 层动态注册）。⚠️ 它继承 BaseTriggerHandler
+        // 而非 ListeningTriggerHandler，且 requiredPermissions 刻意为空
+        // —— 见 BroadcastTriggerModule 的类注释
+        register(BroadcastTriggerModule(), context)
 
         // 界面交互
         register(FindTextModule(), context)
