@@ -451,13 +451,6 @@
             android:label="logcat 调试器"
             android:theme="@style/Theme.vFlow" />
 
-        <!-- fork 独有：玻璃开关调参页（现场调尺寸用，不落盘） -->
-        <activity
-            android:name=".ui.settings.SwitchTunerActivity"
-            android:exported="false"
-            android:label="@string/switch_tuner_entry_title"
-            android:theme="@style/Theme.vFlow" />
-
         <activity
             android:name=".ui.settings.DebugLogViewerActivity"
             android:exported="false"

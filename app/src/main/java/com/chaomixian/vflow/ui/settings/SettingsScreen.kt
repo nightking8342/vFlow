@@ -122,7 +122,6 @@ data class SettingsScreenActions(
     val onRunDiagnostic: () -> Unit,
     val onOpenKeyTester: () -> Unit,
     val onOpenLogcatViewer: () -> Unit,
-    val onOpenSwitchTuner: () -> Unit,
     val onOpenCoreManagement: () -> Unit,
     val onStartUiInspector: () -> Unit,
     val onOpenAbout: () -> Unit,
@@ -270,7 +269,6 @@ fun SettingsScreen(
     val runDiagnosticLabel = stringResource(R.string.settings_button_run_diagnostic)
     val keyTesterLabel = stringResource(R.string.settings_button_key_tester)
     val logcatViewerTitle = stringResource(R.string.logcat_viewer_entry_title)
-    val switchTunerLabel = stringResource(R.string.switch_tuner_entry_title)
     // ⚠️ 这个副标题**当前没有渲染位置**（logcat 入口已经是按钮，不是列表项），
     // 但必须保留并留在下面的搜索列表里——否则用户搜「采集日志」这类
     // 只出现在副标题里的词时，整个「调试」分组会消失（§6.1 易漏点 1）。
@@ -748,7 +746,6 @@ fun SettingsScreen(
                         SettingsButton(coreManagementLabel, actions.onOpenCoreManagement),
                         SettingsButton(uiInspectorLabel, actions.onStartUiInspector),
                         SettingsButton(logcatViewerTitle, actions.onOpenLogcatViewer),
-                        SettingsButton(switchTunerLabel, actions.onOpenSwitchTuner),
                     ),
                     position = SettingsGroupPosition.Bottom,
                 )

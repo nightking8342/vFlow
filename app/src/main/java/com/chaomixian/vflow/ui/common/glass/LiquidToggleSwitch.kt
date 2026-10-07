@@ -14,7 +14,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -28,7 +27,6 @@ import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -97,70 +95,28 @@ import androidx.compose.foundation.shape.RoundedCornerShape
  * - 轨道被采样时 `scaleX = lerp(2/3, 0.75, progress)`、`scaleY = lerp(0, 0.75, progress)`：
  *   **静止 `scaleY = 0`** ⇒ 采样里没有轨道 ⇒ 避开「滑块采样自己盖住的轨道」的自采样回环。
  */
-/**
- * **运行期尺寸覆盖**（供开关调参页使用）。
- *
- * ⚠️ **只在进程内有效，不落盘** —— 它的用途是「调到满意为止」，
- * 满意后应把数值写回下面的常量并移除覆盖项。落盘会变成「用户设备上有一个
- * 没人记得来源的尺寸」（本仓库在磁贴 `kind` 上踩过同形的坑）。
- */
-private val tunerTrackWidth = mutableStateOf<androidx.compose.ui.unit.Dp?>(null)
-private val tunerThumbWidth = mutableStateOf<androidx.compose.ui.unit.Dp?>(null)
-private val tunerThumbHeight = mutableStateOf<androidx.compose.ui.unit.Dp?>(null)
-
-/** 清空调参覆盖（调参页的「重置」用）。 */
-internal fun clearSwitchTunerOverrides() {
-    tunerTrackWidth.value = null
-    tunerThumbWidth.value = null
-    tunerThumbHeight.value = null
-}
-
-/**
- * 给调参页用的临时尺寸覆盖（**只在调参页里调**，改完请写回常量）。
- *
- * ⚠️ 用 `Modifier` 承载而不是给 `VFlowSwitch` 加参数：加参数会让 12 个
- * 生产调用点全部多一个「可以传、但永远不该传」的入口，而本覆盖只服务调参页。
- */
-internal fun Modifier.switchTunerOverrides(
-    trackWidth: androidx.compose.ui.unit.Dp,
-    thumbWidth: androidx.compose.ui.unit.Dp,
-    thumbHeight: androidx.compose.ui.unit.Dp,
-): Modifier = this.layout { measurable, constraints ->
-    // ⚠️ 在**测量阶段**写入覆盖值：`LiquidToggleTokens` 的 getter 在本组件
-    //    组合/测量时被读取，顺序上测量早于绘制，够用。
-    //    ⚠️ 副作用写在 `layout` 里不是好习惯（测量可能被多次调用），
-    //    但这里写的是 `mutableStateOf` 的幂等赋值，重复写没有额外代价。
-    tunerTrackWidth.value = trackWidth
-    tunerThumbWidth.value = thumbWidth
-    tunerThumbHeight.value = thumbHeight
-    val placeable = measurable.measure(constraints)
-    layout(placeable.width, placeable.height) { placeable.place(0, 0) }
-}
-
 internal object LiquidToggleTokens {
     /**
      * 四个尺寸（轨道 44 / 滑块 22×21 / 轨道高 24）**是 2026-10-07 用户在真机上
-     * 用开关调参页逐个手调定稿的**，不是按系数算出来的 —— 它们之间**不成比例**，
+     * 用临时调参页逐个手调定稿的**，不是按系数算出来的 —— 它们之间**不成比例**，
      * 别拿其中一个去推另一个。
      *
      * ⚠️ 示例原值是 64×28 / 滑块 40×24。我们收窄轨道是为了塞进工作流卡片的头行
      * （单列内容宽约 97dp，开关要和图标、⋮ 挤同一行）。
+     *
+     * ⚠️⚠️ **要再动这几个数，别靠猜 —— 把临时调参页加回来调。** 形态见 git 历史
+     * （`SwitchTunerActivity` + 设置页调试区一格入口 + `Modifier.switchTunerOverrides`
+     * 运行期覆盖），它是**一次性工具，定稿后已删除**。留着它的代价不只是多一个页面：
+     * 它会逼着这几个尺寸继续走 `mutableStateOf` 取值（否则调参页改不动），
+     * 于是生产代码里就多出一条「值可能来自运行期」的路径。
+     * 调完把数值写回这里、再把那套临时代码删掉。
      */
-    internal val defaultTrackWidth = 44.dp
-    internal val defaultThumbWidth = 22.dp
-    internal val defaultThumbHeight = 21.dp
-    internal val defaultTrackHeight = 24.dp
+    internal val trackWidthDp: androidx.compose.ui.unit.Dp = 44.dp
+    internal val thumbWidthDp: androidx.compose.ui.unit.Dp = 22.dp
+    internal val thumbHeightDp: androidx.compose.ui.unit.Dp = 21.dp
+    internal val trackHeightDp: androidx.compose.ui.unit.Dp = 24.dp
 
-    internal fun trackWidthDp(): androidx.compose.ui.unit.Dp =
-        tunerTrackWidth.value ?: defaultTrackWidth
-    internal fun thumbWidthDp(): androidx.compose.ui.unit.Dp =
-        tunerThumbWidth.value ?: defaultThumbWidth
-    internal fun thumbHeightDp(): androidx.compose.ui.unit.Dp =
-        tunerThumbHeight.value ?: defaultThumbHeight
-    internal fun trackHeightDp(): androidx.compose.ui.unit.Dp = defaultTrackHeight
-
-    /** 供调参页显示/校验的常量。 */
-    val paddingDp: androidx.compose.ui.unit.Dp = 2.dp
+    internal val paddingDp: androidx.compose.ui.unit.Dp = 2.dp
 
     /**
      * **按下时滑块浮起并放大**的倍率 —— 示例 `1.5f`。
@@ -180,7 +136,7 @@ internal object LiquidToggleTokens {
  * 公式仍自洽 —— 抄常量的版本会静默失去同步（滑块能拖出轨道，而 `Box` 不裁剪）。
  */
 internal fun liquidToggleTravelDp(): androidx.compose.ui.unit.Dp =
-    LiquidToggleTokens.trackWidthDp() - LiquidToggleTokens.thumbWidthDp() -
+    LiquidToggleTokens.trackWidthDp - LiquidToggleTokens.thumbWidthDp -
         LiquidToggleTokens.paddingDp * 2
 
 /** 滑块左边的 x（示例：`lerp(padding, padding + dragWidth, fraction)`）。 */
@@ -314,7 +270,7 @@ internal fun LiquidToggleSwitch(
                     // 示例：`drawRect(lerp(trackColor, accentColor, fraction))` —— 整条纯色。
                     drawRect(lerp(trackColor, accentColor, dampedDragAnimation.value.fastCoerceIn(0f, 1f)))
                 }
-                .size(LiquidToggleTokens.trackWidthDp(), LiquidToggleTokens.trackHeightDp())
+                .size(LiquidToggleTokens.trackWidthDp, LiquidToggleTokens.trackHeightDp)
                 // ⚠️ 语义显式补上（示例原版也没有；它靠滑块上的 `role = Role.Switch`）。
                 //    这里补全 `toggleableState` 与 `onClick`，TalkBack 才能读出状态、
                 //    并用「双击」切换。
@@ -391,7 +347,7 @@ internal fun LiquidToggleSwitch(
                         drawRect(Color.White.copy(alpha = 1f - progress))
                     }
                 )
-                .size(LiquidToggleTokens.thumbWidthDp(), LiquidToggleTokens.thumbHeightDp())
+                .size(LiquidToggleTokens.thumbWidthDp, LiquidToggleTokens.thumbHeightDp)
         )
     }
 }

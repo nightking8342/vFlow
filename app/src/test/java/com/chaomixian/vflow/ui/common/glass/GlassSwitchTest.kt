@@ -602,11 +602,11 @@ class GlassSwitchTest {
         //    因此本用例是**定稿值的锚**：任何一次「顺手微调」都会红。
         //    要改先让用户在新一轮调参里定下来，再回来同步这四个数与下面
         //    三条几何断言（travel / 端点 / 比例）。
-        assertEquals("调参定稿：轨道宽", 44f, LiquidToggleTokens.defaultTrackWidth.value, 0.001f)
-        assertEquals("调参定稿：滑块宽", 22f, LiquidToggleTokens.defaultThumbWidth.value, 0.001f)
-        assertEquals("调参定稿：滑块高", 21f, LiquidToggleTokens.defaultThumbHeight.value, 0.001f)
+        assertEquals("调参定稿：轨道宽", 44f, LiquidToggleTokens.trackWidthDp.value, 0.001f)
+        assertEquals("调参定稿：滑块宽", 22f, LiquidToggleTokens.thumbWidthDp.value, 0.001f)
+        assertEquals("调参定稿：滑块高", 21f, LiquidToggleTokens.thumbHeightDp.value, 0.001f)
         assertEquals("轨道高 24（与示例的 28 同档，未参与本轮调参）",
-            24f, LiquidToggleTokens.defaultTrackHeight.value, 0.001f)
+            24f, LiquidToggleTokens.trackHeightDp.value, 0.001f)
         assertEquals("示例 padding = 2f.dp", 2f, LiquidToggleTokens.paddingDp.value, 0.001f)
         // ⚠️⚠️ **pressedScale 必须照抄 1.5f，不许收回**。它一度被我误判成
         //    「关闭时那个圆变小」的真因而改成 1f，用户随后明确指出：
@@ -641,10 +641,10 @@ class GlassSwitchTest {
         //    写死比例只会让每次调参都要改两条断言，而**真正的失效模式是越界**、
         //    不是「比例与上次不同」。反过来说，区间一旦被突破，那就是观感问题
         //    （柱位看不见 / 滑块像竖条），而这两件都**不报错**。
-        val track = LiquidToggleTokens.defaultTrackWidth.value
-        val thumbW = LiquidToggleTokens.defaultThumbWidth.value
-        val thumbH = LiquidToggleTokens.defaultThumbHeight.value
-        val trackH = LiquidToggleTokens.defaultTrackHeight.value
+        val track = LiquidToggleTokens.trackWidthDp.value
+        val thumbW = LiquidToggleTokens.thumbWidthDp.value
+        val thumbH = LiquidToggleTokens.thumbHeightDp.value
+        val trackH = LiquidToggleTokens.trackHeightDp.value
 
         assertTrue(
             "滑块占轨道应在 40%..55% 之间（太小像一颗豆、太大则关闭态看不到柱位）——" +
@@ -682,12 +682,12 @@ class GlassSwitchTest {
         assertEquals(
             "于是右边缘 = 20 + 22 = 42dp，距轨道右端恰好也是 padding",
             42f,
-            endX + LiquidToggleTokens.defaultThumbWidth.value,
+            endX + LiquidToggleTokens.thumbWidthDp.value,
             0.001f,
         )
         assertTrue(
             "滑块右边缘必须落在轨道内（44dp）",
-            endX + LiquidToggleTokens.defaultThumbWidth.value <= LiquidToggleTokens.defaultTrackWidth.value + 0.001f,
+            endX + LiquidToggleTokens.thumbWidthDp.value <= LiquidToggleTokens.trackWidthDp.value + 0.001f,
         )
         assertEquals(
             "RTL 下应向左偏移",
