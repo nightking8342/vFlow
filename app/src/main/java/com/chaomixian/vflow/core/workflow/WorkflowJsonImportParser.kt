@@ -2,8 +2,6 @@ package com.chaomixian.vflow.core.workflow
 
 import com.chaomixian.vflow.core.workflow.model.Workflow
 import com.chaomixian.vflow.core.workflow.model.WorkflowFolder
-import com.chaomixian.vflow.core.workflow.model.WorkflowLogLevel
-import com.chaomixian.vflow.core.workflow.model.WorkflowReentryBehavior
 import com.google.gson.Gson
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
@@ -66,11 +64,16 @@ class WorkflowJsonImportParser(
         }
     }
 
-    private fun parseWorkflow(rawValue: JsonElement): Workflow {
-        val workflowObject = rawValue.asJsonObjectOrNull()
-            ?: return sanitizeWorkflow(Workflow(id = UUID.randomUUID().toString(), name = "未命名工作流"))
-        return parseWorkflowObject(workflowObject)
-    }
+    /**
+     * 解析单条工作流；**不是 JSON 对象 ⇒ 回落成一条空工作流**（而不是丢掉整份文件）。
+     *
+     * ⚠️ 回落走 `WorkflowJsonCodec.parse(JsonObject())`（全默认值），**不手搓
+     * `Workflow(...)`** —— 手搓等于再维护一份字段默认值清单，而那份清单
+     * 会在「模型加字段」时过期（过期表现是「这个字段恒为默认值」，
+     * 且不会有任何测试发现）。
+     */
+    private fun parseWorkflow(rawValue: JsonElement): Workflow =
+        WorkflowJsonCodec.parseOrNull(rawValue) ?: WorkflowJsonCodec.parse(JsonObject())
 
     private fun parseFolder(rawValue: JsonElement): WorkflowFolder {
         val folderObject = rawValue.asJsonObjectOrNull()
@@ -78,60 +81,19 @@ class WorkflowJsonImportParser(
         return parseFolderObject(folderObject)
     }
 
-    private fun parseWorkflowObject(data: JsonObject): Workflow {
-        val meta = data.getObject("_meta")
-        val legacyTriggerConfigs = buildList {
-            data.getMapList("triggerConfigs")?.let { addAll(it) }
-            data.getMap("triggerConfig")?.let { add(it) }
-        }
-        val normalizedContent = WorkflowNormalizer.normalize(
-            triggers = data.getActionSteps("triggers"),
-            steps = data.getActionSteps("steps"),
-            legacyTriggerConfigs = legacyTriggerConfigs
-        )
-
-        val workflow = Workflow(
-            id = data.getString("id")?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString(),
-            name = data.getString("name")
-                ?.takeIf { it.isNotBlank() }
-                ?: meta?.getString("name")
-                ?.takeIf { it.isNotBlank() }
-                ?: "未命名工作流",
-            triggers = normalizedContent.triggers,
-            steps = normalizedContent.steps,
-            isEnabled = data.getBoolean("isEnabled") ?: true,
-            isFavorite = data.getBoolean("isFavorite") ?: false,
-            wasEnabledBeforePermissionsLost = data.getBoolean("wasEnabledBeforePermissionsLost") ?: false,
-            folderId = data.getString("folderId"),
-            order = data.getInt("order") ?: 0,
-            shortcutName = data.getString("shortcutName"),
-            shortcutIconRes = data.getString("shortcutIconRes"),
-            cardIconRes = WorkflowVisuals.normalizeIconResName(data.getString("cardIconRes")),
-            cardThemeColor = WorkflowVisuals.normalizeThemeColorHex(data.getString("cardThemeColor")),
-            modifiedAt = data.getLong("modifiedAt")?.takeIf { it > 0 } ?: System.currentTimeMillis(),
-            version = data.getString("version")
-                ?.takeIf { it.isNotBlank() }
-                ?: meta?.getString("version")
-                ?.takeIf { it.isNotBlank() }
-                ?: "1.0.0",
-            vFlowLevel = data.getInt("vFlowLevel")
-                ?.takeIf { it > 0 }
-                ?: meta?.getInt("vFlowLevel")
-                ?.takeIf { it > 0 }
-                ?: 1,
-            description = data.getString("description") ?: meta?.getString("description") ?: "",
-            author = data.getString("author") ?: meta?.getString("author") ?: "",
-            homepage = data.getString("homepage") ?: meta?.getString("homepage") ?: "",
-            tags = data.getStringList("tags") ?: meta?.getStringList("tags") ?: emptyList(),
-            maxExecutionTime = data.getInt("maxExecutionTime"),
-            reentryBehavior = WorkflowReentryBehavior.fromStoredValue(data.getString("reentryBehavior")),
-            // 旧导出文件没有这个键 → false（保持既有行为）。
-            silentExecution = data.getBoolean("silentExecution") ?: false,
-            // 旧导出文件没有这个键 → VERBOSE（= 改动前行为，全量记日志）。
-            logLevel = WorkflowLogLevel.fromStoredValue(data.getString("logLevel"))
-        )
-        return sanitizeWorkflow(workflow)
-    }
+    /**
+     * 解析一条工作流记录。
+     *
+     * ⚠️ 字段映射**已下移到** [WorkflowJsonCodec]（fork 新增文件）—— 本方法原来
+     * 与 `WorkflowManager.parseWorkflowRecord` 是**逐字重复的两份 25 字段清单**。
+     * 三条读路径（读盘 / 文件导入 / 备份恢复）现在共用那一份，
+     * **给 `Workflow` 加字段时只改那里**。
+     *
+     * ⚠️ 形状判定留在**调用方**（本类）：`parseWorkflow` 对「不是对象」的输入
+     * 回落成一个默认工作流，而读盘路径是跳过并计数 —— 两种处置不同。
+     */
+    private fun parseWorkflowObject(data: JsonObject): Workflow =
+        WorkflowJsonCodec.parse(data)
 
     private fun parseFolderObject(data: JsonObject): WorkflowFolder {
         return WorkflowFolder(
@@ -144,55 +106,19 @@ class WorkflowJsonImportParser(
         )
     }
 
-    private fun sanitizeWorkflow(workflow: Workflow): Workflow {
-        val description: String? = workflow.description
-        val author: String? = workflow.author
-        val homepage: String? = workflow.homepage
-        val tags: List<String>? = workflow.tags
-        val triggers: List<com.chaomixian.vflow.core.workflow.model.ActionStep>? = workflow.triggers
-        val steps: List<com.chaomixian.vflow.core.workflow.model.ActionStep>? = workflow.steps
-        val reentryBehavior: WorkflowReentryBehavior? = workflow.reentryBehavior
-
-        return workflow.copy(
-            id = workflow.id.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString(),
-            name = workflow.name.takeIf { it.isNotBlank() } ?: "未命名工作流",
-            triggers = triggers ?: emptyList(),
-            steps = steps ?: emptyList(),
-            folderId = workflow.folderId?.takeIf { it.isNotBlank() },
-            cardIconRes = WorkflowVisuals.normalizeIconResName(workflow.cardIconRes),
-            cardThemeColor = WorkflowVisuals.normalizeThemeColorHex(workflow.cardThemeColor),
-            modifiedAt = workflow.modifiedAt.takeIf { it > 0 } ?: System.currentTimeMillis(),
-            version = workflow.version.takeIf { it.isNotBlank() } ?: "1.0.0",
-            vFlowLevel = workflow.vFlowLevel.takeIf { it > 0 } ?: 1,
-            description = description?.takeIf { it.isNotBlank() } ?: "",
-            author = author?.takeIf { it.isNotBlank() } ?: "",
-            homepage = homepage?.takeIf { it.isNotBlank() } ?: "",
-            tags = tags ?: emptyList(),
-            reentryBehavior = WorkflowReentryBehavior.fromStoredValue(
-                reentryBehavior?.storedValue
-            )
-        )
-    }
+    // ── 文件夹读取原语 ────────────────────────────────────────────
+    //
+    // ⚠️ 工作流的那套已随字段映射一起下移到 `WorkflowJsonCodec`；这里只剩
+    //    文件夹需要的几个。文件夹的字段少、且没有第二条读路径，故暂不抽。
 
     private fun JsonElement.asJsonObjectOrNull(): JsonObject? {
         return if (isJsonObject) asJsonObject else null
-    }
-
-    private fun JsonObject.getObject(name: String): JsonObject? {
-        val element = get(name) ?: return null
-        return if (element.isJsonObject) element.asJsonObject else null
     }
 
     private fun JsonObject.getString(name: String): String? {
         val element = get(name) ?: return null
         if (!element.isJsonPrimitive || !element.asJsonPrimitive.isString) return null
         return element.asString
-    }
-
-    private fun JsonObject.getBoolean(name: String): Boolean? {
-        val element = get(name) ?: return null
-        if (!element.isJsonPrimitive) return null
-        return runCatching { element.asBoolean }.getOrNull()
     }
 
     private fun JsonObject.getInt(name: String): Int? {
@@ -205,42 +131,5 @@ class WorkflowJsonImportParser(
         val element = get(name) ?: return null
         if (!element.isJsonPrimitive) return null
         return runCatching { element.asLong }.getOrNull()
-    }
-
-    private fun JsonObject.getStringList(name: String): List<String>? {
-        val element = get(name) ?: return null
-        if (!element.isJsonArray) return null
-        return element.asJsonArray.mapNotNull { item ->
-            if (item.isJsonPrimitive && item.asJsonPrimitive.isString) item.asString else null
-        }
-    }
-
-    private fun JsonObject.getActionSteps(name: String): List<com.chaomixian.vflow.core.workflow.model.ActionStep>? {
-        val element = get(name) ?: return null
-        if (!element.isJsonArray) return null
-        return element.asJsonArray.mapNotNull { item ->
-            val obj = item.asJsonObjectOrNull() ?: return@mapNotNull null
-            val moduleId = obj.getString("moduleId") ?: return@mapNotNull null
-            val parameters = obj.getMap("parameters") ?: emptyMap()
-            com.chaomixian.vflow.core.workflow.model.ActionStep(
-                moduleId = moduleId,
-                parameters = parameters,
-                isDisabled = obj.getBoolean("isDisabled") ?: false,
-                indentationLevel = obj.getInt("indentationLevel") ?: 0,
-                id = obj.getString("id")?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
-            )
-        }
-    }
-
-    private fun JsonObject.getMap(name: String): Map<String, Any?>? {
-        val element = get(name) ?: return null
-        if (!element.isJsonObject) return null
-        return normalizedObjectMap(normalizeJsonElementValue(element))
-    }
-
-    private fun JsonObject.getMapList(name: String): List<Map<String, Any?>>? {
-        val element = get(name) ?: return null
-        if (!element.isJsonArray) return null
-        return normalizedObjectMapList(normalizeJsonElementValue(element))
     }
 }

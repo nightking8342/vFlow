@@ -1,5 +1,7 @@
 package com.chaomixian.vflow.core.workflow
 
+import com.chaomixian.vflow.core.workflow.model.WorkflowLogLevel
+import com.chaomixian.vflow.core.workflow.model.WorkflowReentryBehavior
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -207,5 +209,90 @@ class WorkflowJsonImportParserTest {
         assertEquals(31.2304, (parameters["latitude"] as Number).toDouble(), 0.000001)
         assertEquals(121.4737, (parameters["longitude"] as Number).toDouble(), 0.000001)
         assertEquals(750.0, (parameters["radius"] as Number).toDouble(), 0.000001)
+    }
+
+    // ── 曾经漏掉的 5 个字段 ────────────────────────────────────────
+    //
+    // 起因：单文件导出表只写 20 个键，而**导入侧的解析器认得更多**
+    // ⇒ 导出再导入后用户的设置被静默重置（超时上限没了、日志等级回到最详细、
+    //   重入策略回到默认），函数工作流更是直接退化成普通工作流。
+    // 下面几条锁住解析侧确实认得这些键（导出侧由
+    // `WorkflowExportFieldCoverageTest` 的源码扫描锁住）。
+
+    @Test
+    fun `parses the four execution settings that used to be dropped`() {
+        val json = """
+            {"id":"w1","name":"n",
+             "maxExecutionTime":42,
+             "reentryBehavior":"allow_parallel",
+             "silentExecution":true,
+             "logLevel":"error"}
+        """.trimIndent()
+
+        val workflow = parser.parse(json).workflows.single()
+
+        assertEquals(42, workflow.maxExecutionTime)
+        assertEquals(WorkflowReentryBehavior.ALLOW_PARALLEL, workflow.reentryBehavior)
+        assertTrue(workflow.silentExecution)
+        assertEquals(WorkflowLogLevel.ERROR, workflow.logLevel)
+    }
+
+    @Test
+    fun `a function workflow stays a function workflow after a file round trip`() {
+        // ⚠️ 这条曾经是红的（解析器对 functionSignature **零解析**）——
+        //    表现是「导入后函数工作流静默变成普通工作流」：能存能跑能显示，
+        //    只是「调用函数」步骤再也找不到参数声明。
+        val json = """
+            {"id":"fn1","name":"函数流","steps":[],
+             "functionSignature":{
+               "params":[{"name":"who","type":"vflow.type.string","isRequired":true}],
+               "returnDef":{"type":"vflow.type.dictionary",
+                            "keys":[{"name":"greeting","type":"vflow.type.string"}]}}}
+        """.trimIndent()
+
+        val workflow = parser.parse(json).workflows.single()
+
+        assertNotNull("functionSignature 必须被解析，否则函数工作流会静默退化", workflow.functionSignature)
+        assertTrue(workflow.isFunction)
+        assertEquals("who", workflow.functionSignature!!.params.single().name)
+        assertTrue(workflow.functionSignature!!.params.single().isRequired)
+        assertEquals("greeting", workflow.functionSignature!!.returnDef!!.keys.single().name)
+    }
+
+    @Test
+    fun `a missing functionSignature still means a normal workflow`() {
+        // 反向锁：不能为了修上一条就把所有工作流都判成函数。
+        val workflow = parser.parse("""{"id":"w1","name":"普通流"}""").workflows.single()
+        assertNull(workflow.functionSignature)
+        assertTrue(!workflow.isFunction)
+    }
+
+    @Test
+    fun `a malformed functionSignature does not fail the whole import`() {
+        // 容错口径：签名的某一段坏掉不该让整条工作流导不进来。
+        val json = """
+            {"id":"w1","name":"n","functionSignature":"not-an-object"}
+        """.trimIndent()
+
+        val workflow = parser.parse(json).workflows.single()
+
+        assertEquals("w1", workflow.id)
+        assertNull("不是对象 ⇒ 当普通工作流处理", workflow.functionSignature)
+    }
+
+    @Test
+    fun `a signature param missing its type is dropped without losing the others`() {
+        val json = """
+            {"id":"w1","name":"n","functionSignature":{"params":[
+               {"name":"good","type":"vflow.type.string"},
+               {"name":"no-type"},
+               {"type":"vflow.type.number"}
+            ]}}
+        """.trimIndent()
+
+        val params = parser.parse(json).workflows.single().functionSignature!!.params
+
+        assertEquals("缺 name/type 的条目只丢自己，不整份作废", 1, params.size)
+        assertEquals("good", params.single().name)
     }
 }

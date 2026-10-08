@@ -104,6 +104,11 @@ internal fun IconCategoryBar(
     //    `showFolderMenu = true` 时才会被调用，而本页恒传 `false`。
     //    删掉它们做不到 —— 组件的签名要求这四个回调存在。
     val noopFolderAction: (String) -> Unit = {}
+    // ⚠️ 导出那一路的签名多了 `withIcons`（2026-10-08 起有两种格式），
+    //    故**不能**复用上面那个 `(String) -> Unit`。这两个 noop 都不该被调用
+    //    （本栏传了 `showFolderMenu = false`，菜单根本不会出现），
+    //    它们只是让签名对得上。
+    val noopFolderExport: (String, Boolean) -> Unit = { _, _ -> }
 
     // ⚠️ 走**同一个分派入口**（`WorkflowFolderTabBarSwitch`）而不是自己写
     //    `if (liquidGlassEnabled) A else B` —— 工作流页的两个调用点也是走它的。
@@ -116,7 +121,7 @@ internal fun IconCategoryBar(
         selectedFolderId = selectedTabId,
         onSelect = onSelect,
         onRenameFolder = noopFolderAction,
-        onExportFolder = noopFolderAction,
+        onExportFolder = noopFolderExport,
         onDissolveFolder = noopFolderAction,
         onDeleteFolder = noopFolderAction,
         // ⚠️⚠️ **两侧留白走 `contentInset`，不能加在 `modifier` 上**。

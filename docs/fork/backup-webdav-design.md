@@ -522,8 +522,95 @@ T1 3 条 / T2 12 条 / T3 6 条 / T4 6 条 / T5 11 条 / T6 6 条，共 **44 条
 | 项 | 说明 |
 |---|---|
 | **真机验证 0 项** | `adb devices` 为空。以下全部**只到「单测 + release 打包」这一层**：<br>· **导入后触发器恢复调度**（`reloadTriggers` 的端到端 —— 只在**不重启 App** 的前提下触发才证明得了这条链路）<br>· WebDAV **换机恢复**（转档的实际效果）<br>· `AndroidPrefs` 真实按类型读写 `vFlowPrefs`<br>· 四个新 scope 在设置页勾选界面的实际呈现<br>· `tiles` 的 MERGE 在真机磁贴上的表现<br>· `allowInsecureTls` 的自签名豁免（缺 `okhttp-tls` 依赖，无自动化手段）<br>· 各 WebDAV 服务端实测（Nextcloud / 坚果云）<br>· PBKDF2 210k 的派生耗时（真机量一次） |
+| ✅ **自定义卡片图标已能进备份**（**2026-10-08 补齐**，见 §8.4） | 备份容器由「一个纯 JSON」改为「一个 ZIP」（`BackupArchive`），`files/card_icons/` 与 `files/shortcut_icons/` 的原图作为 `files/` 条目随包走，导入时还原到 `filesDir` 并把 `cardIconRes` / `shortcutIconRes` 指向新路径。<br>⚠️ **仍然只有走「压缩包」档才有**：工作流模块的 `format=json` 档（供「要能直接看/粘」的场景）依旧不带图片 —— 该档的参数标签里写明了这一点。<br>⚠️ 打包只认 `cardIconRes` / `shortcutIconRes` 两个键（`ATTACHMENT_KEYS` 白名单），**不是**「把 `filesDir` 整个带走」；且文件必须落在私有目录内（相册里的原始路径不卷进包）。 |
 | ~~**两份互操作层未收敛**~~ | ✅ **已于 2026-10-03 收敛**（见 §3.7.1）。<br>~~`WebDavProbe.kt`（T3 的测试连接）与 `WebDavClient.kt`（T4 的模块客户端）各自有一份重定向循环、各写一份 `REDIRECT_CODES` 与 `trustAllTrustManager`（后两者逐字相同）。~~ |
 | **两个 Android 实现类无直接单测** | `AndroidBackupEnvironment` 的两个嵌套私有类（`AndroidPrefs` / `AndroidWebDavBackup`）是 `android.*` 生产实现，纯 JVM 起不来。行为契约由 `InMemoryPrefs`/`FakeWebDavBackup` 的**契约测试**间接证明；「生产实现与假实现语义一致」**只有 `writeAll` 的 `upsert` 调用点**由源码扫描覆盖 |
+
+### 8.4 备份容器：从「一个纯 JSON」改为「一个 ZIP」（2026-10-08）
+
+**起因**：用户提出「备份是 Json 文件呀，图片要怎么进」+「一个 Json 模式，工作流太多会不会有问题」
++「我并不觉得一个纯 Json 文件有什么好的」。三条各自独立，但**都指向同一个结构性原因**。
+
+| 纯 JSON 的硬伤 | 后果 | ZIP 如何解决 |
+|---|---|---|
+| JSON 装不下二进制 | 自定义卡片图标**永远进不了备份** | `files/` 条目原样带 |
+| 整棵树 → 整串 → UTF-8 字节数组，**三份同时在内存** | 工作流多时峰值内存翻几倍；`recording_data` 这类大字段尤其明显 | 流式写，逐条落盘 |
+| 明文不压缩 | 体积大（且加密档还叠一层 base64，+33%） | Deflate |
+
+#### 布局
+
+```
+vflow_backup_20261008.zip
+├── manifest.json          ← 信封本体（schema / summary / encryption + 各 scope 的 count）
+├── scopes/
+│   ├── folders.json       ← 该 scope 的 data 本体（一个 JSON 数组）
+│   ├── workflows.json
+│   └── global_variables.json
+└── files/card_icons/a1b2c3.png
+```
+
+**拆分粒度：只拆到 scope。** 每个 scope 的 `data` 各成一个条目，`manifest.json`
+里那处换成 `{"$ref": "scopes/<id>.json"}`。
+
+⚠️⚠️ **scope 内部不再拆** —— `scopes/workflows.json` 里是**一个包含全部工作流的
+JSON 数组**，**不是**一条工作流一个文件。理由：本地存储就是「所有工作流一个 JSON
+塞进一个 prefs 键」（`vflow_workflows` / `workflow_list`），拆到条目级等于凭空多一套
+心智模型，且用户打开包看到一堆碎文件反而更难找他想要的那份。
+
+⇒ 收益是**按范围定位**：只勾了「工作流」时包里就只有 `scopes/workflows.json` 一个
+数据条目，其余范围不占体积；读侧也能按需只解那几个条目。
+
+#### ⚠️ 三条设计约束（都不是随手选的）
+
+1. **`readImportPayload` 是容器探测的唯一入口**，它把 ZIP 解回**纯 JSON 文本**再交给
+   `BackupEnvelope.read` ⇒ 判定链（`schemaVersion` / 口令 / 逐 scope 分发）
+   **一个字都没改**，与纯 JSON 备份走同一段代码。这是「换容器不触碰语义」的落实点。
+   若在 UI 里各写一份容器判定，两处漂移的表现是「探测说不用口令、导入却要」。
+2. **`$ref` 只在 `scopes.<id>.data` 这一处还原**，不做任意深度扫 ——
+   用户数据里完全可能出现真名叫 `$ref` 的键（步骤参数字典是用户可控的），
+   全局还原会把那个键**静默吃掉**。
+3. **附件判据是「键名白名单 + 必须落在 `filesRoot` 内」**，不是「看起来像路径的字符串」。
+   后者会把脚本正文里的 `/data/...` 一起卷进包 —— 既不是用户数据、又撑大体积，且不报错。
+
+#### 向后兼容
+
+- **旧 `.json` 备份照常能导入**：`readImportPayload` 先看**魔数**（不是扩展名），
+  不是 ZIP 就按 UTF-8 文本解，走原来的路径。
+- **`.json` 导出档保留**：工作流模块 `vflow.data.export_backup` 新增 `format` 参数
+  （`zip` 默认 / `json` 可选）。选 `json` 时**不带自定义图标**，参数标签写明了这一点。
+- **`BackupEnvelope.write` 拆出 `buildRoot`**：`write` = `buildRoot` + `writeElementTree`。
+  两条路共用同一棵树 ⇒ 不可能出现「ZIP 里的 manifest 与纯 JSON 形状不一致」。
+- **单文件 / 文件夹 / 备份全部三种导出**用 `writePlain`，主条目名**各不相同**
+  （`workflow.json` / `folder.json` / `workflows.json`）—— 一律叫 `manifest.json`
+  会让用户解压后以为里面是个索引、还有别的东西没解出来。读侧按**排除法**认主条目
+  （任何不在 `files/` 与旧包 `scopes/` 下的 `.json`），所以改名字不会让旧包读不出来。
+
+#### ⚠️ 实现期踩到的一个跨平台坑（值得记）
+
+附件路径判定最初写 `startsWith("$root/")` + `substringAfterLast('/')` ——
+**Android 专用写法**。而本仓库的单测跑在 **Windows** 上：路径分隔符是 `\`，
+于是「在私有目录里的文件」一个都匹配不上、文件名取回整条路径
+⇒ **附件全部不进包且不报错**（`BackupArchiveTest` 17 例里 5 例红）。
+改用 `File.relativeTo()` 与 `File(path).name`，两端都对。
+⇒ **凡涉及路径拼接/分割的判据，用 `java.io.File` 的语义，不要手拼分隔符。**
+
+#### 测试
+
+- `BackupArchiveTest`（17 例）：容器判定（魔数非扩展名）、往返、`$ref` 结构与还原、
+  坏引用降级为空数组、附件打包与还原、**路径穿越必须被拒**、白名单键、
+  `file://` 与绝对路径同解、`writePlain` 不拆 scopes。
+- `BackupArchiveWiringTest`（10 例，**源码扫描型**）：锁住「生产代码真的用上了容器」——
+  这正是本仓库反复踩的盲区（`CoreLauncher` 漏调指纹、`messageFor` 零调用点）。
+  **四条反证已实际执行并确认变红**：删 `filesRoot` 覆盖 / 设置页退回纯 JSON /
+  单文件导出退回纯 JSON / 压缩包路径自建信封。
+- `BackupExportModuleTest` 更新：`format` 进契约、扩展名跟着格式走、
+  **非扩展名的小数点不截断**（`我的备份.v2` 不得被截成 `我的备份`）。
+
+#### 真机验证
+
+**0 项**。以下**只有编译与单测支撑，不得声称可用**：
+跨设备恢复后图标真的显示出来、旧 `.json` 备份在真机上导入、WebDAV 上传/下载压缩包、
+大量工作流（数十条 + 若干自定义图标）下的内存与耗时。
 
 ### 8.3 `FORK.md` 登记项（集成时已登记）
 
@@ -541,3 +628,9 @@ T1 3 条 / T2 12 条 / T3 6 条 / T4 6 条 / T5 11 条 / T6 6 条，共 **44 条
 3. **自动/定时备份**（决策 3 明确不做；若要做，走现有的触发器体系）
 4. **备份文件加密的迭代次数自适应**（当前固定 210k）
 5. **`settings` scope 的粒度细化**（当前是「全有或全无」，未来可按子组勾选）
+6. ~~**文件通道**~~ ✅ **已完成（2026-10-08，§8.4）** —— 未走「新增文件类 scope」那条路
+   （它会波及全部 scope 基类），而是在**容器层**解决：ZIP 包天然能带二进制文件。
+   若将来还有**非图标**的文件要备份（如录制的音频、导出的截图），
+   再评估「文件类 scope」——届时 `ATTACHMENT_KEYS` 白名单也要一并扩展。
+7. **备份包内的附件压缩率** —— 当前用 `Deflater.BEST_SPEED`（图片本来已压缩，
+   再压收益极低、耗时却明显）。若将来有**文本类**附件（JSON / 日志），可考虑分档。

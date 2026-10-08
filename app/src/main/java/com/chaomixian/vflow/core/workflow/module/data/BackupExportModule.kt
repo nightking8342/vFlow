@@ -39,31 +39,115 @@ internal const val PARAM_INCLUDE_SECRETS = "include_secrets"
 internal const val PARAM_FILE_NAME = "file_name"
 
 /**
- * 默认文件名：`vflow_backup_<yyyyMMdd_HHmmss>.json`
+ * 备份**容器格式**参数。
+ *
+ * ⚠️⚠️ **`zip` 是默认值**，理由是纯 JSON 有三个结构性问题（见 `BackupArchive` 的 KDoc）：
+ * 图片进不去、内存峰值三份、体积不压缩。而「给一个默认值」意味着**存量工作流**
+ * （参数里没有这个键）也会走 ZIP —— 那是刻意的：它们本来就导不出图片。
+ *
+ * ⚠️ 存的是**稳定常量**（`zip`/`json`），不是本地化文案 —— 存文案会让用户切语言后
+ * 已保存的工作流失配（本仓库在 `SimDataSwitch` / `ActivityChanged` 的 match_mode 上
+ * 踩过两次同形的坑）。
+ */
+internal const val PARAM_FORMAT = "format"
+internal const val FORMAT_ZIP = "zip"
+internal const val FORMAT_JSON = "json"
+
+/** 选项顺序 = `optionsStringRes` 的顺序（两处按位置对应，改动必须同步）。 */
+internal val FORMAT_OPTIONS = listOf(FORMAT_ZIP, FORMAT_JSON)
+
+/**
+ * 默认文件名：`vflow_backup_<yyyyMMdd_HHmmss>.<ext>`
  *
  * 与 `WorkflowListRoute.kt:458-461` 的时间戳格式一致（复用同一习语，便于用户对照）。
+ *
+ * ⚠️ **扩展名跟着格式走** —— 一个 `.json` 后缀的 ZIP 文件会让用户双击打不开、
+ * 让文件管理器显示错误的类型图标，且**没有任何报错**。
  */
-internal fun defaultBackupFileName(nowMs: Long = System.currentTimeMillis()): String {
+internal fun defaultBackupFileName(
+    nowMs: Long = System.currentTimeMillis(),
+    format: String = FORMAT_ZIP
+): String {
     val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date(nowMs))
-    return "vflow_backup_$stamp.json"
+    return "vflow_backup_$stamp.${extensionOf(format)}"
+}
+
+/** 格式 → 扩展名。未知值按 [FORMAT_ZIP] 处理（与 [normalizeFormat] 同口径）。 */
+internal fun extensionOf(format: String?): String =
+    if (format == FORMAT_JSON) "json" else "zip"
+
+/**
+ * 格式参数的归一化。
+ *
+ * ⚠️ **未知值 ⇒ [FORMAT_ZIP]**（而不是 JSON）：新格式是新安装的默认，
+ * 一个拼错的值应当落到默认档，而不是悄悄退回**能力更弱**的那一档
+ * （JSON 导不出图片 —— 用户会以为「图片功能坏了」）。
+ */
+internal fun normalizeFormat(raw: Any?): String = when (raw) {
+    is String -> if (raw.trim().lowercase() == FORMAT_JSON) FORMAT_JSON else FORMAT_ZIP
+    else -> FORMAT_ZIP
 }
 
 /**
- * 把用户填的 `file_name` 收敛成**一个安全的纯文件名**。
+ * 把用户填的 `file_name` 收敛成**一个安全的纯文件名**，并把扩展名对齐到 [format]。
  *
  * ⚠️ 只取 `File(name).name`（剥掉任何目录成分）。否则用户（或模型）可以写
  * `../../x.json` 或 `/sdcard/vFlow/backups` —— 后者会落到目录本身，
  * 写到目录上必然失败，而错误信息含糊（表现为「权限问题」）。
  *
+ * ⚠️⚠️ **扩展名必须与格式一致**（用户填 `我的备份.json` 而格式是 zip ⇒ 改成
+ * `我的备份.zip`）。不改的话会产出「名字说 json、内容是 zip」的文件 ——
+ * 导入侧靠**魔数**判容器（不看扩展名）所以能读，但用户在文件管理器里
+ * 看到的就是个错误的类型，且不会有任何提示。
+ *
+ * ⚠️ 用户填的名字**不带扩展名**时补上；带了**别的**扩展名时**替换**掉
+ * （而不是追加成 `x.txt.zip`）。
+ *
  * @return 安全文件名；入参为空 / `.` / `..` 时回落到 [defaultBackupFileName]。
  */
-internal fun sanitizeBackupFileName(raw: String?, nowMs: Long = System.currentTimeMillis()): String {
+internal fun sanitizeBackupFileName(
+    raw: String?,
+    nowMs: Long = System.currentTimeMillis(),
+    format: String = FORMAT_ZIP
+): String {
     val trimmed = raw?.trim().orEmpty()
-    if (trimmed.isEmpty() || trimmed == "." || trimmed == "..") return defaultBackupFileName(nowMs)
+    if (trimmed.isEmpty() || trimmed == "." || trimmed == "..") {
+        return defaultBackupFileName(nowMs, format)
+    }
     val leaf = File(trimmed).name
-    if (leaf.isEmpty() || leaf == "." || leaf == "..") return defaultBackupFileName(nowMs)
-    return leaf
+    if (leaf.isEmpty() || leaf == "." || leaf == "..") {
+        return defaultBackupFileName(nowMs, format)
+    }
+    return withExtension(leaf, format)
 }
+
+/**
+ * 把文件名收敛成「主干 + 正确的扩展名」。
+ *
+ * ⚠️ 主干取 `substringBeforeLast('.')`，**不是** `removeSuffix(".json")` ——
+ * 后者只认一种旧扩展名，用户填 `x.txt` 会得到 `x.txt.zip`。
+ * 但**也不能无条件截断**：`我的备份.v2` 会被截成 `我的备份`，
+ * 那是用户名字的一部分。⇒ 判据是「最后一段是不是一个**已知的**扩展名」。
+ */
+internal fun withExtension(fileName: String, format: String): String {
+    val ext = extensionOf(format)
+    val dot = fileName.lastIndexOf('.')
+    if (dot <= 0) return "$fileName.$ext"  // 无扩展名（或点名以 . 开头，如 .hidden）
+    val tail = fileName.substring(dot + 1)
+    return if (tail.lowercase() in KNOWN_EXTENSIONS) {
+        fileName.substring(0, dot) + "." + ext
+    } else {
+        "$fileName.$ext"
+    }
+}
+
+/**
+ * 会被**替换**掉而不是追加的扩展名。
+ *
+ * ⚠️ 刻意做成一个小集合而不是「任意扩展名」：`我的备份.v2` 里的 `v2` 是名字的一部分，
+ * 无条件截断会静默改掉用户起的名字。集合里只放「明显是备份文件扩展名」的那些。
+ */
+private val KNOWN_EXTENSIONS = setOf("json", "zip", "bak", "backup")
 
 /**
  * 摘要文本的**纯函数层**（§7.2 的可测性要求）。
@@ -171,6 +255,23 @@ class BackupExportModule : BaseModule() {
             acceptsNamedVariable = true,
             supportsRichText = true,
         ),
+        InputDefinition(
+            id = PARAM_FORMAT,
+            nameStringRes = R.string.param_vflow_data_export_backup_format_name,
+            name = "格式",
+            staticType = ParameterType.ENUM,
+            // ⚠️ 存**稳定常量**，不是本地化文案（切语言后已保存的工作流会失配）。
+            defaultValue = FORMAT_ZIP,
+            options = FORMAT_OPTIONS,
+            // ⚠️ 本地化走 `optionsStringRes`（与 `options` **按位置对应**），
+            //    不是 `appContext.getString` —— `getInputs()` 可能在
+            //    `initialize(context)` 之前被调用，那时 `appContext` 尚未注入。
+            optionsStringRes = listOf(
+                R.string.option_vflow_data_export_backup_format_zip,
+                R.string.option_vflow_data_export_backup_format_json,
+            ),
+            acceptsMagicVariable = false,
+        ),
     )
 
     override fun getOutputs(step: ActionStep?): List<OutputDefinition> = listOf(
@@ -208,7 +309,12 @@ class BackupExportModule : BaseModule() {
     override fun getSummary(context: Context, step: ActionStep): CharSequence {
         val scopeIds = readScopeIds(step.parameters[PARAM_SCOPES])
         val includeSecrets = step.parameters[PARAM_INCLUDE_SECRETS] as? Boolean ?: false
-        val fileName = sanitizeBackupFileName(step.parameters[PARAM_FILE_NAME] as? String)
+        // ⚠️ **必须把 format 传进去** —— 不传的话摘要显示 `x.json` 而实际落盘 `x.zip`
+        //    （`sanitizeBackupFileName` 会按格式改扩展名），是「改错了不报错」的形态。
+        val fileName = sanitizeBackupFileName(
+            step.parameters[PARAM_FILE_NAME] as? String,
+            format = normalizeFormat(step.parameters[PARAM_FORMAT])
+        )
 
         return PillUtil.buildSpannable(
             context,
@@ -264,9 +370,11 @@ class BackupExportModule : BaseModule() {
         // 直接落盘。这与仓库里其它模块对 STRING 参数的处理一致（`VariableResolver`
         // 解析不了就原样返回），**不额外加校验**：那是「模板里写了不存在的变量」的
         // 既有全局语义，本模块单独拦会让它成为异类。
+        val format = normalizeFormat(step.parameters[PARAM_FORMAT])
         val rawFileName = (step.parameters[PARAM_FILE_NAME] as? String).orEmpty()
         val fileName = sanitizeBackupFileName(
-            if (rawFileName.isBlank()) rawFileName else VariableResolver.resolve(rawFileName, context)
+            if (rawFileName.isBlank()) rawFileName else VariableResolver.resolve(rawFileName, context),
+            format = format
         )
 
         onProgress(ProgressUpdate(appContext.getString(R.string.progress_vflow_data_export_backup_exporting)))
@@ -275,11 +383,23 @@ class BackupExportModule : BaseModule() {
         val secrets = if (includeSecrets) SecretContext(password.toCharArray()) else null
 
         return try {
-            val result = BackupPipeline.export(env, scopeIds.toSet(), secrets)
-
             val dir = StorageManager.backupsDir
             val file = File(dir, fileName)
-            file.writeText(result.text)
+
+            // ⚠️ 两条出口的**异常类型不同**：ZIP 路径可能抛 `IOException`（磁盘满、
+            //    `Deflater` 分配失败），JSON 路径可能抛 `OutOfMemoryError`（整棵树 + 整串 +
+            //    UTF-8 字节数组三份同时在内存里）。下面 catch 的是 `Exception`，
+            //    **OOM 是 `Error`、捕不到** —— 这是纯 JSON 格式已知的代价，
+            //    也是把它降为可选档的理由（见 `BackupArchive` 的 KDoc）。
+            val scrubbedFields: List<String> = if (format == FORMAT_JSON) {
+                val result = BackupPipeline.export(env, scopeIds.toSet(), secrets)
+                file.writeText(result.text)
+                result.scrubbedFields
+            } else {
+                file.outputStream().use { out ->
+                    BackupPipeline.exportToArchive(env, scopeIds.toSet(), secrets, out).scrubbedFields
+                }
+            }
 
             onProgress(
                 ProgressUpdate(
@@ -295,7 +415,7 @@ class BackupExportModule : BaseModule() {
                     "file_path" to file.absolutePath,
                     "file_name" to file.name,
                     "scope_count" to scopeIds.size,
-                    "scrubbed_count" to result.scrubbedFields.size,
+                    "scrubbed_count" to scrubbedFields.size,
                 )
             )
         } catch (e: Exception) {

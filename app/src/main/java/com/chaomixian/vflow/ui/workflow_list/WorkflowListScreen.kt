@@ -46,6 +46,7 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.DashboardCustomize
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.FolderZip
 import androidx.compose.material.icons.outlined.DriveFileRenameOutline
 import androidx.compose.material.icons.outlined.ToggleOn
 import androidx.compose.material3.Card
@@ -124,7 +125,17 @@ data class WorkflowListScreenActions(
     val onToggleEnabled: (Workflow, Boolean) -> Unit,
     val onDeleteWorkflow: (Workflow) -> Unit,
     val onDuplicateWorkflow: (Workflow) -> Unit,
-    val onExportWorkflow: (Workflow) -> Unit,
+    /**
+     * fork（2026-10-08）：导出拆成**两种格式**，故带上 `withIcons`。
+     *
+     * - `false` ⇒ 单个 `.json`（给人看、便于粘贴分享，**不带自定义卡片图标**）；
+     * - `true` ⇒ `.zip` 压缩包（带上图标文件，可跨设备还原）。
+     *
+     * ⚠️ 用布尔而不是把两种格式各做一个回调：两者除了容器之外**完全同路**
+     * （同一份 `createWorkflowExportData` 产出），分成两个回调会让
+     * 「格式」这件事散进 `WorkflowListScreen` 的菜单结构里。
+     */
+    val onExportWorkflow: (Workflow, Boolean) -> Unit,
     val onExecuteWorkflow: (Workflow) -> Unit,
     val onExecuteWorkflowDelayed: (Workflow, Long) -> Unit,
     val onAddShortcut: (Workflow) -> Unit,
@@ -147,7 +158,8 @@ data class WorkflowListScreenActions(
      * 用户不会收到任何提示，只是找不到入口。
      */
     val onRenameFolder: (String) -> Unit,
-    val onExportFolder: (String) -> Unit,
+    /** fork（2026-10-08）：与 [onExportWorkflow] 同款 —— `withIcons = true` 出压缩包。 */
+    val onExportFolder: (String, Boolean) -> Unit,
     /**
      * 删掉文件夹本身，**里面的工作流保留**（移到根目录）。
      * 与 [onDeleteFolder] 的区别只有一条：工作流保不保留。
@@ -518,7 +530,16 @@ fun WorkflowListScreen(
                                     WorkflowMenuItemAction(
                                         textRes = R.string.workflow_item_menu_export_single,
                                         icon = Icons.Outlined.Download,
-                                        onClick = { actions.onExportWorkflow(workflow) }
+                                        onClick = { actions.onExportWorkflow(workflow, false) }
+                                    )
+                                )
+                                // fork（2026-10-08）：压缩包档 —— 唯一能带上自定义卡片图标
+                                // 的导出形式（图片是二进制，塞不进 JSON）。
+                                add(
+                                    WorkflowMenuItemAction(
+                                        textRes = R.string.workflow_item_menu_export_single_archive,
+                                        icon = Icons.Outlined.FolderZip,
+                                        onClick = { actions.onExportWorkflow(workflow, true) }
                                     )
                                 )
                                 add(
@@ -1153,7 +1174,7 @@ private fun WorkflowCompactGridContent(
     selectedFolderTab: String,
     onSelectFolderTab: (String) -> Unit,
     onRenameFolder: (String) -> Unit,
-    onExportFolder: (String) -> Unit,
+    onExportFolder: (String, Boolean) -> Unit,
     onDissolveFolder: (String) -> Unit,
     onDeleteFolder: (String) -> Unit,
     lazyStaggeredGridState: LazyStaggeredGridState,
@@ -1276,7 +1297,16 @@ private fun WorkflowCompactGridContent(
                                 WorkflowMenuItemAction(
                                     textRes = R.string.workflow_item_menu_export_single,
                                     icon = Icons.Outlined.Download,
-                                    onClick = { actions.onExportWorkflow(workflow) }
+                                    onClick = { actions.onExportWorkflow(workflow, false) }
+                                )
+                            )
+                            // fork（2026-10-08）：压缩包档 —— 唯一能带上自定义卡片图标
+                            // 的导出形式（图片是二进制，塞不进 JSON）。
+                            add(
+                                WorkflowMenuItemAction(
+                                    textRes = R.string.workflow_item_menu_export_single_archive,
+                                    icon = Icons.Outlined.FolderZip,
+                                    onClick = { actions.onExportWorkflow(workflow, true) }
                                 )
                             )
                             add(

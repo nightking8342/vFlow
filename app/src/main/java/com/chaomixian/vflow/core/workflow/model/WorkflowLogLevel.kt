@@ -25,6 +25,21 @@ import com.chaomixian.vflow.core.execution.ExecutionLogLevel
  * 脚本用 `vars_api.setGlobalVar(k, v)` 把值存成命名/全局变量之后，任何步骤都能用
  * `[[k]]` / `{{vars.k}}` 读回来 —— 这条路不经过日志，本开关挡不住。
  * 本枚举解决的是**噪音与体积**，不是「值能不能离开工作流」。
+ *
+ * ## ⚠️⚠️ 它在磁盘上有**两种**形状，取决于谁写的
+ *
+ * | 写入方 | 值 |
+ * |---|---|
+ * | `WorkflowManager` 读盘路径（`parseWorkflowRecord`） | `storageValue`（`error`） |
+ * | 单文件导出（`createWorkflowExportData`） | `storageValue`（`error`） |
+ * | **备份链路**（`WorkflowScope` 整对象 Gson） | **枚举名**（`ERROR`） |
+ *
+ * 原因是本枚举**没有** `@SerializedName`（对照 [WorkflowReentryBehavior] 有），
+ * 而 Gson 默认用枚举名。两条读路径各自吃得下自己那一份
+ * （`fromStoredValue` 会 lowercase 后比对，Gson 按枚举名找），
+ * 所以**当前不构成缺陷** —— 但**不要把两个格式互相喂**：
+ * 手工拼 JSON 时喂错形式，Gson 会读到未知值并留 `null`，
+ * 而 `null` 落在这个非空字段上要等下一次 `copy()` 才炸。
  */
 enum class WorkflowLogLevel(
     /** 稳定存储值。⚠️ **不得写本地化文案** —— 那样切语言后已保存的工作流会全部失配。 */

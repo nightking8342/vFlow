@@ -3527,6 +3527,9 @@
     <string name="param_vflow_data_export_backup_password_name">备份口令（勾选「包含密钥」时必填）</string>
     <string name="param_vflow_data_export_backup_password_hint">建议引用全局变量而不是直接填写</string>
     <string name="param_vflow_data_export_backup_file_name_name">文件名（留空则自动命名）</string>
+    <string name="param_vflow_data_export_backup_format_name">格式</string>
+    <string name="option_vflow_data_export_backup_format_zip">压缩包（可含自定义图标）</string>
+    <string name="option_vflow_data_export_backup_format_json">纯 JSON（不含自定义图标）</string>
     <string name="output_vflow_data_export_backup_file_path_name">文件路径</string>
     <string name="output_vflow_data_export_backup_file_name_name">文件名</string>
     <string name="output_vflow_data_export_backup_scope_count_name">范围数量</string>

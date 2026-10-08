@@ -29,6 +29,19 @@ object BackupPipeline {
         val scrubbedFields: List<String>
     )
 
+    /**
+     * **ZIP 容器**的导出结果。
+     *
+     * ⚠️ 刻意不复用 [ExportResult]：那个 `text` 在 ZIP 路径上**没有对应物**
+     * （内容已经流式写进 `OutputStream` 了），保留一个恒为空的 `text` 字段
+     * 会让调用方以为还能拿到文本。
+     */
+    data class ArchiveExportResult(
+        /** 随包带走的附件条数（自定义图标）。 */
+        val attachmentCount: Int,
+        val scrubbedFields: List<String>
+    )
+
     sealed interface ImportOutcome {
         /** 成功。[results] 逐 scope 的导入结果（含被跳过的）。 */
         data class Done(
@@ -108,6 +121,61 @@ object BackupPipeline {
             encryption = section
         )
         return ExportResult(text, scrubbed)
+    }
+
+    /**
+     * **导出为 ZIP 容器**。
+     *
+     * ⚠️ 走的是「先按纯 JSON 生成、再包一层」——即 [export] 的产出直接喂给
+     * `BackupArchive.write`。**不是**另一条构造路径。
+     * 这样「ZIP 里的 manifest」与「纯 JSON 备份」在结构上不可能不一致，
+     * 且 scope 完全不知道容器的存在。
+     *
+     * @param out 由调用方持有并关闭（本函数只 flush）。
+     */
+    fun exportToArchive(
+        env: BackupEnvironment,
+        selected: Set<String>,
+        secrets: SecretContext?,
+        out: java.io.OutputStream,
+        createdAt: Long = System.currentTimeMillis()
+    ): ArchiveExportResult {
+        val plain = export(env, selected, secrets, createdAt)
+        val attachments = BackupArchive.write(plain.text, out, env.filesRoot)
+        return ArchiveExportResult(attachments, plain.scrubbedFields)
+    }
+
+    /**
+     * **把一份导入文件的字节解成纯 JSON 文本** —— 容器探测的唯一入口。
+     *
+     * 三条路：
+     * 1. 魔数是 ZIP ⇒ 解包 → 还原附件到 `filesDir` → 把字段值改指新路径；
+     * 2. 不是 ZIP ⇒ 直接按 UTF-8 文本解（**旧 `.json` 备份走这条**，向后兼容）；
+     * 3. 魔数是 ZIP 但**解不开**（包损坏 / 缺 `manifest.json`）⇒ 也按文本解 ——
+     *    后续的 `BackupEnvelope.read` 会给出「不是合法 JSON」这种**准确**的报错，
+     *    而不是一个「不是压缩包」的误导性提示。
+     *
+     * ⚠️⚠️ **UI 侧只需要这一个函数**：拿到文本之后，「探测是否需要口令」与
+     * 「真正导入」走的是**与纯 JSON 备份完全相同**的那两条既有路径
+     * （`needsPassphraseProbe` / `import`）。这是「换容器不触碰语义」的落实点 ——
+     * 若在 UI 里各写一份容器判定，两处漂移的表现是「探测说不用口令、导入却要」。
+     *
+     * ⚠️ 附件**在这里就落盘**（而不是等 `import` 成功）。代价是用户在模式对话框上
+     * 取消时图标文件也已经写进去了 —— 可接受：那是用户自己的图标、覆盖是幂等的，
+     * 且「先落盘再决定」让重试路径不必重读一遍流。
+     */
+    fun readImportPayload(env: BackupEnvironment, bytes: ByteArray): String {
+        if (!BackupArchive.isArchive(bytes)) return bytes.decodeToString()
+
+        val content = BackupArchive.read(bytes.inputStream()) ?: return bytes.decodeToString()
+        val restored = BackupArchive.restoreAttachments(content.entries, env.filesRoot)
+        if (restored.isEmpty()) return content.plainJson
+
+        // ⚠️ 只在真有附件落地时才多走一趟 parse/serialize —— 没有自定义图标的
+        //    备份（绝大多数）不必付这份成本。
+        val root = JsonParser.parseString(content.plainJson).asJsonObject
+        BackupArchive.remapAttachmentPaths(root, restored)
+        return BackupEnvelope.writeElementTree(root)
     }
 
     /**

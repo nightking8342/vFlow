@@ -3524,6 +3524,9 @@
     <string name="param_vflow_data_export_backup_password_name">Backup passphrase (required when "Include secrets" is on)</string>
     <string name="param_vflow_data_export_backup_password_hint">Prefer referencing a global variable over typing it here</string>
     <string name="param_vflow_data_export_backup_file_name_name">File name (auto-generated when empty)</string>
+    <string name="param_vflow_data_export_backup_format_name">Format</string>
+    <string name="option_vflow_data_export_backup_format_zip">Archive (keeps custom icons)</string>
+    <string name="option_vflow_data_export_backup_format_json">Plain JSON (custom icons are dropped)</string>
     <string name="output_vflow_data_export_backup_file_path_name">File path</string>
     <string name="output_vflow_data_export_backup_file_name_name">File name</string>
     <string name="output_vflow_data_export_backup_scope_count_name">Scope count</string>

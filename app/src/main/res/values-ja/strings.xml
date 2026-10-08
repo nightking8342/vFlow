@@ -297,7 +297,8 @@
     <string name="workflow_item_menu_duplicate">コピー</string>
     <string name="workflow_item_menu_copy_id">ワークフローIDをコピーする</string>
     <string name="workflow_item_menu_move_out_folder">フォルダーを移動する</string>
-    <string name="workflow_item_menu_export_single">このワークフローをエクスポートする</string>
+    <string name="workflow_item_menu_export_single">このワークフローをエクスポート（JSON）</string>
+    <string name="workflow_item_menu_export_single_archive">このワークフローをエクスポート（アーカイブ・カスタムアイコンを含む）</string>
     <string name="workflow_item_menu_delete">削除</string>
     <string name="workflow_item_menu_add_to_tile">コントロールセンターに追加</string>
     <string name="tile_selection_title">Tileの場所を選択してください</string>
@@ -1308,6 +1309,7 @@
     <string name="folder_rename">名前の変更</string>
     <string name="folder_delete">削除</string>
     <string name="folder_dissolve">解散</string>
+    <string name="folder_export_archive">フォルダをエクスポート（アーカイブ・カスタムアイコンを含む）</string>
     <string name="folder_export">エクスポート</string>
     <string name="folder_create">フォルダーの作成</string>
     <string name="folder_name_hint">フォルダ名</string>

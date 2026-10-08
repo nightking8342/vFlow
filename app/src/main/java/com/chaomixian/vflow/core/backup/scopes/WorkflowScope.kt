@@ -6,11 +6,13 @@ import com.chaomixian.vflow.core.backup.BackupEnvironment
 import com.chaomixian.vflow.core.backup.BackupScope
 import com.chaomixian.vflow.core.backup.ImportMode
 import com.chaomixian.vflow.core.backup.ImportStatus
+import com.chaomixian.vflow.core.backup.LogLevel
 import com.chaomixian.vflow.core.backup.ScopeGroup
 import com.chaomixian.vflow.core.backup.ScopeImportResult
 import com.chaomixian.vflow.core.backup.ScopePayload
 import com.chaomixian.vflow.core.backup.SecretContext
 import com.chaomixian.vflow.core.backup.SecretFieldScrubber
+import com.chaomixian.vflow.core.workflow.WorkflowJsonCodec
 import com.chaomixian.vflow.core.workflow.model.Workflow
 import com.google.gson.JsonArray
 
@@ -19,22 +21,22 @@ import com.google.gson.JsonArray
  *
  * ## 完整字段
  *
- * 直接对**整个 `Workflow` 对象**做 Gson 序列化（25 个字段），
- * **不是** `WorkflowListRoute.createWorkflowExportData` 的 20 键 map ——
- * 那份漏掉了 `maxExecutionTime` / `reentryBehavior` / `silentExecution` /
- * `logLevel` / `functionSignature`。
- * 漏 `functionSignature` 的后果最重：函数工作流会**静默退化**成普通工作流
- * （`Workflow.isFunction` 由 `functionSignature != null` 派生）。
- *
- * ⚠️ 上面那份 map 的遗漏是**单文件导出**路径的既有行为（含 `silentExecution` 等，
- * 均早于本 fork 的 `logLevel`），本 fork 只做如实记录、**不改那份 map** ——
- * 改它属于行为变更，且 `WorkflowJsonImportParser` 对所有缺失键都有回落
- * （`logLevel` 缺 → `VERBOSE`，即改动前行为）。**备份/恢复**路径走的是本 scope，
- * 那份是全字段的，不受影响。
+ * 直接对**整个 `Workflow` 对象**做 Gson 序列化（全部字段），
+ * **不是** `WorkflowListRoute.createWorkflowExportData` 那份人工维护的键表
+ * （那条路曾漏 5 个字段，现已补齐并由 `WorkflowExportFieldCoverageTest` 机器化核对）。
  *
  * ⚠️ 序列化用的 Gson 由 `BackupEnvironment.json` 提供，生产实现必须与
  * `WorkflowManager` 用同一套构造方式（含 `VObjectGsonAdapter`），否则同一份数据
  * 在两处会写出不同形状 —— 由 `BackupWiringTest` 的源码扫描锁住。
+ *
+ * ## ⚠️ 导入侧的字段映射走 `WorkflowJsonCodec`
+ *
+ * 曾经这里用 `env.json.fromJson(element, Workflow::class.java)`，而 Gson 的
+ * **反射构造**（`Unsafe.allocateInstance`）**绕过 Kotlin 构造函数** ⇒
+ * `Workflow.kt` 里那些 `= 默认值` 完全不执行：引用类型字段缺键 ⇒ `null`、
+ * 原生类型 ⇒ `false` / `0`。而 `null` 落在非空字段上**不会当场抛**，
+ * 要等第一次 `copy()`（REPLACE 路径必经过）才炸。
+ * 现在与磁盘读盘 / 文件导入共用同一份 codec，见 [workflowFromJson] 的注释。
  *
  * ## REPLACE 真的删
  *
@@ -141,28 +143,48 @@ class WorkflowScope : BackupScope {
         /**
          * 解析单条工作流记录。
          *
-         * ⚠️ **`id` 缺失时返回 null（跳过该条）而不是 `UUID.randomUUID()`** ——
-         * Gson 直接反序列化会让 `val id: String` 收到 **null**（NPE 源自 Kotlin 的
-         * 空检查，错误位置会指向 `isBlank()`，看着像别的地方坏了）。
-         * 没有 id 的工作流无法与任何东西对上，静默给它一个新 id 只会往用户列表里塞空壳。
+         * ⚠️ **`id` 缺失时返回 null（跳过该条）而不是补一个新 id** ——
+         * 没有 id 的工作流无法与任何东西对上，静默给它一个新 id 只会往用户列表里
+         * 塞空壳。（这是本路径与另外两条的**唯一**差别：读盘/文件导入都允许补 id，
+         * 因为那两处是「导入」语义；这里是「恢复」，同一份数据不该换身份。）
+         *
+         * ⚠️⚠️ **字段映射走 `WorkflowJsonCodec`，不用 Gson 反射反序列化。**
+         * 曾经这里用 `env.json.fromJson(element, Workflow::class.java)`，而 Gson 的
+         * 反射构造用 `Unsafe.allocateInstance` **绕过 Kotlin 构造函数** ⇒
+         * `Workflow.kt` 里那些 `= 默认值` 完全不执行：
+         * - 引用类型字段（`logLevel` / `cardIconRes` / `tags` …）缺键 ⇒ **`null`**；
+         * - 原生类型（`isEnabled` / `vFlowLevel`）缺键 ⇒ `false` / `0`
+         *   （而另外两条读路径的回落是 `true` / `1`）。
+         *
+         * ⚠️ `null` 落在非空字段上**不会当场抛**（Kotlin 的检查插在赋值处、
+         * 不插在读取处），它会潜伏到第一次 `copy()` —— 而 REPLACE 走
+         * `replaceAllWorkflows` → `normalizeWorkflow` → **`copy`**
+         * ⇒ 表现是「恢复一份**旧版本**写的备份直接崩」，栈却指向 `Workflow.copy`，
+         * 看不出是备份缺键（已实测复现）。
+         *
+         * ⇒ 改用 codec 后，四条读写路径（磁盘读盘 / 文件导入 / 备份恢复 /
+         * 导出）**共用同一份字段映射**，加字段只改 codec。
          */
         fun workflowFromJson(
             env: BackupEnvironment,
             element: com.google.gson.JsonElement
         ): Workflow? {
-            // 先挡 null id：Gson 会在构造时把 null 塞进非空形参，报错位置具有误导性。
-            val obj = if (element.isJsonObject) element.asJsonObject else return null
-            obj.get("id")?.let {
-                if (it.isJsonNull || !it.isJsonPrimitive || it.asString.isBlank()) return null
-            } ?: return null
+            if (!element.isJsonObject) return null
+            val obj = element.asJsonObject
 
-            val workflow = try {
-                env.json.fromJson(element, Workflow::class.java)
+            // 先挡 id：缺失 / null / 非字符串 / 空白都算「这条记录没法与任何东西对上」。
+            val id = obj.get("id") ?: return null
+            if (id.isJsonNull || !id.isJsonPrimitive || !id.asJsonPrimitive.isString) return null
+            if (id.asString.isBlank()) return null
+
+            return try {
+                WorkflowJsonCodec.parse(obj)
             } catch (e: Exception) {
+                // codec 对任何键缺失/类型不符都不抛；走到这里说明遇到了更意外的东西
+                // （如构造期的内存问题）。单条坏掉不该让整份备份失败。
+                env.log(LogLevel.W, "WorkflowScope", "工作流记录解析失败，已跳过", e)
                 null
             }
-            if (workflow == null || workflow.id.isBlank()) return null
-            return workflow
         }
     }
 }

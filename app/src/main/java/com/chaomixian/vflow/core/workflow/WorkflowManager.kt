@@ -6,13 +6,9 @@ import com.chaomixian.vflow.core.types.VObject
 import com.chaomixian.vflow.core.types.serialization.VObjectGsonAdapter
 import com.chaomixian.vflow.core.workflow.model.ActionStep
 import com.chaomixian.vflow.core.workflow.model.FunctionParam
-import com.chaomixian.vflow.core.workflow.model.FunctionReturn
 import com.chaomixian.vflow.core.workflow.model.FunctionSignature
 import com.chaomixian.vflow.core.workflow.model.FunctionSignatureHelper
-import com.chaomixian.vflow.core.workflow.model.ReturnKey
 import com.chaomixian.vflow.core.workflow.model.Workflow
-import com.chaomixian.vflow.core.workflow.model.WorkflowLogLevel
-import com.chaomixian.vflow.core.workflow.model.WorkflowReentryBehavior
 import com.chaomixian.vflow.core.workflow.module.triggers.AppStartTriggerModule
 import com.chaomixian.vflow.core.workflow.module.triggers.KeyEventTriggerModule
 import com.chaomixian.vflow.core.workflow.module.triggers.ReceiveShareTriggerModule
@@ -254,50 +250,21 @@ class WorkflowManager(val context: Context) {
         )
     }
 
+    /**
+     * 解析一条工作流记录。
+     *
+     * ⚠️ 实现**已下移到** [WorkflowJsonCodec]（fork 新增文件）—— 本方法原来
+     * 与 `WorkflowJsonImportParser.parseWorkflowObject` 是**逐字重复的两份
+     * 25 字段清单**，而「哪一份漏了哪个字段」完全不会被任何测试发现。
+     * 三条读路径（读盘 / 文件导入 / 备份恢复）现在共用那一份。
+     *
+     * ⚠️ 形状判定留在**调用方**（本方法）：`getAllWorkflows` 对「不是对象」的记录
+     * 是**跳过并计数**，而导入路径是回落成一个默认工作流 —— 两种处置不同。
+     */
     private fun parseWorkflowRecord(element: JsonElement): Workflow {
         val record = element.asJsonObjectOrNull()
             ?: throw IllegalStateException("Workflow record is not a JSON object")
-        val legacyTriggerConfigs = buildList {
-            record.getMapList("triggerConfigs")?.let { addAll(it) }
-            record.getMap("triggerConfig")?.let { add(it) }
-        }
-        val normalizedContent = WorkflowNormalizer.normalize(
-            triggers = record.getActionSteps("triggers"),
-            steps = record.getActionSteps("steps"),
-            legacyTriggerConfigs = legacyTriggerConfigs
-        )
-
-        return Workflow(
-            id = record.getString("id")?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString(),
-            name = record.getString("name")?.takeIf { it.isNotBlank() } ?: "未命名工作流",
-            triggers = normalizedContent.triggers,
-            steps = normalizedContent.steps,
-            isEnabled = record.getBoolean("isEnabled") ?: true,
-            isFavorite = record.getBoolean("isFavorite") ?: false,
-            wasEnabledBeforePermissionsLost = record.getBoolean("wasEnabledBeforePermissionsLost") ?: false,
-            folderId = record.getString("folderId"),
-            order = record.getInt("order") ?: 0,
-            shortcutName = record.getString("shortcutName"),
-            shortcutIconRes = record.getString("shortcutIconRes"),
-            cardIconRes = WorkflowVisuals.normalizeIconResName(record.getString("cardIconRes")),
-            cardThemeColor = WorkflowVisuals.normalizeThemeColorHex(record.getString("cardThemeColor")),
-            modifiedAt = record.getLong("modifiedAt")?.takeIf { it > 0 } ?: System.currentTimeMillis(),
-            version = record.getString("version")?.takeIf { it.isNotBlank() } ?: "1.0.0",
-            vFlowLevel = record.getInt("vFlowLevel")?.takeIf { it > 0 } ?: 1,
-            description = record.getString("description") ?: "",
-            author = record.getString("author") ?: "",
-            homepage = record.getString("homepage") ?: "",
-            tags = record.getStringList("tags") ?: emptyList(),
-            maxExecutionTime = record.getInt("maxExecutionTime"),
-            reentryBehavior = WorkflowReentryBehavior.fromStoredValue(record.getString("reentryBehavior")),
-            // 旧记录没有这个键 → 落回 false，即保持既有行为。不需要兼容映射。
-            silentExecution = record.getBoolean("silentExecution") ?: false,
-            // 旧记录没有这个键 → 落回 VERBOSE（= 改动前行为，全量记日志）。
-            // ⚠️ 方向刻意是「不丢信息」而不是「更保守」：日志是排障的唯一依据，
-            //    多记几条的代价远小于「故障时没有线索」。
-            logLevel = WorkflowLogLevel.fromStoredValue(record.getString("logLevel")),
-            functionSignature = parseFunctionSignature(record)
-        )
+        return WorkflowJsonCodec.parse(record)
     }
 
     /**
@@ -325,114 +292,7 @@ class WorkflowManager(val context: Context) {
         return FunctionSignature(params = params, returnDef = returnDef)
     }
 
-    private fun parseFunctionSignature(record: JsonObject): FunctionSignature? {
-        val element = record.get("functionSignature") ?: return null
-        if (!element.isJsonObject) return null
-        val obj = element.asJsonObject
-
-        // 参数声明
-        val params = obj.getAsJsonArraySafe("params")?.mapNotNull { p ->
-            val pObj = p.asJsonObjectOrNull() ?: return@mapNotNull null
-            val name = pObj.getString("name") ?: return@mapNotNull null
-            val type = pObj.getString("type") ?: return@mapNotNull null
-            val rawDefault = pObj.get("defaultValue")
-            FunctionParam(
-                name = name,
-                type = type,
-                defaultValue = if (rawDefault == null || rawDefault.isJsonNull) null else normalizeJsonElementValue(rawDefault),
-                isRequired = pObj.getBoolean("isRequired") ?: false
-            )
-        } ?: emptyList()
-
-        // 返回值声明（可空）
-        val returnDef = obj.getAsJsonObjectSafe("returnDef")?.let { retObj ->
-            val retType = retObj.getString("type") ?: com.chaomixian.vflow.core.types.VTypeRegistry.DICTIONARY.id
-            val keys = retObj.getAsJsonArraySafe("keys")?.mapNotNull { k ->
-                val kObj = k.asJsonObjectOrNull() ?: return@mapNotNull null
-                val kName = kObj.getString("name") ?: return@mapNotNull null
-                val kType = kObj.getString("type") ?: com.chaomixian.vflow.core.types.VTypeRegistry.ANY.id
-                ReturnKey(kName, kType)
-            } ?: emptyList()
-            FunctionReturn(type = retType, keys = keys)
-        }
-
-        return FunctionSignature(params = params, returnDef = returnDef)
-    }
-
-    /** 安全读取 JSON 数组（非数组返回 null）。 */
-    private fun JsonObject.getAsJsonArraySafe(name: String): JsonArray? {
-        val element = get(name) ?: return null
-        return if (element.isJsonArray) element.asJsonArray else null
-    }
-
-    /** 安全读取 JSON 对象（非对象返回 null）。 */
-    private fun JsonObject.getAsJsonObjectSafe(name: String): JsonObject? {
-        val element = get(name) ?: return null
-        return if (element.isJsonObject) element.asJsonObject else null
-    }
-
     private fun JsonElement.asJsonObjectOrNull(): JsonObject? {
         return if (isJsonObject) asJsonObject else null
-    }
-
-    private fun JsonObject.getString(name: String): String? {
-        val element = get(name) ?: return null
-        if (!element.isJsonPrimitive || !element.asJsonPrimitive.isString) return null
-        return element.asString
-    }
-
-    private fun JsonObject.getBoolean(name: String): Boolean? {
-        val element = get(name) ?: return null
-        if (!element.isJsonPrimitive) return null
-        return runCatching { element.asBoolean }.getOrNull()
-    }
-
-    private fun JsonObject.getInt(name: String): Int? {
-        val element = get(name) ?: return null
-        if (!element.isJsonPrimitive) return null
-        return runCatching { element.asInt }.getOrNull()
-    }
-
-    private fun JsonObject.getLong(name: String): Long? {
-        val element = get(name) ?: return null
-        if (!element.isJsonPrimitive) return null
-        return runCatching { element.asLong }.getOrNull()
-    }
-
-    private fun JsonObject.getStringList(name: String): List<String>? {
-        val element = get(name) ?: return null
-        if (!element.isJsonArray) return null
-        return element.asJsonArray.mapNotNull { item ->
-            if (item.isJsonPrimitive && item.asJsonPrimitive.isString) item.asString else null
-        }
-    }
-
-    private fun JsonObject.getActionSteps(name: String): List<ActionStep>? {
-        val element = get(name) ?: return null
-        if (!element.isJsonArray) return null
-        return element.asJsonArray.mapNotNull { item ->
-            val obj = item.asJsonObjectOrNull() ?: return@mapNotNull null
-            val moduleId = obj.getString("moduleId") ?: return@mapNotNull null
-            val parameters = obj.getMap("parameters") ?: emptyMap()
-            ActionStep(
-                moduleId = moduleId,
-                parameters = parameters,
-                isDisabled = obj.getBoolean("isDisabled") ?: false,
-                indentationLevel = obj.getInt("indentationLevel") ?: 0,
-                id = obj.getString("id")?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
-            )
-        }
-    }
-
-    private fun JsonObject.getMap(name: String): Map<String, Any?>? {
-        val element = get(name) ?: return null
-        if (!element.isJsonObject) return null
-        return normalizedObjectMap(normalizeJsonElementValue(element))
-    }
-
-    private fun JsonObject.getMapList(name: String): List<Map<String, Any?>>? {
-        val element = get(name) ?: return null
-        if (!element.isJsonArray) return null
-        return normalizedObjectMapList(normalizeJsonElementValue(element))
     }
 }

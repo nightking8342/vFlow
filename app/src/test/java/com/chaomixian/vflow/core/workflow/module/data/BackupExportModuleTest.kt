@@ -101,7 +101,7 @@ class BackupExportModuleTest {
     @Test
     fun `input ids match the contract`() {
         assertEquals(
-            setOf("scopes", "include_secrets", "backup_password", "file_name"),
+            setOf("scopes", "include_secrets", "backup_password", "file_name", "format"),
             module.getInputs().map { it.id }.toSet(),
         )
     }
@@ -258,16 +258,45 @@ class BackupExportModuleTest {
     fun `sanitize strips directory components`() {
         // ⚠️ 用户（或模型）可以写 `../x.json` 或 `/sdcard/vFlow/backups` ——
         //     后者会落到目录本身，写到目录上必然失败且错误信息含糊。
-        assertEquals("x.json", sanitizeBackupFileName("../x.json"))
-        assertEquals("x.json", sanitizeBackupFileName("/tmp/a/b/x.json"))
-        assertEquals("x.json", sanitizeBackupFileName("a/b/x.json"))
+        //
+        // ⚠️ 显式传 `FORMAT_JSON`：本用例只测「剥目录」，不该顺带把
+        //    「扩展名跟着格式改」也测进来（那会让本用例在格式默认值变化时变红，
+        //    而它想拦的是完全另一件事）。扩展名那条另有专门用例。
+        assertEquals("x.json", sanitizeBackupFileName("../x.json", format = FORMAT_JSON))
+        assertEquals("x.json", sanitizeBackupFileName("/tmp/a/b/x.json", format = FORMAT_JSON))
+        assertEquals("x.json", sanitizeBackupFileName("a/b/x.json", format = FORMAT_JSON))
+        // 默认档（zip）同样剥目录
+        assertEquals("x.zip", sanitizeBackupFileName("../x.json"))
+    }
+
+    /**
+     * 扩展名**跟着格式走**。
+     *
+     * ⚠️ 不跟着走会产出「名字说 json、内容是 zip」的文件 —— 导入侧靠魔数判容器
+     * 所以照样能读，但用户在文件管理器里看到的是个错误的类型，且不会有任何提示。
+     */
+    @Test
+    fun `the extension follows the format`() {
+        assertEquals("x.zip", sanitizeBackupFileName("x.json", format = FORMAT_ZIP))
+        assertEquals("x.json", sanitizeBackupFileName("x.zip", format = FORMAT_JSON))
+        // 无扩展名 ⇒ 补上
+        assertEquals("我的备份.zip", sanitizeBackupFileName("我的备份"))
+        // 非扩展名的小数点 ⇒ **不**截断（`v2` 是名字的一部分）
+        assertEquals("我的备份.v2.zip", sanitizeBackupFileName("我的备份.v2"))
+        // 已知扩展名 ⇒ 替换而不是追加（`x.txt` 是未知的，故追加）
+        assertEquals("x.txt.zip", sanitizeBackupFileName("x.txt"))
     }
 
     @Test
     fun `sanitize falls back to a timestamped name for blank or dot inputs`() {
         val fallback = sanitizeBackupFileName("", nowMs = 0L)
         assertTrue("空文件名应回落到自动命名：$fallback", fallback.startsWith("vflow_backup_"))
-        assertTrue(fallback.endsWith(".json"))
+        // ⚠️ 默认档是 **zip**（见 `BackupExportModule.PARAM_FORMAT` 的 KDoc）。
+        assertTrue("默认档是压缩包：$fallback", fallback.endsWith(".zip"))
+        assertTrue(
+            "显式选 JSON 时扩展名跟着变",
+            sanitizeBackupFileName("", nowMs = 0L, format = FORMAT_JSON).endsWith(".json"),
+        )
         // `.` / `..` 同样回落
         assertTrue(sanitizeBackupFileName(".", 0L).startsWith("vflow_backup_"))
         assertTrue(sanitizeBackupFileName("..", 0L).startsWith("vflow_backup_"))
@@ -293,7 +322,7 @@ class BackupExportModuleTest {
         val raw = "自动备份_{{now.time}}test.json"
         val resolved = raw.replace("{{now.time}}", "22:47:11")
 
-        val fileName = sanitizeBackupFileName(resolved)
+        val fileName = sanitizeBackupFileName(resolved, format = FORMAT_JSON)
 
         assertEquals("自动备份_22:47:11test.json", fileName)
         assertTrue(
@@ -313,14 +342,17 @@ class BackupExportModuleTest {
 
         // 反序：先 sanitize（`{{...}}` 不含 `/` ⇒ 原样保留）再「解析」——
         // 此时得到的仍是模板字面量，因为解析的目标已经是个文件名了。
-        val wrong = sanitizeBackupFileName(raw)
+        val wrong = sanitizeBackupFileName(raw, format = FORMAT_JSON)
 
         assertTrue(
             "反序时模板会原样留在文件名里（这正是真机上发生的）",
             wrong.contains("{{now.time}}"),
         )
         // 与正序的结果必须不同 —— 否则本族断言无意义
-        assertTrue("正序与反序必须给出不同结果", wrong != sanitizeBackupFileName(raw.replace("{{now.time}}", "22:47:11")))
+        assertTrue(
+            "正序与反序必须给出不同结果",
+            wrong != sanitizeBackupFileName(raw.replace("{{now.time}}", "22:47:11"), format = FORMAT_JSON),
+        )
     }
 
     /**
@@ -331,7 +363,7 @@ class BackupExportModuleTest {
      */
     @Test
     fun `sanitize does not validate template syntax`() {
-        val fileName = sanitizeBackupFileName("{{nonexistent.var}}.json")
+        val fileName = sanitizeBackupFileName("{{nonexistent.var}}.json", format = FORMAT_JSON)
         assertEquals("{{nonexistent.var}}.json", fileName)
     }
 
@@ -340,6 +372,9 @@ class BackupExportModuleTest {
         // 同一时刻必产同名（否则「输出路径」这条契约就没法断言）
         assertEquals(defaultBackupFileName(0L), defaultBackupFileName(0L))
         assertTrue(defaultBackupFileName(0L).startsWith("vflow_backup_"))
+        // ⚠️ 扩展名随格式走（默认 zip，显式 JSON 时 .json）。
+        assertTrue(defaultBackupFileName(0L).endsWith(".zip"))
+        assertTrue(defaultBackupFileName(0L, FORMAT_JSON).endsWith(".json"))
     }
 
     /**

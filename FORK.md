@@ -740,7 +740,7 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 | `core/workflow/model/Workflow.kt`（改） | 追加 `var logLevel: WorkflowLogLevel = WorkflowLogLevel.VERBOSE`（+7 行、0 删除）。⚠️ 内置默认值 ⇒ 老记录反序列化出来就是 `VERBOSE`，**不需要 `legacyValueMap` 之类兼容逻辑** | **手动合并**（追加 1 个带默认值字段） |
 | `core/workflow/WorkflowManager.kt`（改） | ⚠️ `saveWorkflow` 的 `copy(...)` 是**显式白名单** —— 补 `logLevel = normalizedVisualWorkflow.logLevel`（**漏这一行 = 用户在编辑器里改了、保存后却没生效**的静默失效）；`loadWorkflow` 补 `WorkflowLogLevel.fromStoredValue(record.getString("logLevel"))` | **手动合并**（追加 2 行） |
 | `core/workflow/WorkflowJsonImportParser.kt`（改） | 补 `logLevel = WorkflowLogLevel.fromStoredValue(data.getString("logLevel"))`（旧导出文件缺该键 → `VERBOSE`） | **手动合并**（追加 1 行） |
-| `core/backup/scopes/WorkflowScope.kt`（改） | **仅注释**：类 KDoc 的字段数由 24 改 25、遗漏清单补 `logLevel`，并写明**刻意不去改** `WorkflowListRoute.createWorkflowExportData` 那份 20 键 map（那是**单文件导出**路径的既有行为，含 `silentExecution` 等早于本 fork 的遗漏；改它属于行为变更，而 `WorkflowJsonImportParser` 对所有缺失键都有回落）。**备份/恢复**走的是本 scope（全字段），不受影响 | **手动合并**（注释） |
+| `core/backup/scopes/WorkflowScope.kt`（改） | ① 类 KDoc 的字段数由 24 改 25、遗漏清单补 `logLevel`（**注释**）；② **2026-10-08 补 `workflowFromJson` 的归一化调用**（见下方「导入导出字段补齐」段） | **手动合并**（注释 + 1 行调用） |
 | `core/workflow/module/data/LogModule.kt`（新增） | fork 独有：**日志模块**（`vflow.data.log`）。三个输入（`content` ANY / `label` STRING / `level` ENUM info·warn·error）+ 两个输出（`success` / `text`）。⚠️⚠️ **`content` 支持「裸写步骤 id ⇒ 展开该步全部输出」（`{{cls}}`）** —— 见下条；⚠️ `riskLevel = LOW`（**必须**：`riskLevelForSavedWorkflow` 取步骤 max，声明 HIGH 会让任何含本模块的工作流被抬到 high 并触发人工审批，而用户审的是「打印一行字」）；⚠️ `usageScopes` **只给 `TEMPORARY_WORKFLOW`、不给 `DIRECT_TOOL`**（直调没有工作流上下文、日志也没人看，且 v2.0 的方向是精简直调工具数） | 我方 |
 | `LogModule` 的**裸步骤 id 分派** | ⚠️⚠️ **本模块专有语义，刻意不写进 `VariableResolver`**：裸写 `{{cls}}`（`path.size == 1` 且该 id 在 `stepOutputs` 里）⇒ 展开该步全部输出。**不能**把它挪进全局解析器 —— 会**全局**改变语义（所有模块的静态输入跑同一个解析器），既有工作流里裸写 id 的地方会从「空值」变成「一整表」，且**不可回滚**。⚠️ 实现走**哨兵替换**（`\u0000vflow-whole-step\u0000`）后交回 `VariableResolver.resolve` 处理其余段落，再按 `split` 把整表填回 —— ⚠️ **索引方向是 `parts[i]` ↔ 哨兵之后**（哨兵夹在 `parts[i]` 与 `parts[i+1]` 之间），写成「按 part 配 stepId」会把前缀文本吃掉（实现期实际踩到，有反向锁）。⚠️ **常规路径刻意不自己再跑一遍 `VariableResolver.resolve`** —— 那会让解析不掉的引用被 `VariableResolver.kt:133` 的回退包成 `{{{…}}}` 再递归重试，用户打错一个 id 就在日志里看到几十个括号的噪声 | 我方 |
 | `core/workflow/module/data/VObjectLogSerializer.kt`（新增） | fork 独有：`VObject` → **一行文本**的渲染层（纯函数，可纯 JVM 单测）。三条硬规则：① **不截断**（使用者显式打了一条日志，就是要看到值的全部；**不做深度上限** —— `VObjectFactory.from` 对 Collection/Map 无条件递归，循环引用图在**构造时**就爆栈了，到不了这里）；② **图片/文件只取元数据、绝不读 `base64`/`content`**（一张 1080p PNG 的 base64 约 2–5 MB，单条日志就能撑爆 `SharedPreferences`）；③ **转义**（`"` `\` 换行 ⇒ 保证一条日志一行，否则执行器的行级解析会错乱）。⚠️ **不复用 `VDictionary.asString()`** —— 它把所有值都包引号且**完全不转义**（`VDictionary.kt:26`）。⚠️ 中心点算法抽成纯函数 `centerOfBounds`：**`android.graphics.Rect` 在纯 JVM 单测里字段恒为 0**（mockable jar 不执行构造函数体），从外面断言「中心算得对不对」**观察不到** | 我方 |
@@ -1097,6 +1097,82 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 > intent-filter 都在，`dexdump` 确认类未被 R8 剥掉）。
 > **未做**：vFlow 自己作为被调用方、在真实第三方工具里走完两级跳（选 App → vFlow 弹框 →
 > 回来 → 点击执行）。该路径**只有编译与单测支撑，不得声称可用**。
+
+---
+
+### 导入导出字段收敛（2026-10-08）—— `Workflow` ↔ JSON 只剩一份字段映射
+
+> 起因：fork 连加了 `logLevel` / `functionSignature` / `reentryBehavior` /
+> `silentExecution` / `maxExecutionTime` 等字段，而**「字段清单」在代码里有三份**
+> （磁盘读盘 / 文件导入 / 备份恢复），**导出**另有一份人工维护的键表。
+> 三份之间没有任何机制保证同步，表现全是**静默**的：
+>
+> - 单文件导出表漏了 5 个字段 ⇒ 导出再导入后设置被**静默重置**；
+> - `functionSignature` 只在读盘那一份里被解析 ⇒ 函数工作流经文件导入后
+>   `isFunction` 变 false，**静默退化成普通工作流**；
+> - 备份恢复走 Gson 反射（`Unsafe.allocateInstance` 绕过 Kotlin 构造函数）
+>   ⇒ 缺键的引用类型字段是 `null`，潜伏到第一次 `copy()` 才炸 ⇒
+>   **恢复一份旧版本写的备份直接崩**，栈却指向 `Workflow.copy`。
+>
+> **三种都不会让任何行为测试变红。** ⇒ 收敛成**一份**。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `core/workflow/WorkflowJsonCodec.kt`（**新增**） | fork 独有：**`Workflow` ↔ JSON 的字段映射唯一实现**（`parse` / `parseOrNull` / `toExportJson`）。四条路径全部走它：**磁盘读盘**（`WorkflowManager.parseWorkflowRecord`）、**文件导入**（`WorkflowJsonImportParser.parseWorkflowObject`）、**备份恢复**（`WorkflowScope.workflowFromJson`）、**导出**（单文件 / 文件夹 / 备份全部）。⚠️ **导出侧是反射派生的**（`gson.toJsonTree(workflow)`）而不是手写键表 —— 手写的表必然在「模型加字段」时过期，而过期的表现是「导出少一个键」，**不报错**。⇒ **给 `Workflow` 加字段时不用再改任何导入导出代码**。⚠️ 输出形状与改动前**逐字一致**（含「值为 null 的键整个不写」—— 旧写法经 `gson.toJson(map)` 时 Gson 同样省略 null）。⚠️ `EXPORT_EXCLUDED` 是刻意留的空集：将来出现敏感字段时加进它，比在导出处写 `if` 更难被漏掉。⚠️ **不管密钥清洗** —— 那是备份链路 `SecretFieldScrubber` 的横切职责。 | 我方 |
+| `core/workflow/WorkflowManager.kt`（改） | `parseWorkflowRecord` 的 25 字段手写清单**整体删除**，改为委托 codec（形状判定留在调用方 —— 读盘对「不是对象」是跳过并计数，导入是回落成默认工作流，两种处置不同）；顺带删掉因此失去调用者的 9 个私有 JSON 扩展 + `parseFunctionSignature` + 6 个不再使用的 import。**净减约 130 行。** | **手动合并**（删私有实现，改调 codec） |
+| `core/workflow/WorkflowJsonImportParser.kt`（改） | `parseWorkflowObject` 的 25 字段手写清单**整体删除**，改为委托 codec；`parseWorkflow` 对「不是对象」的回落改走 `WorkflowJsonCodec.parse(JsonObject())`（**不手搓 `Workflow(...)`** —— 手搓等于再维护一份字段默认值清单）；删掉 `sanitizeWorkflow`（其职责已并入 codec 的逐字段回落）与 7 个失去调用者的私有扩展。**净减约 110 行。** | **手动合并**（删私有实现，改调 codec） |
+| `core/backup/scopes/WorkflowScope.kt`（改） | `workflowFromJson` 由 `env.json.fromJson(element, Workflow::class.java)` 改为 `WorkflowJsonCodec.parse(obj)`；保留「**id 缺失/null/空白 ⇒ 跳过该条**」这一条本路径特有的语义（读盘与文件导入都允许补 id，因为那两处是「导入」；这里是「恢复」，同一份数据不该换身份）。 | **手动合并**（改 1 处 + 注释） |
+| `ui/workflow_list/WorkflowListRoute.kt`（改） | `createWorkflowExportData` 的**人工维护 20 键 map 整体删除**，改为 `WorkflowJsonCodec.toExportJson(gson, workflow)`。⚠️ 那个表实测漏过 5 个字段（`maxExecutionTime` / `reentryBehavior` / `silentExecution` / `logLevel` / `functionSignature`），而导入侧认得它们 ⇒ 导出再导入后设置被静默重置。 | **手动合并**（删键表，改调 codec） |
+| `core/workflow/model/WorkflowLogLevel.kt`（改，**仅注释**） | KDoc 补一节：该枚举在磁盘上有**两种形状** —— 读盘 / 单文件导出用 `storageValue`（`error`），**备份**用 Gson 默认的枚举名（`ERROR`，因为它**没有** `@SerializedName`，对照 `WorkflowReentryBehavior` 有）。两条读路径各自能读自己那份，但手工拼 JSON 时喂错形式会让 Gson 读到未知值并留 `null`。 | **手动合并**（注释） |
+| `test/.../WorkflowJsonCodecTest.kt`（**新增**，16 例） | fork 独有。① **全字段往返**（25 字段逐个断言 + 函数签名往返）；② ★ **`the export shape follows the model automatically`** —— 反射读 `Workflow.declaredFields`，断言每个字段都出现在导出 JSON 里。**这条就是「以后加字段不用改导入导出代码」的机器化保证**：若有人把 `toExportJson` 改回手写键表，它会变红；③ 缺键回落逐条与三条读路径的历史口径对齐（含「缺 `triggers` 会补一个手动触发器」这条容易写错的）；④ `_meta` 兜底与顶层优先；⑤ legacy `triggerConfig`；⑥ 缺 `moduleId` 的步骤被丢弃、缺 `id` 的步骤补 id；⑦ **类型不符不抛**（`name` 是数字、`tags` 是字符串、`order` 是字符串）；⑧ 未知枚举值回落；⑨ **导出形状兼容性**（`reentryBehavior` 写 `allow_parallel`、`logLevel` 写 `ERROR`）；⑩ **null 值键整个不写**。 | 我方 |
+| `test/.../WorkflowExportFieldCoverageTest.kt`（**重写**，3 例） | 由「扫导出键表 + 反射核对字段集」改为「**锁住委托关系还在**」：断言 `createWorkflowExportData` 的函数体里出现 `WorkflowJsonCodec.toExportJson(`，并**反向锁**「不得再出现手写键表」（正则 `"xxx" to workflow.`）。⚠️ **为什么还需要它**：`toExportJson` 是反射派生的这一点**没有类型保护** —— 有人改回手写 map，编译照样过、`WorkflowJsonCodecTest` 照样绿（手写那份只要覆盖当前字段就行），缺陷会在**下一次加字段**时静默复发。⚠️ **反证已实际做过**：把函数体改成 `gson.toJsonTree(mapOf("id" to workflow.id))` ⇒ 1 条变红。 | 我方 |
+| `test/.../WorkflowScopeTest.kt`（改，+2 例） | 新增「旧备份缺键 ⇒ 用默认值恢复而不是崩」与「残缺记录被补齐而不是留半 null」；原「往返保住 legacy 导出漏的那 4 个字段」改名为 `roundTripPreservesEveryWorkflowField` 并补 `logLevel` 断言。⚠️ **反证已实际做过**：把 `WorkflowJsonCodec.parse(obj)` 换回 `env.json.fromJson(...)` ⇒ **2 条变红**（正是当初那个「恢复旧备份直接崩」的缺陷）。 | 我方 |
+| `test/.../WorkflowJsonImportParserTest.kt`（改，+5 例） | 新增：4 个执行设置能被解析、**函数工作流经文件往返后仍是函数工作流**（这条曾经是红的）、缺 `functionSignature` 仍是普通工作流（反向锁）、畸形签名不整体失败、单条参数缺字段只丢自己。 | 我方 |
+| `test/.../LegacyBackupAdapterTest.kt`（改，1 例翻面） | `known limitation - legacy path drops functionSignature` **翻面**成 `legacy path now keeps functionSignature`。⚠️ **不是删掉** —— 那条用例的注释自己就写着「将来有人修好它，这条会变红，届时应当更新本用例」。 | 我方 |
+| `core/backup/LegacyBackupAdapter.kt`（改，**仅注释**） | 类 KDoc：删掉「`functionSignature` 零解析」那条已知缺陷（已修），并说明「旧版本导出的文件确实缺那 5 个字段」是历史事实、现版本已补齐。 | **手动合并**（注释） |
+| `docs/fork/backup-webdav-design.md`（改） | §8.2 新增一行：**自定义卡片图标的「图片文件本身」不进备份**（已知缺口，本轮刻意不做）—— 备份体系只有四种数据通道、**没有通用文件通道**（`core/backup/` 零 `File(`/`filesDir`），故 `files/card_icons/*.png` 与同源的 `files/shortcut_icons/` 不进备份；**路径字符串会进**，所以「同设备恢复」图标还在，只有**跨设备**才丢，且**静默回落默认图标**。§9 追加第 6 项「文件通道」候选。 | 我方 |
+
+> ⚠️ **真机验证 0 项**：本轮改动**只有编译 + 全量单测 + release 打包**支撑
+> （`./gradlew test` 共 **2876 例、1 例失败**，失败的是 `AGENTS.md` 已登记的既有缺陷
+> `VObjectPropertyTest > test VFile properties from absolute path`，与本次无关）。
+> **未做**：真机上「导出 → 导入」一个函数工作流与一个设了日志等级/重入策略的工作流、
+> 真机上恢复一份旧版本写的备份。**不得声称可用**。
+> ⚠️ 本批**动了用户数据的核心读写路径**（磁盘读盘 + 备份恢复），
+> 靠现有测试兜底；上机前建议先导出一次备份留底。
+
+### 备份容器：纯 JSON → ZIP（2026-10-08）
+
+> 设计文档：`docs/fork/backup-webdav-design.md` **§8.4**。
+> 一句话：全局备份从「一个纯 JSON」改为「一个 ZIP」，**顺带补上「自定义卡片图标进不了备份」**这个旧缺口。
+> ⚠️ **本批改了上游文件的行为**（设置页导出/导入、列表页三处导出、备份模块），但每处都是**局部替换**。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `core/backup/BackupArchive.kt`（新增） | fork 独有：**备份的 ZIP 容器层**。布局 `manifest.json` + `scopes/<id>.json` + `files/**` —— **拆分粒度只到 scope**：每个 scope 的 `data` 各成一个条目、主条目里留 `{"$ref": …}`；⚠️⚠️ **scope 内部不再拆**（`scopes/workflows.json` 是**一个含全部工作流的数组**，不是一条一个文件 —— 本地存储就是「所有工作流一个 JSON」，拆到条目级等于凭空多一套心智模型）。两个入口：`write`（信封，拆 scopes）/ `writePlain`（单文件 / 文件夹 / 备份全部，**不拆**，主条目名各不相同：`workflow.json` / `folder.json` / `workflows.json`）/ `read`（**排除法**认主条目：任何不在 `files/` 与 `scopes/` 下的 `.json`；`$ref` 在 `resolveRefs` 里还原）。附件判据 = **键名白名单**（`cardIconRes`/`shortcutIconRes`）+ **必须落在 `filesRoot` 内** + 条目名防 `..` 穿越。⚠️ **只用 `java.util.zip` / `java.io`**（`BackupPurityTest` 管辖）。⚠️ 路径判据一律走 `java.io.File` 语义（`relativeTo` / `File(path).name`），**不要手拼分隔符** —— 实测手拼 `"$root/"` 在 Windows 上让附件全部不进包且不报错 | 我方 |
+| `core/backup/BackupEnvelope.kt`（改） | `write` 拆成 `write` = `buildRoot` + `writeElementTree`（两者都提为可调用）。⚠️ 存在的理由：ZIP 路径要拿**树**去替换各 scope 的 `data`，走「序列化再 parse 回来」是白付一趟且多一次形状漂移的机会。**两条路共用同一棵树** ⇒ ZIP 里的 manifest 与纯 JSON 备份结构上不可能不一致 | **手动合并**（1 处拆分，行为逐字不变） |
+| `core/backup/BackupPipeline.kt`（改） | 新增 `ArchiveExportResult` + `exportToArchive`（= `export` 的产出喂给 `BackupArchive.write`）+ **`readImportPayload`**（容器探测的**唯一入口**：魔数是 ZIP 就解包+还原附件+改路径，否则按 UTF-8 文本）。⚠️⚠️ **`readImportPayload` 交出去的是一份纯 JSON 文本** ⇒ 判定链（`schemaVersion`/口令/逐 scope 分发）一个字都没改。UI 侧只跟它打交道，两处各写一份容器判定会漂移成「探测说不用口令、导入却要」 | **手动合并**（新增 3 项） |
+| `core/backup/BackupEnvironment.kt`（改） | 追加 `val filesRoot: java.io.File? get() = null`（带默认值 ⇒ 既有实现不改也能编译）。用 `File` 而不是 `Context`：本接缝全部类型必须能在纯 JVM 里构造 | **手动合并**（追加 1 个属性） |
+| `core/backup/AndroidBackupEnvironment.kt`（改） | `override val filesRoot = appContext.filesDir`。⚠️ 漏了它 ⇒ 附件**永远不进包**（`null` ⇒ 不打包）且不报错，由 `BackupArchiveWiringTest` 源码扫描锁住 | **手动合并**（追加 1 行） |
+| `core/workflow/module/data/BackupExportModule.kt`（改） | ① 新增 `format` 参数（ENUM，`zip` 默认 / `json`），走 `optionsStringRes` 本地化（**不用 `appContext.getString`** —— `getInputs()` 可能在 `initialize(context)` 之前被调用）；② `execute()` 按格式分流（zip → `exportToArchive` + `file.outputStream()`）；③ `defaultBackupFileName` / `sanitizeBackupFileName` / `withExtension` / `normalizeFormat` 加 `format`（带默认值）；④ `getSummary` 传 format。⚠️ **扩展名必须跟着格式走** —— 用户填 `我的备份.json` 而格式是 zip ⇒ 改成 `.zip`；不跟着走会产出「名字说 json、内容是 zip」的文件（导入侧靠魔数照样能读，但用户在文件管理器里看到的是错的类型，且无提示）。⚠️ **非扩展名的小数点不截断**（`我的备份.v2` 必须保留 `v2`），判据是「最后一段是不是**已知**扩展名」 | **手动合并**（fork 新增文件内完善） |
+| 三语 `strings_module.xml` | 追加 `param_vflow_data_export_backup_format_name` + 两个选项文案（各 ×3）。⚠️ 选项名点明差别（压缩包「可含自定义图标」/ 纯 JSON「不含自定义图标」）—— 那是用户唯一能知道这个选择的后果的地方 | **手动合并**（追加条目） |
+| `ui/settings/BackupRestoreScreen.kt`（改） | ① 导出改走 `exportToArchive`（MIME `application/zip`，默认名 `.zip`）；② 导入改读**字节**再交 `readImportPayload`（**不再 `readText()`** —— 按 UTF-8 解压缩包会得到乱码且不报错）；③ 导入 MIME 由 `application/json` 放宽为 `*/*`（否则用户在选择器里看不到 `.zip`；容器由**魔数**判，放宽不会误判） | **手动合并**（3 处局部替换） |
+| `ui/workflow_list/WorkflowListRoute.kt`（改） | ① 新增 `pendingExportWithIcons` 状态（SAF 回调**异步**，靠读当前勾选会在用户改选后静默导出成另一种格式）；② 新增 `writeExportToDocumentUri`（按布尔分流：zip → `BackupArchive.writePlain`，json → 直接写字节）；③ 单文件 / 文件夹导出改走它，两个 launcher 的 MIME 改 `*/*`；④ 「备份全部」改走 zip（**仍是裸格式**：顶层直接是 `workflows`/`folders`，靠 `BackupEnvelope.read` 的 Legacy 分支认它）；⑤ 导入改走 `readImportPayload` | **手动合并**（多处局部替换） |
+| `ui/workflow_list/WorkflowListScreen.kt`（改） | `onExportWorkflow` / `onExportFolder` 签名加 `withIcons: Boolean`；两处菜单各**追加一项**「导出此工作流（压缩包，含自定义图标）」（`Icons.Outlined.FolderZip`） | **手动合并**（2 处签名 + 2 处菜单项） |
+| `ui/workflow_list/WorkflowFolderTabBar.kt` / `WorkflowFolderGlassTabBar.kt`（改） | `onExportFolder` 签名加 `withIcons`；`WorkflowFolderMenu` 追加「导出文件夹（压缩包，含自定义图标）」一项。⚠️ 玻璃版与普通版**共用同一个菜单函数**（`WorkflowFolderMenu` 由 `internal` 暴露），故只改一处 | **手动合并** |
+| `ui/workflow_editor/IconCategoryBar.kt`（改） | 新增 `noopFolderExport: (String, Boolean) -> Unit` —— 导出那一路的签名多了 `withIcons`，**不能**复用既有的 `(String) -> Unit` noop | **手动合并**（追加 1 行 + 改 1 处） |
+| 三语 `strings.xml` | 追加 `workflow_item_menu_export_single_archive` / `folder_export_archive`（各 ×3），并把 `workflow_item_menu_export_single` 的文案点明是 JSON 档 | **手动合并**（追加/改写条目） |
+| `test/.../core/backup/BackupArchiveTest.kt`（新增，17 例） | fork 独有：容器判定（**魔数非扩展名**）、往返、`$ref` 结构与还原、坏引用降级为空数组、附件打包与还原、**路径穿越必须被拒**、白名单键、`file://` 与绝对路径同解、`writePlain` 不拆 scopes | 我方 |
+| `test/.../core/backup/BackupArchiveWiringTest.kt`（新增，10 例） | fork 独有：**源码扫描型接线锚定**（形态照 `CoreDexFingerprintTest`）。⚠️ **存在理由**：`BackupArchiveTest` 对「生产代码有没有真的用上容器」**完全无感**，而本批的失败模式全是静默的（设置页仍走纯 JSON 却顶着 `.zip` 名字、`filesRoot` 没实现导致附件永不进包、单文件导出没接上）。⚠️ 全部**先剥注释**再断言（源码里到处是这些符号的 KDoc）。⚠️ **四条反证已实际执行并确认变红**：删 `filesRoot` 覆盖 / 设置页退回纯 JSON / 单文件导出退回纯 JSON / 压缩包路径自建信封 | 我方 |
+| `test/.../module/data/BackupExportModuleTest.kt`（改） | `format` 进契约；扩展名跟着格式走；**非扩展名的小数点不截断**；三条既有 `sanitize` 用例显式传 `FORMAT_JSON`（它们测的是「剥目录」，不该顺带把「扩展名跟格式走」也测进来） | 我方（新增/改写用例） |
+| `docs/fork/backup-webdav-design.md`（改） | §8.2 的「图标不进备份」缺口**改为已完成**；§9 第 6 项（文件通道）标记完成并说明**未走「新增文件类 scope」那条路**（改在容器层解决，不波及 scope 基类）；新增 **§8.4** 完整记录布局、三条设计约束、向后兼容、跨平台路径坑、测试与真机状态 | 我方 |
+
+> ⚠️ **真机验证 0 项**：以下**只有编译与单测支撑，不得声称可用** ——
+> 跨设备恢复后图标真的显示出来、旧 `.json` 备份在真机上导入、WebDAV 上传/下载压缩包、
+> 大量工作流（数十条 + 若干自定义图标）下的内存与耗时。
+> ⚠️ **本批动了用户数据的核心读写路径**，上机前建议先导出一份备份留底
+> （且**分别验一次 `.zip` 与 `.json` 两种格式的往返**）。
+
+---
 
 ---
 

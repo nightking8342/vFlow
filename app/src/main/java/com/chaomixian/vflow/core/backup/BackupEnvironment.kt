@@ -78,6 +78,18 @@ interface BackupEnvironment {
     fun reloadTriggers()
 
     /**
+     * **附件根目录**（生产 = `context.filesDir`）。**null ⇒ 本环境不带附件**
+     * （纯 JVM 测试的默认）。
+     *
+     * 只有「自定义卡片图标 / 快捷方式图标」这类**二进制文件**用它 ——
+     * 它们不在任何 scope 的 JSON 里，而 JSON 也装不下它们。
+     *
+     * ⚠️ 用 `java.io.File` 而不是 `Context`：本接缝的**全部**类型都必须能在
+     * 纯 JVM 里构造，否则 scope 语义测试就白写了（`BackupPurityTest` 的边界）。
+     */
+    val filesRoot: java.io.File? get() = null
+
+    /**
      * 密钥读写出口。**null ⇒ 本环境不支持读写密钥**（纯 JVM 测试的默认）。
      *
      * `SecretsScope` 据此判定「本次不适用」并返回 null —— 与「勾了但数据为空」

@@ -33,6 +33,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.chaomixian.vflow.R
+import com.chaomixian.vflow.core.backup.AndroidBackupEnvironment
+import com.chaomixian.vflow.core.backup.BackupArchive
+import com.chaomixian.vflow.core.backup.BackupPipeline
 import com.chaomixian.vflow.core.execution.ExecutionStateBus
 import com.chaomixian.vflow.core.execution.WorkflowExecutor
 import com.chaomixian.vflow.core.workflow.FolderManager
@@ -45,6 +48,7 @@ import com.chaomixian.vflow.core.workflow.TriggerExecutionCoordinator
 import com.chaomixian.vflow.core.workflow.WorkflowBatchEnumMigrationPreview
 import com.chaomixian.vflow.core.workflow.WorkflowDataChangeBus
 import com.chaomixian.vflow.core.workflow.WorkflowEnumMigration
+import com.chaomixian.vflow.core.workflow.WorkflowJsonCodec
 import com.chaomixian.vflow.core.workflow.WorkflowManager
 import com.chaomixian.vflow.core.workflow.WorkflowPermissionRecovery
 import com.chaomixian.vflow.core.workflow.model.Workflow
@@ -64,6 +68,7 @@ import com.chaomixian.vflow.ui.workflow_list.WorkflowImportHelper
 import com.chaomixian.vflow.ui.workflow_list.WorkflowListItem
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.gson.Gson
+import com.google.gson.JsonObject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collectLatest
@@ -125,6 +130,16 @@ fun WorkflowListRoute(
     var pendingExportWorkflow by remember { mutableStateOf<Workflow?>(null) }
     var pendingExportFolderId by remember { mutableStateOf<String?>(null) }
     var pendingEnumMigrationPreview by remember { mutableStateOf<WorkflowBatchEnumMigrationPreview?>(null) }
+
+    /**
+     * 本次导出要不要打包自定义卡片图标（即「压缩包」格式）。
+     *
+     * ⚠️⚠️ **它必须是一个独立的 `pending` 状态，不能读组合里的 `remember` 值** ——
+     * SAF 的 `CreateDocument` 是**异步**的：用户选完位置回调才跑，那时若靠
+     * 「当前勾选了什么」来判断，勾选早被下一次交互改掉了。
+     * 这是 `pendingExportWorkflow` 同款的纪律（它也是为此而存在）。
+     */
+    var pendingExportWithIcons by remember { mutableStateOf(false) }
     var dismissedEnumMigrationSignature by rememberSaveable { mutableStateOf<String?>(null) }
     var loadDataJob by remember { mutableStateOf<Job?>(null) }
     var requestBackup by remember { mutableStateOf<((String) -> Unit)?>(null) }
@@ -291,14 +306,20 @@ fun WorkflowListRoute(
     }
 
     val exportSingleLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("application/json")
+        // ⚠️ MIME 用 `*/*` 而不是 `application/json` —— 同一个 launcher 要同时服务
+        //    `.json` 与 `.zip` 两种产出，而 SAF 的 MIME 是**建契约时固定**的、
+        //    不能按 pending 状态切换。扩展名由建议文件名给出，实际格式靠**内容**判。
+        ActivityResultContracts.CreateDocument("*/*")
     ) { uri ->
         uri?.let { fileUri ->
             pendingExportWorkflow?.let { workflow ->
                 try {
                     val exportData = createWorkflowExportData(gson, workflow)
                     val jsonString = gson.toJson(exportData)
-                    writeTextToDocumentUri(context, fileUri, jsonString)
+                    writeExportToDocumentUri(
+                        context, fileUri, jsonString, pendingExportWithIcons,
+                        BackupArchive.WORKFLOW_ENTRY,
+                    )
                     Toast.makeText(
                         context,
                         context.getString(R.string.toast_export_success),
@@ -314,10 +335,11 @@ fun WorkflowListRoute(
             }
         }
         pendingExportWorkflow = null
+        pendingExportWithIcons = false
     }
 
     val exportFolderLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("application/json")
+        ActivityResultContracts.CreateDocument("*/*")
     ) { uri ->
         uri?.let { fileUri ->
             pendingExportFolderId?.let { folderId ->
@@ -326,9 +348,13 @@ fun WorkflowListRoute(
                     val workflows = workflowManager.getAllWorkflows().filter { it.folderId == folderId }
                     if (folder != null) {
                         val workflowsWithMeta = workflows.map { createWorkflowExportData(gson, it) }
-                        val exportData = mapOf("folder" to folder, "workflows" to workflowsWithMeta)
+                        val exportData: Map<String, Any?> =
+                            mapOf("folder" to folder, "workflows" to workflowsWithMeta)
                         val jsonString = gson.toJson(exportData)
-                        writeTextToDocumentUri(context, fileUri, jsonString)
+                        writeExportToDocumentUri(
+                            context, fileUri, jsonString, pendingExportWithIcons,
+                            BackupArchive.FOLDER_ENTRY,
+                        )
                         Toast.makeText(
                             context,
                             context.getString(R.string.toast_folder_export_success),
@@ -345,10 +371,11 @@ fun WorkflowListRoute(
             }
         }
         pendingExportFolderId = null
+        pendingExportWithIcons = false
     }
 
     val backupLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("application/json")
+        ActivityResultContracts.CreateDocument("*/*")
     ) { uri ->
         val migrationPreview = pendingEnumMigrationPreview
         uri?.let { fileUri ->
@@ -391,9 +418,16 @@ fun WorkflowListRoute(
         val uri = result.data?.data
         uri?.let { fileUri ->
             try {
-                val jsonString = context.contentResolver.openInputStream(fileUri)?.use {
-                    BufferedReader(InputStreamReader(it)).readText()
+                // ⚠️ 读**字节**再交给 `readImportPayload` 判容器（ZIP / 纯 JSON）——
+                //    直接 `readText()` 会把压缩包按 UTF-8 解成乱码，
+                //    而 `readText()` 本身不报错，最终只表现为「不是有效的工作流文件」。
+                val bytes = context.contentResolver.openInputStream(fileUri)?.use {
+                    it.readBytes()
                 } ?: throw Exception(context.getString(R.string.error_cannot_read_file))
+                val jsonString = BackupPipeline.readImportPayload(
+                    AndroidBackupEnvironment(context.applicationContext),
+                    bytes,
+                )
                 importHelper.importFromJson(jsonString)
             } catch (e: Exception) {
                 Toast.makeText(
@@ -490,13 +524,16 @@ fun WorkflowListRoute(
             WorkflowTopBarAction.BackupWorkflows -> {
                 val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
                     .format(Date())
-                backupLauncher.launch("vflow_backup_${timestamp}.json")
+                // ⚠️ 扩展名 `.zip` —— 这条路现在走压缩包（见 `backupAllWorkflowsToUri`）。
+                backupLauncher.launch("vflow_backup_${timestamp}.zip")
             }
 
             WorkflowTopBarAction.ImportWorkflows -> {
                 importLauncher.launch(
                     Intent(Intent.ACTION_GET_CONTENT).apply {
-                        type = "application/json"
+                        // ⚠️ `*/*`：现在既可能是 `.json` 也可能是 `.zip`，
+                        //    容器由**魔数**判（`BackupArchive.isArchive`）。
+                        type = "*/*"
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     }
                 )
@@ -589,9 +626,10 @@ fun WorkflowListRoute(
                 ).show()
                 loadData()
             },
-            onExportWorkflow = { workflow ->
+            onExportWorkflow = { workflow, withIcons ->
                 pendingExportWorkflow = workflow
-                exportSingleLauncher.launch("${workflow.name}.json")
+                pendingExportWithIcons = withIcons
+                exportSingleLauncher.launch("${workflow.name}.${if (withIcons) "zip" else "json"}")
             },
             onExecuteWorkflow = { workflow ->
                 if (WorkflowExecutor.isRunning(workflow.id)) {
@@ -683,10 +721,13 @@ fun WorkflowListRoute(
             onRenameFolder = { folderId ->
                 showRenameFolderDialog(context, folderManager, folderId) { loadData() }
             },
-            onExportFolder = { folderId ->
+            onExportFolder = { folderId, withIcons ->
                 pendingExportFolderId = folderId
+                pendingExportWithIcons = withIcons
                 val folder = folderManager.getFolder(folderId)
-                exportFolderLauncher.launch("${folder?.name ?: "folder"}.json")
+                exportFolderLauncher.launch(
+                    "${folder?.name ?: "folder"}.${if (withIcons) "zip" else "json"}"
+                )
             },
             onDissolveFolder = { folderId ->
                 showDissolveFolderConfirmationDialog(context, folderManager, workflowManager, folderId) {
@@ -778,29 +819,28 @@ fun WorkflowListRoute(
 
 private enum class ConflictChoice { ASK, REPLACE_ALL, KEEP_ALL }
 
-private fun createWorkflowExportData(gson: Gson, workflow: Workflow): Map<String, Any?> {
-    return mapOf(
-        "id" to workflow.id,
-        "name" to workflow.name,
-        "triggers" to workflow.triggers,
-        "steps" to workflow.steps,
-        "isEnabled" to workflow.isEnabled,
-        "isFavorite" to workflow.isFavorite,
-        "wasEnabledBeforePermissionsLost" to workflow.wasEnabledBeforePermissionsLost,
-        "folderId" to workflow.folderId,
-        "order" to workflow.order,
-        "shortcutName" to workflow.shortcutName,
-        "shortcutIconRes" to workflow.shortcutIconRes,
-        "cardIconRes" to workflow.cardIconRes,
-        "cardThemeColor" to workflow.cardThemeColor,
-        "modifiedAt" to workflow.modifiedAt,
-        "version" to workflow.version,
-        "vFlowLevel" to workflow.vFlowLevel,
-        "description" to workflow.description,
-        "author" to workflow.author,
-        "homepage" to workflow.homepage,
-        "tags" to workflow.tags
-    )
+/**
+ * 单工作流 / 文件夹 / 「备份全部」三处导出共用的记录构造。
+ *
+ * ⚠️ **字段集由 `WorkflowJsonCodec` 反射派生，不再手写键表。**
+ *
+ * 这里原先是一份**人工维护的 20 键 map**，而它与「导入侧认得的字段」必须同步 ——
+ * 不同步的表现是：导出再导入后用户的设置被**静默重置**（超时上限没了、
+ * 日志等级回到最详细、重入策略回到「阻止新的」），函数工作流更是直接退化成
+ * 普通工作流。三者都不报错，只是「用着用着发现设置不对」。
+ * 实测它确实漏了 5 个字段（`maxExecutionTime` / `reentryBehavior` /
+ * `silentExecution` / `logLevel` / `functionSignature`）。
+ *
+ * ⇒ 现在与「磁盘读盘 / 文件导入 / 备份恢复」共用同一个 codec：
+ * **给 `Workflow` 加字段时不用再改任何导入导出代码**。
+ * 由 `WorkflowJsonCodecTest` 的往返用例与
+ * `the export shape follows the model automatically` 机器化保证。
+ *
+ * ⚠️ 输出形状与改动前**逐字一致**（含「值为 null 的键整个不写」这一条 ——
+ * 旧写法经 `gson.toJson(map)` 时 Gson 同样省略 null 值）。
+ */
+private fun createWorkflowExportData(gson: Gson, workflow: Workflow): JsonObject {
+    return WorkflowJsonCodec.toExportJson(gson, workflow)
 }
 
 private fun backupAllWorkflowsToUri(
@@ -813,15 +853,56 @@ private fun backupAllWorkflowsToUri(
     val allWorkflows = workflowManager.getAllWorkflows()
     val allFolders = folderManager.getAllFolders()
     val workflowsWithMeta = allWorkflows.map { createWorkflowExportData(gson, it) }
-    val backupData = mapOf("workflows" to workflowsWithMeta, "folders" to allFolders)
+    val backupData: Map<String, Any?> =
+        mapOf("workflows" to workflowsWithMeta, "folders" to allFolders)
     val jsonString = gson.toJson(backupData)
-    writeTextToDocumentUri(context, fileUri, jsonString)
+    // ⚠️ 这是**裸格式**（顶层直接是 workflows/folders，没有 schema 信封）——
+    //    与设置页那份**全局备份**（`BackupPipeline.exportToArchive`，带 schema /
+    //    summary / 加密段）不是一回事，导入侧靠 `BackupEnvelope.read` 的
+    //    「无 schema 但有 workflows/folders ⇒ Legacy」分支认它。
+    //    两种形状都保留是有意的：这条路的产出要能被**旧版本**读。
+    writeExportToDocumentUri(
+        context, fileUri, jsonString, withIcons = true,
+        entryName = BackupArchive.WORKFLOWS_ENTRY,
+    )
 }
 
 private fun writeTextToDocumentUri(context: Context, fileUri: Uri, text: String) {
     val outputStream = openDocumentOutputStream(context, fileUri)
     outputStream.use { stream ->
         stream.write(text.toByteArray(Charsets.UTF_8))
+        stream.flush()
+    }
+}
+
+/**
+ * 按 [withIcons] 选容器写出：`false` ⇒ 纯 JSON 文本；`true` ⇒ ZIP 压缩包（带图标）。
+ *
+ * ⚠️ **两条路共用同一份 [jsonString]** —— 压缩包只是「同一段 JSON + 若干图片文件」，
+ * 不是另一次序列化。各拼一份 JSON 会让两条路的字段集漂移，
+ * 而那是本仓库刚收敛掉的那类缺陷（见 `WorkflowJsonCodec` 的 KDoc）。
+ *
+ * ⚠️ **主条目名由调用方给**（[entryName]）—— 包里装的是什么就叫什么
+ * （单工作流 `workflow.json` / 文件夹 `folder.json` / 备份全部 `workflows.json`）。
+ * 一律叫 `manifest.json` 会让用户解压后以为里面是个索引、还有别的东西没解出来。
+ *
+ * ⚠️ ZIP 路径的附件来源是 `filesDir`：只有位于**应用私有目录内**的自定义图标
+ * 才会被打包（`BackupArchive.attachmentsOf` 里判），相册里的原始路径不会被卷进来。
+ */
+private fun writeExportToDocumentUri(
+    context: Context,
+    fileUri: Uri,
+    jsonString: String,
+    withIcons: Boolean,
+    entryName: String,
+) {
+    val outputStream = openDocumentOutputStream(context, fileUri)
+    outputStream.use { stream ->
+        if (withIcons) {
+            BackupArchive.writePlain(jsonString, stream, context.applicationContext.filesDir, entryName)
+        } else {
+            stream.write(jsonString.toByteArray(Charsets.UTF_8))
+        }
         stream.flush()
     }
 }

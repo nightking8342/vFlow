@@ -113,7 +113,34 @@ object BackupEnvelope {
         appVersionCode: Int,
         createdAt: Long = System.currentTimeMillis(),
         encryption: EncryptionSection? = null
-    ): String {
+    ): String = writeElementTree(
+        buildRoot(
+            sections, includedScopes, excludedScopes, scrubbedFields,
+            appVersionName, appVersionCode, createdAt, encryption
+        )
+    )
+
+    /**
+     * 构造信封的 **JSON 树**（不序列化）。
+     *
+     * ⚠️ 存在的理由是 [BackupArchive]：ZIP 容器要把信封当作 `manifest.json` 的根对象，
+     * 而它需要**替换**各 scope 的 `data`（改成对 `scopes/<id>.json` 条目的引用）。
+     * 走 `write()` 拿到文本再 parse 回来能做同一件事，但那是「先序列化再反序列化」
+     * 的一趟无用功，且两份树之间多一次形状漂移的机会。
+     *
+     * [write] 就是「本函数 + [writeElementTree]」，两条路共用同一棵树 ——
+     * 所以「ZIP 里的 manifest」与「纯 JSON 备份」在结构上**不可能不一致**。
+     */
+    fun buildRoot(
+        sections: Map<String, ScopePayload>,
+        includedScopes: List<String>,
+        excludedScopes: List<String>,
+        scrubbedFields: List<String>,
+        appVersionName: String,
+        appVersionCode: Int,
+        createdAt: Long = System.currentTimeMillis(),
+        encryption: EncryptionSection? = null
+    ): JsonObject {
         val root = JsonObject()
         root.addProperty(KEY_SCHEMA, SCHEMA)
         root.addProperty(KEY_SCHEMA_VERSION, SCHEMA_VERSION)
@@ -149,7 +176,7 @@ object BackupEnvelope {
             add(KEY_SCRUBBED_FIELDS, toArray(scrubbedFields))
         })
 
-        return writeElementTree(root)
+        return root
     }
 
     /**
@@ -171,7 +198,7 @@ object BackupEnvelope {
      * 只递归 `JsonElement`（信封根本就是手工搭出来的，且 payload 在进入本函数**之前**
      * 已由 `env.json.toJsonTree(...)` 转成元素）⇒ 这里不需要 Gson 的任何适配器。
      */
-    private fun writeElementTree(root: JsonElement): String {
+    fun writeElementTree(root: JsonElement): String {
         val out = StringWriter()
         JsonWriter(out).use { writer ->
             // ⚠️ 必须开：否则 `nullValue()` 同样会被吞（那是 Gson 与本函数都要的那一档）。

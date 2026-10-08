@@ -29,9 +29,10 @@ class WorkflowScopeTest {
     }
 
     @Test
-    fun `roundTripPreservesAllFieldsIncludingTheFourTheLegacyExportDropped`() {
-        // 既有 createWorkflowExportData 只写 20 个键，漏掉
-        // maxExecutionTime / reentryBehavior / silentExecution / functionSignature。
+    fun `roundTripPreservesEveryWorkflowField`() {
+        // 这条曾是「锁住单文件导出漏的那 4 个字段」，现在那条路已补齐
+        // （见 WorkflowExportFieldCoverageTest），本用例改成**全字段**往返：
+        // 备份走整对象 Gson，任何字段都不该在往返中丢失或变形。
         val original = Workflow(
             id = "w1",
             name = "全字段",
@@ -58,6 +59,7 @@ class WorkflowScopeTest {
             maxExecutionTime = 42,
             reentryBehavior = WorkflowReentryBehavior.ALLOW_PARALLEL,
             silentExecution = true,
+            logLevel = com.chaomixian.vflow.core.workflow.model.WorkflowLogLevel.ERROR,
             functionSignature = FunctionSignature(
                 params = listOf(FunctionParam(name = "p1", type = "vflow.type.string", isRequired = true)),
                 returnDef = FunctionReturn(keys = listOf(ReturnKey("k", "vflow.type.number")))
@@ -91,6 +93,7 @@ class WorkflowScopeTest {
         assertEquals(original.maxExecutionTime, restored.maxExecutionTime)
         assertEquals(original.reentryBehavior, restored.reentryBehavior)
         assertEquals(original.silentExecution, restored.silentExecution)
+        assertEquals(original.logLevel, restored.logLevel)
         assertNotNull("functionSignature 必须往返 —— 丢了会把函数工作流退化成普通流", restored.functionSignature)
         assertEquals("p1", restored.functionSignature!!.params.single().name)
         assertEquals("k", restored.functionSignature!!.returnDef!!.keys.single().name)
@@ -241,6 +244,76 @@ class WorkflowScopeTest {
 
         assertEquals(listOf("ok"), env.workflowStore.map { it.id })
         assertEquals(1, result.skipped)
+    }
+
+    @Test
+    fun `an older backup missing keys is restored with defaults instead of crashing`() {
+        // ⚠️⚠️ 这条锁的是一个**会崩**的缺陷，不是「值不对」。
+        //
+        //    `env.json.fromJson` 走 Gson 的反射构造（`Unsafe.allocateInstance`），
+        //    它**绕过 Kotlin 构造函数** ⇒ `Workflow.kt` 里那些 `= 默认值`
+        //    完全不执行：引用类型字段缺键 ⇒ **`null`**（`logLevel` / `cardIconRes` …），
+        //    原生类型 ⇒ `false` / `0`（`isEnabled` 期望的是 `true`）。
+        //
+        //    ⚠️ `null` 落在非空字段上**不会当场抛**，它潜伏到第一次 `copy()` ——
+        //    而 REPLACE 恰好走 `replaceAllWorkflows` → `normalizeWorkflow` → `copy`
+        //    ⇒ 不加归一化时，**恢复一份旧版本写的备份会直接崩**，
+        //    栈指向 `Workflow.copy`，看不出是备份缺键。
+        //
+        //    这里模拟「logLevel 之前那一版」写出的备份：Gson 整对象序列化，
+        //    但没有 `logLevel` 键。
+        val oldRecord = """
+            {"id":"w1","name":"旧备份里的工作流","triggers":[],"steps":[],
+             "isEnabled":true,"isFavorite":false,"wasEnabledBeforePermissionsLost":false,
+             "folderId":null,"order":0,"shortcutName":null,"shortcutIconRes":null,
+             "cardIconRes":"rounded_home_24","cardThemeColor":"#112233","modifiedAt":1,
+             "version":"1.0.0","vFlowLevel":1,"description":"","author":"","homepage":"",
+             "tags":[],"maxExecutionTime":null,"reentryBehavior":"block_new",
+             "silentExecution":false}
+        """.trimIndent()
+
+        val payload = com.chaomixian.vflow.core.backup.ScopePayload.of(
+            listOf(com.google.gson.JsonParser.parseString(oldRecord))
+        )
+        val env = FakeBackupEnvironment()
+
+        val result = scope.import(env, payload, ImportMode.REPLACE)
+
+        assertEquals(ImportStatus.IMPORTED, result.status)
+        val restored = env.workflowStore.single()
+        assertEquals("w1", restored.id)
+        assertEquals(
+            "缺 logLevel 必须回落 VERBOSE（= 改动前行为），而不是 null",
+            com.chaomixian.vflow.core.workflow.model.WorkflowLogLevel.VERBOSE,
+            restored.logLevel
+        )
+        assertEquals(
+            "缺的引用类型字段必须全部补齐 —— 留 null 会在下一次 copy() 上炸",
+            "rounded_home_24", restored.cardIconRes
+        )
+        assertEquals(emptyList<String>(), restored.tags)
+    }
+
+    @Test
+    fun `a sparse backup record is completed rather than left half-null`() {
+        // 极端情形：只剩 id 与 name（手改过的 / 未来某版本裁过字段的备份）。
+        val payload = com.chaomixian.vflow.core.backup.ScopePayload.of(
+            listOf(com.google.gson.JsonParser.parseString("""{"id":"w1","name":"残缺"}"""))
+        )
+        val env = FakeBackupEnvironment()
+
+        scope.import(env, payload, ImportMode.REPLACE)
+
+        val restored = env.workflowStore.single()
+        // ⚠️ 缺 isEnabled 时 Gson 留 `false`，而另外两条读路径的回落都是 `true`
+        //    ⇒ 不补这一条，一份残缺备份会把用户的工作流**静默全部禁用**。
+        assertEquals("缺 isEnabled 必须回落 true", true, restored.isEnabled)
+        assertEquals(1, restored.vFlowLevel)
+        assertEquals(com.chaomixian.vflow.core.workflow.model.WorkflowLogLevel.VERBOSE, restored.logLevel)
+        assertEquals(
+            com.chaomixian.vflow.core.workflow.model.WorkflowReentryBehavior.BLOCK_NEW,
+            restored.reentryBehavior
+        )
     }
 
     @Test

@@ -96,18 +96,20 @@ class LegacyBackupAdapterTest {
     }
 
     /**
-     * ⚠️ **固定一处已知的 legacy 缺陷**（不是「测试通过就说明它是对的」）。
+     * ⚠️ **这条曾经锁的是一个缺陷**，现已修正 —— 见下。
      *
-     * `WorkflowJsonImportParser` 从不解析 `functionSignature`（实测 `grep` 零命中），
-     * 而 `Workflow.isFunction` 由 `functionSignature != null` 派生 ⇒
-     * **函数工作流经 legacy 路径会静默退化成普通工作流**。
+     * 旧行为：`WorkflowJsonImportParser` 从不解析 `functionSignature`
+     * （实测 `grep` 零命中），而 `Workflow.isFunction` 由 `functionSignature != null`
+     * 派生 ⇒ **函数工作流经 legacy 路径静默退化成普通工作流**。
+     * 当时的用例刻意断言 `functionSignature == null` 把这个缺陷钉住，
+     * 并在注释里写明「将来有人修好它，这条会变红，届时应当更新本用例」。
      *
-     * 这是 legacy 路径的既有行为，T1 范围内不修（见交付说明的遗留问题）。
-     * 本用例把它**钉住**：将来有人修好它，这条会变红，届时应当**更新本用例
-     * 并同步登记**，而不是以为「测试写错了」。
+     * 现在：解析实现下移到 `WorkflowFunctionSignatureCodec`（三条读路径共用），
+     * 本用例按当时的约定**翻面**成正面断言 —— 比原来更强（原来只断言「是 null」，
+     * 现在断言具体的参数名与类型都被还原）。
      */
     @Test
-    fun `known limitation - legacy path drops functionSignature`() {
+    fun `legacy path now keeps functionSignature`() {
         val text = """
             {"workflows":[{"id":"fn1","name":"函数流","steps":[],
               "functionSignature":{"params":[{"name":"a","type":"vflow.type.string"}],"returnDef":null}}]}
@@ -119,12 +121,14 @@ class LegacyBackupAdapterTest {
             Workflow::class.java
         )
 
-        assertNull(
-            "legacy 路径丢 functionSignature 是已知行为（WorkflowJsonImportParser 零解析）；" +
-                "若这里不再为 null，说明该缺陷已被修 —— 请更新本用例并登记",
+        assertNotNull(
+            "函数工作流经 legacy 备份路径**必须**保住 functionSignature —— " +
+                "丢了会让 isFunction 变 false，静默退化成普通工作流",
             workflow.functionSignature
         )
-        assertTrue(workflow.isFunction.not())
+        assertEquals("a", workflow.functionSignature!!.params.single().name)
+        assertEquals("vflow.type.string", workflow.functionSignature!!.params.single().type)
+        assertTrue(workflow.isFunction)
     }
 
     @Test

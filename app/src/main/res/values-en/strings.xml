@@ -304,7 +304,8 @@
     <string name="workflow_item_menu_duplicate">Duplicate</string>
     <string name="workflow_item_menu_copy_id">Copy Workflow ID</string>
     <string name="workflow_item_menu_move_out_folder">Move Out of Folder</string>
-    <string name="workflow_item_menu_export_single">Export This Workflow</string>
+    <string name="workflow_item_menu_export_single">Export This Workflow (JSON)</string>
+    <string name="workflow_item_menu_export_single_archive">Export This Workflow (Archive, keeps custom icons)</string>
     <string name="workflow_item_menu_delete">Delete</string>
     <string name="workflow_item_menu_add_to_tile">Add to Control Center</string>
     <string name="tile_selection_title">Select Tile</string>
@@ -1372,6 +1373,7 @@ Try another category or clear the search.</string>
     <string name="folder_rename">Rename</string>
     <string name="folder_delete">Delete</string>
     <string name="folder_dissolve">Dissolve</string>
+    <string name="folder_export_archive">Export Folder (Archive, keeps custom icons)</string>
     <string name="folder_export">Export</string>
     <string name="folder_create">Create Folder</string>
     <string name="folder_name_hint">Folder name</string>

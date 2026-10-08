@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.FolderDelete
 import androidx.compose.material.icons.outlined.FolderOff
+import androidx.compose.material.icons.outlined.FolderZip
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.DriveFileRenameOutline
 import androidx.compose.material3.DropdownMenuGroup
@@ -93,7 +94,7 @@ fun WorkflowFolderTabBar(
     selectedFolderId: String,
     onSelect: (String) -> Unit,
     onRenameFolder: (String) -> Unit,
-    onExportFolder: (String) -> Unit,
+    onExportFolder: (String, Boolean) -> Unit,
     onDissolveFolder: (String) -> Unit,
     onDeleteFolder: (String) -> Unit,
     modifier: Modifier = Modifier,
@@ -304,7 +305,7 @@ internal fun WorkflowFolderMenu(
     folderId: String,
     onDismiss: () -> Unit,
     onRenameFolder: (String) -> Unit,
-    onExportFolder: (String) -> Unit,
+    onExportFolder: (String, Boolean) -> Unit,
     /** 删掉文件夹本身，**里面的工作流保留**（移到根目录）。 */
     onDissolveFolder: (String) -> Unit,
     /** 删掉文件夹**连同里面所有工作流**。 */
@@ -334,7 +335,17 @@ internal fun WorkflowFolderMenu(
                     icon = Icons.Outlined.Download,
                 ) {
                     onDismiss()
-                    onExportFolder(folderId)
+                    onExportFolder(folderId, false)
+                }
+                // fork（2026-10-08）：压缩包档 —— 唯一能带上自定义卡片图标的导出形式。
+                // 与上面那项**并列**而不是做成子菜单：菜单本来就只有 4 项，
+                // 多一层展开反而更难找。
+                FolderMenuItem(
+                    text = stringResource(R.string.folder_export_archive),
+                    icon = Icons.Outlined.FolderZip,
+                ) {
+                    onDismiss()
+                    onExportFolder(folderId, true)
                 }
                 // ⚠️ 「解散」与「删除」只差一件事：**里面的工作流保不保留**。
                 //    图标刻意用成套的一对（FolderOff = 只去掉文件夹本身，

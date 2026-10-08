@@ -10,8 +10,14 @@ import com.google.gson.JsonObject
  * 把**旧格式备份**（无 `schema` 的信封）转成新的 scope payload。
  *
  * 旧格式来自 `ui/workflow_list/WorkflowListRoute.kt` 的既有导出：
- * `{"workflows":[…20 键 map…],"folders":[…]}`，且那份导出**丢字段**
- * （漏 `maxExecutionTime` / `reentryBehavior` / `silentExecution` / `functionSignature`）。
+ * `{"workflows":[…键表…],"folders":[…]}`。
+ *
+ * ⚠️ **旧版本导出的文件里确实缺那 5 个字段**（`maxExecutionTime` /
+ * `reentryBehavior` / `silentExecution` / `logLevel` / `functionSignature`）
+ * —— 那是历史事实，改不了；但**现在的导出已经补上**（见
+ * `WorkflowListRoute.createWorkflowExportData`），故只有「用旧版本导出的文件」
+ * 会走回落路径。`WorkflowJsonImportParser` 对每个缺失键都有明确回落
+ * （`logLevel` → `VERBOSE`，即改动前行为）。
  *
  * ## 做法：解析成对象 → 用新格式重新序列化
  *
@@ -22,18 +28,15 @@ import com.google.gson.JsonObject
  * 一份**只此一处的形状**，而后继所有消费者（scope 的 import）只认新形状。
  * 走对象中转，保证「到了 scope 手里，新旧备份的形状完全一致」。
  *
- * ## ⚠️ 两个继承自 `WorkflowJsonImportParser` 的既有行为（本适配器不修）
+ * ## ⚠️ 一处继承自 `WorkflowJsonImportParser` 的既有行为（本适配器不修）
  *
- * 1. **id 缺失才重生成**：`WorkflowJsonImportParser` 在 `id` 字段缺失/空白时
- *    `UUID.randomUUID()`。备份里通常有 id，故正常备份不受影响；但**残缺备份**
- *    会拿到新 id —— 那是「导入」语义，不是「恢复」语义。
- * 2. **`functionSignature` 零解析**（实测 `grep` 零命中）：函数工作流经 legacy 路径
- *    会**静默退化成普通工作流**（`Workflow.isFunction` 由 `functionSignature != null` 派生）。
+ * **id 缺失才重生成**：`WorkflowJsonImportParser` 在 `id` 字段缺失/空白时
+ * `UUID.randomUUID()`。备份里通常有 id，故正常备份不受影响；但**残缺备份**
+ * 会拿到新 id —— 那是「导入」语义，不是「恢复」语义。
  *
- * 两条都是 legacy 路径的**既有**缺陷，与恢复语义冲突时**以 legacy 现状为准**
- * —— 旧备份本来就不可靠，且修它们属于 T2/T5 的范围。
- * 第二条由 `LegacyBackupAdapterTest` 用一条**固定该已知行为**的测试锁住
- * （断言 `functionSignature == null`），免得将来有人以为这里坏了。
+ * （曾另有第二条：`functionSignature` 零解析导致函数工作流静默退化。
+ *  该缺陷已修 —— 解析实现下移到 `WorkflowFunctionSignatureCodec`，
+ *  三条读路径共用，`LegacyBackupAdapterTest` 的用例已按约定翻面成正面断言。）
  */
 class LegacyBackupAdapter(private val json: Gson) {
 

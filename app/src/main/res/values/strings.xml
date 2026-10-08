@@ -306,7 +306,8 @@
     <string name="workflow_item_menu_duplicate">复制</string>
     <string name="workflow_item_menu_copy_id">复制工作流ID</string>
     <string name="workflow_item_menu_move_out_folder">移出文件夹</string>
-    <string name="workflow_item_menu_export_single">导出此工作流</string>
+    <string name="workflow_item_menu_export_single">导出此工作流（JSON）</string>
+    <string name="workflow_item_menu_export_single_archive">导出此工作流（压缩包，含自定义图标）</string>
     <string name="workflow_item_menu_delete">删除</string>
     <string name="workflow_item_menu_add_to_tile">添加到控制中心</string>
     <string name="tile_selection_title">选择Tile位置</string>
@@ -1374,6 +1375,7 @@
     <string name="folder_rename">重命名</string>
     <string name="folder_delete">删除</string>
     <string name="folder_dissolve">解散</string>
+    <string name="folder_export_archive">导出文件夹（压缩包，含自定义图标）</string>
     <string name="folder_export">导出</string>
     <string name="folder_create">创建文件夹</string>
     <string name="folder_name_hint">文件夹名称</string>

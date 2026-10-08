@@ -136,9 +136,20 @@ fun BackupRestoreScreen(onBack: () -> Unit) {
         true
     }
 
+    /**
+     * 默认文件名。
+     *
+     * ⚠️ **扩展名是 `.zip`** —— 设置页的全局备份**固定走压缩包**（`BackupArchive`）：
+     * 它是唯一能带上自定义卡片图标、且不会把整棵树撑在内存里的容器。
+     * 纯 JSON 只保留在「导出备份」工作流模块那边作为一个**可选**档
+     * （那个场景有人要「能直接看/粘」的文本）。
+     *
+     * ⚠️ 导入侧**不看扩展名**，靠魔数判容器 ⇒ 用户把 `.zip` 改成 `.json`
+     * 也照样能导入（`.json` 的旧备份同样能导入，见 `BackupPipeline.readImportPayload`）。
+     */
     fun defaultFileName(): String {
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        return "vflow_backup_$stamp.json"
+        return "vflow_backup_$stamp.zip"
     }
 
     /** 跑一次导入并渲染结果。**只在这一处调用 import**，避免 REPLACE 被跑两遍。 */
@@ -253,7 +264,7 @@ fun BackupRestoreScreen(onBack: () -> Unit) {
     }
 
     val exportLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("application/json")
+        ActivityResultContracts.CreateDocument("application/zip")
     ) { uri ->
         uri ?: return@rememberLauncherForActivityResult
         busy = true
@@ -262,9 +273,8 @@ fun BackupRestoreScreen(onBack: () -> Unit) {
                 runCatching {
                     val env = AndroidBackupEnvironment(context.applicationContext)
                     val secrets = if (includeSecrets) SecretContext(passphrase.toCharArray()) else null
-                    val result = BackupPipeline.export(env, selectedIds.toSet(), secrets)
-                    context.contentResolver.openOutputStream(uri)?.use { out ->
-                        out.write(result.text.toByteArray(Charsets.UTF_8))
+                    val result = context.contentResolver.openOutputStream(uri)?.use { out ->
+                        BackupPipeline.exportToArchive(env, selectedIds.toSet(), secrets, out)
                     } ?: error("openOutputStream 返回 null")
                     result
                 }
@@ -313,9 +323,17 @@ fun BackupRestoreScreen(onBack: () -> Unit) {
         scope.launch {
             val text = withContext(Dispatchers.IO) {
                 runCatching {
-                    context.contentResolver.openInputStream(uri)?.use {
-                        BufferedReader(InputStreamReader(it)).readText()
+                    // ⚠️ 读**字节**而不是 `readText()` —— 备份现在可能是 ZIP 压缩包，
+                    //    按 UTF-8 解码会把二进制内容毁掉（而 `readText()` 不报错，
+                    //    只是得到一串乱码，最终表现为「不是合法的 vFlow 备份」）。
+                    //    容器判定与附件还原都在 `readImportPayload` 里做，见它的 KDoc。
+                    val bytes = context.contentResolver.openInputStream(uri)?.use {
+                        it.readBytes()
                     } ?: error("openInputStream 返回 null")
+                    BackupPipeline.readImportPayload(
+                        AndroidBackupEnvironment(context.applicationContext),
+                        bytes,
+                    )
                 }
             }
             busy = false
@@ -396,7 +414,11 @@ fun BackupRestoreScreen(onBack: () -> Unit) {
                     onImport = {
                         importLauncher.launch(
                             Intent(Intent.ACTION_GET_CONTENT).apply {
-                                type = "application/json"
+                                // ⚠️ **不能只过滤 `application/json`** —— 新备份是 ZIP，
+                                //    那样用户在文件选择器里根本看不到自己的备份文件。
+                                //    用 `*/*`：容器由**魔数**判定（`BackupArchive.isArchive`），
+                                //    不依赖扩展名，故放宽 MIME 不会误判。
+                                type = "*/*"
                                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                             }
                         )

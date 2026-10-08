@@ -72,6 +72,15 @@ class AndroidBackupEnvironment(context: Context) : BackupEnvironment {
         ?.let { PackageInfoCompat.getLongVersionCode(it).toInt() }
         ?: -1
 
+    /**
+     * 附件根目录（ZIP 容器里的 `files/` 落到这里）。
+     *
+     * ⚠️ `filesDir` 下**不止**图标目录 —— `shared_prefs` 等在别处，但
+     * `files/` 里可能还有其它功能的文件。故打包侧只认 [ATTACHMENT_KEYS]
+     * 显式列出的字段（见 `BackupArchive.attachmentsOf`），**不是**「把 filesDir 整个带走」。
+     */
+    override val filesRoot: java.io.File = appContext.filesDir
+
     override fun getWorkflows(): List<Workflow> = workflowManager.getAllWorkflows()
 
     override fun replaceWorkflows(workflows: List<Workflow>) {

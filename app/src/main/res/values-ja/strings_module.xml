@@ -3144,6 +3144,9 @@
     <string name="param_vflow_data_export_backup_password_name">バックアップのパスフレーズ（「シークレットを含める」選択時は必須）</string>
     <string name="param_vflow_data_export_backup_password_hint">直接入力せずグローバル変数を参照することを推奨します</string>
     <string name="param_vflow_data_export_backup_file_name_name">ファイル名（空なら自動命名）</string>
+    <string name="param_vflow_data_export_backup_format_name">形式</string>
+    <string name="option_vflow_data_export_backup_format_zip">アーカイブ（カスタムアイコンを含む）</string>
+    <string name="option_vflow_data_export_backup_format_json">プレーン JSON（カスタムアイコンは含まれません）</string>
     <string name="output_vflow_data_export_backup_file_path_name">ファイルパス</string>
     <string name="output_vflow_data_export_backup_file_name_name">ファイル名</string>
     <string name="output_vflow_data_export_backup_scope_count_name">範囲の数</string>
