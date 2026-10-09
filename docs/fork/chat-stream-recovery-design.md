@@ -1,6 +1,6 @@
 # Chat 流超时与恢复设计（chat-stream-recovery-design.md）
 
-> **状态：设计稿 v1，未实现。** 写于 2026-10-10，基线 `44de0785`。
+> **状态：设计稿 v1.1，未实现。** 写于 2026-10-10，基线 `44de0785`。
 > **目录归属**：`docs/fork/`，fork 独有文件 ⇒ **冲突归我方**。
 >
 > **上位文档**：`docs/fork/chat-streaming-design.md`。本文补的正是它 §1.2 明列「第一版不做」的
@@ -109,25 +109,39 @@
 
 | 参数 | 取值 | 依据 | 为什么不是别的 |
 |---|---|---|---|
-| `firstByteTimeoutSeconds` | **300 s** | OpenCode `headerTimeout` 默认 300 s；Codex / dsh 的单值 300 s 同样覆盖首字节阶段 | ⚠️ 见 §3.2 —— **首字节不该比流中空闲更短** |
-| `streamIdleTimeoutSeconds` | **300 s** | **Codex / dsh / OpenCode 三家一致 300 s**（五家里三家、且是三个独立团队） | `ccb` 的 90 s 是**唯一**异类，且它背后有「降级非流式」这条我们暂不做的兜底（§3.4） |
+| `streamIdleTimeoutSeconds` | **300 s**（**单一阈值**，同时覆盖首字节与流中两个阶段） | **Codex / dsh / OpenCode 三家一致 300 s**（五家里三家、且是三个独立团队） | `ccb` 的 90 s 是**唯一**异类，且它背后有「降级非流式」这条我们暂不做的兜底（§3.4）。⚠️ **为什么只有一个阈值**见 §3.2（v1.1 修正） |
 | 空闲判据 | **字节级**（socket 读），不是事件级 | dsh `pulse()` 语义 + 其 `: keep-alive` 测试；OpenCode `wrapSSE` 按 chunk 字节重置 | 事件级判据会把「服务端在发 keep-alive 但没内容」误判成超时 |
 | `streamMaxRetries` | **2**（= 最多 3 次尝试） | **刻意偏离**头部的 5，理由见 §3.3 | 常量独立，**改一行即可对齐头部** |
+| `streamMaxRetries` 的夹取范围 | **0..5** | 上限 = Codex `DEFAULT_STREAM_MAX_RETRIES`；`0` = 关闭重试 | v1.0 写的「按 `MAX_STREAM_MAX_RETRIES = 100` 夹住」是抄了 Codex 的**硬上限宽度**（那是防呆值），手机上无意义（v1.1 修正） |
 | 退避 | **1 s 起步，×2，上限 10 s，±10% 抖动** | dsh 的 500 ms→10 s + 10% 抖动；Codex `base_delay` 200 ms；OpenCode `base * 2^n * [0.8, 1.2]` | 落在三家区间的并集内 |
 | `connectTimeout` | **保持 30 s** | 与头部**不可比**：Codex 的 15 s 是 **WebSocket 握手**，Pi 的 `websocketConnectTimeoutMs` 同理 | 本轮不动（TCP 建连与本课题无关） |
 | 总时长上限（`callTimeout`） | **不加** | Codex / dsh / `ccb` **都没有**；只有 OpenCode 有（`timeout` 默认 300 s） | 见 §3.4 与 §7 |
 
-### 3.2 ⚠️ 反直觉点：首字节超时**不该**比流中空闲更短
+### 3.2 ⚠️ 为什么**只留一个**阈值：首字节 / 流中是**分类**，不是两个可配数值
 
 第一直觉是「首字节给短一点（比如 60 s），流中给长一点」——**这是错的**，而且**恰好错在本需求的起点上**：
 
 > 「长思考」在协议上就是**首字节之前的一段长时间静默**。把首字节阈值设短，等于**专门去杀**我们本来想救的那个场景。
 
-头部做法与此一致：OpenCode 把两个值设成**同一个数**（300 s / 300 s），Codex / dsh 干脆只有一个值。
-⇒ 本设计**取同一个默认值 300 s**，但**保留两个独立的配置项**——价值不在「值不同」，而在：
+⚠️⚠️ **v1.1 修正（初稿的实质缺陷）**：v1.0 说「取同一个默认值，但**保留两个独立的配置项**」——**这条落不了地**。
+OkHttp 每个 client 只有**一个** `readTimeout`，两个旋钮必须组合成一个值，而任何组合规则都会**静默忽略一个方向**：
 
-- 能**分类**（决定是否可重试，§4.3）；
-- 能**独立配置**（本地 Ollama 可以两个都设小；某些 reasoning 网关可以把首字节单独放大）。
+| 组合规则 | 静默失效的方向 | 后果 |
+|---|---|---|
+| 取 **min** | 「把首字节放大」 | **正是本需求要修的方向** —— 用户以为放宽了，实际没放宽（reasoning 网关场景失效） |
+| 取 **max** | 「把流中空闲调小」 | 想「快点失败」的收紧意图被忽略 |
+| **真两阶段**（首事件前用 A、之后切 B） | —（唯一无静默失效的形态） | 要改 **Okio 层 body source 的 timeout**（超出 §5.2 的改动清单）；若改用应用层看门狗，会**丢掉「keep-alive 注释也算活跃」这条字节级语义**（dsh 有测试锁它） |
+
+⇒ **决定：只留一个阈值 + 保留分类。**
+
+- 配置面收敛为 **一个** `streamIdleTimeoutSeconds`（默认 300 s），它就是那个 `readTimeout`；
+- `sawFirstEvent` **仍然保留**，但只用于**分类与诊断**（决定「可重试 vs 保留半截正文」，§4.3），**不再是一个独立配置项**；
+- 「reasoning 网关要等更久」这个诉求由**重试**兜住（§4.3），不需要第二个旋钮。
+
+头部佐证：Codex / dsh / `ccb` 本来就是**单值**；OpenCode 的双值（`headerTimeout` / `chunkTimeout`）是**真两阶段**——
+它的 `headerTimeout` 在响应头到达时即停，不是 min/max 组合。**没有任何一家做组合规则。**
+
+「两阶段真独立」列入 §7 未做项（独立课题，需 Okio 层手术 + 真机验证）。
 
 ### 3.3 为什么重试次数取 2 而不是头部的 5
 
@@ -140,7 +154,8 @@
 | ③ 用户在场 | CLI 可以挂着跑；手机用户面对的是一个「已经等了 5 分钟」的界面 |
 
 ⚠️ **这是一处有意偏离，不是遗漏**：`ChatStreamRecoveryPolicy.DEFAULT_MAX_RETRIES = 2` 是独立常量，
-若日后要完全对齐头部，**改这一个数**即可（上限与校验逻辑按 Codex 的 `MAX_STREAM_MAX_RETRIES = 100` 思路夹住）。
+若日后要完全对齐头部，**改这一个数**即可。字段的夹取范围取 **0..5**（上限 = Codex `DEFAULT_STREAM_MAX_RETRIES`；
+`0` = 关闭重试）——**不是** Codex 那个 `MAX_STREAM_MAX_RETRIES = 100`，那是它的防呆硬上限，不是推荐区间。
 
 ### 3.4 明确**不取**的值与理由
 
@@ -321,20 +336,21 @@ return ChatStreamRunner.run(
 @Serializable
 data class ChatPresetConfig(
     // …既有字段不动…
-    val firstByteTimeoutSeconds: Int = 300,   // 新增
-    val streamIdleTimeoutSeconds: Int = 300,  // 新增
+    val streamIdleTimeoutSeconds: Int = 300,  // 新增（单一阈值，见 §3.2）
     val streamMaxRetries: Int = 2,            // 新增
 )
 ```
 
 **兼容性**（已核对 `ChatPresetRepository.kt:32-35`：`ignoreUnknownKeys = true` + `encodeDefaults = true`）：
 
-- 旧数据无这三个键 ⇒ 走默认值 ✅；
-- 新数据多这三个键 ⇒ 旧版本读时被 `ignoreUnknownKeys` 忽略 ✅；
+- 旧数据无这两个键 ⇒ 走默认值 ✅；
+- 新数据多这两个键 ⇒ 旧版本读时被 `ignoreUnknownKeys` 忽略 ✅；
 - 备份/恢复走同一份序列化 ⇒ **自动随 `chat` 范围一起备份**，无需改 `ChatScope`。
 
-**取值校验**（放在 `ChatStreamTimeouts` 的构造函数里，不放在 UI）：`1..3600` 秒；越界时**夹住并记日志**，
-不抛异常——「用户在设置页手输 99999 导致聊天直接不可用」是比「用了不理想的值」更糟的失败。
+**取值校验**（放在 `ChatStreamTimeouts` 的构造函数里，不放在 UI）：超时 `1..3600` 秒、重试 `0..5`；
+越界时**夹住并记日志**，不抛异常——「用户在设置页手输 99999 导致聊天直接不可用」是比「用了不理想的值」更糟的失败。
+
+⚠️ **UI 落点是「预设编辑弹窗 `ModelEditorDialog`」，不是供应商配置卡**。v1.0 给的六个行号是**误标**，见 §5.2。
 
 ### 4.8 与既有机制的关系
 
@@ -368,9 +384,9 @@ data class ChatPresetConfig(
 | `ui/chat/ChatStreamRunner.kt` | 失败分支按 `cause` 分流：`FIRST_BYTE_TIMEOUT` / `IDLE_TIMEOUT` → `ChatStreamTimeoutException`，其余保持 `IllegalStateException`（**既有错误文案不变**，避免影响既有测试与用户可见文案） | **我方** |
 | `ui/chat/ChatCompletionClient.kt` | **2 行**：`:325` 与 `:692` 的 `ChatSse.frames(httpRequest)` → `ChatSse.frames(httpRequest, ChatStreamTimeouts.fromPreset(request.preset))`；`sharedHttpClient`（`:210-215`）改为从 `ChatStreamTimeouts.DEFAULT` 取数 | **手动合并**（已认长期分叉） |
 | `ui/chat/ChatViewModel.kt` | `:901-905` 的 `chatClient.streamReply(...).collect { }` 包成 `streamWithRecovery(policy, onRetry = { _events.tryEmit(...) }) { chatClient.streamReply(...) }.collect { }`；`finishWithError` 的错误文案带上重试次数 | **手动合并**（此处已有 fork 改动） |
-| `ui/chat/ChatModels.kt` | `ChatPresetConfig` 加三个字段（带默认值） | **手动合并** |
-| `ui/settings/ModelConfigActivity.kt` | 预设编辑弹窗加「网络」分组：首字节超时 / 流中空闲超时（秒）+ 最大重试次数。插入点：`:349-350`（draft state）、`:610-619`（参数）、`:717` 附近（控件区）、`:133-134`/`:257-258`/`:445-446`（`PresetDraft` 三处字段搬运） | **手动合并** |
-| 三语 `strings*.xml` | 新增 6 条文案（分组标题 ×1 + 三个标签 + 三个说明），中/英/日同步。⚠️ 追加前先 `grep` 键名防重复 | **手动合并** |
+| `ui/chat/ChatModels.kt` | `ChatPresetConfig` 加**两个**字段（带默认值，见 §4.7） | **手动合并** |
+| `ui/settings/ModelConfigActivity.kt` | **预设编辑弹窗 `ModelEditorDialog`** 加「网络」分组：流中空闲超时（秒）+ 最大重试次数。⚠️⚠️ **v1.1 修正**：v1.0 给的六个行号（`133-134`/`257-258`/`349-350`/`445-446`/`610-619`/`717`）经方案阶段回代码核实，**全部是供应商配置卡**（`ProviderDraft` + `ProviderConfigurationCard`，编辑的是 `ChatProviderConfig`），与「字段落 `ChatPresetConfig`」自相矛盾 —— 是初稿把 `ProviderDraft` 误写成 `PresetDraft`。**实现以预设弹窗为准，精确插入点由方案阶段回代码确定并写进 plan** | **手动合并** |
+| 三语 `strings*.xml` | 新增 **5 条**文案（分组标题 ×1 + 两个标签 + 两个说明），中/英/日同步。⚠️ 追加前先 `grep` 键名防重复 —— 方案阶段已发现 **`label_network`（「网络」）已存在**，复用会**构建失败** | **手动合并** |
 | `test/ui/chat/ChatSseStreamTest.kt` | ⚠️ 删掉那个**从未被使用**的 `client` 字段与**与事实不符**的注释（§1.4），改用新的注入缝 | **我方** |
 | `FORK.md` | 在「Chat Agent 架构重构（第二批）」表末尾**追加**本轮各行（新增文件 3 行 + 改动文件 5 行） | **我方** |
 
@@ -419,6 +435,7 @@ data class ChatPresetConfig(
 | ⚠️ **重试 = 重复计费** | 每次重试都是完整上下文重发。已用「仅零内容时重试」把触发面收窄，但仍存在；`_events` 的提示文案必须让用户知道发生了什么（§4.6） |
 | ⚠️ **不做总时长上限的洞** | 理论上「每 299 s 发 1 个字节」可以无限拖住连接。三家头部（Codex / dsh / `ccb`）同样不设，OpenCode 设了 300 s。**本轮不设**，理由：多轮工具调用 + 长回答会误杀；且有「用户点停止」兜底。若日后要补，按 OpenCode 的 `timeout` 语义做成**可关闭**的独立字段 |
 | ⚠️ **只发 keep-alive、永不发内容** | 字节级判据会让这种连接**永不超时**（与 dsh 的 `pulse` 行为一致）。用户看到「一直转圈」。本轮的缓解只有「用户点停止」；**主动的 no-progress 看门狗**（忽略 keep-alive、只看事件）属独立课题——`ccb` 也只把它做成**被动记日志**（30 s stall），没有一家主动杀 |
+| **首字节 / 流中两个**独立**阈值（真两阶段）** | v1.1 撤回（§3.2）。要真独立必须改 Okio 层 body source 的 timeout（保持字节级 keep-alive 语义）或加应用层看门狗（会丢该语义），且需真机验证 —— 属独立课题。本轮用「单值 + 分类 + 重试」覆盖同一诉求 |
 | **不做非流式降级** | `ccb` 的兜底手段。我们不做：`generateReply` 路径仍在（`ChatBenchmarkRunner` 在用），但把它接进用户路径需要重做「非流式结果如何复用同一占位消息 id」的收尾逻辑（`finalizeStreamingMessage` 的既有契约），属独立课题 |
 | **不做倒计时 / 阶段进度 UI** | 需动 `ChatMessage` 模型（上游文件），收益低于本课题 |
 | **`connectTimeout` 未动** | 30 s 保留。头部无可比数值（Codex 的 15 s 是 WS 握手） |
@@ -431,8 +448,8 @@ data class ChatPresetConfig(
 | # | 决策 | 依据 | 备选与否决理由 |
 |---|---|---|---|
 | D1 | 做「空闲超时」而非「总时长」 | 五家一致 | 总时长会误杀长回答（§7） |
-| D2 | 首字节 = 流中 = **300 s** | OpenCode 两值相等；Codex / dsh 单值 | 首字节设短会**专杀**长思考场景（§3.2） |
-| D3 | 保留**两个**独立配置项 | OpenCode 的 `headerTimeout` / `chunkTimeout` | 合并成一个值就失去了分类能力 |
+| D2 | **单一阈值** `streamIdleTimeoutSeconds` = 300 s，同时覆盖首字节与流中两个阶段 | Codex / dsh / OpenCode 三家一致 300 s；三家头部均为单值 | 首字节设短会**专杀**长思考场景（§3.2） |
+| D3 | 首字节 / 流中**只做分类，不做两个配置项** | OkHttp 一个 client 只有一个 `readTimeout`；min / max 都会**静默忽略一个方向** | 「保留两个独立旋钮」是 v1.0 的过度设计，**v1.1 撤回**（§3.2）；真两阶段列 §7 |
 | D4 | 判据 = **字节级**（不自己写看门狗） | OkHttp `readTimeout` 天然重置；dsh `pulse` 测试 | 事件级判据会误杀「只发 keep-alive」的连接 |
 | D5 | 可重试 ⟺ **未发出过 TextDelta / ReasoningDelta / Completed** | 代码核对（§4.3）：其余事件一律不进 UI/VM 状态 | 更宽的判据需要回滚 UI，得不偿失 |
 | D6 | 重试 **2** 次（头部为 5） | 成本结构不同（§3.3） | **有意偏离**，常量独立可改 |
@@ -450,3 +467,4 @@ data class ChatPresetConfig(
 | 版本 | 日期 | 内容 |
 |---|---|---|
 | v1 | 2026-10-10 | 初稿。基线 `44de0785`。数值全部取自五家头部 Agent 的源码/文档实测值（§2.1）；六条共同决策见 §2.2；有意偏离项（重试次数 2）见 §3.3 与 D6。顺带记录 `ChatSseStreamTest.kt:36` 的死字段与不符注释（§1.4） |
+| v1.1 | 2026-10-10 | **由方案阶段（codex）的提问触发的三处修正**：① §3.2 **撤回「两个独立配置项」** —— OkHttp 只有一个 `readTimeout`，min / max 都会静默忽略一个方向，改为「单值 + 分类」（D2/D3 同步改）；② §5.2 修正**六处行号误标** —— 它们是供应商配置卡（`ProviderDraft`）的位置，不是预设编辑弹窗；UI 落点明确为 `ModelEditorDialog`，字段收敛为**两个**；③ §3.3 重试夹取范围由「100 的宽度」改为 **0..5**（Codex 的 `DEFAULT_STREAM_MAX_RETRIES`）。另记：`label_network` 键已存在（复用会构建失败） |
