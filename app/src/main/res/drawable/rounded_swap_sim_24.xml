@@ -1,25 +1,48 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 数据卡切换触发器图标：两张卡 + 双向对调箭头（fork 独有，上游无此 drawable） -->
+<!--
+  数据卡切换图标：两张部分重叠的 SIM 卡（fork 独有，上游无此 drawable）。
+
+  ⚠️ 文件名里的 `swap` 指的是**功能**（数据卡切换），不是图形 —— 图形里没有
+  对调箭头（旧版有，用户 2026-10-10 明确要求改成「两张卡重叠、有层级」）。
+
+  ## 画法
+
+  - **后面那张卡**：只有轮廓线，没有填充。它是**一条开口路径 + 描边**
+    （`fillColor` 透明、`strokeWidth=80`、`strokeLineCap/Join=round`），
+    而不是「闭合路径描边 + 前面那张卡盖上去」—— 后者会让轮廓线的端头
+    与前卡**贴死**（同色，看起来连成一体）。这里只画**露在外面的那一段**
+    （上边 → 左上斜切角 → 左边 → 左下圆角 → 一小段下边），
+    端头用圆帽收口，且**离前卡留 50 的缺口**。
+  - **前面那张卡**：实心填充，代表「激活中的那张卡」。
+
+  ## 几何（960 viewport）
+
+  卡形 = 圆角矩形 + 左上角 45° 斜切（真实 SIM 卡的**五边形**轮廓）。
+  后卡外沿 (140,80)-(620,688)，前卡外沿 (340,270)-(820,878)，圆角 62、斜切 155。
+  描边中心线是后卡**内缩 40** 的轮廓（40 = 描边的一半），这样描边的**外沿**
+  才与前卡同尺寸；开口端点由 `前卡边 - 50(缺口) - 40(半描边)` 算出，
+  即右端 y=180、下端 x=250。
+
+  ⚠️ 两处 22 的圆角是**描边中心线**的圆角（62 − 40），不是外沿的 62。
+  ⚠️ 圆角弧的 sweep-flag 都是 **0**（角度递减方向），前卡的是 **1**。
+  写反会画出「反着兜」的弧，且不报错。
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
     android:viewportWidth="960"
     android:viewportHeight="960"
     android:tint="?attr/colorControlNormal">
-  <!-- 卡1（左上） -->
+  <!-- 后卡：只有轮廓线，被前卡遮住的部分直接不画，端头留缺口 -->
+  <path
+      android:fillColor="#00000000"
+      android:strokeColor="@android:color/white"
+      android:strokeWidth="80"
+      android:strokeLineCap="round"
+      android:strokeLineJoin="round"
+      android:pathData="M580,180 L580,142 A22,22 0 0 0 558,120 L295,120 L180,235 L180,626 A22,22 0 0 0 202,648 L250,648"/>
+  <!-- 前卡：实心填充，代表激活中的那张卡 -->
   <path
       android:fillColor="@android:color/white"
-      android:pathData="M260,120L400,120Q420,120 420,140L420,280Q420,300 400,300L260,300Q240,300 240,280L240,140Q240,120 260,120ZM280,160L280,260L380,260L380,160Z"/>
-  <!-- 卡2（右下） -->
-  <path
-      android:fillColor="@android:color/white"
-      android:pathData="M560,400L700,400Q720,400 720,420L720,560Q720,580 700,580L560,580Q540,580 540,560L540,420Q540,400 560,400ZM580,440L580,540L680,540L680,440Z"/>
-  <!-- 上箭头指向右（去卡2方向） -->
-  <path
-      android:fillColor="@android:color/white"
-      android:pathData="M470,150L620,150L620,190L470,190ZM620,190L560,130L590,100L680,190L590,280L560,250L620,190Z"/>
-  <!-- 下箭头指向左（回卡1方向） -->
-  <path
-      android:fillColor="@android:color/white"
-      android:pathData="M490,500L340,500L340,540L490,540ZM340,540L400,480L370,450L280,540L370,630L400,600L340,540Z"/>
+      android:pathData="M495,270 L758,270 A62,62 0 0 1 820,332 L820,816 A62,62 0 0 1 758,878 L402,878 A62,62 0 0 1 340,816 L340,425 Z"/>
 </vector>

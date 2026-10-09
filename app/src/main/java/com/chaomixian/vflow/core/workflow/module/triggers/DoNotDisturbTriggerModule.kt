@@ -66,7 +66,11 @@ class DoNotDisturbTriggerModule : BaseModule() {
         descriptionStringRes = R.string.module_vflow_trigger_do_not_disturb_desc,
         name = "免打扰触发",  // Fallback
         description = "当系统免打扰模式开启或关闭时触发工作流",  // Fallback
-        iconRes = R.drawable.rounded_do_not_disturb_on_24,
+        // fork: 月牙图标。原先用的是 `rounded_do_not_disturb_on_24`
+        // （「勿扰已开启」的圆圈加横杠）—— 那是 Material Symbols 的正式名字，
+        // 图标选择器里按字符串名解析它，**不能**把它的图形改掉。
+        // 见 res/drawable/rounded_do_not_disturb_moon_24.xml
+        iconRes = R.drawable.rounded_do_not_disturb_moon_24,
         category = "触发器",
         categoryId = "trigger"
     )

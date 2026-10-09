@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  免打扰（勿扰）图标：月牙（fork 独有，上游无此 drawable）。
+
+  ⚠️ **为什么不是复用 Material 的 `rounded_dark_mode_24`**：那是「近似满月」的
+  胖月牙（咬口半径 203 对本体半径 360，最厚处几乎等于半径），用户明确要的是
+  **细月牙**。这里的两条圆弧是**按几何算出来的**：本体是半径 380 的圆，
+  咬口是半径 335、圆心沿 -45° 方向偏 126 的圆；两圆交点即月牙的两个尖角
+  （388.41,106.75）/（853.25,571.59），最厚处 171 ≈ 半径的 45%，
+  开口张角 119.8°。
+
+  ⚠️ 两条弧都是 **large-arc=1**（外弧扫过 240°、内弧扫过 202°）。
+  把 large-arc 写成 0 会得到一个完全不同的图形（实测：只画出右上角一小块），
+  而**这不会报错**。
+
+  ⚠️ 图标盒内字形 bbox 为 747×747（中心 480,480），与 Material 图标
+  （约 720×720）同量级，别为了"看起来大"而放大 —— 会顶破 24dp 的安全区。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="960"
+    android:viewportHeight="960"
+    android:tint="?attr/colorControlNormal">
+  <path
+      android:fillColor="@android:color/white"
+      android:pathData="M388.41,106.75 A380,380 0 1 0 853.25,571.59 A335,335 0 1 1 388.41,106.75 Z"/>
+</vector>

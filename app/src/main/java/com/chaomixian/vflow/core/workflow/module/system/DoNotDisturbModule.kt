@@ -54,7 +54,10 @@ class DoNotDisturbModule : BaseModule() {
         nameStringRes = R.string.module_vflow_system_do_not_disturb_name,
         description = "通过 vFlow 自动规则开启、关闭或切换免打扰模式。",
         descriptionStringRes = R.string.module_vflow_system_do_not_disturb_desc,
-        iconRes = R.drawable.rounded_notifications_unread_24,
+        // fork: 月牙图标（与免打扰触发器同款）。原先借用的是
+        // `rounded_notifications_unread_24`（铃铛 + 小红点），语义上是「未读通知」，
+        // 与「勿扰」不符。见 res/drawable/rounded_do_not_disturb_moon_24.xml
+        iconRes = R.drawable.rounded_do_not_disturb_moon_24,
         category = "应用与系统",
         categoryId = "device"
     )
