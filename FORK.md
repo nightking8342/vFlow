@@ -1168,6 +1168,28 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 | `test/.../core/backup/BackupArchiveWiringTest.kt`（新增，10 例） | fork 独有：**源码扫描型接线锚定**（形态照 `CoreDexFingerprintTest`）。⚠️ **存在理由**：`BackupArchiveTest` 对「生产代码有没有真的用上容器」**完全无感**，而本批的失败模式全是静默的（设置页仍走纯 JSON 却顶着 `.zip` 名字、`filesRoot` 没实现导致附件永不进包、单文件导出没接上）。⚠️ 全部**先剥注释**再断言（源码里到处是这些符号的 KDoc）。⚠️ **四条反证已实际执行并确认变红**：删 `filesRoot` 覆盖 / 设置页退回纯 JSON / 单文件导出退回纯 JSON / 压缩包路径自建信封 | 我方 |
 | `test/.../module/data/BackupExportModuleTest.kt`（改） | `format` 进契约；扩展名跟着格式走；**非扩展名的小数点不截断**；三条既有 `sanitize` 用例显式传 `FORMAT_JSON`（它们测的是「剥目录」，不该顺带把「扩展名跟格式走」也测进来） | 我方（新增/改写用例） |
 | `docs/fork/backup-webdav-design.md`（改） | §8.2 的「图标不进备份」缺口**改为已完成**；§9 第 6 项（文件通道）标记完成并说明**未走「新增文件类 scope」那条路**（改在容器层解决，不波及 scope 基类）；新增 **§8.4** 完整记录布局、三条设计约束、向后兼容、跨平台路径坑、测试与真机状态 | 我方 |
+| `core/workflow/WorkflowWriteOrigin.kt`（新增） | fork 独有：`WorkflowWriteOrigin { EXPLICIT, AUTOMATIC }`。**它是「什么算一次开关变化」的唯一判据来源**；`docs/fork/workflow-toggle-design.md` §3.3 已用一组「字段逐字节相同」的反例证伪了「借用 `wasEnabledBeforePermissionsLost`」的旧方案（系统自动重开 vs 工作流步骤启用），**将来不要「简化」回去** | 我方 |
+| `core/workflow/module/triggers/WorkflowToggleTrigger{Module,Data,UIProvider}.kt` + `handlers/WorkflowToggleTriggerHandler.kt`（新增） | fork 独有：**工作流开关触发器** `vflow.trigger.workflow_toggle`。事件源不在 Handler 内部（是 App 自己写的 `Workflow.isEnabled`），由 `TriggerService.onStartCommand` 的 `ACTION_WORKFLOW_CHANGED` 分支**直接调进 Handler** —— 形态照抄 `key_event`，是第二个同类触发器 | 我方 |
+| `core/workflow/module/logic/SetWorkflowEnabled{Module,UIProvider}.kt`（新增） | fork 独有：**设置工作流开关** `vflow.logic.set_workflow_enabled`（enable / disable / toggle）。上游无此能力。`changed == false` 时**不写盘**；**不做**权限预检（避免第二套判据漂移） | 我方 |
+| `res/layout/partial_workflow_picker_editor.xml`（新增） | fork 独有：A / B 共用的目标工作流选择器布局。**刻意不复用** `partial_call_workflow_editor.xml`（后者标题硬编码为「要调用的工作流」+ 带一个本模块用不上的函数参数 include） | 我方 |
+| `res/drawable/rounded_workflow_toggle_24.xml`、`rounded_set_workflow_enabled_24.xml`（新增） | fork 独有：两个新模块的图标（`rounded_*_24` 前缀，被 `res/raw/keep.xml` 的通配白名单覆盖；已用 `aapt2 dump resources` 确认进包） | 我方 |
+| `core/workflow/WorkflowManager.kt`（改） | ⚠️ **`saveWorkflow` 签名变更**：追加**带默认值**的参数 `origin: WorkflowWriteOrigin = WorkflowWriteOrigin.EXPLICIT`，并透传给 `TriggerServiceProxy.notifyWorkflowChanged`。**默认值必须是 `EXPLICIT`** —— 忘标记 ⇒ 多触发（用户可见，能报上来）；反过来是**静默失效**（本仓库记录过三次同类事故的形态）。设计文档 §3.3 定案 | **手动合并**（签名 1 行 + 透传 1 行） |
+| `services/WorkflowTriggerDelta.kt`（改） | 追加 2 个**带默认值**字段：`oldIsEnabled: Boolean? = null`（`null` = 保存前该工作流不存在）、`writeOrigin: WorkflowWriteOrigin = EXPLICIT`。⚠️ **不要**再加第二个 `isNew` 布尔 —— `null` 已同时承担「不存在」与「首次」两个语义 | **手动合并**（2 行，此前无分歧） |
+| `services/TriggerServiceProxy.kt`（改） | `notifyWorkflowChanged` 追加带默认值参数 `origin` 并填 2 个新字段。⚠️ 这是「加了字段但没人填」的高危形态（本仓库在 `CoreDexFingerprint` 上踩过）⇒ 有源码扫描测试锁住 | **手动合并**（此前无分歧） |
+| `services/TriggerService.kt`（改） | ① `onStartCommand` 的 `ACTION_WORKFLOW_CHANGED` 分支**追加**派发调用，⚠️ **必须放在 `handleWorkflowChanged` 之后**（顺序是功能性的：「启用 Y 且 Y 自带 A 触发器」要能立刻响应；「关闭 Y」时 Y 的触发器刚被移除 ⇒ 不自触发）；② 2 处程序性自动禁用传 `AUTOMATIC` | **手动合并** |
+| `core/workflow/WorkflowPermissionRecovery.kt`（改） | 权限恢复自动重开那 1 处传 `AUTOMATIC`。⚠️ 它挂在 **6 个入口**上（`TriggerService.onCreate` / `MainActivity` / `PermissionActivity` / `PermissionGuardianService` / `WorkflowListRoute` ×2），不过滤的后果是「用户每次打开 App 都可能看到我没碰开关工作流自己跑了」 | **手动合并**（1 行，此前无分歧） |
+| `ui/workflow_list/WorkflowListRoute.kt`（改） | 权限回弹那 1 处传 `AUTOMATIC` | **手动合并**（1 行） |
+| `ui/tile/BaseToggleTileService.kt`（改，**fork 自有文件**） | 权限回弹那 1 处传 `AUTOMATIC`。零冲突面 | 我方 |
+| `test/.../triggers/WorkflowToggleTriggerTest.kt`、`test/.../logic/SetWorkflowEnabledModuleTest.kt`（新增，23 例） | fork 独有：判定纯函数单测 + **四组源码扫描锚定**（两个 Registry 各一行注册 / 派发在 `handleWorkflowChanged` 之后 / 5 处 `AUTOMATIC` 逐处存在 / Proxy 真的填了那 2 个字段）。四组都做过反证（改回缺陷版本确认变红再改回） | 我方 |
+| 三语 `res/values{,-en,-ja}/strings_module.xml`（改，各追加 32 键） | fork 独有文案块。⚠️ 一律**追加到文件末尾**（便于跨分支合并），追加前已 `grep` 防重复键（重复键会直接构建失败） | **手动合并**（追加） |
+
+**工作流开关批次（2026-10-10）· 特别登记（防将来有人改错方向）**：
+
+1. `saveWorkflow` 的**签名变更**与其**默认值方向**（`EXPLICIT` 是安全方向）。
+2. 设计文档 §3.3 证伪「借用 `wabpl`」方案的**理由**（两条字段逐字节相同的反例）。
+3. **5 处 `AUTOMATIC` 标记点的清单**（防漏改）：`TriggerService.kt` 的 `recoverWorkflowPermissionsAndApplyState` 与 `disableWorkflowsMissingCorePermissions`、`WorkflowPermissionRecovery.kt` 的 `recoverEligibleWorkflows`、`WorkflowListRoute.kt` 的 `onToggleEnabled` lambda、`BaseToggleTileService.kt` 的 `toggleWorkflowEnabled`。
+   ⚠️ 另有两处 `saveWorkflow`（`TriggerService` 里清 `wabpl` 的）**刻意不标** —— 它们不改 `isEnabled`，由判定规则的状态相等分支天然过滤。
+4. ⚠️ **本批真机验证 0 项**：`docs/fork/workflow-toggle-design.md` §11.3 的 12 条场景全部未做，其中**场景 3 / 5 / 6 是三条核心断言**，**只有编译与单测支撑**。
 
 > ⚠️ **真机验证 0 项**：以下**只有编译与单测支撑，不得声称可用** ——
 > 跨设备恢复后图标真的显示出来、旧 `.json` 备份在真机上导入、WebDAV 上传/下载压缩包、
