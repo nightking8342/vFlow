@@ -3328,4 +3328,27 @@
     <!-- 「ワークフロースイッチ」2 モジュールのターゲット選択の空状態
          （fork、2026-10-10 実機フィードバック後に追加）。 -->
     <string name="toast_no_toggleable_workflow">スイッチのあるワークフローがありません。手動トリガーのみのワークフローにはスイッチがないため、先に自動トリガーを追加してください。</string>
+
+    <!-- データ型を表示モジュール（fork 新規：実行時の型を後続ステップに渡し、
+         If で分岐できるようにする）。選択肢の用語は VType.getLocalizedName と
+         逐語的に一致させている（type_name 出力は getLocalizedName が生成するため）。 -->
+    <string name="module_vflow_data_inspect_type_name">データ型を表示</string>
+    <string name="module_vflow_data_inspect_type_desc">値の実行時の型を調べ、期待する型と比較できます。</string>
+    <string name="param_vflow_data_inspect_type_value_name">値</string>
+    <string name="param_vflow_data_inspect_type_expected_type_name">期待する型</string>
+    <string name="output_vflow_data_inspect_type_type_id_name">型 ID</string>
+    <string name="output_vflow_data_inspect_type_type_name_name">型名</string>
+    <string name="output_vflow_data_inspect_type_matched_name">型が一致</string>
+    <string name="option_vflow_data_inspect_type_view_only">表示のみ</string>
+    <string name="option_vflow_data_inspect_type_string">テキスト</string>
+    <string name="option_vflow_data_inspect_type_number">数字</string>
+    <string name="option_vflow_data_inspect_type_boolean">ブール値</string>
+    <string name="option_vflow_data_inspect_type_dictionary">辞書</string>
+    <string name="option_vflow_data_inspect_type_list">リスト</string>
+    <string name="option_vflow_data_inspect_type_image">写真</string>
+    <string name="option_vflow_data_inspect_type_file">ファイル</string>
+    <string name="option_vflow_data_inspect_type_coordinate">座標</string>
+    <string name="option_vflow_data_inspect_type_null">空の</string>
+    <string name="summary_vflow_data_inspect_type_prefix">データ型を表示</string>
+    <string name="summary_vflow_data_inspect_type_with_expected">データ型を表示 · 期待 %1$s</string>
 </resources>

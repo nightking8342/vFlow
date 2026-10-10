@@ -3714,4 +3714,28 @@
     <!-- 「工作流开关」两个模块的目标选择器空态（fork，2026-10-10 真机反馈后补）。
          ⚠️ 不能用 workflow_search_no_results 兜底 —— 那是「搜不到」，这里是「一个都没有」。 -->
     <string name="toast_no_toggleable_workflow">没有可选的开关工作流。手动触发的工作流没有开关，请先给它添加一个自动触发器。</string>
+
+    <!-- 查看数据类型模块（fork 新增：把运行期实际类型暴露给下游，供 If 分流）。
+         ⚠️ 选项用词与 VType.getLocalizedName 逐字一致（文本 / 图片 / 空…），
+            因为 type_name 输出走的就是 getLocalizedName —— 两处不一致会让
+            用户看到同一个类型有两个名字。 -->
+    <string name="module_vflow_data_inspect_type_name">查看数据类型</string>
+    <string name="module_vflow_data_inspect_type_desc">查看一个值的运行期类型，并可与期望类型比较。</string>
+    <string name="param_vflow_data_inspect_type_value_name">值</string>
+    <string name="param_vflow_data_inspect_type_expected_type_name">期望类型</string>
+    <string name="output_vflow_data_inspect_type_type_id_name">类型 ID</string>
+    <string name="output_vflow_data_inspect_type_type_name_name">类型名称</string>
+    <string name="output_vflow_data_inspect_type_matched_name">类型匹配</string>
+    <string name="option_vflow_data_inspect_type_view_only">仅查看</string>
+    <string name="option_vflow_data_inspect_type_string">文本</string>
+    <string name="option_vflow_data_inspect_type_number">数字</string>
+    <string name="option_vflow_data_inspect_type_boolean">布尔</string>
+    <string name="option_vflow_data_inspect_type_dictionary">字典</string>
+    <string name="option_vflow_data_inspect_type_list">列表</string>
+    <string name="option_vflow_data_inspect_type_image">图片</string>
+    <string name="option_vflow_data_inspect_type_file">文件</string>
+    <string name="option_vflow_data_inspect_type_coordinate">坐标</string>
+    <string name="option_vflow_data_inspect_type_null">空</string>
+    <string name="summary_vflow_data_inspect_type_prefix">查看数据类型</string>
+    <string name="summary_vflow_data_inspect_type_with_expected">查看数据类型 · 期望 %1$s</string>
 </resources>

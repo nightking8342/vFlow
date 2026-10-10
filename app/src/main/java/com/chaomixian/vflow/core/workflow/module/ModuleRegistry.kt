@@ -181,6 +181,8 @@ object ModuleRegistry {
         register(FileOperationModule(), context)
         // 导出备份（fork 新增：把 T1/T2 的备份能力接到编排面）
         register(BackupExportModule(), context)
+        // 查看数据类型（fork 新增：把运行期实际类型暴露给下游，供 If 分流）
+        register(InspectTypeModule(), context)
 
         // 文件
         register(ImportImageModule(), context)
