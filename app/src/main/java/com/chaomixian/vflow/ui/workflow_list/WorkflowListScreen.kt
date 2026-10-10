@@ -119,7 +119,18 @@ import sh.calvin.reorderable.rememberReorderableLazyListState
 import sh.calvin.reorderable.rememberReorderableLazyStaggeredGridState
 
 data class WorkflowListScreenActions(
-    val onCreateWorkflow: () -> Unit,
+    /**
+     * fork（2026-10-10）：新建工作流。
+     *
+     * 参数是**当前选中的文件夹 Tab 的 id**，`null` = 「全部」Tab（不归类）。
+     * 用户要求：在某个文件夹 Tab 下点 ＋ 新建的工作流，自动归入该文件夹。
+     *
+     * ⚠️ 「全部」那一档必须传 `null`，**不能**把 [WORKFLOW_TAB_ALL] 哨兵串当文件夹 id 传下去
+     * —— 它会被原样写进 `Workflow.folderId`，而那是个**不存在的文件夹 id**：
+     * 工作流只在「全部」里可见、切到任何文件夹都找不到（且不报错）。
+     * 哨兵串到 `null` 的换算在 FAB 那一处（见 `WorkflowListScreen`）。
+     */
+    val onCreateWorkflow: (String?) -> Unit,
     val onOpenWorkflow: (Workflow) -> Unit,
     val onToggleFavorite: (Workflow) -> Unit,
     val onToggleEnabled: (Workflow, Boolean) -> Unit,
@@ -637,7 +648,11 @@ fun WorkflowListScreen(
         }
 
         FloatingActionButton(
-            onClick = actions.onCreateWorkflow,
+            onClick = {
+                // ⚠️ 「全部」是 UI 概念（哨兵串），不是文件夹 id —— 必须换成 null 再往下传，
+                //    否则新建的工作流会带着一个悬空 folderId 落盘（见 `onCreateWorkflow` 的注释）。
+                actions.onCreateWorkflow(selectedFolderTab.takeIf { it != WORKFLOW_TAB_ALL })
+            },
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(end = 16.dp, bottom = extraBottomPadding + 16.dp)

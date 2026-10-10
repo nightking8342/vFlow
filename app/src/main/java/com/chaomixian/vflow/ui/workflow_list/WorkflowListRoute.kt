@@ -557,8 +557,19 @@ fun WorkflowListRoute(
         extraBottomPadding = extraBottomPadding,
         modifier = modifier,
         actions = WorkflowListScreenActions(
-            onCreateWorkflow = {
-                context.startActivity(Intent(context, WorkflowEditorActivity::class.java))
+            onCreateWorkflow = { folderId ->
+                // fork（2026-10-10）：把「当前选中的文件夹 Tab」带进编辑器 —— 在那个文件夹下
+                // 点 ＋ 新建的工作流自动归入该文件夹（用户要求）。`null` = 「全部」Tab，不归类。
+                //
+                // ⚠️ 归属**不是**在这里落盘，而是编辑器把 id 写进 `createDraftWorkflow()` 的
+                //    `folderId` —— 本页此刻还没有工作流 id（要等用户在编辑器里保存才生成）。
+                context.startActivity(
+                    Intent(context, WorkflowEditorActivity::class.java).apply {
+                        if (folderId != null) {
+                            putExtra(WorkflowEditorActivity.EXTRA_NEW_WORKFLOW_FOLDER_ID, folderId)
+                        }
+                    }
+                )
             },
             onToggleFavorite = { workflow ->
                 workflowManager.saveWorkflow(workflow.copy(isFavorite = !workflow.isFavorite))

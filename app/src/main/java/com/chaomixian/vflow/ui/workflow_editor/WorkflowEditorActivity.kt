@@ -47,6 +47,7 @@ import com.chaomixian.vflow.core.module.*
 import com.chaomixian.vflow.core.types.VTypeRegistry
 import com.chaomixian.vflow.core.types.parser.NamedVariableReferenceRewriter
 import com.chaomixian.vflow.core.types.parser.VariablePathParser
+import com.chaomixian.vflow.core.workflow.FolderManager
 import com.chaomixian.vflow.core.workflow.WorkflowEnumMigration
 import com.chaomixian.vflow.core.workflow.WorkflowJumpReferenceUpdater
 import com.chaomixian.vflow.core.workflow.WorkflowManager
@@ -297,6 +298,18 @@ class WorkflowEditorActivity : BaseActivity() {
 
     companion object {
         const val EXTRA_WORKFLOW_ID = "WORKFLOW_ID"
+
+        /**
+         * fork（2026-10-10）：**新建**工作流的预归属文件夹 id。
+         *
+         * 由工作流列表页的 ＋ 按钮从「当前选中的文件夹 Tab」传下来 —— 用户在某个文件夹里
+         * 新建工作流时，它自动归入那个文件夹（用户要求）。
+         *
+         * ⚠️ 只在**新建**路径生效（`currentWorkflow == null` ⇒ [createDraftWorkflow]）。
+         * 编辑已有工作流时归属以工作流自身的 `folderId` 为准，本 extra 一律忽略。
+         */
+        const val EXTRA_NEW_WORKFLOW_FOLDER_ID = "NEW_WORKFLOW_FOLDER_ID"
+
         private const val MAX_UNDO_STEPS = 50
         private const val DEFINE_FUNCTION_MODULE_ID = "vflow.logic.define_function"
     }
@@ -505,8 +518,28 @@ class WorkflowEditorActivity : BaseActivity() {
             triggers = triggerSteps.map { step -> step.copy(parameters = normalizeStepParameters(step.parameters)) },
             steps = actionSteps.map { step -> step.copy(parameters = normalizeStepParameters(step.parameters)) },
             cardIconRes = WorkflowVisuals.defaultIconResName(),
-            cardThemeColor = WorkflowVisuals.randomThemeColorHex()
+            cardThemeColor = WorkflowVisuals.randomThemeColorHex(),
+            folderId = newWorkflowFolderId()
         )
+    }
+
+    /**
+     * fork（2026-10-10）：本次**新建**的工作流要落进哪个文件夹（`null` = 不归类）。
+     *
+     * 来源是列表页 ＋ 按钮传来的 [EXTRA_NEW_WORKFLOW_FOLDER_ID]（当前选中的文件夹 Tab）。
+     *
+     * ⚠️⚠️ **每次调用都重新读 Intent，并且校验文件夹仍然存在** —— 悬空的 `folderId`
+     * 会让工作流在列表页**任何一个 Tab 下都看不见**（`filterByFolderTab` 只认「全部」与
+     * 真实存在的文件夹 id，没有「未分类」兜底），表现是「保存成功，但工作流不见了」。
+     * 文件夹在本编辑器打开期间被删掉（远程 API / AI 对话）时就属于这种情况，故这里退回不归类。
+     *
+     * ⚠️ 刻意**不**缓存成字段：撤销（`restoreEditorSnapshot`）会把 `currentWorkflow` 打回
+     * null，之后再次保存会重新走 [createDraftWorkflow] —— 读 Intent 是幂等的，缓存反而多一份状态。
+     */
+    private fun newWorkflowFolderId(): String? {
+        val folderId = intent.getStringExtra(EXTRA_NEW_WORKFLOW_FOLDER_ID)
+            ?.takeIf { it.isNotBlank() } ?: return null
+        return folderId.takeIf { FolderManager(this).getFolder(it) != null }
     }
 
     private fun getAllEditableSteps(): List<ActionStep> = triggerSteps + actionSteps
