@@ -6,6 +6,7 @@ import com.chaomixian.vflow.core.workflow.TileGate
 import com.chaomixian.vflow.core.workflow.TriggerExecutionCoordinator
 import com.chaomixian.vflow.core.workflow.WorkflowDataChangeBus
 import com.chaomixian.vflow.core.workflow.WorkflowManager
+import com.chaomixian.vflow.core.workflow.WorkflowWriteOrigin
 import com.chaomixian.vflow.core.workflow.model.TileKind
 import com.chaomixian.vflow.core.workflow.model.Workflow
 import kotlinx.coroutines.CoroutineScope
@@ -144,7 +145,10 @@ abstract class BaseToggleTileService : BaseWorkflowTileService() {
                 current.copy(
                     isEnabled = false,
                     wasEnabledBeforePermissionsLost = true
-                )
+                ),
+                // fork：程序性权限回弹 ⇒ 不触发工作流开关触发器（设计文档 §3.3）。
+                // ⚠️ 上面那次「用户点磁贴」的写入是 EXPLICIT（走默认值），**要触发**。
+                origin = WorkflowWriteOrigin.AUTOMATIC,
             )
             DebugLogger.w(
                 TAG,

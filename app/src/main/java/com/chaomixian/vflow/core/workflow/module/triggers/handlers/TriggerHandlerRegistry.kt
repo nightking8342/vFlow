@@ -61,6 +61,10 @@ object TriggerHandlerRegistry {
         // ListeningTriggerHandler（同上），且**每个触发器各注册一个 receiver**
         // —— 因为 filter 随触发器参数变化，不能靠并集 + 二次判定
         register(BroadcastTriggerModule().id) { BroadcastTriggerHandler() }
+        // 工作流开关触发器（fork 新增）。⚠️ 它继承 BaseTriggerHandler（同上），
+        // 且**没有可注册的系统事件源** —— 由 TriggerService.onStartCommand 的
+        // ACTION_WORKFLOW_CHANGED 分支直接调 WorkflowToggleTriggerHandler.onWorkflowSaved
+        register(WorkflowToggleTriggerModule().id) { WorkflowToggleTriggerHandler() }
 
     }
 

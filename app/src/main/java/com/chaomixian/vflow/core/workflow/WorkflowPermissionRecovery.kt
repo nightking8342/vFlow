@@ -37,7 +37,11 @@ object WorkflowPermissionRecovery {
                 workflow.copy(
                     isEnabled = true,
                     wasEnabledBeforePermissionsLost = false
-                )
+                ),
+                // fork：程序性自动重开 ⇒ 不触发工作流开关触发器（设计文档 §3.3）。
+                // ⚠️ 本方法挂在 6 个入口上（含每次进 App / 每次服务启动），
+                //    不过滤的后果是「用户每次打开 App 都可能看到我没碰开关工作流自己跑了」。
+                origin = WorkflowWriteOrigin.AUTOMATIC,
             )
             recoveredCount++
         }

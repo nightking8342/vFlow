@@ -51,6 +51,7 @@ import com.chaomixian.vflow.core.workflow.WorkflowEnumMigration
 import com.chaomixian.vflow.core.workflow.WorkflowJsonCodec
 import com.chaomixian.vflow.core.workflow.WorkflowManager
 import com.chaomixian.vflow.core.workflow.WorkflowPermissionRecovery
+import com.chaomixian.vflow.core.workflow.WorkflowWriteOrigin
 import com.chaomixian.vflow.core.workflow.model.Workflow
 import com.chaomixian.vflow.core.workflow.model.WorkflowFolder
 import com.chaomixian.vflow.core.workflow.model.WorkflowTile
@@ -589,7 +590,10 @@ fun WorkflowListRoute(
                         currentWorkflow.copy(
                             isEnabled = false,
                             wasEnabledBeforePermissionsLost = true
-                        )
+                        ),
+                        // fork：程序性权限回弹 ⇒ 不触发工作流开关触发器（设计文档 §3.3）。
+                        // ⚠️ 上面那次「用户按开关」的写入是 EXPLICIT（走默认值），**要触发**。
+                        origin = WorkflowWriteOrigin.AUTOMATIC,
                     )
                     loadData()
                     Toast.makeText(
