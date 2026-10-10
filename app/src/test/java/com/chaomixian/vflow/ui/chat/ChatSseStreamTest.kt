@@ -1,10 +1,8 @@
 package com.chaomixian.vflow.ui.chat
 
-import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -31,12 +29,6 @@ import org.junit.Test
 class ChatSseStreamTest {
 
     private lateinit var server: MockWebServer
-
-    /** ⚠️ 超时必须远小于生产环境的 120s readTimeout，否则挂死用例要跑两分钟。 */
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(2, TimeUnit.SECONDS)
-        .readTimeout(2, TimeUnit.SECONDS)
-        .build()
 
     @Before
     fun setUp() {

@@ -1,7 +1,6 @@
 package com.chaomixian.vflow.ui.chat
 
 import com.chaomixian.vflow.core.logging.DebugLogger
-import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -208,11 +207,8 @@ internal class ChatCompletionClient(
         }
         private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
         private val sharedHttpClient by lazy {
-            OkHttpClient.Builder()
-                .connectTimeout(30, TimeUnit.SECONDS)
-                .readTimeout(120, TimeUnit.SECONDS)
-                .writeTimeout(120, TimeUnit.SECONDS)
-                .build()
+            // fork: 超时口径收敛到 ChatStreamTimeouts（SSE 与非流式两个 client 的唯一真值来源）
+            ChatStreamTimeouts.DEFAULT.toClient()
         }
     }
 
@@ -322,7 +318,7 @@ internal class ChatCompletionClient(
                 "Stream request mode=$mode url=$url useResponses=$useResponses"
             )
             return ChatStreamRunner.run(
-                frames = ChatSse.frames(httpRequest),
+                frames = ChatSse.frames(httpRequest, ChatStreamTimeouts.fromPreset(request.preset)),
                 assembler = ChatStreamAssembler(protocol),
             )
         }
@@ -689,7 +685,7 @@ internal class ChatCompletionClient(
                 }
                 .build()
             return ChatStreamRunner.run(
-                frames = ChatSse.frames(httpRequest),
+                frames = ChatSse.frames(httpRequest, ChatStreamTimeouts.fromPreset(request.preset)),
                 assembler = ChatStreamAssembler(ChatStreamProtocol.ANTHROPIC_MESSAGES),
             )
         }

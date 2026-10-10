@@ -81,9 +81,15 @@ data class ChatPresetConfig(
     val systemPrompt: String = DEFAULT_SYSTEM_PROMPT,
     val temperature: Double = 0.7,
     val useResponsesApi: Boolean = false,
+    // fork: Chat 流超时与恢复 —— 单一空闲阈值（首字节/流中分类只发生在 ChatSse 的失败分类里）
+    // + 仅在「本轮未提交任何内容」时才生效的重试次数。两者都带默认值 ⇒ 旧 JSON 缺键照常加载。
+    val streamIdleTimeoutSeconds: Int = DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS,
+    val streamMaxRetries: Int = DEFAULT_STREAM_MAX_RETRIES,
 ) {
     companion object {
         const val DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant. Keep responses concise and clear."
+        const val DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS = 300
+        const val DEFAULT_STREAM_MAX_RETRIES = 2
     }
 
     val providerEnum: ChatProvider

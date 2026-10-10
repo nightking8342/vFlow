@@ -881,6 +881,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             var streamedContent = StringBuilder()
             var streamedReasoning = StringBuilder()
             var result: ChatCompletionResult? = null
+            // fork: Chat 流超时与恢复 —— 本轮用掉的重试次数（失败文案要带上它）。
+            // 与上面三个变量同理，必须在 `try` 之外声明（catch 要用）。
+            var retriesUsed = 0
             try {
                 val skillSelection = ChatAgentSkillRouter.availableTools(
                     _uiState.value.availableTools,
@@ -898,11 +901,29 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 //    （它每次把整个会话表序列化成大 JSON 写盘，流式下每秒十几次）；
                 // 2. `Completed` 携带的是**权威值**（§4.4 的 B4），累积 delta 只用于过程显示；
                 // 3. 收尾必须走 `finalizeStreamingMessage`，它负责 §4.4 那 11 项里的 7 项。
-                chatClient.streamReply(
-                    preset = preset,
-                    history = historyForRequest,
-                    skillSelection = skillSelection,
-                ).collect { event ->
+                //
+                // ⚠️ fork: Chat 流超时与恢复 —— 外面包一层 `streamWithRecovery`。
+                // `openStream` 必须是**工厂**（每次重试都重新调 `streamReply` ⇒ 新的 adapter /
+                // 新的 assembler / 新的 HTTP 请求），复用同一个 Flow 实例会拿到跑脏的归约器。
+                streamWithRecovery(
+                    policy = ChatStreamRecoveryPolicy(
+                        maxRetries = ChatStreamTimeouts.clampStreamMaxRetries(preset.streamMaxRetries),
+                    ),
+                    onRetry = { notice ->
+                        retriesUsed = notice.attempt
+                        DebugLogger.w(
+                            LOG_TAG,
+                            "Stream idle timeout retry attempt=${notice.attempt}/${notice.maxAttempts - 1} kind=${notice.kind} delayMs=${notice.delayMs} conversation=${updatedConversation.id}",
+                        )
+                        _events.tryEmit("网络空闲超时，正在重试（${notice.attempt}/${notice.maxAttempts - 1}）…")
+                    },
+                ) {
+                    chatClient.streamReply(
+                        preset = preset,
+                        history = historyForRequest,
+                        skillSelection = skillSelection,
+                    )
+                }.collect { event ->
                     when (event) {
                         is ChatStreamEvent.TextDelta -> {
                             streamedContent.append(event.text)
@@ -1030,12 +1051,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 pendingToolExecution = null
                 // ⚠️ §4.7：失败时**已收到的正文必须保留**，错误以**独立消息**追加，
                 // 而不是把半截回复整条换成错误文案（那会让用户刚读到的一段凭空消失）。
+                val baseError = throwable.message?.trim().orEmpty().ifBlank { "请求失败，请检查当前模型配置。" }
                 finishWithError(
                     conversationId = updatedConversation.id,
                     messageId = pendingMessage.id,
                     partialContent = streamedContent.toString(),
                     partialReasoning = streamedReasoning.toString().ifBlank { null },
-                    errorText = throwable.message?.trim().orEmpty().ifBlank { "请求失败，请检查当前模型配置。" },
+                    // fork: 带重试次数（finishWithError 签名不动）
+                    errorText = if (retriesUsed > 0) "$baseError（已重试 $retriesUsed 次）" else baseError,
                 )
                 processNextQueuedPromptIfIdle()
             } finally {
