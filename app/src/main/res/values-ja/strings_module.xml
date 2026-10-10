@@ -3287,4 +3287,41 @@
     <string name="error_vflow_trigger_broadcast_no_action">ブロードキャスト Action を最低 1 つ入力してください：このトリガーは「空欄 = すべて監視」に対応していません</string>
     <string name="error_vflow_trigger_broadcast_wildcard">ブロードキャスト Action はワイルドカード * に対応していません。完全な action 文字列を入力してください</string>
     <string name="msg_vflow_trigger_broadcast_ready">ブロードキャストトリガーの準備ができました</string>
+    <!-- ワークフロースイッチトリガー（fork） -->
+    <string name="module_vflow_trigger_workflow_toggle_name">ワークフロースイッチトリガー</string>
+    <string name="module_vflow_trigger_workflow_toggle_desc">指定したワークフローが有効/無効になったときに実行します</string>
+    <string name="param_vflow_trigger_workflow_toggle_workflow_id_name">ワークフロー</string>
+    <string name="param_vflow_trigger_workflow_toggle_state_name">状態</string>
+    <string name="option_vflow_trigger_workflow_toggle_any">すべての変化</string>
+    <string name="option_vflow_trigger_workflow_toggle_enabled">有効化</string>
+    <string name="option_vflow_trigger_workflow_toggle_disabled">無効化</string>
+    <string name="output_vflow_trigger_workflow_toggle_workflow_id">ワークフロー ID</string>
+    <string name="output_vflow_trigger_workflow_toggle_workflow_name">ワークフロー名</string>
+    <string name="output_vflow_trigger_workflow_toggle_is_enabled">現在有効</string>
+    <string name="output_vflow_trigger_workflow_toggle_was_enabled">以前有効</string>
+    <string name="summary_vflow_trigger_workflow_toggle_prefix">ワークフローが</string>
+    <string name="msg_vflow_trigger_workflow_toggle_triggered">ワークフロースイッチが発火しました</string>
+    <string name="editor_vflow_trigger_workflow_toggle_workflow_title">監視するワークフロー</string>
+    <string name="dialog_vflow_trigger_workflow_toggle_select_title">監視するワークフローを選択</string>
+
+    <!-- ワークフロースイッチの設定モジュール（fork） -->
+    <string name="module_vflow_logic_set_workflow_enabled_name">ワークフロースイッチの設定</string>
+    <string name="module_vflow_logic_set_workflow_enabled_desc">別のワークフローを有効化・無効化・切り替えます。対象に必要な権限がない場合、自動的に無効化されることがあります。</string>
+    <string name="param_vflow_logic_set_workflow_enabled_workflow_id_name">ワークフロー</string>
+    <string name="param_vflow_logic_set_workflow_enabled_action_name">操作</string>
+    <string name="option_vflow_logic_set_workflow_enabled_enable">有効化</string>
+    <string name="option_vflow_logic_set_workflow_enabled_disable">無効化</string>
+    <string name="option_vflow_logic_set_workflow_enabled_toggle">切り替え</string>
+    <string name="output_vflow_logic_set_workflow_enabled_workflow_name">ワークフロー名</string>
+    <string name="output_vflow_logic_set_workflow_enabled_previous_enabled">以前有効</string>
+    <string name="output_vflow_logic_set_workflow_enabled_is_enabled">現在有効</string>
+    <string name="output_vflow_logic_set_workflow_enabled_changed">変化したか</string>
+    <string name="summary_vflow_logic_set_workflow_enabled_prefix">ワークフローを設定</string>
+    <string name="msg_vflow_logic_set_workflow_enabled_done">ワークフロースイッチを設定しました</string>
+    <string name="msg_vflow_logic_set_workflow_enabled_unchanged">対象は既にその状態です（変更なし）</string>
+    <string name="editor_vflow_logic_set_workflow_enabled_workflow_title">スイッチを設定するワークフロー</string>
+    <string name="dialog_vflow_logic_set_workflow_enabled_select_title">スイッチを設定するワークフローを選択</string>
+
+    <!-- 共通のターゲット選択レイアウトのタイトル既定値（各 UIProvider が上書き） -->
+    <string name="label_workflow_picker_title">ワークフロー</string>
 </resources>

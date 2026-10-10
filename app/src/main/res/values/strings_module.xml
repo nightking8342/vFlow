@@ -3673,4 +3673,41 @@
     <string name="error_vflow_trigger_broadcast_no_action">请至少填写一个广播 Action：广播触发器不支持「留空 = 监听全部」</string>
     <string name="error_vflow_trigger_broadcast_wildcard">广播 Action 不支持通配符 *，请填写完整的 action 字符串</string>
     <string name="msg_vflow_trigger_broadcast_ready">广播触发器已就绪</string>
+    <!-- 工作流开关触发器（fork 新增） -->
+    <string name="module_vflow_trigger_workflow_toggle_name">工作流开关触发</string>
+    <string name="module_vflow_trigger_workflow_toggle_desc">当指定的工作流被启用或关闭时触发工作流</string>
+    <string name="param_vflow_trigger_workflow_toggle_workflow_id_name">工作流</string>
+    <string name="param_vflow_trigger_workflow_toggle_state_name">状态</string>
+    <string name="option_vflow_trigger_workflow_toggle_any">任意变化</string>
+    <string name="option_vflow_trigger_workflow_toggle_enabled">被启用</string>
+    <string name="option_vflow_trigger_workflow_toggle_disabled">被关闭</string>
+    <string name="output_vflow_trigger_workflow_toggle_workflow_id">工作流 ID</string>
+    <string name="output_vflow_trigger_workflow_toggle_workflow_name">工作流名称</string>
+    <string name="output_vflow_trigger_workflow_toggle_is_enabled">当前已启用</string>
+    <string name="output_vflow_trigger_workflow_toggle_was_enabled">之前已启用</string>
+    <string name="summary_vflow_trigger_workflow_toggle_prefix">当工作流</string>
+    <string name="msg_vflow_trigger_workflow_toggle_triggered">工作流开关已触发</string>
+    <string name="editor_vflow_trigger_workflow_toggle_workflow_title">要监听的工作流</string>
+    <string name="dialog_vflow_trigger_workflow_toggle_select_title">选择要监听的工作流</string>
+
+    <!-- 设置工作流开关模块（fork 新增） -->
+    <string name="module_vflow_logic_set_workflow_enabled_name">设置工作流开关</string>
+    <string name="module_vflow_logic_set_workflow_enabled_desc">启用、关闭或切换另一个工作流。目标工作流缺少所需权限时，可能被系统自动关闭。</string>
+    <string name="param_vflow_logic_set_workflow_enabled_workflow_id_name">工作流</string>
+    <string name="param_vflow_logic_set_workflow_enabled_action_name">操作</string>
+    <string name="option_vflow_logic_set_workflow_enabled_enable">启用</string>
+    <string name="option_vflow_logic_set_workflow_enabled_disable">关闭</string>
+    <string name="option_vflow_logic_set_workflow_enabled_toggle">切换</string>
+    <string name="output_vflow_logic_set_workflow_enabled_workflow_name">工作流名称</string>
+    <string name="output_vflow_logic_set_workflow_enabled_previous_enabled">之前已启用</string>
+    <string name="output_vflow_logic_set_workflow_enabled_is_enabled">当前已启用</string>
+    <string name="output_vflow_logic_set_workflow_enabled_changed">是否发生变化</string>
+    <string name="summary_vflow_logic_set_workflow_enabled_prefix">设置工作流</string>
+    <string name="msg_vflow_logic_set_workflow_enabled_done">已设置工作流开关</string>
+    <string name="msg_vflow_logic_set_workflow_enabled_unchanged">目标已是该状态，未做改动</string>
+    <string name="editor_vflow_logic_set_workflow_enabled_workflow_title">要设置开关的工作流</string>
+    <string name="dialog_vflow_logic_set_workflow_enabled_select_title">选择要设置开关的工作流</string>
+
+    <!-- A / B 共用的目标选择器布局标题默认值（两个 UIProvider 各自覆盖） -->
+    <string name="label_workflow_picker_title">工作流</string>
 </resources>

@@ -3,6 +3,7 @@ package com.chaomixian.vflow.services
 
 import android.content.Context
 import android.content.Intent
+import com.chaomixian.vflow.core.workflow.WorkflowWriteOrigin
 import com.chaomixian.vflow.core.workflow.model.Workflow
 
 /**
@@ -18,13 +19,23 @@ object TriggerServiceProxy {
     private const val ACTION_RELOAD_TRIGGERS = "com.chaomixian.vflow.ACTION_RELOAD_TRIGGERS"
     private const val EXTRA_TRIGGER_DELTA = "extra_trigger_delta"
 
-    fun notifyWorkflowChanged(context: Context, newWorkflow: Workflow, oldWorkflow: Workflow?) {
+    fun notifyWorkflowChanged(
+        context: Context,
+        newWorkflow: Workflow,
+        oldWorkflow: Workflow?,
+        // fork（2026-10-10）：写入来源。默认 EXPLICIT —— 见 WorkflowWriteOrigin 的注释。
+        origin: WorkflowWriteOrigin = WorkflowWriteOrigin.EXPLICIT,
+    ) {
         val delta = WorkflowTriggerDelta(
             workflowId = newWorkflow.id,
             oldTriggerRefs = oldWorkflow
                 ?.toAutoTriggerSpecs()
                 ?.map { WorkflowTriggerRef(triggerId = it.triggerId, type = it.type) }
-                .orEmpty()
+                .orEmpty(),
+            // fork：工作流开关触发器需要的两个字段。⚠️ 它们是「加了字段但没人填」的
+            // 高危形态（本仓库在 CoreDexFingerprint 上踩过）⇒ 有源码扫描测试锁住。
+            oldIsEnabled = oldWorkflow?.isEnabled,
+            writeOrigin = origin,
         )
         val intent = Intent(context, TriggerService::class.java).apply {
             action = ACTION_WORKFLOW_CHANGED

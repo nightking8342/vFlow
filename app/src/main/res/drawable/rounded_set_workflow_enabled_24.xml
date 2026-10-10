@@ -1,0 +1,16 @@
+<!-- 设置工作流开关模块的图标（fork 新增）。
+     内容复制自 rounded_settings_power_24.xml 的 <vector>（电源符号 = 「开关」的语义），
+     刻意**不改**既有文件 —— 那是 Material Symbols 全量库的一部分。
+
+     ⚠️ 名字以 rounded_ 开头 ⇒ 被 res/raw/keep.xml 的通配白名单
+     `@drawable/rounded_*_24` 覆盖，不会被 R8 shrinkResources 剥掉。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="960"
+    android:viewportHeight="960"
+    android:tint="?attr/colorControlNormal">
+  <path
+      android:fillColor="@android:color/white"
+      android:pathData="M440,440L440,120Q440,103 451.5,91.5Q463,80 480,80Q497,80 508.5,91.5Q520,103 520,120L520,440Q520,457 508.5,468.5Q497,480 480,480Q463,480 451.5,468.5Q440,457 440,440ZM480,760Q346,760 253,667Q160,574 160,440Q160,372 187.5,311Q215,250 264,205Q278,193 296,193.5Q314,194 327,207Q338,218 336.5,234Q335,250 322,261Q284,295 262,341Q240,387 240,440Q240,540 310,610Q380,680 480,680Q580,680 650,610Q720,540 720,440Q720,387 698,341Q676,295 638,261Q625,250 623.5,234Q622,218 633,207Q646,194 664,193.5Q682,193 696,205Q745,250 772.5,311Q800,372 800,440Q800,574 707,667Q614,760 480,760Z"/>
+</vector>

@@ -3667,4 +3667,41 @@
     <string name="error_vflow_trigger_broadcast_no_action">Enter at least one broadcast Action: this trigger does not support leaving it empty to listen for everything</string>
     <string name="error_vflow_trigger_broadcast_wildcard">The * wildcard is not supported for broadcast Actions; enter the full action string</string>
     <string name="msg_vflow_trigger_broadcast_ready">Broadcast trigger ready</string>
+    <!-- Workflow toggle trigger (fork) -->
+    <string name="module_vflow_trigger_workflow_toggle_name">Workflow Toggle Trigger</string>
+    <string name="module_vflow_trigger_workflow_toggle_desc">Triggers when the selected workflow is enabled or disabled</string>
+    <string name="param_vflow_trigger_workflow_toggle_workflow_id_name">Workflow</string>
+    <string name="param_vflow_trigger_workflow_toggle_state_name">State</string>
+    <string name="option_vflow_trigger_workflow_toggle_any">Any change</string>
+    <string name="option_vflow_trigger_workflow_toggle_enabled">Enabled</string>
+    <string name="option_vflow_trigger_workflow_toggle_disabled">Disabled</string>
+    <string name="output_vflow_trigger_workflow_toggle_workflow_id">Workflow ID</string>
+    <string name="output_vflow_trigger_workflow_toggle_workflow_name">Workflow name</string>
+    <string name="output_vflow_trigger_workflow_toggle_is_enabled">Enabled now</string>
+    <string name="output_vflow_trigger_workflow_toggle_was_enabled">Enabled before</string>
+    <string name="summary_vflow_trigger_workflow_toggle_prefix">When workflow</string>
+    <string name="msg_vflow_trigger_workflow_toggle_triggered">Workflow toggle triggered</string>
+    <string name="editor_vflow_trigger_workflow_toggle_workflow_title">Workflow to Watch</string>
+    <string name="dialog_vflow_trigger_workflow_toggle_select_title">Choose Workflow to Watch</string>
+
+    <!-- Set workflow switch module (fork) -->
+    <string name="module_vflow_logic_set_workflow_enabled_name">Set Workflow Switch</string>
+    <string name="module_vflow_logic_set_workflow_enabled_desc">Enables, disables, or toggles another workflow. If the target lacks required permissions, it may be disabled automatically.</string>
+    <string name="param_vflow_logic_set_workflow_enabled_workflow_id_name">Workflow</string>
+    <string name="param_vflow_logic_set_workflow_enabled_action_name">Action</string>
+    <string name="option_vflow_logic_set_workflow_enabled_enable">Enable</string>
+    <string name="option_vflow_logic_set_workflow_enabled_disable">Disable</string>
+    <string name="option_vflow_logic_set_workflow_enabled_toggle">Toggle</string>
+    <string name="output_vflow_logic_set_workflow_enabled_workflow_name">Workflow name</string>
+    <string name="output_vflow_logic_set_workflow_enabled_previous_enabled">Enabled before</string>
+    <string name="output_vflow_logic_set_workflow_enabled_is_enabled">Enabled now</string>
+    <string name="output_vflow_logic_set_workflow_enabled_changed">Changed</string>
+    <string name="summary_vflow_logic_set_workflow_enabled_prefix">Set workflow</string>
+    <string name="msg_vflow_logic_set_workflow_enabled_done">Workflow switch updated</string>
+    <string name="msg_vflow_logic_set_workflow_enabled_unchanged">Target already in that state; nothing changed</string>
+    <string name="editor_vflow_logic_set_workflow_enabled_workflow_title">Workflow to Switch</string>
+    <string name="dialog_vflow_logic_set_workflow_enabled_select_title">Choose Workflow to Switch</string>
+
+    <!-- Shared target picker layout title default (overridden by each UIProvider) -->
+    <string name="label_workflow_picker_title">Workflow</string>
 </resources>

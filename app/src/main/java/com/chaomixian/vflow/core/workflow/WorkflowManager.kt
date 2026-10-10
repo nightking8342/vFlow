@@ -68,7 +68,21 @@ class WorkflowManager(val context: Context) {
         .registerTypeHierarchyAdapter(VObject::class.java, VObjectGsonAdapter())
         .create()
 
-    fun saveWorkflow(workflow: Workflow) {
+    /**
+     * 保存工作流。
+     *
+     * @param origin 这次写入的**来源**（fork 新增，见 [WorkflowWriteOrigin]）。
+     *   ⚠️⚠️ **默认值必须是 [WorkflowWriteOrigin.EXPLICIT]，不要改成 `AUTOMATIC`** ——
+     *   默认值决定了「将来有人忘了标记」时的失败方向：忘标记 ⇒ **多触发**（用户可见、
+     *   能报上来）；反过来则是**静默失效**（该触发的不触发）。设计文档 §3.3 定案。
+     *
+     *   只有 5 处**程序性**写入传 `AUTOMATIC`（权限丢失禁用 ×2 / 权限恢复重开 /
+     *   权限回弹 ×2），其余调用点**一行都不用改**。
+     */
+    fun saveWorkflow(
+        workflow: Workflow,
+        origin: WorkflowWriteOrigin = WorkflowWriteOrigin.EXPLICIT,
+    ) {
         val workflows = getAllWorkflows().toMutableList()
         val index = workflows.indexOfFirst { it.id == workflow.id }
         val oldWorkflow = if (index != -1) workflows[index] else null
@@ -110,7 +124,7 @@ class WorkflowManager(val context: Context) {
         }
 
         prefs.edit().putString("workflow_list", gson.toJson(workflows)).apply()
-        TriggerServiceProxy.notifyWorkflowChanged(context, workflowToSave, oldWorkflow)
+        TriggerServiceProxy.notifyWorkflowChanged(context, workflowToSave, oldWorkflow, origin)
         // fork（2026-10-06）：磁贴显示工作流名 / 图标 / 启用态，而这些都在本次写入里。
         // ⚠️ 必须放在**所有**写入路径的汇聚点（本方法）—— 磁贴是「推」模型：
         //    加了 `ACTIVE_TILE` 元数据之后系统不会主动绑，只靠 `requestListeningState`。

@@ -100,6 +100,10 @@ object ModuleRegistry {
         // 而非 ListeningTriggerHandler，且 requiredPermissions 刻意为空
         // —— 见 BroadcastTriggerModule 的类注释
         register(BroadcastTriggerModule(), context)
+        // 工作流开关触发器（fork 新增）。⚠️ 它同样继承 BaseTriggerHandler，
+        // 且事件源不在 Handler 内部 —— 由 TriggerService 的
+        // ACTION_WORKFLOW_CHANGED 分支直接调进 Handler（形态照抄 key_event）
+        register(WorkflowToggleTriggerModule(), context)
 
         // 界面交互
         register(FindTextModule(), context)
@@ -146,6 +150,8 @@ object ModuleRegistry {
         register(CallFunctionModule(), context)
         register(DefineFunctionModule(), context)
         register(StopAndReturnModule(), context)
+        // 设置工作流开关（fork 新增）。紧邻 CallWorkflowModule —— 同属「对工作流本身操作」
+        register(SetWorkflowEnabledModule(), context)
 
         // 数据
         register(CreateVariableModule(), context)

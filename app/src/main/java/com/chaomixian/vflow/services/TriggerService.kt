@@ -21,13 +21,16 @@ import com.chaomixian.vflow.core.module.ModuleRegistry
 import com.chaomixian.vflow.core.workflow.WorkflowManager
 import com.chaomixian.vflow.core.workflow.TriggerExecutionCoordinator
 import com.chaomixian.vflow.core.workflow.WorkflowPermissionRecovery
+import com.chaomixian.vflow.core.workflow.WorkflowWriteOrigin
 import com.chaomixian.vflow.core.workflow.model.TriggerSpec
 import com.chaomixian.vflow.core.workflow.model.Workflow
 import com.chaomixian.vflow.core.workflow.module.scripted.ModuleManager
 import com.chaomixian.vflow.core.workflow.module.triggers.KeyEventTriggerModule
+import com.chaomixian.vflow.core.workflow.module.triggers.WorkflowToggleTriggerModule
 import com.chaomixian.vflow.core.workflow.module.triggers.handlers.ITriggerHandler
 import com.chaomixian.vflow.core.workflow.module.triggers.handlers.KeyEventTriggerHandler
 import com.chaomixian.vflow.core.workflow.module.triggers.handlers.TriggerHandlerRegistry
+import com.chaomixian.vflow.core.workflow.module.triggers.handlers.WorkflowToggleTriggerHandler
 import com.chaomixian.vflow.core.xposed.HookChannelController
 import com.chaomixian.vflow.core.xposed.XposedDiagnostics
 import com.chaomixian.vflow.core.xposed.XposedFrameworkMonitor
@@ -189,6 +192,16 @@ class TriggerService : Service() {
                     val latestWorkflow = workflowManager.getWorkflow(delta.workflowId)
                     if (latestWorkflow != null) {
                         handleWorkflowChanged(latestWorkflow, delta.oldTriggerRefs)
+                        // fork（2026-10-10）：工作流开关触发器派发。
+                        // ⚠️ 必须放在 handleWorkflowChanged **之后** —— 它负责增删该工作流
+                        //    自己的触发器：「启用 Y 而 Y 自带开关触发器」要能立刻响应；
+                        //    「关闭 Y」时 Y 的触发器刚被移除 ⇒ 不自触发。
+                        // ⚠️ 接线点在这里而**不在** handleWorkflowChanged 内部：后者有
+                        //    「开机装载」第二个调用方（loadAllActiveTriggers），写进去就必须
+                        //    再给它加一个「我是不是启动装载」的参数。
+                        //    形态照抄既有的 KeyEventTriggerHandler 分支。
+                        (triggerHandlers[WorkflowToggleTriggerModule().id] as? WorkflowToggleTriggerHandler)
+                            ?.onWorkflowSaved(this, latestWorkflow, delta.oldIsEnabled, delta.writeOrigin)
                     } else {
                         handleWorkflowRemoved(delta.oldTriggerRefs)
                     }
@@ -359,7 +372,9 @@ class TriggerService : Service() {
                     latestWorkflow.copy(
                         isEnabled = false,
                         wasEnabledBeforePermissionsLost = true
-                    )
+                    ),
+                    // fork：程序性自动禁用 ⇒ 不触发工作流开关触发器（设计文档 §3.3）
+                    origin = WorkflowWriteOrigin.AUTOMATIC,
                 )
             }
         }
@@ -555,7 +570,9 @@ class TriggerService : Service() {
                 workflow.copy(
                     isEnabled = false,
                     wasEnabledBeforePermissionsLost = true
-                )
+                ),
+                // fork：程序性自动禁用（Core 不可用批量暂停）⇒ 不触发开关触发器
+                origin = WorkflowWriteOrigin.AUTOMATIC,
             )
         }
     }
