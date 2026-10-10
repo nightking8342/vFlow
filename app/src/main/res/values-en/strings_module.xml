@@ -3721,4 +3721,26 @@
     <string name="editor_return_key_type_hint">Value type</string>
     <string name="editor_return_key_no_host">Cannot open key editor (no activity host)</string>
 
+    <!-- Inspect Data Type module (fork: exposes the runtime type to downstream steps
+         so an If step can branch on it). Option wording mirrors VType.getLocalizedName
+         verbatim, since the type_name output is produced by getLocalizedName. -->
+    <string name="module_vflow_data_inspect_type_name">Inspect Data Type</string>
+    <string name="module_vflow_data_inspect_type_desc">Inspect the runtime type of a value and optionally compare it with an expected type.</string>
+    <string name="param_vflow_data_inspect_type_value_name">Value</string>
+    <string name="param_vflow_data_inspect_type_expected_type_name">Expected type</string>
+    <string name="output_vflow_data_inspect_type_type_id_name">Type ID</string>
+    <string name="output_vflow_data_inspect_type_type_name_name">Type name</string>
+    <string name="output_vflow_data_inspect_type_matched_name">Type matched</string>
+    <string name="option_vflow_data_inspect_type_view_only">View only</string>
+    <string name="option_vflow_data_inspect_type_string">Text</string>
+    <string name="option_vflow_data_inspect_type_number">Number</string>
+    <string name="option_vflow_data_inspect_type_boolean">Boolean</string>
+    <string name="option_vflow_data_inspect_type_dictionary">Dictionary</string>
+    <string name="option_vflow_data_inspect_type_list">List</string>
+    <string name="option_vflow_data_inspect_type_image">Image</string>
+    <string name="option_vflow_data_inspect_type_file">File</string>
+    <string name="option_vflow_data_inspect_type_coordinate">Coordinate</string>
+    <string name="option_vflow_data_inspect_type_null">Null</string>
+    <string name="summary_vflow_data_inspect_type_prefix">Inspect data type</string>
+    <string name="summary_vflow_data_inspect_type_with_expected">Inspect data type · expect %1$s</string>
 </resources>
