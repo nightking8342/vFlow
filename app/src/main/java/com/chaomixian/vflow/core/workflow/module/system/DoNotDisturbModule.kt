@@ -50,9 +50,9 @@ class DoNotDisturbModule : BaseModule() {
     override val id = "vflow.system.do_not_disturb"
 
     override val metadata = ActionMetadata(
-        name = "免打扰模式",
+        name = "勿扰模式",
         nameStringRes = R.string.module_vflow_system_do_not_disturb_name,
-        description = "通过 vFlow 自动规则开启、关闭或切换免打扰模式。",
+        description = "通过 vFlow 自动规则开启、关闭或切换勿扰模式。",
         descriptionStringRes = R.string.module_vflow_system_do_not_disturb_desc,
         // fork: 月牙图标（与免打扰触发器同款）。原先借用的是
         // `rounded_notifications_unread_24`（铃铛 + 小红点），语义上是「未读通知」，

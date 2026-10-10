@@ -1323,7 +1323,7 @@
     <string name="permission_name_notification_listener">通知使用权</string>
     <string name="permission_desc_notification_listener">允许应用读取和操作状态栏通知，用于实现通知触发器、查找和移除通知等功能。</string>
     <string name="permission_name_notification_policy">勿扰访问权限</string>
-    <string name="permission_desc_notification_policy">允许应用开启、关闭或切换系统免打扰模式。</string>
+    <string name="permission_desc_notification_policy">允许应用开启、关闭或切换系统勿扰模式。</string>
     <string name="permission_name_storage">文件访问权限</string>
     <string name="permission_desc_storage">允许应用读写 /sdcard/vFlow 目录下的脚本和资源文件。</string>
     <string name="permission_name_sms">短信权限</string>

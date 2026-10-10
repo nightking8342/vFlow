@@ -114,7 +114,7 @@ object PermissionManager {
     val NOTIFICATION_POLICY = Permission(
         id = Manifest.permission.ACCESS_NOTIFICATION_POLICY,
         name = "勿扰访问权限",
-        description = "允许应用开启、关闭或切换系统免打扰模式。",
+        description = "允许应用开启、关闭或切换系统勿扰模式。",
         type = PermissionType.SPECIAL,
         nameStringRes = R.string.permission_name_notification_policy,
         descriptionStringRes = R.string.permission_desc_notification_policy

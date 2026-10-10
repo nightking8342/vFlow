@@ -64,8 +64,8 @@ class DoNotDisturbTriggerModule : BaseModule() {
     override val metadata = ActionMetadata(
         nameStringRes = R.string.module_vflow_trigger_do_not_disturb_name,
         descriptionStringRes = R.string.module_vflow_trigger_do_not_disturb_desc,
-        name = "免打扰触发",  // Fallback
-        description = "当系统免打扰模式开启或关闭时触发工作流",  // Fallback
+        name = "勿扰模式触发",  // Fallback
+        description = "当系统勿扰模式开启或关闭时触发工作流",  // Fallback
         // fork: 月牙图标。原先用的是 `rounded_do_not_disturb_on_24`
         // （「勿扰已开启」的圆圈加横杠）—— 那是 Material Symbols 的正式名字，
         // 图标选择器里按字符串名解析它，**不能**把它的图形改掉。
@@ -102,7 +102,7 @@ class DoNotDisturbTriggerModule : BaseModule() {
     override fun getOutputs(step: ActionStep?): List<OutputDefinition> = listOf(
         OutputDefinition(
             id = "enabled",
-            name = "免打扰已开启",
+            name = "勿扰已开启",
             typeName = VTypeRegistry.BOOLEAN.id,
             nameStringRes = R.string.output_vflow_trigger_do_not_disturb_enabled_name
         ),
@@ -142,7 +142,7 @@ class DoNotDisturbTriggerModule : BaseModule() {
         context: ExecutionContext,
         onProgress: suspend (ProgressUpdate) -> Unit
     ): ExecutionResult {
-        onProgress(ProgressUpdate("免打扰触发器已就绪"))
+        onProgress(ProgressUpdate("勿扰模式触发器已就绪"))
         return ExecutionResult.Success(
             mapOf(
                 "enabled" to com.chaomixian.vflow.core.types.basic.VBoolean(readDndEnabled(context.applicationContext)),

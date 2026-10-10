@@ -3075,23 +3075,23 @@
     <string name="option_vflow_system_darkmode_toggle">切换</string>
 
     <!-- vflow.system.do_not_disturb -->
-    <string name="module_vflow_system_do_not_disturb_name">免打扰模式</string>
-    <string name="module_vflow_system_do_not_disturb_desc">开启、关闭或切换免打扰模式。Android 15+ 使用 vFlow 自己的勿扰规则，Android 15 以下使用全局勿扰开关。</string>
+    <string name="module_vflow_system_do_not_disturb_name">勿扰模式</string>
+    <string name="module_vflow_system_do_not_disturb_desc">开启、关闭或切换勿扰模式。Android 15+ 使用 vFlow 自己的勿扰规则，Android 15 以下使用全局勿扰开关。</string>
     <string name="param_vflow_system_do_not_disturb_action_name">操作</string>
     <string name="output_vflow_system_do_not_disturb_success_name">是否成功</string>
-    <string name="output_vflow_system_do_not_disturb_enabled_name">免打扰已开启</string>
+    <string name="output_vflow_system_do_not_disturb_enabled_name">勿扰已开启</string>
     <string name="option_vflow_system_do_not_disturb_toggle">切换</string>
     <string name="option_vflow_system_do_not_disturb_on">开启</string>
     <string name="option_vflow_system_do_not_disturb_off">关闭</string>
     <string name="error_vflow_system_do_not_disturb_permission_missing">缺少勿扰访问权限</string>
-    <string name="error_vflow_system_do_not_disturb_permission_missing_desc">请在系统设置中允许 vFlow 控制免打扰模式。</string>
+    <string name="error_vflow_system_do_not_disturb_permission_missing_desc">请在系统设置中允许 vFlow 控制勿扰模式。</string>
     <string name="error_vflow_system_do_not_disturb_invalid_action">参数错误</string>
-    <string name="error_vflow_system_do_not_disturb_invalid_action_detail">不支持的免打扰操作: %s</string>
-    <string name="error_vflow_system_do_not_disturb_set_failed">设置免打扰失败</string>
+    <string name="error_vflow_system_do_not_disturb_invalid_action_detail">不支持的勿扰操作: %s</string>
+    <string name="error_vflow_system_do_not_disturb_set_failed">设置勿扰失败</string>
     <string name="error_vflow_system_do_not_disturb_rule_create_failed">无法创建 vFlow 自动勿扰规则</string>
     <string name="error_vflow_system_do_not_disturb_unknown">发生未知错误</string>
-    <string name="msg_vflow_system_do_not_disturb_setting">正在%1$s免打扰模式...</string>
-    <string name="msg_vflow_system_do_not_disturb_completed">免打扰模式设置完成</string>
+    <string name="msg_vflow_system_do_not_disturb_setting">正在%1$s勿扰模式...</string>
+    <string name="msg_vflow_system_do_not_disturb_completed">勿扰模式设置完成</string>
     <string name="msg_vflow_system_do_not_disturb_rule_enabled">vFlow 自动勿扰规则已开启</string>
     <string name="msg_vflow_system_do_not_disturb_rule_disabled">vFlow 自动勿扰规则已关闭</string>
 
@@ -3472,14 +3472,14 @@
     <string name="output_vflow_trigger_logcat_pid_name">进程号</string>
     <string name="output_vflow_trigger_logcat_raw_name">完整原始行</string>
     <string name="summary_vflow_trigger_logcat_prefix">当日志</string>
-    <string name="module_vflow_trigger_do_not_disturb_name">免打扰触发</string>
-    <string name="module_vflow_trigger_do_not_disturb_desc">当系统免打扰模式开启或关闭时触发工作流</string>
+    <string name="module_vflow_trigger_do_not_disturb_name">勿扰模式触发</string>
+    <string name="module_vflow_trigger_do_not_disturb_desc">当系统勿扰模式开启或关闭时触发工作流</string>
     <string name="param_vflow_trigger_do_not_disturb_state_name">触发条件</string>
-    <string name="summary_vflow_trigger_do_not_disturb_prefix">免打扰</string>
+    <string name="summary_vflow_trigger_do_not_disturb_prefix">勿扰</string>
     <string name="option_vflow_trigger_do_not_disturb_on">开启时</string>
     <string name="option_vflow_trigger_do_not_disturb_off">关闭时</string>
     <string name="option_vflow_trigger_do_not_disturb_any">任意变化</string>
-    <string name="output_vflow_trigger_do_not_disturb_enabled_name">免打扰已开启</string>
+    <string name="output_vflow_trigger_do_not_disturb_enabled_name">勿扰已开启</string>
     <string name="output_vflow_trigger_do_not_disturb_previous_enabled_name">变化前是否开启</string>
     <!-- vflow.trigger.activity_changed -->
     <string name="module_vflow_trigger_activity_changed_name">Activity 切换触发</string>
