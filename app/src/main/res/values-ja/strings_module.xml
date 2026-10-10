@@ -3363,4 +3363,5 @@
     <string name="option_vflow_data_inspect_type_null">空の</string>
     <string name="summary_vflow_data_inspect_type_prefix">データ型を表示</string>
     <string name="summary_vflow_data_inspect_type_with_expected">データ型を表示 · 期待 %1$s</string>
+    <string name="output_vflow_data_inspect_type_value_if_matched_name">一致したときの値</string>
 </resources>

@@ -14,6 +14,7 @@ import com.chaomixian.vflow.core.module.ProgressUpdate
 import com.chaomixian.vflow.core.types.VObject
 import com.chaomixian.vflow.core.types.VTypeRegistry
 import com.chaomixian.vflow.core.types.basic.VBoolean
+import com.chaomixian.vflow.core.types.basic.VNull
 import com.chaomixian.vflow.core.types.basic.VString
 import com.chaomixian.vflow.core.workflow.model.ActionStep
 import com.chaomixian.vflow.ui.workflow_editor.PillUtil
@@ -62,19 +63,31 @@ internal fun inspectValueType(value: VObject, expectedTypeId: String?): TypeInsp
  * 而不是退化成只能证明「源码里写了」的扫描断言。
  *
  * @param typeName 本地化的类型名 —— 由调用方从 `Context` 取，**不进本函数**。
+ * @param value 原始值。匹配时**原样交回同一个对象**（见下 `OUTPUT_VALUE_IF_MATCHED` 的注释），
+ *   未匹配时交回 `VNull`。**显式作为参数**（而不是塞进 [TypeInspectionResult]）是为了让
+ *   「我们交回的是**原来那个对象**、不是新造的」这件事在调用点可见。
  */
 internal fun buildInspectionOutputs(
     result: TypeInspectionResult,
     typeName: String,
+    value: VObject,
 ): Map<String, Any?> {
     val outputs = mutableMapOf<String, Any?>(
         InspectTypeModule.OUTPUT_TYPE_ID to VString(result.typeId),
         InspectTypeModule.OUTPUT_TYPE_NAME to VString(typeName),
     )
-    // ⚠️「仅查看」（`matched == null`）时**不写 `matched` 键** —— 与 [InspectTypeModule.getOutputs]
-    //    的条件输出保持一致。写成 `?: false` 会让用户判「为真」时永远走假分支，
-    //    还以为是「类型不匹配」（文档 §3.2.1 的对照表）。
-    result.matched?.let { outputs[InspectTypeModule.OUTPUT_MATCHED] = VBoolean(it) }
+    // ⚠️「仅查看」（`matched == null`）时**不写 `matched` / `value_if_matched` 键** ——
+    //    与 [InspectTypeModule.getOutputs] 的条件输出保持一致。写成 `?: false` 会让用户判
+    //    「为真」时永远走假分支，还以为是「类型不匹配」（文档 §3.2.1 的对照表）。
+    result.matched?.let { matched ->
+        outputs[InspectTypeModule.OUTPUT_MATCHED] = VBoolean(matched)
+        // ⚠️⚠️ **绝不伪造**：匹配 ⇒ 原样交回**同一个对象**（不是副本、不是重新构造）；
+        //    未匹配 ⇒ `VNull`。若这里改成 `CreateVariableModule` 那种"转换"写法
+        //    （`VImage(value.asString())`），传字典进来会造出一个**假图片**，
+        //    属性访问静默 `VNull` 而用户以为拿到了图 —— 那才是真正的"说谎"。
+        //    ⇒ 本行是「不伪造」这条设计的**唯一落点**，测试直接锚在这里。
+        outputs[InspectTypeModule.OUTPUT_VALUE_IF_MATCHED] = if (matched) value else VNull
+    }
     return outputs
 }
 
@@ -90,23 +103,27 @@ internal fun buildInspectionOutputs(
  * `If` 的「存在 / 不存在」**判不出空值**。脚本侧也拿不到细粒度类型
  * （`JsValueConverter` 对图片 / 文件走 `toString()`）。本模块补上这个缺口。
  *
- * ## 主用法（文档 §3.4）
+ * ## 主用法（文档 §3.4 / §3.6）
  *
  * ```
  * ① 查看数据类型：value = {{调用步骤.result}}，expected_type = 图片
  * ② If：条件 = {{①.matched}}，运算符 = 为真      ← 不用填右操作数
- *    ├─ 真分支 → 创建变量(断言成图片) → 点 width/height
+ *    ├─ 真分支 → 直接点 {{①.value_if_matched.width}} / .height
  *    └─ 假分支 → …
  * ```
  *
- * ⚠️ **断言必须放在「判断为真」的分支内** —— 放在分支外的话假分支也会执行它，
- * 那时值不是图片，`创建变量` 会构造出一个假图片（属性访问静默 `VNull`）。
+ * ⚠️ **`{{①.value_if_matched}}` 只在「为真」分支里才有意义** —— 未匹配时它是 `VNull`。
+ * 这与「判断 + 真分支内用『创建变量』断言」的缺口**完全相同**：那个步骤的输出同样
+ * 可以从任何地方引用，未执行时同样解析成 `VNull`（`VariableResolver.kt:204`）。
+ * ⇒ 本模块只是把那两步**省掉**，没有引入新的失效面（论证见文档 §3.6）。
  *
  * ## ⚠️ 三个静默失效点（文档 §7）
  *
- * 1. `expected_type` **只影响 `matched`，不影响 `value` 的类型** ⇒ 本模块
- *    **刻意不输出「带类型的 value」**（`value` 由「创建变量」在真分支内给）。
- *    若本模块的 `value` 被标成目标类型，那是在**说谎**（文档 §4.1）。
+ * 1. `value_if_matched` 的**静态类型** = `expected_type`，而运行期**未匹配时是 `VNull`**
+ *    ⇒ 在假分支 / `If` 之外引用它会静默拿到空值。⚠️ 这是本模块**唯一**有意接受的
+ *    soundness 缺口；它与「创建变量」的关键差别是**绝不伪造** ——
+ *    `CreateVariableModule` 对图片会造出 `VImage(字典字符串化后的路径)`（`:263-265`）、
+ *    对数字静默给 `0.0`（`:250-253`），本模块只给空。
  * 2. 用户拿 `type_name`（本地化文案）做比较 ⇒ 切换语言后判断失效。
  *    故同时输出稳定的 `type_id`；`type_name` **仅供显示**。
  * 3. 先选了具体类型、引用 `matched` 后又改成「仅查看」⇒ 引用**悬空**
@@ -122,6 +139,12 @@ internal fun buildInspectionOutputs(
  * | **不输出**（本模块） | **选择器里根本没有这一项** ⇒ 用户被迫去选一个期望类型 | 无陷阱 |
  *
  * ⇒ **把错误暴露在编辑期**，而不是运行期静默走错分支。
+ *
+ * ## ⚠️ 为什么 `value_if_matched` 与 `matched` **同条件**输出
+ *
+ * 「仅查看」时若也给出一个带类型的值，就等于把上面那条「编辑期暴露」的护栏拆掉
+ * （用户不用选类型也能拿到带类型的值）。故两者**必须**同在 `expectedTypeOf(step) != null`
+ * 的分支里输出。
  */
 class InspectTypeModule : BaseModule() {
 
@@ -186,15 +209,27 @@ class InspectTypeModule : BaseModule() {
             )
         )
 
-        // ⚠️ 「仅查看」时**不输出 `matched`**（不是输出一个恒假布尔）——
+        // ⚠️ 「仅查看」时**不输出 `matched` / `value_if_matched`**（不是输出一个恒假布尔）——
         //    把「没选期望类型」暴露在**编辑期**（选择器里根本没这一项），
         //    而不是让用户在运行期静默走假分支还以为「类型不匹配」。
-        if (expectedTypeOf(step) != null) {
+        val expected = expectedTypeOf(step)
+        if (expected != null) {
             outputs += OutputDefinition(
                 id = OUTPUT_MATCHED,
                 name = "类型匹配",
                 typeName = VTypeRegistry.BOOLEAN.id,
                 nameStringRes = R.string.output_vflow_data_inspect_type_matched_name
+            )
+            // ⚠️ `value_if_matched` 的**静态类型 = 期望类型**，让选择器能按该类型展开属性
+            //    （图片 → 宽高、列表 → 首项、文件 → 路径、字典 → 声明的键）。
+            //    运行期语义：匹配 ⇒ 原对象；未匹配 ⇒ `VNull`（**绝不伪造**）。
+            //    与 `matched` **同条件**输出 —— 否则「仅查看」也能拿到带类型的值，
+            //    「把没选类型暴露在编辑期」那条护栏就白设了（见类注释末节）。
+            outputs += OutputDefinition(
+                id = OUTPUT_VALUE_IF_MATCHED,
+                name = "匹配时的值",
+                typeName = expected,
+                nameStringRes = R.string.output_vflow_data_inspect_type_value_if_matched_name
             )
         }
         return outputs
@@ -236,6 +271,7 @@ class InspectTypeModule : BaseModule() {
             buildInspectionOutputs(
                 inspection,
                 value.type.getLocalizedName(context.applicationContext),
+                value,
             )
         )
     }
@@ -256,6 +292,19 @@ class InspectTypeModule : BaseModule() {
         const val OUTPUT_TYPE_ID = "type_id"
         const val OUTPUT_TYPE_NAME = "type_name"
         const val OUTPUT_MATCHED = "matched"
+
+        /**
+         * 「匹配时的值」——**本模块的第二用途**：把值按期望类型交给下游，
+         * 省掉「If + 创建变量」两步。
+         *
+         * ⚠️ 运行期：匹配 ⇒ **原对象**；未匹配 ⇒ `VNull`。**绝不伪造**
+         * （对照 `CreateVariableModule` 的 `TYPE_IMAGE` 分支 `:263-265` —— 它对任何输入
+         * 都会造出一个 `VImage`）。
+         *
+         * ⚠️ 静态类型 = `expected_type`，故**在假分支引用它会静默拿到空值**；
+         * 这与「判断 + 真分支内创建变量」的缺口相同（文档 §3.6）。
+         */
+        const val OUTPUT_VALUE_IF_MATCHED = "value_if_matched"
 
         /**
          * 「仅查看」哨兵值。

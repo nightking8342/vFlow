@@ -3743,4 +3743,5 @@
     <string name="option_vflow_data_inspect_type_null">Null</string>
     <string name="summary_vflow_data_inspect_type_prefix">Inspect data type</string>
     <string name="summary_vflow_data_inspect_type_with_expected">Inspect data type · expect %1$s</string>
+    <string name="output_vflow_data_inspect_type_value_if_matched_name">Value when matched</string>
 </resources>

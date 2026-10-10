@@ -275,6 +275,42 @@ class InspectTypeModuleTest {
         assertNotNull(matched.nameStringRes)
     }
 
+    /**
+     * 方案 C21：选具体类型 ⇒ 同时含 `value_if_matched`，且它的**静态类型就是期望类型本身**。
+     *
+     * 这是「省掉 If + 创建变量两步」的全部原理：选择器按 `typeName` 决定能不能继续展开属性
+     * （`MagicVariablePickerSheet` 的 `canNavigateDeeper`）⇒ 标成 `ANY` 就等于没做。
+     */
+    @Test
+    fun `a concrete expected type also adds a value output typed as the expectation`() {
+        for (expected in listOf(
+            VTypeRegistry.IMAGE.id,
+            VTypeRegistry.DICTIONARY.id,
+            VTypeRegistry.LIST.id,
+            VTypeRegistry.FILE.id,
+            VTypeRegistry.STRING.id,
+        )) {
+            val outputs = module.getOutputs(stepWith(expected))
+            val handed = outputs.single { it.id == InspectTypeModule.OUTPUT_VALUE_IF_MATCHED }
+            assertEquals(
+                "value_if_matched 的静态类型必须是期望类型本身（否则选择器展不开属性）",
+                expected,
+                handed.typeName,
+            )
+            assertNotNull(handed.nameStringRes)
+        }
+    }
+
+    /** 方案 C22：「仅查看」⇒ **不含** `value_if_matched`（与 `matched` 同条件，护栏不能被拆）。 */
+    @Test
+    fun `view only produces no typed value output`() {
+        val ids = module.getOutputs(stepWith(InspectTypeModule.EXPECTED_VIEW_ONLY)).map { it.id }
+        assertFalse(
+            "「仅查看」时不得输出 value_if_matched（否则用户不选类型也能拿到带类型的值）",
+            ids.contains(InspectTypeModule.OUTPUT_VALUE_IF_MATCHED),
+        )
+    }
+
     /** 方案 C18：`expected_type` 缺失 / 非法 ⇒ 与「仅查看」同（回落）。 */
     @Test
     fun `a missing or invalid expected type falls back to view only`() {
@@ -373,6 +409,30 @@ class InspectTypeModuleTest {
         )
     }
 
+    /**
+     * 方案 D26：本模块**不得构造任何具体类型的值** —— "不伪造"的源码级守卫。
+     *
+     * 行为测试（F30）只能证明「走这条路径时没伪造」；这条扫描断言防的是**将来有人**
+     * 为了"顺手转换一下"而在本文件里写 `VImage(...)` / `VDictionary(...)`。
+     *
+     * ⚠️ `VString(` / `VBoolean(` **不在**禁列 —— 它们用于 `type_id` / `type_name` / `matched`
+     * 这三个本就该是字符串/布尔的输出，属正常使用。
+     * ⚠️ 反证：在 `execute` 里加一行 `VImage(value.asString())` ⇒ 本条必红。
+     */
+    @Test
+    fun `the module never fabricates a value of the target type`() {
+        val source = SourceScan.stripped(MODULE_PATH)
+        assertTrue("剥注释后行数异常（${source.lines().size}）", source.lines().size > 50)
+        for (ctor in listOf("VImage(", "VFile(", "VDictionary(", "VList(", "VNumber(", "VCoordinate(")) {
+            assertFalse(
+                "本模块不得构造 $ctor —— 未匹配时只给 VNull，不伪造（见 OUTPUT_VALUE_IF_MATCHED 的 KDoc）",
+                source.contains(ctor),
+            )
+        }
+        // 反证用：确认扫描到的确实是模块源码
+        assertTrue(source.contains("class InspectTypeModule"))
+    }
+
     // ═══════════ E. 三语键齐全 ═══════════
 
     /** 方案 E24：三份 `strings_module.xml` 的键集合逐字相等。 */
@@ -439,25 +499,77 @@ class InspectTypeModuleTest {
     /** 方案 F26：匹配 ⇒ `type_id` 正确、`matched` 是 `VBoolean(true)`、`type_name` 在位。 */
     @Test
     fun `outputs carry the type id and a true match`() {
+        val image = VImage("content://x/1.png")
         val outputs = buildInspectionOutputs(
-            inspectValueType(VImage("content://x/1.png"), VTypeRegistry.IMAGE.id),
+            inspectValueType(image, VTypeRegistry.IMAGE.id),
             typeName = "图片",
+            value = image,
         )
         assertEquals(VTypeRegistry.IMAGE.id, (outputs[InspectTypeModule.OUTPUT_TYPE_ID] as VString).raw)
         assertEquals(true, (outputs[InspectTypeModule.OUTPUT_MATCHED] as VBoolean).raw)
         assertEquals("图片", (outputs[InspectTypeModule.OUTPUT_TYPE_NAME] as VString).raw)
     }
 
-    /** 方案 F27：选「仅查看」⇒ `outputs` **不含 `matched` 键**（不是恒假布尔）。 */
+    /**
+     * 方案 F29：匹配 ⇒ `value_if_matched` 是**原来那个对象**（同一引用，不是副本）。
+     *
+     * ⚠️ 必须用 `assertSame` —— `assertEquals` 对 `VImage` 这种 data class 会被"值相等"蒙过去，
+     * 从而**漏掉**「实现偷偷重新构造了一个对象」这类缺陷。
+     */
+    @Test
+    fun `a matched value is handed back as the very same object`() {
+        val image = VImage("content://x/1.png")
+        val outputs = buildInspectionOutputs(
+            inspectValueType(image, VTypeRegistry.IMAGE.id),
+            typeName = "图片",
+            value = image,
+        )
+        assertSame(
+            "匹配时必须交回原对象本身（不得重新构造）",
+            image,
+            outputs[InspectTypeModule.OUTPUT_VALUE_IF_MATCHED],
+        )
+    }
+
+    /**
+     * 方案 F30：**未匹配 ⇒ `VNull`，绝不伪造** —— 本模块最重要的一条行为断言。
+     *
+     * 对照 `CreateVariableModule` 的 `TYPE_IMAGE` 分支（`:263-265`）：它对**任何**输入都会
+     * 造出一个 `VImage`（把字典字符串化当路径）⇒ 属性访问静默 `VNull`，而用户以为拿到了图。
+     * 本模块只给空，不造值。
+     */
+    @Test
+    fun `a mismatched value becomes null instead of a fabricated one`() {
+        val dictionary = VDictionary(mapOf("code" to VNumber(200.0)))
+        val outputs = buildInspectionOutputs(
+            inspectValueType(dictionary, VTypeRegistry.IMAGE.id),
+            typeName = "字典",
+            value = dictionary,
+        )
+        assertEquals(false, (outputs[InspectTypeModule.OUTPUT_MATCHED] as VBoolean).raw)
+        assertSame(
+            "未匹配时必须给 VNull（不得伪造出目标类型的值）",
+            VNull,
+            outputs[InspectTypeModule.OUTPUT_VALUE_IF_MATCHED],
+        )
+    }
+
+    /** 方案 F27：选「仅查看」⇒ `outputs` **不含 `matched` / `value_if_matched` 键**（不是恒假布尔）。 */
     @Test
     fun `outputs omit matched under view only`() {
+        val text = VString("hello")
         val outputs = buildInspectionOutputs(
-            inspectValueType(VString("hello"), null),
+            inspectValueType(text, null),
             typeName = "文本",
+            value = text,
         )
         assertFalse(
             "「仅查看」时 outputs 里不得有 matched 键",
             outputs.containsKey(InspectTypeModule.OUTPUT_MATCHED),
+        )
+        assertFalse(
+            "「仅查看」时 outputs 里不得有 value_if_matched 键（否则编辑期护栏被拆）",
+            outputs.containsKey(InspectTypeModule.OUTPUT_VALUE_IF_MATCHED),
         )
         assertEquals(VTypeRegistry.STRING.id, (outputs[InspectTypeModule.OUTPUT_TYPE_ID] as VString).raw)
     }
@@ -468,6 +580,7 @@ class InspectTypeModuleTest {
         val outputs = buildInspectionOutputs(
             inspectValueType(VNull, null),
             typeName = "空",
+            value = VNull,
         )
         assertEquals(VTypeRegistry.NULL.id, (outputs[InspectTypeModule.OUTPUT_TYPE_ID] as VString).raw)
     }
@@ -475,9 +588,11 @@ class InspectTypeModuleTest {
     /** 不匹配时 `matched` 是 `false`（而不是缺失）。 */
     @Test
     fun `outputs carry a false match for a mismatched type`() {
+        val text = VString("hello")
         val outputs = buildInspectionOutputs(
-            inspectValueType(VString("hello"), VTypeRegistry.IMAGE.id),
+            inspectValueType(text, VTypeRegistry.IMAGE.id),
             typeName = "文本",
+            value = text,
         )
         assertEquals(false, (outputs[InspectTypeModule.OUTPUT_MATCHED] as VBoolean).raw)
     }

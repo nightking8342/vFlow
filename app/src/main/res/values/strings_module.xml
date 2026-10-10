@@ -3750,4 +3750,5 @@
     <string name="option_vflow_data_inspect_type_null">空</string>
     <string name="summary_vflow_data_inspect_type_prefix">查看数据类型</string>
     <string name="summary_vflow_data_inspect_type_with_expected">查看数据类型 · 期望 %1$s</string>
+    <string name="output_vflow_data_inspect_type_value_if_matched_name">匹配时的值</string>
 </resources>
