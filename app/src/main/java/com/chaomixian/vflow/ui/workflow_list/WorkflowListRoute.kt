@@ -790,9 +790,9 @@ fun WorkflowListRoute(
                         tileSelectionVersion++
                     } else {
                         // ⚠️ 解绑时**按 (workflowId, kind) 删**，不是无差别删 ——
-                        //    两池互斥后同一工作流不会同时在两池，但「先在执行池解绑、
-                        //    再去开关池绑定」之间若用无差别删，会把用户刚在另一池
-                        //    绑好的也一起删掉（无提示）。
+                        //    ⚠️ 2026-10-10 起同一工作流**可以同时在两池**（执行池看手动触发器、
+                        //    开关池看自动触发器，见 `TileGate`），此时无差别删会把用户在另一池
+                        //    绑好的槽位也一起清掉（无提示）。
                         tileManager.removeTileByWorkflowIdInKind(target.workflowId, target.kind)
                         tileManager.saveTile(
                             WorkflowTile(

@@ -30,17 +30,18 @@ abstract class BaseExecuteTileService : BaseWorkflowTileService() {
         val (workflow, _) = bound
 
         // ⚠️⚠️ 闸 3（§4.6）：前两道闸（菜单显隐 / 面板分段）判的是「**绑定的那一刻**」，
-        //       而 `hasAutoTriggers()` 的结果**会随用户编辑而变**。
-        //       少了这一道，一个「绑定时是手动型、后来加了定时触发」的工作流会
-        //       **继续按执行型跑**，而它的 `isEnabled` 开关在卡片上显示着、
-        //       用户以为那个开关管用 —— 实际磁贴每次点击都在绕过它执行。
+        //       而触发器组成**会随用户编辑而变**。
+        //       2026-10-10 起执行池的判据是「**有手动触发器**」（`TileGate`），
+        //       故这里的越界只剩一种：用户把该工作流的手动触发器删掉了。
+        //       那时它只剩自动触发器 ⇒ 继续点这个磁贴等于绕过 `isEnabled` 直接跑，
+        //       而用户在卡片上看到的开关管不住它。
         //       ⚠️ 且**没有任何行为测试会因此变红**，只有源码扫描能锁住。
         if (!TileGate.accepts(TileKind.EXECUTE, workflow)) {
             // 表现刻意设计成**可见的**（§4.6/§4.7）：磁贴此刻是 UNAVAILABLE +
             // subtitle 说明去哪一池。点击只打开 App，**不执行、也不切换**。
             DebugLogger.i(
                 TAG,
-                "执行型磁贴拒绝执行：工作流「${workflow.name}」含自动触发器。" +
+                "执行型磁贴拒绝执行：工作流「${workflow.name}」已无手动触发器。" +
                     "磁贴本身已处于越界态，此处只打开 App。"
             )
             toast(getString(R.string.tile_out_of_kind_execute))

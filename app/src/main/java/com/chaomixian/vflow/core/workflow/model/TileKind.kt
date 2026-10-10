@@ -14,9 +14,10 @@ package com.chaomixian.vflow.core.workflow.model
  * 且备份（`TileScope` 是**文本层合并**）与 `TileManager` 的 Gson 反序列化
  * 都**天然容忍新字段** ⇒ 旧记录缺 `kind` 时落默认值 [EXECUTE]，**零迁移**。
  *
- * ⚠️ **两池强制互斥**（用户 2026-10-06 定案）：执行型**不允许**绑有 auto trigger 的工作流。
- * 判据**只有一处** —— 见 `TileGate`，任何地方自己写 `hasAutoTriggers()` 都会让
- * 「三道闸判据一致」失效。
+ * ⚠️ **两池不再互斥**（用户 2026-10-10 修订，此前是「强制互斥」）：
+ * 执行型只要求**有手动触发器**，开关型只要求**有自动触发器** ⇒ 同时挂着两种触发器的工作流
+ * **可以同时**占一个执行槽与一个开关槽。判据**只有一处** —— 见 `TileGate`，
+ * 任何地方自己写 `hasAutoTriggers()` / `hasManualTrigger()` 都会让「三道闸判据一致」失效。
  *
  * ⚠️ 独立成文件（而非塞进 `WorkflowTile.kt`）是为了**纯 JVM 单测**能单独引用它 ——
  * `WorkflowTile` 带 `@Parcelize`、依赖 android，引它会连 `Parcel` 一起拖进测试。

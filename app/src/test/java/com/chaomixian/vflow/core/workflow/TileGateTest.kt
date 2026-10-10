@@ -9,11 +9,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 两池**互斥判据**的逐格验证（设计 §4.6 / §8.1）。
+ * 两池**准入判据**的逐格验证（设计 §4.6 / §8.1）。
  *
  * ⚠️⚠️ 这是三道闸（菜单 / 面板 / service）**共用的唯一判据**。
- * 任何一处自己写 `hasAutoTriggers()`，都会让「菜单项显示着、点了却被拒绝」出现。
+ * 任何一处自己写 `hasAutoTriggers()` / `hasManualTrigger()`，都会让
+ * 「菜单项显示着、点了却被拒绝」出现。
  * 故本文件逐格锁死四个组合，外加两条反向锁。
+ *
+ * ⚠️ **2026-10-10 行为变更**：执行池的判据由 `!hasAutoTriggers()` 改为
+ * `hasManualTrigger()`（用户定案）⇒ 两池**不再互斥**，「手动 + 自动」的工作流同时进两池。
+ * 下面几条用例就是这次变更的机器化保证。
  */
 class TileGateTest {
 
@@ -39,21 +44,36 @@ class TileGateTest {
         isEnabled = isEnabled,
     )
 
-    // ── 互斥判据逐格 ────────────────────────────────────────
+    // ── 准入判据逐格 ────────────────────────────────────────
 
     @Test
-    fun `EXECUTE accepts a workflow without auto triggers`() {
-        assertTrue(TileGate.accepts(TileKind.EXECUTE, workflow(triggers = emptyList())))
+    fun `EXECUTE accepts any workflow with a manual trigger`() {
         assertTrue(TileGate.accepts(TileKind.EXECUTE, workflow(triggers = listOf(manualTrigger))))
+        assertTrue(
+            "★ 2026-10-10：手动 + 自动并存时**也**能进执行池（本次变更的核心）",
+            TileGate.accepts(TileKind.EXECUTE, workflow(triggers = listOf(manualTrigger, autoTrigger)))
+        )
     }
 
     @Test
-    fun `EXECUTE rejects a workflow with auto triggers`() {
+    fun `EXECUTE rejects a workflow without a manual trigger`() {
         assertFalse(TileGate.accepts(TileKind.EXECUTE, workflow(triggers = listOf(autoTrigger))))
         assertFalse(
-            "manual + auto 并存时仍属开关池（这正是既有缺陷被掩盖的形态）",
-            TileGate.accepts(TileKind.EXECUTE, workflow(triggers = listOf(manualTrigger, autoTrigger)))
+            "无触发器也不行 —— 判据是诚实的，不做「没有触发器 ⇒ 放行」的兜底" +
+                "（实践中不会出现：三条读路径的归一化都会补一个手动触发器）",
+            TileGate.accepts(TileKind.EXECUTE, workflow(triggers = emptyList()))
         )
+    }
+
+    @Test
+    fun `EXECUTE is not gated by isManualOnly`() {
+        // ★ 反向锁：`isManualOnly()`（= 有手动且**无**自动）正是**被推翻的旧口径**。
+        //    用它（或等价的 `!hasAutoTriggers()`）会把手动 + 自动的工作流挡在执行池外 ——
+        //    而那是编辑器新建工作流的默认形态 ⇒ 用户会发现「加了定时触发器之后
+        //    就再也绑不到执行磁贴了」，这正是本次要修的那个问题。
+        val both = workflow("both", listOf(manualTrigger, autoTrigger))
+        assertFalse("前提：这个工作流不是 manual-only", both.isManualOnly())
+        assertTrue("但它必须能进执行池", TileGate.accepts(TileKind.EXECUTE, both))
     }
 
     @Test
@@ -76,20 +96,23 @@ class TileGateTest {
     }
 
     @Test
-    fun `the two pools are strictly complementary`() {
-        // ⚠️ 两池**互斥且穷尽**：任一工作流恰好被一个池接受（设计 §4.1）。
-        //    若将来有人「放宽」某一池，这条会立刻变红。
-        val cases = listOf(
-            workflow("empty", emptyList()),
-            workflow("manual-only", listOf(manualTrigger)),
-            workflow("auto-only", listOf(autoTrigger)),
-            workflow("both", listOf(manualTrigger, autoTrigger)),
-        )
-        for (wf in cases) {
-            val execute = TileGate.accepts(TileKind.EXECUTE, wf)
-            val toggle = TileGate.accepts(TileKind.TOGGLE, wf)
-            assertTrue("${wf.id}：必须恰好被一个池接受", execute != toggle)
-        }
+    fun `the two pools overlap on a manual plus auto workflow`() {
+        // ⚠️ 2026-10-10：两池**不再互斥、也不再穷尽**（旧断言是「恰好被一个池接受」）。
+        //    这条测试锁住新口径 —— 若有人把执行池改回 `!hasAutoTriggers()`，它立刻变红。
+        val both = workflow("both", listOf(manualTrigger, autoTrigger))
+        assertTrue("手动 + 自动：执行池接受", TileGate.accepts(TileKind.EXECUTE, both))
+        assertTrue("手动 + 自动：开关池**也**接受（同一工作流可占两个槽位）", TileGate.accepts(TileKind.TOGGLE, both))
+
+        // 其余组合仍然各归一处
+        assertTrue(TileGate.accepts(TileKind.EXECUTE, workflow("manual-only", listOf(manualTrigger))))
+        assertFalse(TileGate.accepts(TileKind.TOGGLE, workflow("manual-only", listOf(manualTrigger))))
+        assertFalse(TileGate.accepts(TileKind.EXECUTE, workflow("auto-only", listOf(autoTrigger))))
+        assertTrue(TileGate.accepts(TileKind.TOGGLE, workflow("auto-only", listOf(autoTrigger))))
+
+        // ⚠️ 唯一两池都不收的一格：零触发器（归一化会补手动触发器 ⇒ 实际不会出现）
+        val empty = workflow("empty", emptyList())
+        assertFalse(TileGate.accepts(TileKind.EXECUTE, empty))
+        assertFalse(TileGate.accepts(TileKind.TOGGLE, empty))
     }
 
     @Test
@@ -100,7 +123,10 @@ class TileGateTest {
             TileGate.accepts(TileKind.TOGGLE, workflow(triggers = listOf(autoTrigger), isEnabled = false))
         )
         assertTrue(
-            TileGate.accepts(TileKind.EXECUTE, workflow(triggers = emptyList(), isEnabled = false))
+            TileGate.accepts(
+                TileKind.EXECUTE,
+                workflow(triggers = listOf(manualTrigger), isEnabled = false)
+            )
         )
     }
 
@@ -127,11 +153,23 @@ class TileGateTest {
     }
 
     @Test
-    fun `isOutOfKind is true when a bound workflow gained auto triggers`() {
-        // ★ 本设计最核心的一格（§9 未决项 4）：绑定时是手动型、后来加了定时触发。
+    fun `isOutOfKind is false when a bound execute workflow gained auto triggers`() {
+        // ★ 2026-10-10 修订：加自动触发器**不再**让执行磁贴越界（判据是「有手动触发器」）。
+        //    它此后同时属于两池 —— 用户想去开关池控制自动触发，可以**另外**绑一个开关槽位，
+        //    而不是被强制把执行槽位换掉。
         val tile = WorkflowTile(0, "wf", TileKind.EXECUTE)
-        val nowAuto = workflow("wf", listOf(autoTrigger))
-        assertTrue(TileGate.isOutOfKind(tile, nowAuto))
+        assertFalse(
+            TileGate.isOutOfKind(tile, workflow("wf", listOf(manualTrigger, autoTrigger)))
+        )
+    }
+
+    @Test
+    fun `isOutOfKind is true when a bound execute workflow lost its manual trigger`() {
+        // ★ 现在执行池**唯一**的越界形态：用户把手动触发器删掉了。
+        //   此时该工作流必然只剩自动触发器（归一化保证至少有一个触发器）
+        //   ⇒ `tile_out_of_kind_execute` 引导去开关池是对的。
+        val tile = WorkflowTile(0, "wf", TileKind.EXECUTE)
+        assertTrue(TileGate.isOutOfKind(tile, workflow("wf", listOf(autoTrigger))))
     }
 
     @Test

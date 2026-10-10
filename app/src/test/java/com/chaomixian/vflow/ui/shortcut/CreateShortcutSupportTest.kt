@@ -52,10 +52,11 @@ class CreateShortcutSupportTest {
 
     @Test
     fun `a manual plus auto workflow is still pickable`() {
-        // ★ 这是与磁贴 `TileGate` **刻意不同**的那一格（用户 2026-10-07 定案）：
-        //   磁贴的执行池排斥自动工作流（自动工作流在磁贴上该是个开关），
-        //   而「创建快捷方式」只是给用户一个手动点火入口 —— 挂了定时触发器
-        //   的工作流照样能手动跑，没有理由藏起来。
+        // ★ 用户 2026-10-07 定案：「创建快捷方式」只给用户一个**手动点火入口** ——
+        //   挂了定时触发器的工作流照样能手动跑，没有理由藏起来。
+        //   （⚠️ 2026-10-10 之前，磁贴执行池的口径与此**不同**：它排斥自动工作流。
+        //     那次修订后两处判据逐字相同，但**仍是各自独立的判据**，见
+        //     `CreateShortcutSupport` 的 KDoc。）
         val mixed = workflow(triggers = listOf(manualTrigger, autoTrigger))
         assertEquals(
             "手动 + 自动并存时**仍要**出现在快捷方式列表里",

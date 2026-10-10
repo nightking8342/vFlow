@@ -550,9 +550,10 @@ fun WorkflowListScreen(
                                     )
                                 )
                                 // ⚠️ 两个池**各自按自己那一池判**，且判据只有 TileGate 一处。
-                                //    此前这里只有一个菜单项、判据是 hasManualTrigger() ——
-                                //    那会让「Agent 建的纯自动工作流」没有入口（它没有 manual
-                                //    trigger），而多数工作流同时有 manual+auto、缺陷被掩盖着。
+                                //    ⚠️ 2026-10-10 起两池**不再互斥**：执行池看「有手动触发器」、
+                                //    开关池看「有自动触发器」，故「手动 + 自动」的工作流
+                                //    （编辑器新建的默认形态）**两项菜单会同时出现** —— 这是要的，
+                                //    不是重复项。纯自动工作流（Agent 建 / 外部导入）只有开关项。
                                 if (TileGate.accepts(TileKind.EXECUTE, workflow)) {
                                     add(
                                         WorkflowMenuItemAction(

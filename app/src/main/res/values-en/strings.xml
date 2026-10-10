@@ -318,13 +318,13 @@
     <string name="workflow_item_menu_add_to_toggle_tile">Add to Control Center (Toggle)</string>
     <string name="tile_execute_pool_title">Run tiles</string>
     <string name="tile_toggle_pool_title">Toggle tiles</string>
-    <string name="tile_kind_mismatch_execute">This workflow has automatic triggers. Add it to a toggle tile instead.</string>
+    <string name="tile_kind_mismatch_execute">This workflow has no manual trigger. Add it to a toggle tile instead.</string>
     <string name="tile_kind_mismatch_toggle">This workflow has no automatic trigger. Add it to a run tile instead.</string>
     <string name="tile_unbound_subtitle">No workflow assigned</string>
     <string name="tile_toggle_enabled">Enabled</string>
     <string name="tile_toggle_disabled">Paused</string>
     <string name="tile_toggle_failed_permission">Missing permissions, cannot enable</string>
-    <string name="tile_out_of_kind_execute">Has automatic triggers; rebind it to a toggle tile</string>
+    <string name="tile_out_of_kind_execute">No manual trigger left; rebind it to a toggle tile</string>
     <string name="tile_out_of_kind_toggle">No automatic trigger left; rebind it to a run tile</string>
     <string name="dialog_delete_title">Confirm Delete</string>
     <string name="dialog_delete_message">Are you sure you want to delete workflow \"%s\"? This action cannot be undone.</string>
