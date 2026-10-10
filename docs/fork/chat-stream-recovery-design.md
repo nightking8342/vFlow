@@ -1,6 +1,6 @@
 # Chat 流超时与恢复设计（chat-stream-recovery-design.md）
 
-> **状态：设计稿 v1.2，未实现。** 写于 2026-10-10，基线 `44de0785`。
+> **状态：设计稿 v1.3，未实现。** 写于 2026-10-10，基线 `44de0785`。
 > **目录归属**：`docs/fork/`，fork 独有文件 ⇒ **冲突归我方**。
 >
 > **上位文档**：`docs/fork/chat-streaming-design.md`。本文补的正是它 §1.2 明列「第一版不做」的
@@ -384,7 +384,7 @@ data class ChatPresetConfig(
 
 | 文件 | 内容 |
 |---|---|
-| `ui/chat/ChatStreamTimeouts.kt` | `ChatStreamTimeouts(firstByteMs, idleMs, connectMs)` + `DEFAULT` + 校验/夹取 + `fromPreset(preset)` + `toClient()`。**两个 client 的唯一真值来源** |
+| `ui/chat/ChatStreamTimeouts.kt` | `ChatStreamTimeouts(idleMs, connectMs)` + `DEFAULT` + 校验/夹取 + `fromPreset(preset)` + `toClient()`。**两个 client 的唯一真值来源**（⚠️ v1.3：构造参数由三个收敛为两个，`firstByteMs` 已随 §3.2 一并作废） |
 | `ui/chat/ChatStreamRecovery.kt` | `ChatStreamTimeoutException` / `ChatStreamRecoveryPolicy` / `ChatStreamRetryNotice` / `streamWithRecovery(...)` / `commitsToUi()`（§4.4）。**纯 Kotlin，零 Android 依赖** |
 | `test/ui/chat/ChatStreamRecoveryTest.kt` | 恢复层单测（§6.1） |
 | `test/ui/chat/ChatSseTimeoutTest.kt` | 超时分类单测（§6.1，MockWebServer + 注入缝） |
@@ -430,7 +430,14 @@ data class ChatPresetConfig(
 | 把 `catch (timeout: ChatStreamTimeoutException)` 改成 `catch (e: Throwable)` | 用例 ⑥ |
 | 把 `openStream` 工厂改成复用同一个 Flow 实例 | 用例 ①（事件重复）或新增的「assembler 状态污染」用例 |
 | 把 `sawFirstEvent` 恒置 false | 用例 ②（分类错） |
-| 把 keep-alive 判据改成事件级 | 用例 ③ |
+| ~~把 keep-alive 判据改成事件级~~ —— ⚠️ **v1.3 作废：本实现下无落点** | — |
+
+⚠️ **v1.3：上一条反证作废，理由如实记录。** 「keep-alive 也算活跃」这条字节级语义在本实现里
+**由 OkHttp 的 socket 级 `readTimeout` 天然提供**（§4.2 第 1 点），代码里**没有应用层判据可改**——
+所以这条反证**改不出红**。真正守卫该语义的是**用例②与用例③的组合**：
+③（只发 `: keep-alive` ⇒ 不超时）单独看是**弱断言**（把 `readTimeout` 设成 0 也照样通过），
+必须配上 ②（发一个事件后 `STALL` ⇒ 报 `IDLE_TIMEOUT`，它要求 `readTimeout` 非 0）才能把
+「字节级、且阈值非 0」这个组合钉死。⇒ 守卫保留为**用例②+③**，反证条目作废。
 
 ### 6.3 真机场景（release 构建）
 
@@ -485,3 +492,4 @@ data class ChatPresetConfig(
 | v1 | 2026-10-10 | 初稿。基线 `44de0785`。数值全部取自五家头部 Agent 的源码/文档实测值（§2.1）；六条共同决策见 §2.2；有意偏离项（重试次数 2）见 §3.3 与 D6。顺带记录 `ChatSseStreamTest.kt:36` 的死字段与不符注释（§1.4） |
 | v1.1 | 2026-10-10 | **由方案阶段（codex）的提问触发的三处修正**：① §3.2 **撤回「两个独立配置项」** —— OkHttp 只有一个 `readTimeout`，min / max 都会静默忽略一个方向，改为「单值 + 分类」（D2/D3 同步改）；② §5.2 修正**六处行号误标** —— 它们是供应商配置卡（`ProviderDraft`）的位置，不是预设编辑弹窗；UI 落点明确为 `ModelEditorDialog`，字段收敛为**两个**；③ §3.3 重试夹取范围由「100 的宽度」改为 **0..5**（Codex 的 `DEFAULT_STREAM_MAX_RETRIES`）。另记：`label_network` 键已存在（复用会构建失败） |
 | v1.2 | 2026-10-10 | **方案阶段第二次提问触发的修正（第四处文档错）**：`response == null` 由「`CONNECT_TIMEOUT`、不重试」改为「**`NO_RESPONSE_TIMEOUT`、可重试**」（§4.2 / §5.2 / D13）。理由：它与 §4.2 第 2 点自相矛盾，且会让缓冲型网关下的长思考**救不回来**。同时修正 §6.1 用例①与用例④的构造（`NO_RESPONSE` 落不到 `FIRST_BYTE_TIMEOUT`，已字节码核实），并在 §7 如实记录黑洞网络下的重试代价 |
+| v1.3 | 2026-10-10 | **验收段独立复核触发的两处修正（第五、六处文档错）**：① §5.1 的构造函数签名仍写着三个参数 `ChatStreamTimeouts(firstByteMs, idleMs, connectMs)`，与 §3.2 的「单值」结论**自相矛盾**（§4.7 已改、§5.1 漏改），收敛为两个；② §6.2 的「把 keep-alive 判据改成事件级」这条反证**在本实现下无落点**（字节级语义来自 OkHttp 的 socket 级 `readTimeout`，无应用层判据可改）⇒ 作废，改为由「用例②+③ 的组合」守卫该语义。⚠️ 另记：验收段发现 MindFS 把**另一个任务（TriggerLabel）的交付说明**串进了本任务的 `{previous_input}`，导致交付说明整段错位——**这是编排层的问题，不是实现缺陷** |
