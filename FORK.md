@@ -1209,6 +1209,96 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 > ⚠️ **本批动了用户数据的核心读写路径**，上机前建议先导出一份备份留底
 > （且**分别验一次 `.zip` 与 `.json` 两种格式的往返**）。
 
+### 文件夹 Tab 下新建工作流自动归属（2026-10-10）
+
+> 需求（用户原话）：「在某一个文件夹 tab 下点击加号添加工作流时，这个工作流自动归到这个文件夹」。
+>
+> 归属**只能写在编辑器侧** —— 列表页点 ＋ 的那一刻**还没有工作流 id**（要等用户在编辑器里
+> 保存才生成），故整条链路是「列表页把当前选中的 Tab 串 → Intent extra → 编辑器建草稿时写
+> `folderId`」。
+>
+> ⚠️ **唯一的静默失效点**：`WORKFLOW_TAB_ALL`（`"vflow.tab.all"`）是 **UI 概念**，不是文件夹 id。
+> 它一旦被原样写进 `Workflow.folderId`，工作流就带上了一个**指向不存在文件夹的 id** ——
+> `filterByFolderTab` 刻意**没有**「未分类」兜底（见其 KDoc：不设那一档），于是该工作流切到
+> 任何文件夹都找不到。换算成 `null` 的地方**只有 FAB 那一处**。
+>
+> ⚠️ 悬空 `folderId` 还有第二个来源：文件夹在编辑器打开期间被删掉（远程 API / AI 对话）。
+> 故落盘前校验文件夹仍然存在，否则退回不归类。
+
+| 文件 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `ui/workflow_list/WorkflowListScreen.kt`（改） | `WorkflowListScreenActions.onCreateWorkflow` 签名 `() -> Unit` → **`(String?) -> Unit`**（参数 = 当前选中的文件夹 Tab id，`null` = 「全部」）。FAB 的 `onClick` 由 `actions.onCreateWorkflow` 改为 `actions.onCreateWorkflow(selectedFolderTab.takeIf { it != WORKFLOW_TAB_ALL })` —— **哨兵串 → `null` 的换算只此一处**。 | **手动合并**（1 处签名 + FAB 改写） |
+| `ui/workflow_list/WorkflowListRoute.kt`（改） | `onCreateWorkflow` 接收 `folderId`，非空时经 `WorkflowEditorActivity.EXTRA_NEW_WORKFLOW_FOLDER_ID` 传进编辑器。⚠️ **不在列表页落盘**（此刻还没有工作流 id）。 | **手动合并**（1 个 lambda） |
+| `ui/workflow_editor/WorkflowEditorActivity.kt`（改） | ① `companion object` 新增 `EXTRA_NEW_WORKFLOW_FOLDER_ID = "NEW_WORKFLOW_FOLDER_ID"`（与 `EXTRA_WORKFLOW_ID` **不可同值**）；② 新增 `private fun newWorkflowFolderId()`：读 extra + **校验文件夹仍存在**（`FolderManager.getFolder`），且**每次调用重新读 Intent**（撤销会把 `currentWorkflow` 打回 null、之后重新建草稿 —— 不缓存成字段）；③ `createDraftWorkflow` 补 `folderId = newWorkflowFolderId()`。⚠️ 只在**新建**路径生效，编辑已有工作流时归属以工作流自身的 `folderId` 为准。 | **手动合并**（1 常量 + 1 方法 + 1 参数） |
+| `test/.../ui/workflow_list/NewWorkflowFolderWiringTest.kt`（**新增**，4 例） | fork 独有：锁三处**各自都能编译通过、只有连起来才成立**的接线（哨兵→`null`、Intent extra 透传、编辑器建草稿写 `folderId` + 校验文件夹存在），外加一条「两个 extra 的 key 不撞车」。⚠️ 已做**反证**：把 FAB 那行退回 `actions.onCreateWorkflow(selectedFolderTab)`，用例变红。 | 我方 |
+
+> ⚠️ **真机验证 0 项**：只有编译、`./gradlew test` 与上述源码扫描测试支撑。
+
+### 磁贴执行池判据改「有手动触发器」（2026-10-10）—— **推翻**「两池强制互斥」
+
+> 需求（用户原话）：「目前，开关型的磁贴是根据工作流有没有 auto trigger 来判断的。
+> 执行的磁贴也是根据 auto trigger 来判断的，这个要改一下：改成只要是有『手动触发器』
+> 的工作流，就能被绑定到执行的这种磁贴」。
+>
+> **行为变更**：`TileGate.accepts(EXECUTE, …)` 由 `!hasAutoTriggers()` 改为
+> **`hasManualTrigger()`**（开关池不变）。
+>
+> ⚠️ **两池不再互斥**：执行池只要求**有手动触发器**、开关池只要求**有自动触发器**
+> ⇒ 「手动 + 自动」的工作流**可以同时**占一个执行槽与一个开关槽。而「手动 + 自动」正是
+> **编辑器新建工作流的默认形态**（新建自带 `vflow.trigger.manual`，之后加定时触发器不会删它）
+> ⇒ 旧判据下这种工作流**再也绑不到执行磁贴**，这是本次要修的问题。
+>
+> ⚠️ **三道闸的结构一个字都没放松**（菜单显隐 / 面板分段 / service 侧兜底，判据只有
+> `TileGate` 一处）；变的只是执行池的**越界形态**：由「后来**加了**自动触发器」变为
+> 「后来**删掉了**手动触发器」。后者必然只剩自动触发器（归一化保证至少有一个触发器）
+> ⇒ 越界文案引导去开关池是对的。
+>
+> ⚠️ **设计文档已同步**：`docs/fork/quick-settings-tile-design.md` 文首新增
+> 「判据修订（2026-10-10）」一节，并就地标注了 §1 / §4.5 / §4.6 / §4.7 / §5（决策 1/13/14，
+> 新增 17）/ §6.1 / §7（第 16/17 条重写）/ §8.1 / §8.3 / §9（第 4/5 条）/ §10。
+
+| 文件 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `core/workflow/TileGate.kt`（改） | `accepts` 的执行池判据换成 `hasManualTrigger()`；类 KDoc 重写（判据表 → 四格准入表、为什么改、推翻了哪条旧论证、两池不再互斥、越界只剩一种形态）。⚠️ **这是三道闸共用的唯一判据** | **手动合并**（1 行判据 + KDoc） |
+| `core/workflow/model/TileKind.kt`（改，**仅注释**） | 「两池强制互斥」→「两池不再互斥」 | **手动合并**（注释） |
+| `core/workflow/TileManager.kt`（改，**仅注释**） | `removeTileByWorkflowIdInKind` 的理由重写：**同一工作流可同时在两池**是常态，无差别删会清掉另一池的槽位 | **手动合并**（注释） |
+| `ui/tile/BaseExecuteTileService.kt`（改，**仅注释 + 1 行日志**） | 闸 3 的说明与日志由「含自动触发器」改为「已无手动触发器」 | **手动合并** |
+| `ui/workflow_list/WorkflowListScreen.kt` / `WorkflowListRoute.kt`（改，**仅注释**） | 两处「两池互斥」的注释重写（菜单两项会**同时出现**；解绑必须按 kind 删） | **手动合并**（注释） |
+| `ui/shortcut/CreateShortcutSupport.kt`（改，**仅注释**） | 判据**不变**（本来就是 `hasManualTrigger()`），只更新「与磁贴刻意不同」那句 —— 两处现在**逐字相同**，但仍是各自独立的判据 | **手动合并**（注释） |
+| 三语 `res/values{,-en,-ja}/strings.xml`（改，**改值非追加**） | `tile_kind_mismatch_execute` / `tile_out_of_kind_execute` 由「含自动触发器…」改为「**没有 / 已无手动触发器**…」。⚠️ `tile_*_toggle` 两条**刻意不动**：新判据下「无自动 ⇒ 有手动 ⇒ 引导去执行池」才真正成立 | **手动合并**（2 键 ×3 语言） |
+| `test/.../core/workflow/TileGateTest.kt`（改） | 逐格重写 + 新增两条反向锁（`isManualOnly` 不得回归、手动+自动必须进执行池）+ 越界两格改向。⚠️ **已做反证**：把判据退回 `!hasAutoTriggers()` ⇒ **5 条变红** | 我方 |
+| `test/.../ui/shortcut/CreateShortcutSupportTest.kt`（改，**仅注释**） | 同步「两处判据现在相同」的说明 | 我方 |
+| `docs/fork/quick-settings-tile-design.md`（改） | 文首新增判据修订节 + 就地标注受影响各节（清单见上） | 我方 |
+
+> ⚠️ **真机验证 0 项**：只有编译、`./gradlew test` 与源码扫描测试支撑。
+> 上机重点看：① 「手动 + 自动」的工作流**两项菜单都出现**、能同时绑两池；
+> ② 在一池解绑**不影响**另一池；③ 把执行磁贴上那个工作流的**手动触发器删掉** ⇒
+> 磁贴进 `UNAVAILABLE` + 「已无手动触发器」subtitle，点击只打开 App。
+
+### 返回值类型推导 + 数据类型模块（2026-10-11）—— **仅设计草稿，未实现**
+
+> 需求（用户 2026-10-11）：① **第一需求** —— 无论**函数工作流**还是**普通子工作流**，
+> 调用时都要能知道返回值的**类型**；② 更进一步才需要定义返回值的**结构**（且只有字典需要）；
+> ③ 如果结构定义搬到「停止并返回」步骤上，函数签名的 `returnDef` 可能就不再需要。
+>
+> 两份草稿落点见下表。**本文档只登记，不含任何代码改动**（`git status` 里只有两个 `.md`）。
+>
+> ⚠️ 一条必须先读的结论：**两个调用模块的返回值来自同一个锚点**（「停止并返回」发
+> `ExecutionSignal.Return`，`WorkflowExecutor` 的 `returnValue` 只被这一个分支赋值）
+> ⇒ 任何"只给函数工作流做"的方案都是错的。
+>
+> ⚠️ 第二条：**"类型断言"本身不 sound**（编辑器说"是图片"、运行期可能给 `VNull`
+> ⇒ 比 `ANY` 更糟，因为它在说谎）。只有三条路 sound：真转换 / 断言+失败即中断 / 分支收窄。
+> 这正是"只做一个「查看数据类型」模块 + 复用「创建变量」做断言"这个最小方案成立的理由。
+
+| 文件 | 内容 | 归属 |
+|---|---|---|
+| `docs/fork/return-type-inference-design.md`（**新增**，草稿） | fork 独有：**返回值类型推导设计**。含 §2 现状（`deriveReturnDef` 的 6 处局限、`firstOrNull` 只取第一个 return、`outputId` 被丢弃、硬编码 DICTIONARY、推类型/推键未解耦、只认「创建变量」）、§2.4 **两个模块同锚点**的代码证据、**§2.9 脚本模块的返回值形态边界**（JS/Lua 永远产不出图片/文件）、§3 四步设计（类型推导 / 多 return 合并规则【**已定案**：分歧退 ANY + 键并集 + ANY 参与合并】/ 「停止并返回」上的结构定义 + **§3.3.4 `return_keys` 的显示判据与读取侧兜底** + **§3.3.5 键只靠声明（删掉推导键逻辑，连带让 `returnDef` 彻底失去来源）** / `ANY` 兜底）、**§3.3.2 一处既有缺陷：子工作流里的模块失败不中断父工作流**（`WorkflowExecutor.kt:849` + `:490`）、§4 soundness 结论、§5 **`returnDef` 的 5 个读取点与"先收敛再删"的顺序**、§6 14 条静默失效点 | 我方 |
+| `docs/fork/type-inspection-module-design.md`（**新增**，草稿） | fork 独有：**「查看数据类型」模块设计**。含模块规格（`value` + `expected_type` → `type_id` / `type_name` / `matched`）、**§3.2 枚举设计（「仅查看」（默认，哨兵串带前缀）+ 8 种 + 「空」；「空」必须加 —— If 的「存在/不存在」判不出 `VNull`，`ConditionEvaluator.kt:59-63` 明写 VNull 视为存在）**、**§3.2.1 「仅查看」时不输出 `matched`（把"没选类型"暴露在编辑期，而不是输出恒假布尔）**、**§3.4 与 If 的配合（If 里不引用枚举，只判 `matched` 布尔；`type_id` 文本比较是次用法）**、§2 现状（类型信息在 `VObject.type` 上、If 无类型运算符、脚本侧拿不到细粒度类型）、§4 **为什么不做断言模块与转换模块**（不 sound / 静默失败 / 不能改「创建变量」的失败语义）、§5 sound 用法范式（判断 + 真分支内断言）、§7 10 条静默失效点 | 我方 |
+
+> ⚠️ **两份都是草稿，未实现、未真机验证**。实施前先读
+> `return-type-inference-design.md` §2.4 与 §4（那两条是所有后续讨论的前提）。
+
 ---
 
 ---
