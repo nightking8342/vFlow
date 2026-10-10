@@ -350,9 +350,16 @@ class WorkflowToggleTriggerTest {
         )
 
         // 4) WorkflowListRoute 的权限回弹（onToggleEnabled 内）
+        //
+        // ⚠️ 两级截取：先取 `fun WorkflowListRoute(` 的**函数体**，再在其中定位
+        //    `onToggleEnabled = { workflow, enabled ->` 这个 lambda 的**自己的体**。
+        //    刻意**不用「lambda 之后 N 行窗口」**那种写法 —— N 是魔数，将来在 lambda 里
+        //    插几行就会假红/假绿（本仓库已记过「判据写死窗口/缩进」的教训）。
         val listRoute = SourceScan.stripped(listRoutePath)
-        val toggleBody = SourceScan.functionBody(listRoute, "onToggleEnabled = { workflow, enabled ->")
-        assertTrue("找不到 onToggleEnabled 的 lambda 体", toggleBody != null)
+        val routeBody = SourceScan.functionBody(listRoute, "fun WorkflowListRoute(")
+        assertTrue("找不到 WorkflowListRoute 的函数体", routeBody != null)
+        val toggleBody = SourceScan.functionBody(routeBody!!, "onToggleEnabled = { workflow, enabled ->")
+        assertTrue("在 WorkflowListRoute 函数体内找不到 onToggleEnabled 的 lambda 体", toggleBody != null)
         assertTrue(
             "列表页权限回弹那处没标 AUTOMATIC",
             toggleBody!!.contains(marker),
