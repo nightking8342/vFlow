@@ -1275,13 +1275,14 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 > ② 在一池解绑**不影响**另一池；③ 把执行磁贴上那个工作流的**手动触发器删掉** ⇒
 > 磁贴进 `UNAVAILABLE` + 「已无手动触发器」subtitle，点击只打开 App。
 
-### 返回值类型推导 + 数据类型模块（2026-10-11）—— **仅设计草稿，未实现**
+### 返回值类型推导 + 「查看数据类型」模块（2026-10-11）—— **已实现**（单测 + 打包通过，真机未验证）
 
 > 需求（用户 2026-10-11）：① **第一需求** —— 无论**函数工作流**还是**普通子工作流**，
 > 调用时都要能知道返回值的**类型**；② 更进一步才需要定义返回值的**结构**（且只有字典需要）；
 > ③ 如果结构定义搬到「停止并返回」步骤上，函数签名的 `returnDef` 可能就不再需要。
 >
-> 两份草稿落点见下表。**本文档只登记，不含任何代码改动**（`git status` 里只有两个 `.md`）。
+> 两份设计稿：`docs/fork/return-type-inference-design.md`（返回值类型推导）与
+> `docs/fork/type-inspection-module-design.md`（「查看数据类型」模块）。
 >
 > ⚠️ 一条必须先读的结论：**两个调用模块的返回值来自同一个锚点**（「停止并返回」发
 > `ExecutionSignal.Return`，`WorkflowExecutor` 的 `returnValue` 只被这一个分支赋值）
@@ -1291,13 +1292,42 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 > ⇒ 比 `ANY` 更糟，因为它在说谎）。只有三条路 sound：真转换 / 断言+失败即中断 / 分支收窄。
 > 这正是"只做一个「查看数据类型」模块 + 复用「创建变量」做断言"这个最小方案成立的理由。
 
+**实现提交**：`202058a2`（返回值类型推导）、`554b4f44`（查看数据类型模块）、`36303c5b`（合并）。
+集成验证：`./gradlew test` **3014 例，唯一失败是既有 `VObjectPropertyTest`**；`assembleRelease` 成功。
+**真机未验证** —— 见下方遗留。
+
 | 文件 | 内容 | 归属 |
 |---|---|---|
-| `docs/fork/return-type-inference-design.md`（**新增**，草稿） | fork 独有：**返回值类型推导设计**。含 §2 现状（`deriveReturnDef` 的 6 处局限、`firstOrNull` 只取第一个 return、`outputId` 被丢弃、硬编码 DICTIONARY、推类型/推键未解耦、只认「创建变量」）、§2.4 **两个模块同锚点**的代码证据、**§2.9 脚本模块的返回值形态边界**（JS/Lua 永远产不出图片/文件）、§3 四步设计（类型推导 / 多 return 合并规则【**已定案**：分歧退 ANY + 键并集 + ANY 参与合并】/ 「停止并返回」上的结构定义 + **§3.3.4 `return_keys` 的显示判据与读取侧兜底** + **§3.3.5 键只靠声明（删掉推导键逻辑，连带让 `returnDef` 彻底失去来源）** / `ANY` 兜底）、**§3.3.2 一处既有缺陷：子工作流里的模块失败不中断父工作流**（`WorkflowExecutor.kt:849` + `:490`）、§4 soundness 结论、§5 **`returnDef` 的 5 个读取点与"先收敛再删"的顺序**、§6 14 条静默失效点 | 我方 |
-| `docs/fork/type-inspection-module-design.md`（**新增**，草稿） | fork 独有：**「查看数据类型」模块设计**。含模块规格（`value` + `expected_type` → `type_id` / `type_name` / `matched`）、**§3.2 枚举设计（「仅查看」（默认，哨兵串带前缀）+ 8 种 + 「空」；「空」必须加 —— If 的「存在/不存在」判不出 `VNull`，`ConditionEvaluator.kt:59-63` 明写 VNull 视为存在）**、**§3.2.1 「仅查看」时不输出 `matched`（把"没选类型"暴露在编辑期，而不是输出恒假布尔）**、**§3.4 与 If 的配合（If 里不引用枚举，只判 `matched` 布尔；`type_id` 文本比较是次用法）**、§2 现状（类型信息在 `VObject.type` 上、If 无类型运算符、脚本侧拿不到细粒度类型）、§4 **为什么不做断言模块与转换模块**（不 sound / 静默失败 / 不能改「创建变量」的失败语义）、§5 sound 用法范式（判断 + 真分支内断言）、§7 10 条静默失效点 | 我方 |
+| `core/workflow/model/FunctionSignatureHelper.kt`（改） | 判据由「那一步是不是『创建变量』」改为「查那一步**声明的输出类型**」；推类型 / 推键**解耦**；`deriveReturnDef` → `deriveReturn`（**永不返回 null**：无「停止并返回」⇒ `ANY`）；**删掉** `extractDictionaryKeys` 两条路径（含字面量字典的**键提取**，只保留「类型 = 字典」判断）；新增 `resolveValueType`（public，供 UIProvider 复用同一判据）与 `dictionaryKeysFor`（**读取侧类型兜底**：非字典 ⇒ 键必须为空）；多 return 合并（类型 `distinct().singleOrNull() ?: ANY`；键并集、去重、保序） | **手动合并**（fork 已有文件） |
+| `core/workflow/module/logic/StopAndReturnModule.kt`（改） | 新增 `return_keys` 参数（**唯一新增参数**，可留空）；`value` 补 `supportsRichText = true`；挂上 `uiProvider` | **手动合并** |
+| `core/workflow/module/logic/ReturnKeyEditorSheet.kt`（**新增**） | fork 独有：return key 编辑 sheet（键名 + **类型下拉**，类型存 `VTypeRegistry` 的 id，默认「任意」= `ANY`）。**复用** `sheet_define_function_param_editor.xml` 布局（隐藏「默认值 / 必填」两块，不改该 XML），**不碰** `DictionaryKVAdapter`（该组件 9 处在用，不得改其行结构） | 我方 |
+| `core/workflow/module/logic/StopAndReturnModuleUIProvider.kt`（**新增**） | fork 独有：`return_keys` 的**条件渲染**（仅当该 return 点的 `value` 现场推导为字典时才显示）+ 键列表增删改 | 我方 |
+| `core/workflow/module/logic/CallWorkflowModule.kt`（改） | `getDynamicOutputs` 的 `result` 由硬编码 `ANY` 改为**现场推导**（与 `call_function` 共用同一份实现） | **手动合并** |
+| `core/workflow/module/logic/CallFunctionModule.kt`（改） | `getOutputs` 由读 `functionSignature.returnDef` 改为**现场推导**被调工作流的步骤 | **手动合并** |
+| `core/workflow/WorkflowManager.kt`（改） | `aggregateFunctionSignature` **停写** `returnDef`（恒 `null`）。⚠️ **有意的行为变化**：存量 `returnDef.keys` 会在用户**下次保存**时被清空，**不写迁移**（决策 #11 —— 该功能 2026-09-10 才上线、多 return 时旧键无法归属到哪个步骤，迁移无解） | **手动合并** |
+| `ui/workflow_editor/EditorMoreOptionsSheet.kt`、`logic/DefineFunctionModuleUIProvider.kt`、`ui/chat/ChatAgentModuleExecutor.kt`（改） | 三处 `returnDef` 读取点收敛为**现场推导**；keys 为空时显示类型名 | **手动合并** |
+| `core/workflow/module/data/InspectTypeModule.kt`（**新增**） | fork 独有：**「查看数据类型」模块**（`vflow.data.inspect_type`，分类「数据」）。输出按 `expected_type` **条件化**（「仅查看」时**不输出 `matched`**，把"没选期望类型"暴露在编辑期）；枚举含**「空」**（补 If 的「存在/不存在」判不出 `VNull` 的既有缺口）；枚举值取 `VTypeRegistry.*.id`（**会落盘**）；**不声明 `aiMetadata`**；含两个顶层纯函数 `inspectValueType` / `buildInspectionOutputs` | 我方 |
+| `core/workflow/module/ModuleRegistry.kt`（改） | 数据段**段末追加** `register(InspectTypeModule(), context)`（+1 行注释），**不重排既有注册** | 手动合并（追加一行） |
+| 三语 `res/values{,-en,-ja}/strings_module.xml`（改） | 本批共追加 **29 键**（类型推导 10 + 查看数据类型 19）× 3 语言，**一律追加到文件末尾**；三语键名集合一致、无重复键 | 手动合并（追加条目） |
+| `test/.../model/FunctionSignatureHelperTest.kt`（改）、`test/.../module/logic/CallWorkflowOutputTypeTest.kt` + `ReturnKeysEditorWiringTest.kt` + `test/.../module/data/InspectTypeModuleTest.kt`（新增） | 单测：类型推导 / 带路径 / 多 return 合并 / 键并集 / 读取侧兜底 / 条件输出 / 防空转。**均含反证**（退回旧判据或硬编码 ⇒ 变红） | 我方 |
 
-> ⚠️ **两份都是草稿，未实现、未真机验证**。实施前先读
-> `return-type-inference-design.md` §2.4 与 §4（那两条是所有后续讨论的前提）。
+> ⚠️ **两处已知遗留（本批有意不做）**：
+> 1. **`functionSignature.returnDef` 字段仍在**（wire 格式未变），但已**无生产消费者** —— 按决策 #12，
+>    删字段留待**第一步 + 第二步真机确认之后**单独一次提交。
+> 2. **手打文本改「停止并返回」的 `value` 不会即时刷新 `return_keys` 的显隐**
+>    （`bindImmediateDynamicInputUpdates` 只绑 BOOLEAN/SWITCH）；主路径（`{{js步骤.outputs}}`
+>    只能靠 🪄 选择得到）不受影响。退路已写进设计稿：常驻渲染 + 非字典时给一行提示。
+>
+> ⚠️ **集成时的一处真事**：两个任务都往三语 `strings_module.xml` **文件末尾**追加，
+> 于是合并**必然**在这三个文件上冲突（即便追加位置已在末尾）。本次按「保留双方全部键」解决，
+> 已核对无重复键、XML 良构。⇒ 下次并行拆任务时若都要动同一份 strings 文件，**预期冲突即可，不必当异常**。
+>
+> ⚠️ **设计稿里两处已被实现推翻的断言**（已就地订正，引用时以代码为准）：
+> ① `return-type-inference-design.md` §7 落点表曾写「复用 `DictionaryKVAdapter`」与「保留字面量字典那条」——
+> 前者不成立（`StopAndReturnModule` 原本无 uiProvider，且该组件不得改），后者与决策 #9（键只靠声明）冲突；
+> ② `type-inspection-module-design.md` §3.5 曾写「不设 `usageScopes` ⇒ 不进 AI 工具清单」——
+> `ChatAgentToolRegistry.isSavedWorkflowModuleAllowed` 走**排除法、不看 `usageScopes`**，
+> 该模块**会**出现在 `save_workflow` 的模块清单里（只留 moduleId，与既有 `LogModule` / `BackupExportModule` 同量级）。
 
 ---
 

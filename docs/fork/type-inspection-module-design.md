@@ -1,6 +1,8 @@
 # 「查看数据类型」模块设计
 
-> **状态**：**草稿**（仅需求与设计，**未实现**）｜ **日期**：2026-10-11
+> **状态**：**已实现**（单测 + 打包通过；**真机未验证**）｜ **日期**：2026-10-11
+> ｜ 实现提交 `554b4f44` / 合并 `36303c5b`
+> ⚠️ 正文保留"设计时"的原始表述；**与实现不一致的一处已在 §3.5 就地订正**（引用时以代码与 FORK.md 为准）。
 > **相关**：`return-type-inference-design.md`（配套文档：返回值类型推导）。
 > 该文档的 §4 是本文档的**前提**（soundness 结论），读本文档前先读它。
 > 上游无此文件的对应物（fork 独有，冲突归属我方）。
@@ -261,7 +263,11 @@ If: {{该步骤.type_id}} 等于 "vflow.type.dictionary"     ← 手打 id
   （`VImage("x")` / `VString("a")` / `VNull` 可直接构造）；
 - `type_name` 用 `value.type.getLocalizedName(context)`，**只在模块层**做
   （需要 Context，不进纯函数）；
-- ⚠️ **不设 `AiModuleMetadata.usageScopes`** ⇒ 不进 AI 工具清单（避免污染 catalog）；
+- ⚠️ **不设 `AiModuleMetadata.usageScopes`**（避免污染 catalog）。
+  ⚠️ **实现时订正**：原写「⇒ 不进 AI 工具清单」只对了一半 ——
+  `ChatAgentToolRegistry.isSavedWorkflowModuleAllowed` 走**排除法、根本不看 `usageScopes`**，
+  故本模块**会**出现在 `save_workflow` 的模块清单里（只留 moduleId，
+  与既有 `LogModule` / `BackupExportModule` 同量级）。**这是有意保留，不是缺陷。**
 - 三语文案 + 图标 + `ModuleRegistry` **追加**注册（不重排已有注册）。
 
 ---

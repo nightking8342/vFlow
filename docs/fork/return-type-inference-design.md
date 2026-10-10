@@ -1,6 +1,8 @@
 # 返回值类型推导（函数工作流 / 普通子工作流）设计
 
-> **状态**：**草稿**（仅需求与设计，**未实现**）｜ **日期**：2026-10-11
+> **状态**：**已实现**（第一步 + 第二步 + 第三步已落地，单测 + 打包通过；**真机未验证**）
+> ｜ **日期**：2026-10-11 ｜ 实现提交 `202058a2` / `554b4f44` / 合并 `36303c5b`
+> ⚠️ 正文保留"设计时"的原始表述；**与实现不一致的两处已在 §7 就地订正**（引用时以代码与 FORK.md 为准）。
 > **相关**：`function-workflow.md`（函数工作流的原始需求文档，§14.14 是返回值键展开那一批）、
 > `quick-settings-tile-design.md`（同款「分阶段 + 静默失效点清单」写法）
 > 上游无此文件的对应物（fork 独有，冲突归属我方）。
@@ -559,11 +561,16 @@ FunctionSignatureHelper.extractDictionaryKeys (:44)   ← 唯一实现
 
 | 文件 | 改动 | 归属 |
 |---|---|---|
-| `core/workflow/model/FunctionSignatureHelper.kt`（改） | 判据从"是不是「创建变量」"改成"查输出定义类型"；推类型/推键解耦；保留字面量字典那条 | **手动合并**（fork 已有文件） |
+| `core/workflow/model/FunctionSignatureHelper.kt`（改） | 判据从"是不是「创建变量」"改成"查输出定义类型"；推类型/推键解耦。⚠️ **实现时订正**：原写「保留字面量字典那条」与决策 #9（键只靠声明）冲突 ⇒ 字面量字典**只保留「类型 = 字典」判断，不再提取键**（`extractDictionaryKeys` 两条路径全删） | **手动合并**（fork 已有文件） |
 | `core/workflow/module/logic/CallWorkflowModule.kt`（改） | `getDynamicOutputs` 的 `result` 接上同一条推导 | **手动合并** |
-| `core/workflow/module/logic/CallFunctionModule.kt`（**不改**） | `typeName = returnDef?.type ?: ANY` 已经是对的写法，helper 改完自动生效 | — |
+| `core/workflow/module/logic/CallFunctionModule.kt`（**改**） | ⚠️ **实现时订正**：原以为「不改即可」，但 `returnDef` 停写后 `lookupSignature(step)?.returnDef` 恒为 null ⇒ 改为与 `CallWorkflowModule` 共用 `FunctionSignatureHelper.deriveReturn` 现场推导 | **手动合并** |
 | `core/workflow/module/logic/DefineFunctionModuleUIProvider.kt`、`ui/workflow_editor/EditorMoreOptionsSheet.kt`（改） | keys 为空时显示类型名 | **手动合并** |
 | `test/.../model/FunctionSignatureHelperTest.kt`（改） | 见 §8 | 我方 |
+
+⚠️ **实现时新增的两个落点**（本节原表未列，见 FORK.md 的完整清单）：
+`StopAndReturnModuleUIProvider.kt`（`return_keys` 的条件渲染）与 `ReturnKeyEditorSheet.kt`
+（键名 + **类型下拉**）。后者**复用** `sheet_define_function_param_editor.xml`，
+**不复用 `DictionaryKVAdapter`** —— 该组件 9 处在用，不得改其行结构。
 
 ---
 
