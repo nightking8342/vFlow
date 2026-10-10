@@ -1,6 +1,6 @@
 # Chat 流超时与恢复设计（chat-stream-recovery-design.md）
 
-> **状态：设计稿 v1.1，未实现。** 写于 2026-10-10，基线 `44de0785`。
+> **状态：设计稿 v1.2，未实现。** 写于 2026-10-10，基线 `44de0785`。
 > **目录归属**：`docs/fork/`，fork 独有文件 ⇒ **冲突归我方**。
 >
 > **上位文档**：`docs/fork/chat-streaming-design.md`。本文补的正是它 §1.2 明列「第一版不做」的
@@ -190,7 +190,7 @@ ChatViewModel.kt        编排层：【改】把 streamReply 包一层，重试�
 ```kotlin
 var sawFirstEvent = false      // 在 onEvent 里置 true（唯一写入点）
 // onFailure 里：
-//   t is SocketTimeoutException && response == null            -> CONNECT_TIMEOUT
+//   t is SocketTimeoutException && response == null            -> NO_RESPONSE_TIMEOUT（v1.2 改名，见下）
 //   t is SocketTimeoutException && !sawFirstEvent              -> FIRST_BYTE_TIMEOUT
 //   t is SocketTimeoutException &&  sawFirstEvent              -> IDLE_TIMEOUT
 //   其余                                                        -> TRANSPORT
@@ -204,7 +204,8 @@ var sawFirstEvent = false      // 在 onEvent 里置 true（唯一写入点）
    ⚠️ 这一点已核对字节码：`RealEventSource` **没有**覆写任何 timeout，`ServerSentEventReader` 走 `readUtf8LineStrict()`，
    即 120 s（现）/ 300 s（改后）原样作用于 socket 读。
 2. **首字节的定义是「收到第一个 SSE 事件之前」**，由同一个 `readTimeout` 实现，
-   因此它同时覆盖「连响应头都没来」与「响应头来了但 body 一直空」两种形态。
+   因此它覆盖「响应头来了但 body 一直空」这一形态；而「**响应头都没到**」（`response == null`）
+   落在 `NO_RESPONSE_TIMEOUT` —— **v1.2 起它同样可重试**，见下方 ⚠️。
 3. `SseFrame.Failure` **加一个 `cause` 字段**（默认值保证既有构造点不变）：
 
 ```kotlin
@@ -214,6 +215,19 @@ data class Failure(
     val cause: SseFailureCause = SseFailureCause.TRANSPORT,   // 新增，带默认值
 ) : SseFrame
 ```
+
+⚠️⚠️ **v1.2 修正：`response == null` 也必须可重试，且不该叫 `CONNECT_TIMEOUT`。**
+
+方案阶段指出，并用 okhttp-sse 4.12.0 的字节码核实：`response == null` ⇔ **压根没拿到响应**，
+它同时覆盖「TCP 建连阶段超时」与「**连上了、但响应头一直没来**」——后者在**缓冲型网关 / 反代**上很常见，
+而它恰恰就是「长思考」在本客户端的表现。v1.1 把它归到「不重试」的 `CONNECT_TIMEOUT`，
+与本节第 2 点「首字节之前也包括响应头未到」**自相矛盾**，会让本需求要救的场景**有一半救不回来**。
+
+⇒ 改名 **`NO_RESPONSE_TIMEOUT`**（名字不再撒谎）+ **映射为 `ChatStreamTimeoutException`（可重试）**。
+
+代价（如实记录）：真·黑洞网络下会多花最多 2 次重试（每次最长 `connectTimeout` 30 s）；
+但 DNS 失败 / `connection refused` 这类**快速失败**不是 `SocketTimeoutException`，走 `TRANSPORT`、不重试，不受影响。
+头部先例：Codex 的 `ApiRetryConfig { retry_transport: true }`。
 
 ### 4.3 恢复判据：**本轮尚未向 UI 提交任何内容**
 
@@ -381,7 +395,7 @@ data class ChatPresetConfig(
 | 文件 | 改动 | 归属 |
 |---|---|---|
 | `ui/chat/ChatSseStream.kt` | ① `client` 由硬编码改为**按超时配置构造**（缓存 `ConcurrentHashMap<ChatStreamTimeouts, OkHttpClient>`）；② `frames(request, timeouts)` 加参数（**带默认值** ⇒ 既有调用点与测试不必改）；③ `onEvent` 置 `sawFirstEvent`；④ `onFailure` 做分类并写进 `SseFrame.Failure.cause`；⑤ `SseFrame.Failure` 加 `cause` 字段（带默认值） | **我方**（fork 新增文件） |
-| `ui/chat/ChatStreamRunner.kt` | 失败分支按 `cause` 分流：`FIRST_BYTE_TIMEOUT` / `IDLE_TIMEOUT` → `ChatStreamTimeoutException`，其余保持 `IllegalStateException`（**既有错误文案不变**，避免影响既有测试与用户可见文案） | **我方** |
+| `ui/chat/ChatStreamRunner.kt` | 失败分支按 `cause` 分流：**`NO_RESPONSE_TIMEOUT`（v1.2 并入）/ `FIRST_BYTE_TIMEOUT` / `IDLE_TIMEOUT` → `ChatStreamTimeoutException`**，其余保持 `IllegalStateException`（**既有错误文案不变**，避免影响既有测试与用户可见文案） | **我方** |
 | `ui/chat/ChatCompletionClient.kt` | **2 行**：`:325` 与 `:692` 的 `ChatSse.frames(httpRequest)` → `ChatSse.frames(httpRequest, ChatStreamTimeouts.fromPreset(request.preset))`；`sharedHttpClient`（`:210-215`）改为从 `ChatStreamTimeouts.DEFAULT` 取数 | **手动合并**（已认长期分叉） |
 | `ui/chat/ChatViewModel.kt` | `:901-905` 的 `chatClient.streamReply(...).collect { }` 包成 `streamWithRecovery(policy, onRetry = { _events.tryEmit(...) }) { chatClient.streamReply(...) }.collect { }`；`finishWithError` 的错误文案带上重试次数 | **手动合并**（此处已有 fork 改动） |
 | `ui/chat/ChatModels.kt` | `ChatPresetConfig` 加**两个**字段（带默认值，见 §4.7） | **手动合并** |
@@ -404,7 +418,7 @@ data class ChatPresetConfig(
 | 文件 | 用例（重点） |
 |---|---|
 | `ChatStreamRecoveryTest.kt`（纯 JVM，假流） | ① 零内容 + 首字节超时 → **重试且事件不重复**；② 已发 `TextDelta` 后超时 → **不重试**、原异常上抛；③ 预算耗尽（第 3 次）→ 上抛；④ `onRetry` 收到递增 attempt 与正确的 `kind`；⑤ 退避时长落在 `[base*0.9, cap*1.1]`；⑥ **`CancellationException` 必须穿透**（反证：改成宽 catch 会红）；⑦ 非超时异常（HTTP 400 / 截断）**不重试**；⑧ `Completed` 后不再有任何事件 |
-| `ChatSseTimeoutTest.kt`（MockWebServer + 注入缝，超时设 **200 ms**） | ① `SocketPolicy.NO_RESPONSE` → `FIRST_BYTE_TIMEOUT`；② 先发一个事件再 `STALL` → `IDLE_TIMEOUT`；③ 服务端只发 `: keep-alive\n\n` → **不超时**（对齐 dsh 的 `pulse` 测试）；④ 连接失败 → `CONNECT_TIMEOUT`；⑤ 非 2xx → `TRANSPORT`（既有行为不变） |
+| `ChatSseTimeoutTest.kt`（MockWebServer + 注入缝，超时设 **200 ms**） | ① **响应头已到 + 首块不含事件** → `FIRST_BYTE_TIMEOUT`（⚠️ v1.2：`SocketPolicy.NO_RESPONSE` **落不到**这个 cause —— 方案阶段已用字节码核实，原写法互斥）；② 先发一个事件再 `STALL` → `IDLE_TIMEOUT`；③ 服务端只发 `: keep-alive\n\n` → **不超时**（对齐 dsh 的 `pulse` 测试）；④ `SocketPolicy.NO_RESPONSE` → `NO_RESPONSE_TIMEOUT`，并断言它**可重试**；⑤ 非 2xx → `TRANSPORT`（既有行为不变） |
 
 ⚠️ 用例 ③ 是**「字节级 vs 事件级」判据的唯一机器化守卫**——它红了说明有人把判据改成了「收到事件才算活着」。
 
@@ -433,6 +447,7 @@ data class ChatPresetConfig(
 | 项 | 说明 |
 |---|---|
 | ⚠️ **重试 = 重复计费** | 每次重试都是完整上下文重发。已用「仅零内容时重试」把触发面收窄，但仍存在；`_events` 的提示文案必须让用户知道发生了什么（§4.6） |
+| ⚠️ **黑洞网络下的重试代价** | v1.2 起 `NO_RESPONSE_TIMEOUT` 也重试 ⇒ 真·黑洞网络（丢包而非拒连）会多花最多 2 次重试、每次最长 `connectTimeout` 30 s 才报错。这是换取「缓冲型网关不 flush 响应头时本需求能救回来」的必要代价（§4.2）；DNS 失败 / `connection refused` 不受影响 |
 | ⚠️ **不做总时长上限的洞** | 理论上「每 299 s 发 1 个字节」可以无限拖住连接。三家头部（Codex / dsh / `ccb`）同样不设，OpenCode 设了 300 s。**本轮不设**，理由：多轮工具调用 + 长回答会误杀；且有「用户点停止」兜底。若日后要补，按 OpenCode 的 `timeout` 语义做成**可关闭**的独立字段 |
 | ⚠️ **只发 keep-alive、永不发内容** | 字节级判据会让这种连接**永不超时**（与 dsh 的 `pulse` 行为一致）。用户看到「一直转圈」。本轮的缓解只有「用户点停止」；**主动的 no-progress 看门狗**（忽略 keep-alive、只看事件）属独立课题——`ccb` 也只把它做成**被动记日志**（30 s stall），没有一家主动杀 |
 | **首字节 / 流中两个**独立**阈值（真两阶段）** | v1.1 撤回（§3.2）。要真独立必须改 Okio 层 body source 的 timeout（保持字节级 keep-alive 语义）或加应用层看门狗（会丢该语义），且需真机验证 —— 属独立课题。本轮用「单值 + 分类 + 重试」覆盖同一诉求 |
@@ -459,6 +474,7 @@ data class ChatPresetConfig(
 | D10 | 只 catch `ChatStreamTimeoutException` | 取消必须穿透（§4.4） | 宽 catch ⇒ 点停止后偷偷重试 |
 | D11 | 两个 client 共用 `ChatStreamTimeouts` | 消除「两处各硬编码 120 s」的漂移源 | 分开写迟早不一致 |
 | D12 | 不做非流式降级 / 不做总时长上限 / 不做 no-progress 看门狗 | 三家头部同样不做 | 见 §7 |
+| D13 | `response == null` 的 **`NO_RESPONSE_TIMEOUT` 可重试**（原 `CONNECT_TIMEOUT` 改名） | v1.1 与 §4.2 第 2 点**自相矛盾**；okhttp-sse 字节码核实 `response == null` ⇔ 压根没拿到响应；Codex `retry_transport: true` | 不重试 ⇒ 缓冲型网关下**本需求要救的场景救不回来** |
 
 ---
 
@@ -468,3 +484,4 @@ data class ChatPresetConfig(
 |---|---|---|
 | v1 | 2026-10-10 | 初稿。基线 `44de0785`。数值全部取自五家头部 Agent 的源码/文档实测值（§2.1）；六条共同决策见 §2.2；有意偏离项（重试次数 2）见 §3.3 与 D6。顺带记录 `ChatSseStreamTest.kt:36` 的死字段与不符注释（§1.4） |
 | v1.1 | 2026-10-10 | **由方案阶段（codex）的提问触发的三处修正**：① §3.2 **撤回「两个独立配置项」** —— OkHttp 只有一个 `readTimeout`，min / max 都会静默忽略一个方向，改为「单值 + 分类」（D2/D3 同步改）；② §5.2 修正**六处行号误标** —— 它们是供应商配置卡（`ProviderDraft`）的位置，不是预设编辑弹窗；UI 落点明确为 `ModelEditorDialog`，字段收敛为**两个**；③ §3.3 重试夹取范围由「100 的宽度」改为 **0..5**（Codex 的 `DEFAULT_STREAM_MAX_RETRIES`）。另记：`label_network` 键已存在（复用会构建失败） |
+| v1.2 | 2026-10-10 | **方案阶段第二次提问触发的修正（第四处文档错）**：`response == null` 由「`CONNECT_TIMEOUT`、不重试」改为「**`NO_RESPONSE_TIMEOUT`、可重试**」（§4.2 / §5.2 / D13）。理由：它与 §4.2 第 2 点自相矛盾，且会让缓冲型网关下的长思考**救不回来**。同时修正 §6.1 用例①与用例④的构造（`NO_RESPONSE` 落不到 `FIRST_BYTE_TIMEOUT`，已字节码核实），并在 §7 如实记录黑洞网络下的重试代价 |
