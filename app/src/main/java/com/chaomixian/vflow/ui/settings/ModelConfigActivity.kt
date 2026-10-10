@@ -78,8 +78,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
@@ -265,13 +267,16 @@ private fun ModelConfigRoute(
                     repository.deleteProviderConfig(selectedProviderConfig.id)
                     onBack()
                 },
-                onSavePreset = { preset, displayName, modelName ->
+                onSavePreset = { preset, displayName, modelName, idleSeconds, maxRetries ->
                     repository.savePreset(
                         (preset ?: ChatPresetConfig()).copy(
                             id = preset?.id.orEmpty(),
                             name = displayName,
                             providerConfigId = selectedProviderConfig.id,
                             model = modelName,
+                            // fork: Chat 流超时与恢复（夹取不在此处，读取时由 ChatStreamTimeouts 负责）
+                            streamIdleTimeoutSeconds = idleSeconds,
+                            streamMaxRetries = maxRetries,
                         )
                     )
                     refresh()
@@ -337,7 +342,7 @@ private fun ProviderDetailScreen(
     contentPadding: PaddingValues,
     onSaveProvider: (ProviderDraft) -> Unit,
     onDeleteProvider: () -> Unit,
-    onSavePreset: (ChatPresetConfig?, String, String) -> Unit,
+    onSavePreset: (ChatPresetConfig?, String, String, Int, Int) -> Unit,
     onDeletePreset: (String) -> Unit,
     onSetDefaultPreset: (String) -> Unit,
 ) {
@@ -369,9 +374,13 @@ private fun ProviderDetailScreen(
         ModelEditorDialog(
             initialDisplayName = editingPreset?.name.orEmpty(),
             initialModelName = editingPreset?.model ?: providerConfig.providerEnum.defaultModel,
+            initialStreamIdleTimeoutSeconds = editingPreset?.streamIdleTimeoutSeconds
+                ?: ChatPresetConfig.DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS,
+            initialStreamMaxRetries = editingPreset?.streamMaxRetries
+                ?: ChatPresetConfig.DEFAULT_STREAM_MAX_RETRIES,
             onDismiss = { editingPresetId = null },
-            onConfirm = { displayName, modelName ->
-                onSavePreset(editingPreset, displayName, modelName)
+            onConfirm = { displayName, modelName, idleSeconds, maxRetries ->
+                onSavePreset(editingPreset, displayName, modelName, idleSeconds, maxRetries)
                 editingPresetId = null
             },
         )
@@ -1024,11 +1033,21 @@ private fun AddProviderDialog(
 private fun ModelEditorDialog(
     initialDisplayName: String,
     initialModelName: String,
+    initialStreamIdleTimeoutSeconds: Int,
+    initialStreamMaxRetries: Int,
     onDismiss: () -> Unit,
-    onConfirm: (String, String) -> Unit,
+    onConfirm: (String, String, Int, Int) -> Unit,
 ) {
     var displayName by remember(initialDisplayName) { mutableStateOf(initialDisplayName) }
     var modelName by remember(initialModelName) { mutableStateOf(initialModelName) }
+    // fork: Chat 流超时与恢复。⚠️ 用 String 承载输入（Int 输入框在编辑中途会是空串/半截数字），
+    // 确认时再 `toIntOrNull() ?: 默认值`；夹取不在此处（见 ChatStreamTimeouts.fromPreset）。
+    var idleTimeoutText by remember(initialStreamIdleTimeoutSeconds) {
+        mutableStateOf(initialStreamIdleTimeoutSeconds.toString())
+    }
+    var maxRetriesText by remember(initialStreamMaxRetries) {
+        mutableStateOf(initialStreamMaxRetries.toString())
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1050,11 +1069,41 @@ private fun ModelEditorDialog(
                     label = { Text(stringResource(R.string.module_config_chat_model_name)) },
                     singleLine = true,
                 )
+                // fork: Chat 流超时与恢复 —— 网络分组（Int 数字字段，不是接受魔法变量的文本参数）
+                Text(
+                    text = stringResource(R.string.model_config_network_group),
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                OutlinedTextField(
+                    value = idleTimeoutText,
+                    onValueChange = { idleTimeoutText = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(stringResource(R.string.model_config_stream_idle_timeout)) },
+                    supportingText = { Text(stringResource(R.string.model_config_stream_idle_timeout_hint)) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = maxRetriesText,
+                    onValueChange = { maxRetriesText = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(stringResource(R.string.model_config_stream_max_retries)) },
+                    supportingText = { Text(stringResource(R.string.model_config_stream_max_retries_hint)) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                )
             }
         },
         confirmButton = {
             TextButton(
-                onClick = { onConfirm(displayName.trim(), modelName.trim()) },
+                onClick = {
+                    onConfirm(
+                        displayName.trim(),
+                        modelName.trim(),
+                        idleTimeoutText.trim().toIntOrNull() ?: ChatPresetConfig.DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS,
+                        maxRetriesText.trim().toIntOrNull() ?: ChatPresetConfig.DEFAULT_STREAM_MAX_RETRIES,
+                    )
+                },
                 enabled = modelName.trim().isNotEmpty(),
             ) {
                 Text(stringResource(android.R.string.ok))

@@ -2,7 +2,7 @@ package com.chaomixian.vflow.ui.chat
 
 import com.chaomixian.vflow.core.logging.DebugLogger
 import java.io.IOException
-import java.util.concurrent.TimeUnit
+import java.net.SocketTimeoutException
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.flow.Flow
@@ -16,7 +16,6 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.sse.EventSource
@@ -51,25 +50,34 @@ import okhttp3.sse.EventSources
  * 回调由 OkHttp 的读线程触发，`trySendBlocking` 保证不丢帧；
  * 组装与解析用 [flowOn] 挪到 IO 线程，**不会**占用 UI 线程。
  */
+/**
+ * 传输层失败分类（`chat-stream-recovery-design.md` §4.2）。
+ * 前三个都源自 [SocketTimeoutException] 且**都可重试**（v1.2 / D13），第四个是其余全部情形。
+ */
+internal enum class SseFailureCause {
+    /**
+     * 压根没拿到响应：`response == null`。
+     * 同时覆盖「TCP 建连阶段超时」与「连上了、但响应头一直没来」（缓冲型网关/反代常见）。
+     * ⚠️ v1.2 起**不再叫 `CONNECT_TIMEOUT`**（那个名字只描述了前一半），且**可重试**。
+     */
+    NO_RESPONSE_TIMEOUT,
+
+    /** 响应头已到、但一个 SSE 事件都还没收到。 */
+    FIRST_BYTE_TIMEOUT,
+
+    /** 已经收到过事件之后空闲超时。 */
+    IDLE_TIMEOUT,
+
+    /** 非超时失败（非 2xx、content-type 不对、连接被掐断……）。 */
+    TRANSPORT,
+}
+
 internal object ChatSse {
 
     private const val LOG_TAG = "ChatSse"
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
     private val sseMediaType = "text/event-stream".toMediaType()
-
-    /** 连接与读取超时。⚠️ 与 `ChatCompletionClient` 的 `sharedHttpClient` 保持一致。 */
-    private val client: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(30, TimeUnit.SECONDS)
-            // ⚠️ 注释掉 readTimeout 会更符合 SSE 语义（流不该因空闲被断），
-            // 但**保留 120s** 是有意的：与既有 `complete()` 路径的等待上限一致，
-            // 且长思考（reasoning 阶段零字节）超时的问题属独立课题（见设计文档 §5.3 的 H4）。
-            // 若将来要做「首字节超时 / 流中空闲超时」分离，改这里。
-            .readTimeout(120, TimeUnit.SECONDS)
-            .writeTimeout(120, TimeUnit.SECONDS)
-            .build()
-    }
 
     /**
      * 一条 SSE 帧。
@@ -97,17 +105,28 @@ internal object ChatSse {
          *
          * @param httpCode 非 null 表示**响应层**失败（非 2xx，或 content-type 不是 SSE）；
          *   此时 [message] 已是**服务端错误体里的原文**（尽力提取），可直接展示给用户。
+         * @param cause 传输层失败分类（§4.2），带默认值 ⇒ 既有构造点不必改。
          */
-        data class Failure(val message: String, val httpCode: Int? = null) : SseFrame
+        data class Failure(
+            val message: String,
+            val httpCode: Int? = null,
+            val cause: SseFailureCause = SseFailureCause.TRANSPORT,
+        ) : SseFrame
     }
 
     /**
      * 发起请求并把响应体读成 [SseFrame] 流。
      *
-     * @param headers 已含 `Accept: text/event-stream` 的完整请求头（由调用方构造，见 `buildStreamHeaders`）。
+     * @param request 已含 `Accept: text/event-stream` 的完整请求头（由调用方构造，见 `buildStreamHeaders`）。
+     * @param timeouts 连接/读取超时（唯一真值来源 [ChatStreamTimeouts]）。带默认值 ⇒ 既有调用点/测试不必改。
      * @throws IOException 仅在建连阶段（`newEventSource` 同步失败时）。
      */
-    fun frames(request: Request): Flow<SseFrame> = callbackFlow {
+    fun frames(
+        request: Request,
+        timeouts: ChatStreamTimeouts = ChatStreamTimeouts.DEFAULT,
+    ): Flow<SseFrame> = callbackFlow {
+        val startedAt = System.currentTimeMillis()
+        var sawFirstEvent = false          // onEvent 里置 true（唯一写入点）
         val listener = object : EventSourceListener() {
             override fun onEvent(
                 eventSource: EventSource,
@@ -115,6 +134,7 @@ internal object ChatSse {
                 type: String?,
                 data: String,
             ) {
+                sawFirstEvent = true
                 // ⚠️ 用 trySendBlocking 而非 trySend：channel 缓冲满时，
                 // trySend 会**静默丢弃**这一帧——表现为「回答少了一段」而不报错。
                 trySendBlocking(SseFrame.Data(data = data, type = type))
@@ -136,13 +156,25 @@ internal object ChatSse {
                     t != null -> t.message?.takeIf { it.isNotBlank() } ?: t::class.java.simpleName
                     else -> readErrorBody(response) ?: "HTTP $code"
                 }
-                DebugLogger.w(LOG_TAG, "SSE failed code=${code ?: -1} detail=$detail")
-                trySendBlocking(SseFrame.Failure(message = detail, httpCode = code))
+                // ⚠️ 分类只看两个事实：是否 SocketTimeoutException、以及是否已见过事件。
+                // 判据必须是**字节级**（收到任意事件即算活跃）——keep-alive 注释行不算事件，
+                // 但它保持连接不空闲，故 readTimeout 不会触发、自然不会走到这里（见 §6.1 用例③）。
+                val cause = when {
+                    t is SocketTimeoutException && response == null -> SseFailureCause.NO_RESPONSE_TIMEOUT
+                    t is SocketTimeoutException && !sawFirstEvent -> SseFailureCause.FIRST_BYTE_TIMEOUT
+                    t is SocketTimeoutException && sawFirstEvent -> SseFailureCause.IDLE_TIMEOUT
+                    else -> SseFailureCause.TRANSPORT
+                }
+                DebugLogger.w(
+                    LOG_TAG,
+                    "SSE failed code=${code ?: -1} cause=$cause elapsedMs=${System.currentTimeMillis() - startedAt} detail=$detail",
+                )
+                trySendBlocking(SseFrame.Failure(message = detail, httpCode = code, cause = cause))
                 close()
             }
         }
 
-        val source = EventSources.createFactory(client).newEventSource(request, listener)
+        val source = EventSources.createFactory(timeouts.toClient()).newEventSource(request, listener)
         awaitClose {
             // ⚠️ 取消连接用 `EventSource.cancel()`，**不是** `Call.cancel()`——
             // 这条路径拿不到 Call 对象。不取消的话，用户点「停止」后连接仍会占着

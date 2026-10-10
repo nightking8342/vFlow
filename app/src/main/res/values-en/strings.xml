@@ -1778,4 +1778,10 @@ Then come back; the current state will be shown above.</string>
     <!-- fork: 响应第三方 App 的 CREATE_SHORTCUT 请求 -->
     <string name="create_shortcut_title">Choose a workflow</string>
     <string name="create_shortcut_no_workflows">No workflow can be used as a shortcut (a manual trigger is required)</string>
+    <!-- fork: Chat 流超时与恢复 -->
+    <string name="model_config_network_group">Network</string>
+    <string name="model_config_stream_idle_timeout">Stream idle timeout (seconds)</string>
+    <string name="model_config_stream_idle_timeout_hint">Abort the turn when no data arrives for this long. Default 300.</string>
+    <string name="model_config_stream_max_retries">Max retries</string>
+    <string name="model_config_stream_max_retries_hint">Retried only before any content arrives; 0 disables retries. Default 2.</string>
 </resources>

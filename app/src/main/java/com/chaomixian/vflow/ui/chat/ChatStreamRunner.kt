@@ -50,8 +50,24 @@ internal object ChatStreamRunner {
         }
 
         failure?.let { fail ->
-            // 服务端的错误原文已在传输层提取（含 HTTP 层失败时读响应体），直接展示
-            throw IllegalStateException(fail.message)
+            when (fail.cause) {
+                // ⚠️ v1.2 / D13：NO_RESPONSE_TIMEOUT 也并入可重试分支。
+                // 三个超时 cause 全部映射成 ChatStreamTimeoutException；其余（TRANSPORT）保持
+                // IllegalStateException —— 后者是**快速失败**（非 2xx / DNS 失败 / connection refused），
+                // 不是 SocketTimeoutException，重试无意义。
+                SseFailureCause.NO_RESPONSE_TIMEOUT,
+                SseFailureCause.FIRST_BYTE_TIMEOUT,
+                SseFailureCause.IDLE_TIMEOUT,
+                ->
+                    throw ChatStreamTimeoutException(
+                        kind = fail.cause,
+                        elapsedHintMs = null,   // 耗时只进 ChatSse 的日志（帧里不额外加字段）
+                        message = timeoutMessage(fail.cause),
+                    )
+                // 服务端的错误原文已在传输层提取（含 HTTP 层失败时读响应体），直接展示。
+                // ⚠️ 既有文案一字不改（避免影响既有测试与用户可见文案）。
+                else -> throw IllegalStateException(fail.message)
+            }
         }
 
         // ⚠️ F7：连接正常关闭 ≠ 本轮正常结束。
@@ -66,5 +82,12 @@ internal object ChatStreamRunner {
         // ⚠️ B4：`Completed` 携带的是 `finish()` 的**权威值**（已经过 normalizeAssistantReply），
         // 不是累积的 delta。上层据此落盘，两条路径才逐字段一致。
         emit(ChatStreamEvent.Completed(assembler.finish()))
+    }
+
+    /** 三个超时 cause 的用户可见文案（§4.4）。 */
+    private fun timeoutMessage(kind: SseFailureCause): String = when (kind) {
+        SseFailureCause.IDLE_TIMEOUT -> "网络空闲超时：回复过程中连接停止发送数据，本轮请求已中断。"
+        SseFailureCause.NO_RESPONSE_TIMEOUT -> "网络空闲超时：模型一直没有开始响应，本轮请求已中断。"
+        else -> "网络空闲超时：超过设定时间没有收到模型的任何数据，本轮请求已中断。"
     }
 }
