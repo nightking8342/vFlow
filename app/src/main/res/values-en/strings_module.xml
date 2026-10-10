@@ -3704,4 +3704,8 @@
 
     <!-- Shared target picker layout title default (overridden by each UIProvider) -->
     <string name="label_workflow_picker_title">Workflow</string>
+
+    <!-- Empty state of the target picker in the two "workflow toggle" modules
+         (fork, added after on-device feedback 2026-10-10). -->
+    <string name="toast_no_toggleable_workflow">No switchable workflow available. Manual-only workflows have no switch — add an automatic trigger to one first.</string>
 </resources>

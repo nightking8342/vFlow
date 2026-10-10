@@ -1181,7 +1181,7 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 | `ui/workflow_list/WorkflowListRoute.kt`（改） | 权限回弹那 1 处传 `AUTOMATIC` | **手动合并**（1 行） |
 | `ui/tile/BaseToggleTileService.kt`（改，**fork 自有文件**） | 权限回弹那 1 处传 `AUTOMATIC`。零冲突面 | 我方 |
 | `test/.../triggers/WorkflowToggleTriggerTest.kt`、`test/.../logic/SetWorkflowEnabledModuleTest.kt`（新增，23 例） | fork 独有：判定纯函数单测 + **四组源码扫描锚定**（两个 Registry 各一行注册 / 派发在 `handleWorkflowChanged` 之后 / 5 处 `AUTOMATIC` 逐处存在 / Proxy 真的填了那 2 个字段）。四组都做过反证（改回缺陷版本确认变红再改回） | 我方 |
-| 三语 `res/values{,-en,-ja}/strings_module.xml`（改，各追加 32 键） | fork 独有文案块。⚠️ 一律**追加到文件末尾**（便于跨分支合并），追加前已 `grep` 防重复键（重复键会直接构建失败） | **手动合并**（追加） |
+| 三语 `res/values{,-en,-ja}/strings_module.xml`（改，各追加 33 键 —— 含真机反馈后补的空态提示 	oast_no_toggleable_workflow） | fork 独有文案块。⚠️ 一律**追加到文件末尾**（便于跨分支合并），追加前已 `grep` 防重复键（重复键会直接构建失败） | **手动合并**（追加） |
 
 **工作流开关批次（2026-10-10）· 特别登记（防将来有人改错方向）**：
 

@@ -7,11 +7,14 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.TextView
+import android.widget.Toast
 import com.chaomixian.vflow.R
 import com.chaomixian.vflow.core.module.CustomEditorViewHolder
 import com.chaomixian.vflow.core.module.ModuleUIProvider
+import com.chaomixian.vflow.core.workflow.TileGate
 import com.chaomixian.vflow.core.workflow.WorkflowManager
 import com.chaomixian.vflow.core.workflow.model.ActionStep
+import com.chaomixian.vflow.core.workflow.model.TileKind
 import com.chaomixian.vflow.ui.common.SearchableWorkflowDialog
 import com.chaomixian.vflow.ui.common.WorkflowDialogItem
 
@@ -24,6 +27,15 @@ import com.chaomixian.vflow.ui.common.WorkflowDialogItem
  * 共用同一个布局 [R.layout.partial_workflow_picker_editor]（只是文案不同）。
  *
  * ⚠️ 只接管 `workflow_id`；`action` 走自动表单的 `CHIP_GROUP`。
+ *
+ * ⚠️⚠️ **候选只列「有开关状态」的工作流**（fork，2026-10-10 真机反馈后补）。
+ * 判据走 [TileGate.accepts]`(TOGGLE, …)`，**不在这里自己写 `hasAutoTriggers()`** ——
+ * 见 [com.chaomixian.vflow.core.workflow.module.triggers.WorkflowToggleTriggerUIProvider] 的同名说明。
+ *
+ * ⚠️ 本模块**也能**写手动型工作流的 `isEnabled`，但那个字段对手动型**毫无作用**
+ * （不阻止手动执行、卡片上也没有开关可看），而且会在用户**之后**给它加自动触发器时
+ * 留下一个 `isEnabled = false` 的存量值（编辑器保存会保留它）⇒ 新触发器静默不注册。
+ * 与其让用户踩这个坑，不如**根本不提供**这个选项。
  */
 class SetWorkflowEnabledUIProvider : ModuleUIProvider {
 
@@ -67,10 +79,21 @@ class SetWorkflowEnabledUIProvider : ModuleUIProvider {
         updateSelectedWorkflowText(workflowId)
 
         holder.selectButton.setOnClickListener {
+            val candidates = workflowManager.getAllWorkflows()
+                .filter { TileGate.accepts(TileKind.TOGGLE, it) }
+            // 空态必须**说出来**（理由同上，与触发器侧一致）
+            if (candidates.isEmpty()) {
+                Toast.makeText(
+                    context,
+                    R.string.toast_no_toggleable_workflow,
+                    Toast.LENGTH_LONG,
+                ).show()
+                return@setOnClickListener
+            }
             SearchableWorkflowDialog.show(
                 context = context,
                 titleResId = R.string.dialog_vflow_logic_set_workflow_enabled_select_title,
-                items = workflowManager.getAllWorkflows().map { WorkflowDialogItem(id = it.id, name = it.name) },
+                items = candidates.map { WorkflowDialogItem(id = it.id, name = it.name) },
                 onSelected = {
                     holder.selectedWorkflowId = it.id
                     updateSelectedWorkflowText(it.id)

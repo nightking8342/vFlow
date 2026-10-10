@@ -495,13 +495,45 @@ override val aiMetadata = AiModuleMetadata(
 **不要**新造 `PickerType` 枚举值（那要改上游的 `definitions.kt` + `PickerHandler.kt` +
 `StandardControlFactory.kt`，diff 面大得多）。
 
-### 8.1 布局
+### 8.1 候选过滤：只有「有开关状态」的工作流可选
+
+> ⚠️ **本节是 2026-10-10 真机反馈后补的** —— 首版两个选择器都直接喂 `getAllWorkflows()`，
+> 于是**手动触发的工作流也能被选中**。用户实测指出：那种工作流**没有开关**。
+
+**判据**：`TileGate.accepts(TileKind.TOGGLE, workflow)`（= `workflow.hasAutoTriggers()`）。
+
+| 事实 | 出处 |
+|---|---|
+| 卡片上的开关**只在** `hasAutoTriggers` 时绘制；手动型画的是 ▶ 执行按钮 | `ui/workflow_list/WorkflowListScreen.kt:933` / `:944` |
+| 手动型的 `isEnabled` **毫无作用**（不阻止手动执行） | `WorkflowExecutor` / `ManualTriggerModule` 都不读它 |
+| `TileGate` 是「这一池接不接受这个工作流」的**唯一判据落点** | `core/workflow/TileGate.kt` 的 KDoc 明写「任何一处自己写 `hasAutoTriggers()`，都会让『菜单项显示着、点了却被拒绝』这类不一致出现」 |
+
+⇒ **不要在 UIProvider 里自己写 `hasAutoTriggers()`**，调 `TileGate`。
+
+**为什么 B（动作模块）也要过滤**（它技术上能写手动型的 `isEnabled`）：那个字段对手动型
+**没有任何可见效果**，却会在用户**之后**给该工作流加自动触发器时留下一个存量
+`isEnabled = false`（编辑器保存时 `isEnabled = currentWorkflow?.isEnabled ?: true` 会**保留**它）
+⇒ **新触发器静默不注册**。与其让用户踩这个坑，不如根本不提供这个选项。
+
+**空态必须说出来**：候选为空时直接弹空列表，用户看到的是 `workflow_search_no_results`
+（「没有找到相关工作流」）—— 那是「**搜不到**」，而这里是「**一个都没有**」，观感是「功能坏了」。
+⇒ 提前 `Toast` 一条 `toast_no_toggleable_workflow`（三语）并**不打开**对话框。
+
+**锚定**：`test/.../core/workflow/module/WorkflowTogglePickerWiringTest.kt`（4 例，含反向锁
+「不得再出现 `getAllWorkflows().map` 直接喂对话框」与三语键存在性）。三条反证已实做。
+
+**已知未处理（如实记录）**：目标工作流**绑定时**合法、**之后**被删掉自动触发器（越界态）时，
+A 永远不命中（无害），B 仍会写那个隐藏的 `isEnabled`。与磁贴的「闸 3」同形，
+但 B 的目标是**每次执行时读到的存量 id**，加运行时守卫会引入「存量步骤开始报错」这一独立行为变更，
+**本次不做**。
+
+### 8.2 布局
 
 **新建** `partial_workflow_picker_editor.xml`（A 与 B 共用，约 25 行），
 **不要复用** `partial_call_workflow_editor.xml` —— 后者标题硬编码为
 `text_workflow_to_call`（「要调用的工作流」），且含一个本模块用不上的函数参数 `include` 块。
 
-### 8.2 目标工作流被删除
+### 8.3 目标工作流被删除
 
 `workflow_id` 指向已删除的工作流时：
 
@@ -592,7 +624,7 @@ override val aiMetadata = AiModuleMetadata(
 | 17 | B 的写入保持 `origin = EXPLICIT` | §7.3 + 用户第 3 条要求 |
 | 18 | B 给 `aiMetadata`，A 不给 | §7.5（AI 本来就能改 `isEnabled`；触发器一律不给是既有纪律） |
 | 19 | 目标选择器复用 `SearchableWorkflowDialog` | §8 |
-| 20 | 新布局，不复用 `partial_call_workflow_editor.xml` | §8.1（标题文案与结构都不匹配） |
+| 20 | 新布局，不复用 `partial_call_workflow_editor.xml` | §8.2（标题文案与结构都不匹配） |
 | 21 | 目标工作流被删除时不自动清理绑定 | §8.2（备份恢复后 id 不变） |
 | 22 | 禁用「自己」不打断当前执行 | §7.6（与执行器既有行为一致） |
 

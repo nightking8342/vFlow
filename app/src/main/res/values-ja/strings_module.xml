@@ -3324,4 +3324,8 @@
 
     <!-- 共通のターゲット選択レイアウトのタイトル既定値（各 UIProvider が上書き） -->
     <string name="label_workflow_picker_title">ワークフロー</string>
+
+    <!-- 「ワークフロースイッチ」2 モジュールのターゲット選択の空状態
+         （fork、2026-10-10 実機フィードバック後に追加）。 -->
+    <string name="toast_no_toggleable_workflow">スイッチのあるワークフローがありません。手動トリガーのみのワークフローにはスイッチがないため、先に自動トリガーを追加してください。</string>
 </resources>

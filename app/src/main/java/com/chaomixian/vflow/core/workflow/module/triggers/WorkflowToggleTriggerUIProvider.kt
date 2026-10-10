@@ -7,11 +7,14 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.TextView
+import android.widget.Toast
 import com.chaomixian.vflow.R
 import com.chaomixian.vflow.core.module.CustomEditorViewHolder
 import com.chaomixian.vflow.core.module.ModuleUIProvider
+import com.chaomixian.vflow.core.workflow.TileGate
 import com.chaomixian.vflow.core.workflow.WorkflowManager
 import com.chaomixian.vflow.core.workflow.model.ActionStep
+import com.chaomixian.vflow.core.workflow.model.TileKind
 import com.chaomixian.vflow.ui.common.SearchableWorkflowDialog
 import com.chaomixian.vflow.ui.common.WorkflowDialogItem
 
@@ -26,6 +29,15 @@ import com.chaomixian.vflow.ui.common.WorkflowDialogItem
  * 只是换了布局（[R.layout.partial_workflow_picker_editor]）与文案。
  *
  * ⚠️ 只接管 `workflow_id`；`state` 走自动表单的 `CHIP_GROUP`。
+ *
+ * ⚠️⚠️ **候选只列「有开关状态」的工作流**（fork，2026-10-10 真机反馈后补）。
+ * 判据走 [TileGate.accepts]`(TOGGLE, …)`，**不在这里自己写 `hasAutoTriggers()`** ——
+ * `TileGate` 的 KDoc 明写「任何一处自己写判据，都会让『菜单项显示着、点了却被拒绝』
+ * 这类不一致出现」，而**卡片上的开关本身就是同一个判据**
+ * （`WorkflowListScreen` 只在 `hasAutoTriggers` 时画 `VFlowSwitch`，手动型画的是 ▶ 执行按钮）。
+ *
+ * 手动型工作流的 `isEnabled` **毫无作用**（`WorkflowExecutor` / `ManualTriggerModule` 都不读它），
+ * 既没有开关可点、也不会因它而不执行 ⇒ 让用户选中它等于**给了一个永远不可能发生的触发条件**。
  */
 class WorkflowToggleTriggerUIProvider : ModuleUIProvider {
 
@@ -69,10 +81,22 @@ class WorkflowToggleTriggerUIProvider : ModuleUIProvider {
         updateSelectedWorkflowText(workflowId)
 
         holder.selectButton.setOnClickListener {
+            val candidates = workflowManager.getAllWorkflows()
+                .filter { TileGate.accepts(TileKind.TOGGLE, it) }
+            // 空态必须**说出来**：直接弹一个空列表只会显示「没有找到相关工作流」，
+            // 而那不是「搜不到」，是「一个都没有」—— 用户会以为功能坏了。
+            if (candidates.isEmpty()) {
+                Toast.makeText(
+                    context,
+                    R.string.toast_no_toggleable_workflow,
+                    Toast.LENGTH_LONG,
+                ).show()
+                return@setOnClickListener
+            }
             SearchableWorkflowDialog.show(
                 context = context,
                 titleResId = R.string.dialog_vflow_trigger_workflow_toggle_select_title,
-                items = workflowManager.getAllWorkflows().map { WorkflowDialogItem(id = it.id, name = it.name) },
+                items = candidates.map { WorkflowDialogItem(id = it.id, name = it.name) },
                 onSelected = {
                     holder.selectedWorkflowId = it.id
                     updateSelectedWorkflowText(it.id)
