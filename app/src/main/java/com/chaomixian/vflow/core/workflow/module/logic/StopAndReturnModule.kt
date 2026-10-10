@@ -6,6 +6,7 @@ import com.chaomixian.vflow.R
 import com.chaomixian.vflow.core.execution.ExecutionContext
 import com.chaomixian.vflow.core.module.*
 import com.chaomixian.vflow.core.workflow.model.ActionStep
+import com.chaomixian.vflow.core.workflow.model.FunctionSignatureHelper
 import com.chaomixian.vflow.ui.workflow_editor.PillUtil
 
 /**
@@ -24,6 +25,8 @@ class StopAndReturnModule : BaseModule() {
         categoryId = "logic"
     )
 
+    override val uiProvider: ModuleUIProvider = StopAndReturnModuleUIProvider()
+
     override fun getInputs(): List<InputDefinition> = listOf(
         InputDefinition(
             id = "value",
@@ -31,7 +34,21 @@ class StopAndReturnModule : BaseModule() {
             name = "返回值",
             staticType = ParameterType.ANY,
             acceptsMagicVariable = true,
-            acceptsNamedVariable = true
+            acceptsNamedVariable = true,
+            // ⚠️ 文本参数接受变量 ⇒ 必须 supportsRichText = true（AGENTS.md 硬规则），
+            //    否则 🪄 选出的变量在输入框里只显示底层语法、渲染不成胶囊。
+            supportsRichText = true
+        ),
+        InputDefinition(
+            id = FunctionSignatureHelper.RETURN_KEYS_KEY,
+            nameStringRes = R.string.param_vflow_logic_return_return_keys_name,
+            name = "返回键",
+            staticType = ParameterType.ANY,
+            acceptsMagicVariable = false,
+            acceptsNamedVariable = false,
+            // 该参数由 uiProvider 的 getHandledInputIds 整体接管（不进通用表单），
+            // 显隐与位置完全由 createEditor 决定。
+            supportsRichText = false
         )
     )
 

@@ -10,6 +10,7 @@ import com.chaomixian.vflow.core.module.*
 import com.chaomixian.vflow.core.types.VTypeRegistry
 import com.chaomixian.vflow.core.workflow.WorkflowManager
 import com.chaomixian.vflow.core.workflow.model.ActionStep
+import com.chaomixian.vflow.core.workflow.model.FunctionSignatureHelper
 import com.chaomixian.vflow.ui.workflow_editor.PillUtil
 
 class CallWorkflowModule : BaseModule() {
@@ -56,11 +57,18 @@ class CallWorkflowModule : BaseModule() {
 
         val outputs = mutableListOf<OutputDefinition>()
 
-        // 1. 添加子工作流返回值
+        // 1. 添加子工作流返回值。
+        //    类型 / 声明的键由**现场推导**得出（与「调用函数工作流」共用同一份实现）：
+        //    普通子工作流的返回值同样来自子工作流里的「停止并返回」步骤
+        //    （WorkflowExecutor 的 ExecutionSignal.Return 是唯一赋值点）。
+        val ret = FunctionSignatureHelper.deriveReturn(subWorkflow.steps)
         outputs.add(OutputDefinition(
             id = "result",
             name = "子工作流返回值",
-            typeName = VTypeRegistry.ANY.id
+            typeName = ret.type,
+            // 类型兜底：只有推导出「字典」时才携带键（见 dictionaryKeysFor 的 KDoc）。
+            dictionaryKeys = FunctionSignatureHelper.dictionaryKeysFor(ret)
+                .map { OutputKeyDefinition(it.name, it.type) }
         ))
 
         // 2. 收集子工作流中的命名变量作为输出

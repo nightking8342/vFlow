@@ -3714,4 +3714,17 @@
     <!-- 「工作流开关」两个模块的目标选择器空态（fork，2026-10-10 真机反馈后补）。
          ⚠️ 不能用 workflow_search_no_results 兜底 —— 那是「搜不到」，这里是「一个都没有」。 -->
     <string name="toast_no_toggleable_workflow">没有可选的开关工作流。手动触发的工作流没有开关，请先给它添加一个自动触发器。</string>
+
+    <!-- 返回值类型推导（fork，2026-10-11）：「停止并返回」的返回键声明 -->
+    <string name="param_vflow_logic_return_return_keys_name">返回键</string>
+    <string name="editor_return_keys_section">返回字典的键</string>
+    <string name="editor_return_keys_empty">还没有声明键。调用方的魔法变量选择器将无法展开这个返回值。</string>
+    <string name="editor_return_keys_not_dictionary">当前返回值推导为「%s」，不是字典，无需声明键。</string>
+    <string name="editor_return_keys_add">添加键</string>
+    <string name="editor_return_key_title_add">添加返回键</string>
+    <string name="editor_return_key_title_edit">编辑返回键</string>
+    <string name="editor_return_key_name_hint">键名</string>
+    <string name="editor_return_key_type_hint">键值类型</string>
+    <string name="editor_return_key_no_host">无法打开键编辑（无活动宿主）</string>
+
 </resources>

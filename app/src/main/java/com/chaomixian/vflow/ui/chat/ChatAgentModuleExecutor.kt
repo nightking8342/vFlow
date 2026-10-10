@@ -24,7 +24,9 @@ import com.chaomixian.vflow.core.types.complex.VCoordinate
 import com.chaomixian.vflow.core.types.complex.VCoordinateRegion
 import com.chaomixian.vflow.core.types.complex.VImage
 import com.chaomixian.vflow.core.types.complex.VScreenElement
+import com.chaomixian.vflow.core.types.VTypeRegistry
 import com.chaomixian.vflow.core.workflow.model.ActionStep
+import com.chaomixian.vflow.core.workflow.model.FunctionSignatureHelper
 import com.chaomixian.vflow.core.workflow.model.Workflow
 import com.chaomixian.vflow.core.workflow.model.WorkflowReentryBehavior
 import com.chaomixian.vflow.core.workflow.model.TriggerLabel
@@ -932,7 +934,11 @@ internal class ChatAgentModuleExecutor(
                         appendLine("  - ${param.name}: ${param.type}$required$default")
                     }
                 }
-                signature.returnDef?.let { ret -> appendLine("  returns: ${ret.type}") }
+                // 返回值类型现场推导（不再读已停写的 functionSignature.returnDef）
+                val ret = FunctionSignatureHelper.deriveReturn(workflow.steps)
+                if (ret.type != VTypeRegistry.ANY.id || ret.keys.isNotEmpty()) {
+                    appendLine("  returns: ${ret.type}")
+                }
             }
 
             appendLine()
@@ -2655,7 +2661,9 @@ internal class ChatAgentModuleExecutor(
                             )
                             append(")")
                         }
-                        signature.returnDef?.let { ret -> append(" -> ").append(ret.type) }
+                        // 返回值类型现场推导（不再读已停写的 functionSignature.returnDef）
+                        val ret = FunctionSignatureHelper.deriveReturn(workflow.steps)
+                        if (ret.type != VTypeRegistry.ANY.id) append(" -> ").append(ret.type)
                     }
                     appendLine()
                 }

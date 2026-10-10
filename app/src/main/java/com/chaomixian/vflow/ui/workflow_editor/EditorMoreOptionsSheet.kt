@@ -40,6 +40,7 @@ import com.chaomixian.vflow.R
 import com.chaomixian.vflow.core.types.VTypeRegistry
 import com.chaomixian.vflow.core.workflow.WorkflowIconValue
 import com.chaomixian.vflow.core.workflow.WorkflowVisuals
+import com.chaomixian.vflow.core.workflow.model.FunctionSignatureHelper
 import com.chaomixian.vflow.core.workflow.model.Workflow
 import com.chaomixian.vflow.core.workflow.model.WorkflowLogLevel
 import com.chaomixian.vflow.core.workflow.model.WorkflowReentryBehavior
@@ -326,13 +327,17 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
             R.string.editor_more_options_function_params_prefix
         ) + ": " + paramsSummary
 
-        // 返回值摘要：只对「返回字典」场景展示键
-        val returnDef = signature.returnDef
-        textFunctionReturnSummary.text = if (returnDef != null && returnDef.keys.isNotEmpty()) {
-            getString(R.string.editor_more_options_function_return_prefix) + ": {" +
-                returnDef.keys.joinToString(", ") { it.name } + "}"
-        } else {
-            getString(R.string.editor_more_options_function_return_prefix) + ": -"
+        // 返回值摘要：现场推导（不再读已停写的 functionSignature.returnDef）
+        val returnDef = FunctionSignatureHelper.deriveReturn(wf.steps)
+        textFunctionReturnSummary.text = when {
+            returnDef.keys.isNotEmpty() ->
+                getString(R.string.editor_more_options_function_return_prefix) + ": {" +
+                    returnDef.keys.joinToString(", ") { it.name } + "}"
+            // 无声明键但类型已知（如「图片」「列表」）⇒ 显示类型名
+            returnDef.type != VTypeRegistry.ANY.id ->
+                getString(R.string.editor_more_options_function_return_prefix) + ": " +
+                    VTypeRegistry.getType(returnDef.type).getLocalizedName(requireContext())
+            else -> getString(R.string.editor_more_options_function_return_prefix) + ": -"
         }
     }
 

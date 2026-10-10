@@ -14,7 +14,9 @@ import com.chaomixian.vflow.core.types.VObjectFactory
 import com.chaomixian.vflow.core.types.VTypeRegistry
 import com.chaomixian.vflow.core.workflow.WorkflowManager
 import com.chaomixian.vflow.core.workflow.model.ActionStep
+import com.chaomixian.vflow.core.workflow.model.FunctionReturn
 import com.chaomixian.vflow.core.workflow.model.FunctionSignature
+import com.chaomixian.vflow.core.workflow.model.FunctionSignatureHelper
 import com.chaomixian.vflow.ui.workflow_editor.PillUtil
 
 class CallFunctionModule : BaseModule() {
@@ -67,20 +69,35 @@ class CallFunctionModule : BaseModule() {
     }
 
     override fun getOutputs(step: ActionStep?): List<OutputDefinition> {
-        // result 的类型 / 声明的键 从被调工作流的函数签名解析：
-        //  - returnDef != null：result 标为 returnDef.type（通常为「字典」），并携带声明的键，
-        //    供魔法变量选择器直接展开点选（决策 6/24，B4）。
-        //  - 无 returnDef：回退 ANY（基础类型返回值，由底层类型引擎展开属性）。
-        val returnDef = lookupSignature(step)?.returnDef
+        // result 的类型 / 声明的键由**现场推导**得出（读被调工作流的步骤，而不是保存时
+        // 聚合进 functionSignature.returnDef 的旧值）：
+        //  - 推导出字典 ⇒ 携带声明的键，供魔法变量选择器直接展开点选。
+        //  - 推不出（基础类型 / 无「停止并返回」）⇒ ANY（由底层类型引擎展开属性）。
+        val ret = lookupReturn(step)
         return listOf(
             OutputDefinition(
                 id = "result",
                 nameStringRes = R.string.output_vflow_logic_call_function_result_name,
                 name = "函数返回值",
-                typeName = returnDef?.type ?: VTypeRegistry.ANY.id,
-                dictionaryKeys = returnDef?.keys.orEmpty().map { OutputKeyDefinition(it.name, it.type) }
+                typeName = ret.type,
+                // 类型兜底：只有推导出「字典」时才携带键（见 dictionaryKeysFor 的 KDoc）。
+                dictionaryKeys = FunctionSignatureHelper.dictionaryKeysFor(ret)
+                    .map { OutputKeyDefinition(it.name, it.type) }
             )
         )
+    }
+
+    /**
+     * 现场推导被调工作流的返回值（与 `CallWorkflowModule` 共用 [FunctionSignatureHelper]）。
+     * 取不到工作流时返回 `ANY` 的空定义（模块未初始化 Context 时静默回退，不阻断 UI 渲染）。
+     */
+    private fun lookupReturn(step: ActionStep?): FunctionReturn {
+        val workflowId = step?.parameters?.get("workflow_id") as? String
+            ?: return FunctionReturn(VTypeRegistry.ANY.id)
+        val subSteps = runCatching {
+            WorkflowManager(appContext).getWorkflow(workflowId)?.steps
+        }.getOrNull() ?: return FunctionReturn(VTypeRegistry.ANY.id)
+        return FunctionSignatureHelper.deriveReturn(subSteps)
     }
 
     private fun lookupSignature(step: ActionStep?): FunctionSignature? {

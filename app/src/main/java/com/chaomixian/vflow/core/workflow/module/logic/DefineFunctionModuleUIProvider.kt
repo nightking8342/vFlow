@@ -27,6 +27,7 @@ import com.chaomixian.vflow.core.workflow.WorkflowManager
 import com.chaomixian.vflow.core.workflow.model.ActionStep
 import com.chaomixian.vflow.core.workflow.model.FunctionParam
 import com.chaomixian.vflow.core.workflow.model.FunctionReturn
+import com.chaomixian.vflow.core.workflow.model.FunctionSignatureHelper
 import com.google.android.material.button.MaterialButton
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
@@ -36,7 +37,7 @@ class DefineFunctionModuleUIProvider : ModuleUIProvider {
     class ViewHolder(view: View) : CustomEditorViewHolder(view) {
         val container: LinearLayout = view as LinearLayout
         var params: MutableList<FunctionParam> = mutableListOf()
-        var returnDef: FunctionReturn? = null
+        var returnDef: FunctionReturn = FunctionReturn(VTypeRegistry.ANY.id)
         var onParametersChanged: (() -> Unit)? = null
         var allSteps: List<ActionStep>? = null
         var render: (() -> Unit)? = null
@@ -112,11 +113,15 @@ class DefineFunctionModuleUIProvider : ModuleUIProvider {
             // 返回值配置区（只读）
             container.addView(sectionLabel(context, context.getString(R.string.editor_define_function_section_return)))
             val returnDef = holder.returnDef
-            val returnText = if (returnDef != null && returnDef.keys.isNotEmpty()) {
-                context.getString(R.string.summary_vflow_logic_define_function_return_prefix) + ": {" +
-                    returnDef.keys.joinToString(", ") { it.name } + "}"
-            } else {
-                context.getString(R.string.editor_define_function_return_none)
+            val returnText = when {
+                returnDef.keys.isNotEmpty() ->
+                    context.getString(R.string.summary_vflow_logic_define_function_return_prefix) + ": {" +
+                        returnDef.keys.joinToString(", ") { it.name } + "}"
+                // 无声明键但类型已知（如「图片」「列表」）⇒ 显示类型名，而不是「无返回值」
+                returnDef.type != VTypeRegistry.ANY.id ->
+                    context.getString(R.string.summary_vflow_logic_define_function_return_prefix) + ": " +
+                        VTypeRegistry.getType(returnDef.type).getLocalizedName(context)
+                else -> context.getString(R.string.editor_define_function_return_none)
             }
             container.addView(TextView(context).apply {
                 text = returnText
@@ -168,16 +173,19 @@ class DefineFunctionModuleUIProvider : ModuleUIProvider {
     }
 
     /**
-     * 反查包含本「定义函数」步骤的工作流，读取保存时已聚合的 functionSignature.returnDef（只读展示）。
+     * 反查包含本「定义函数」步骤的工作流，**现场推导**它的返回值（只读展示）。
      * 与 DefineFunctionModule.findOwningWorkflowId 一致。
+     *
+     * ⚠️ 不再读 `functionSignature.returnDef`（该字段已停写，见 WorkflowManager.aggregateFunctionSignature）。
      */
-    private fun lookupReturnDef(context: Context): FunctionReturn? {
+    private fun lookupReturnDef(context: Context): FunctionReturn {
         return try {
             val workflow = WorkflowManager(context).getAllWorkflows()
                 .firstOrNull { wf -> wf.steps.any { it.moduleId == DEFINE_FUNCTION_MODULE_ID } }
-            workflow?.functionSignature?.returnDef
+                ?: return FunctionReturn(VTypeRegistry.ANY.id)
+            FunctionSignatureHelper.deriveReturn(workflow.steps)
         } catch (e: Exception) {
-            null
+            FunctionReturn(VTypeRegistry.ANY.id)
         }
     }
 

@@ -3708,4 +3708,17 @@
     <!-- Empty state of the target picker in the two "workflow toggle" modules
          (fork, added after on-device feedback 2026-10-10). -->
     <string name="toast_no_toggleable_workflow">No switchable workflow available. Manual-only workflows have no switch — add an automatic trigger to one first.</string>
+
+    <!-- Return type inference (fork, 2026-10-11): return key declaration on "Stop and return" -->
+    <string name="param_vflow_logic_return_return_keys_name">Return keys</string>
+    <string name="editor_return_keys_section">Keys of the returned dictionary</string>
+    <string name="editor_return_keys_empty">No keys declared yet. The magic-variable picker of the caller will not be able to expand this return value.</string>
+    <string name="editor_return_keys_not_dictionary">The current return value is inferred as "%s", not a dictionary — no keys needed.</string>
+    <string name="editor_return_keys_add">Add key</string>
+    <string name="editor_return_key_title_add">Add return key</string>
+    <string name="editor_return_key_title_edit">Edit return key</string>
+    <string name="editor_return_key_name_hint">Key name</string>
+    <string name="editor_return_key_type_hint">Value type</string>
+    <string name="editor_return_key_no_host">Cannot open key editor (no activity host)</string>
+
 </resources>

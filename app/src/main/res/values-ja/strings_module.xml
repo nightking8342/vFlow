@@ -3328,4 +3328,17 @@
     <!-- 「ワークフロースイッチ」2 モジュールのターゲット選択の空状態
          （fork、2026-10-10 実機フィードバック後に追加）。 -->
     <string name="toast_no_toggleable_workflow">スイッチのあるワークフローがありません。手動トリガーのみのワークフローにはスイッチがないため、先に自動トリガーを追加してください。</string>
+
+    <!-- 戻り値の型推論（fork、2026-10-11）：「停止して返す」の戻り値キー宣言 -->
+    <string name="param_vflow_logic_return_return_keys_name">戻り値キー</string>
+    <string name="editor_return_keys_section">返す辞書のキー</string>
+    <string name="editor_return_keys_empty">キーがまだ宣言されていません。呼び出し側のマジック変数ピッカーでこの戻り値を展開できません。</string>
+    <string name="editor_return_keys_not_dictionary">現在の戻り値は「%s」と推論され、辞書ではないためキーは不要です。</string>
+    <string name="editor_return_keys_add">キーを追加</string>
+    <string name="editor_return_key_title_add">戻り値キーを追加</string>
+    <string name="editor_return_key_title_edit">戻り値キーを編集</string>
+    <string name="editor_return_key_name_hint">キー名</string>
+    <string name="editor_return_key_type_hint">値の型</string>
+    <string name="editor_return_key_no_host">キーエディタを開けません（アクティビティのホストがありません）</string>
+
 </resources>

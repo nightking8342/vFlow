@@ -299,11 +299,11 @@ class WorkflowManager(val context: Context) {
             existing?.params ?: emptyList()
         }
 
-        // 返回值静态推导
-        val derivedReturn = FunctionSignatureHelper.deriveReturnDef(steps)
-        val returnDef = derivedReturn ?: existing?.returnDef
-
-        return FunctionSignature(params = params, returnDef = returnDef)
+        // 返回值不再写入签名（决策 #11）：类型与键改由**现场推导**
+        // （FunctionSignatureHelper.deriveReturn），5 处读取点全部走它。
+        // ⚠️ 这是**有意的行为变化**：存量 returnDef.keys 会在用户下次保存时被清空，
+        //    不做迁移（该字段即将废弃，见设计文档 §5）。
+        return FunctionSignature(params = params, returnDef = null)
     }
 
     private fun JsonElement.asJsonObjectOrNull(): JsonObject? {
