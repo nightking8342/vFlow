@@ -16,6 +16,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -185,6 +186,18 @@ internal fun LiquidToggleSwitch(
     val dragState = remember { booleanArrayOf(false) }
     var fraction by remember { mutableFloatStateOf(if (checked) 1f else 0f) }
 
+    // ⚠️⚠️ `onCheckedChange` **必须**经 `rememberUpdatedState` 转一手再用 ——
+    //    `DampedDragAnimation` 建在 `remember(animationScope)` 里、**只建一次**，
+    //    它闭包里捕获的 `onCheckedChange` 从此**永远是首帧那一个**。
+    //    调用方传进来的 lambda 常常捕获**当帧的数据快照**（工作流列表的开关就是
+    //    `{ enabled -> actions.onToggleEnabled(workflow, enabled) }`）⇒ 用户
+    //    「编辑并保存某个工作流 → 回列表拨一下这个开关」时，写回去的是**首帧那个
+    //    旧快照**（`saveWorkflow(stale.copy(isEnabled = ...))`），工作流被**静默
+    //    还原成旧版本**（不报错、界面上的 `checked` 还是对的，只有内容退回）。
+    //    状态里的 `.value` 每次重组都会刷新，闭包读到的始终是最新回调。
+    //    本类此前只修过「闭包捕获 `checked`」那一半（轻点取反），漏了这一半。
+    val currentOnCheckedChange by rememberUpdatedState(onCheckedChange)
+
     val dampedDragAnimation = remember(animationScope) {
         // ⚠️ 照抄示例的参数：valueRange 0..1、pressedScale 1.5、
         //    即时起拖（`longPressDrag` 默认 false，与示例的即时响应一致）。
@@ -199,7 +212,7 @@ internal fun LiquidToggleSwitch(
             onDragStopped = {
                 if (dragState[0]) {
                     fraction = if (targetValue >= 0.5f) 1f else 0f
-                    onCheckedChange?.invoke(fraction == 1f)
+                    currentOnCheckedChange?.invoke(fraction == 1f)
                     dragState[0] = false
                 } else {
                     // 轻点：取反当前值。⚠️ 不能用闭包里的 `checked` —— 它在
@@ -208,7 +221,7 @@ internal fun LiquidToggleSwitch(
                     // 用 `fraction`（同一帧的当前进度）判，它由 `LaunchedEffect` 持续同步。
                     val next = if (fraction >= 0.5f) 0f else 1f
                     fraction = next
-                    onCheckedChange?.invoke(next == 1f)
+                    currentOnCheckedChange?.invoke(next == 1f)
                 }
             },
             onDrag = { _, dragAmount ->
