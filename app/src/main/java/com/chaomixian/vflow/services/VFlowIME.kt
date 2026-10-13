@@ -36,6 +36,18 @@ class VFlowIME : InputMethodService() {
         const val KEY_ACTION_ENTER = "enter"
         const val KEY_ACTION_TAB = "tab"
         const val KEY_ACTION_NEXT = "next"
+
+        /**
+         * fork：上一次 [inputText] 是否真的拿到了 `InputConnection`（即真的 commit 上屏了）。
+         *
+         * ⚠️ **为什么需要它**：调用方（`VFlowImeManager`）原先只能判断"广播发出去没有"，
+         * 广播成功 ≠ 文字上屏 —— IME 没有当前客户端时 `currentInputConnection` 是 null，
+         * 这里会静默 return，而调用方会**误报成功**（表现为"AI 说输入好了，输入框还是空的"）。
+         *
+         * 本服务跑在 App 进程内（manifest 里是本应用的 service），所以进程内静态标记够用。
+         */
+        @Volatile
+        var lastCommitHadConnection: Boolean = false
     }
 
     private val inputReceiver = object : BroadcastReceiver() {
@@ -82,7 +94,12 @@ class VFlowIME : InputMethodService() {
     }
 
     private fun inputText(text: String, performEditorAction: Boolean, keyAction: String) {
-        val inputConnection = currentInputConnection ?: return
+        val inputConnection = currentInputConnection
+        lastCommitHadConnection = inputConnection != null
+        if (inputConnection == null) {
+            DebugLogger.w(TAG, "没有 currentInputConnection，文本未上屏")
+            return
+        }
 
         DebugLogger.d(TAG, "IME Committing text: $text, keyAction: $keyAction")
 

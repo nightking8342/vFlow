@@ -50,4 +50,17 @@ interface IShizukuUserService {
      * 销毁一个虚拟屏幕。
      */
     void destroyVirtualDisplay(int displayId) = 6;
+
+    /**
+     * 设置某块屏幕的输入法显示策略（fork 新增）。
+     *
+     * 取值同 `WindowManager.DISPLAY_IME_POLICY_*`：
+     *  0 = LOCAL（输入法显示在该屏）/ 1 = FALLBACK_DISPLAY（回落主屏，系统默认）/ 2 = HIDE。
+     *
+     * ⚠️ 底层是 `IWindowManager.setDisplayImePolicy`，需要 `INTERNAL_SYSTEM_WINDOW`
+     * （`com.android.shell` 持有），且目标屏必须是 **trusted** 的虚拟屏，否则抛 SecurityException。
+     *
+     * @return 是否成功。失败一律返回 false，不抛异常（避免打挂调用方）。
+     */
+    boolean setDisplayImePolicy(int displayId, int policy) = 8;
 }

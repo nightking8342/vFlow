@@ -564,10 +564,24 @@ class AgentTools(private val context: ExecutionContext) {
      * 如果失败回落到 剪贴板 + KEYCODE_PASTE (解决乱码问题)
      */
     suspend fun inputText(text: String): String {
-        // 如果是虚拟屏幕，强制使用 Shell input text (不完全支持中文，除非用 IME 广播)
+        // fork：虚拟屏的输入路径 —— **先试 vFlow IME，失败再回落 shell `input text`**。
+        //
+        // ⚠️ 改前这里**直接**走 `input -d <id> text`，完全跳过了 vFlow IME —— 而 `input text`
+        //    对非 ASCII 支持很差 ⇒ **虚拟屏下根本输不了中文**（原注释也承认"不完全支持中文"）。
+        //
+        // 为什么 IME 这条在虚拟屏上可行：vFlow IME 是 **headless** 的（`onCreateInputView()`
+        // 返回 null，不显示任何 UI）；AOSP 的 IME display policy 只决定**键盘窗口画在哪块屏**
+        // （见 `InputMethodManagerService.computeImeDisplayIdForTargetInner`），
+        // 而 `currentInputConnection` 仍指向**虚拟屏上那个真正获得焦点的客户端** ⇒ 直接
+        // `commitText` 就能上屏。这条已随本批实现写入文档，真机待验证。
         if (targetDisplayId > 0) {
             if (ShellManager.isShizukuActive(appContext)) {
-                // 虚拟屏幕输入简单文本
+                if (VFlowImeManager.inputText(appContext, text)) {
+                    return "Success: 已通过 vFlow IME 向虚拟屏幕输入文本。"
+                }
+                DebugLogger.w(TAG, "vFlow IME 未上屏，回落到 shell input text（仅 ASCII）")
+
+                // 回退：虚拟屏幕输入简单文本
                 val safeText = text.replace(" ", "%s").replace("\"", "\\\"")
                 val cmd = "input ${getDisplayOption()} text \"$safeText\""
                 val result = ShellManager.execShellCommand(appContext, cmd, ShellManager.ShellMode.AUTO)

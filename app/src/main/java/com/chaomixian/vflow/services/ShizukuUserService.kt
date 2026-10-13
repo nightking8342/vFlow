@@ -293,6 +293,49 @@ class ShizukuUserService(private val context: Context) : IShizukuUserService.Stu
     }
 
     /**
+     * fork：设置某块屏幕的输入法显示策略。
+     *
+     * ⚠️ 这是**隐藏 API**，只能反射调用：
+     *  - `android.os.ServiceManager` 与 `android.view.IWindowManager$Stub` 都是 `@hide`，但在 bootclasspath 上，
+     *    `app_process` 起的进程（本服务就跑在里面）能 `Class.forName` 到；
+     *  - 权限门槛是 `INTERNAL_SYSTEM_WINDOW` —— `com.android.shell` 的 manifest 里**确实声明了**它，本服务以 shell uid 运行；
+     *  - WMS 侧还要求 `displayContent.isTrusted()` —— vFlow 建屏时传了 `TRUSTED(1024)`，所以能过。
+     *
+     * 失败一律返回 false（权限不足 / 屏不存在 / 非 trusted / 隐藏 API 被拦），不抛异常打挂调用方。
+     */
+    override fun setDisplayImePolicy(displayId: Int, policy: Int): Boolean {
+        return try {
+            val serviceManager = Class.forName("android.os.ServiceManager")
+            val binder = serviceManager
+                .getMethod("getService", String::class.java)
+                .invoke(null, "window") as? IBinder
+            if (binder == null) {
+                DebugLogger.e(TAG, "setDisplayImePolicy: 拿不到 window 服务")
+                return false
+            }
+
+            val stubClass = Class.forName("android.view.IWindowManager\$Stub")
+            val windowManager = stubClass
+                .getMethod("asInterface", IBinder::class.java)
+                .invoke(null, binder) ?: return false
+
+            windowManager.javaClass
+                .getMethod(
+                    "setDisplayImePolicy",
+                    Int::class.javaPrimitiveType,
+                    Int::class.javaPrimitiveType,
+                )
+                .invoke(windowManager, displayId, policy)
+
+            DebugLogger.i(TAG, "setDisplayImePolicy 成功: displayId=$displayId policy=$policy")
+            true
+        } catch (e: Exception) {
+            DebugLogger.e(TAG, "setDisplayImePolicy 失败: displayId=$displayId policy=$policy", e)
+            false
+        }
+    }
+
+    /**
      * 读取输入流内容
      */
     private fun readStream(inputStream: java.io.InputStream): String {

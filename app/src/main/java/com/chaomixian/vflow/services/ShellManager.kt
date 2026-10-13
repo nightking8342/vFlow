@@ -213,6 +213,28 @@ object ShellManager {
     }
 
     /**
+     * fork：设置某块屏幕的输入法显示策略（`0 = LOCAL` / `1 = FALLBACK_DISPLAY` / `2 = HIDE`）。
+     *
+     * 用于让虚拟屏上的输入法**留在虚拟屏**，而不是弹到用户的主屏（AOSP 默认行为）。
+     * 详见 `VirtualDisplayManager.startHeadlessSession` 与 `docs/fork/chat-agent-enhancement-plan.md`。
+     *
+     * ⚠️ 只有 Shizuku 通道有这条路（Root 侧未实现）。返回 false 表示没设成 ——
+     * 调用方应当**继续走后续流程**：输入法只是显示位置不对，不影响任务本身。
+     */
+    suspend fun setVirtualDisplayImePolicy(displayId: Int, policy: Int): Boolean {
+        if (displayId <= 0) return false
+        val context = LogManager.applicationContext
+        if (!isShizukuActive(context)) return false
+        val service = getService(context) ?: return false
+        return try {
+            service.setDisplayImePolicy(displayId, policy)
+        } catch (e: Exception) {
+            DebugLogger.e(TAG, "调用 setDisplayImePolicy 失败", e)
+            false
+        }
+    }
+
+    /**
      * 执行一条 Shell 命令。
      * @param context 上下文
      * @param command 要执行的命令
