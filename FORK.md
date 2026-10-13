@@ -1401,6 +1401,311 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 
 ---
 
+### 折叠屏多显示器调研（2026-10-13）—— **仅调研，无代码改动**
+
+> 起因（用户）：折叠屏有两块屏，想「让 AI 在指定的那块屏上干活」（你看内屏、AI 用外屏）。
+> 方法：**零代码改动** —— 用工作流两步（`vflow.shizuku.shell_command` + `vflow.data.log`）在真机上跑了五轮 shell 探针，
+> 再拿结果逐条对照 AOSP 源码。全过程与结论见 [`docs/fork/surveys/multi-display-survey.md`](docs/fork/surveys/multi-display-survey.md)。
+
+**结论**：**当前 vFlow 侧做不到，被三层机制同时挡住**（驱动 / 显示管理 / 窗口管理），但**硬件层面未必不行**。
+
+| 关键实测结论 | 依据 |
+|---|---|
+| 两块面板是两个 `Display`，同在 `displayGroupId 0`；**`displayId` 不绑面板**（`0` 永远是"当前活跃面板"，折叠/展开时物理背板对调） | 两种折叠态对比 |
+| 非活跃面板 `state OFF` + `canHostTasks false` + 被 `Display-off` token 按住 12.9 小时 | `dumpsys display` / `dumpsys window displays` |
+| `cmd display enable-display 1` → `exit=0`、`state` 变 `ON`、睡眠 token 释放，但**面板物理背光仍是灭的** | 探针 + 用户观察 |
+| `am start --display 1` → `SecurityException`；logcat 原文 `activity launch is not allowed on a display that cannot host tasks`。**`am` 是以 `uid=0`（root）跑的，照样被拒** | 探针 + logcat |
+| `canHostTasks` 恒为 false 的机制：构造函数初值 `(mDisplayId == DEFAULT_DISPLAY)`，而唯一更新点 `updateCanHostTasksIfNeededLocked` 两处调用**都在 aconfig 开关 `isDisplayContentModeManagementEnabled()` 之内**；`validateCanHostTasksLocked` 对外屏（带 `FLAG_OWN_CONTENT_ONLY`）本会放行 ⇒ **不是"被否决"，是"没人调用"** | AOSP `LogicalDisplay.java:255/975`、`DisplayManagerService.java:1275/2388/2716` |
+| `screencap -d` 要**物理** display id；传逻辑 id 报 `Display Id '1' is not valid.` | 探针 |
+
+**⚠️ 未解疑点（留给后续）**：系统相机的「外屏预览」**能同时点亮内外屏**（用户观察）⇒ **推翻"硬件只能驱动一块面板"的推断**，
+属"没找到通道"而非"做不到"。候选方向与复测清单见文档 §6（含 `DisplayManager.setMirroringEnabled()` 这条与
+`canHostTasks = !mMirrorBuiltInDisplay` 直接相关的线索）。
+
+**对本批决策的影响**：
+
+- ❌ **不做** `display_mode` 的「指定屏幕」+ 屏列表（没有第二块可用屏可指）；
+- ✅ **改做** `display_mode` 补 `acceptsMagicVariable = true` —— 让折叠触发器驱动「展开 ⇒ 主屏（内屏）；折叠 ⇒ 虚拟屏」的分流；
+- ✅ **「AI 不占你的屏」这个需求，唯一可行形态是虚拟屏**（已实现），配监视器看画面。
+
+| 文件 | 内容 | 归属 |
+|---|---|---|
+| `docs/fork/surveys/multi-display-survey.md`（**新增**） | fork 独有：折叠屏多显示器能力调研（真机五轮探针 + AOSP 源码对照 + 未解疑点 + 复测清单 + 探针命令附录） | 我方 |
+| `docs/fork/surveys/README.md`（改） | 索引追加 `multi-display-survey.md` 一行 | **手动合并**（追加） |
+
+> ⚠️ **教训入册（本轮踩到）**：先据 `LogicalDisplay` 构造函数推断「`canHostTasks=false` 只是字段没初始化、不是拦路虎」，
+> **结果 logcat 直接打脸**（它确实是拦路虎，而且连 root 都绕不过）。**写进文档的平台行为断言必须先实跑再落笔** ——
+> 与 `backup-webdav-design.md` §1.5 同源。另外两条工具坑也记进文档 §8.3：`ShizukuUserService` 只在 `exitCode != 0`
+> 时才带出 stderr（命令末尾的成功语句会让前面所有报错静默消失）、`cut` 会把 `DisplayInfo` 行尾的 `state`/`canHostTasks` 切掉。
+
+---
+
+---
+
+### 虚拟屏能力三项增强（2026-10-13）—— **已实现**（单测 + release 打包通过，真机未验证）
+
+> 需求（用户）：① 虚拟屏里点输入框时，**键盘弹到用户主屏**上，很打扰 ⇒ 要跟到虚拟屏；
+> ② 顺带修「虚拟屏输不了中文」；③ 模型思考只有悬浮窗上一行 **30 字**、无历史 ⇒ 要能看全、能回看；
+> ④ 新建一个**监视 Activity**（画面 + 思考 + 控制），且能进系统小窗。
+
+**四条关键机制（改这块前必读）**：
+
+1. **输入法上屏 = 给虚拟屏设 IME policy `LOCAL`。** AOSP `InputMethodManagerService.computeImeDisplayIdForTargetInner()`
+   的注释写明：*"Show IME window on fallback display when … the display is virtual and isn't owned by system"* ——
+   虚拟屏默认 `FALLBACK_DISPLAY` ⇒ 键盘**必然**弹在主屏。改法是 `IWindowManager.setDisplayImePolicy(displayId, LOCAL)`：
+   权限门槛 `INTERNAL_SYSTEM_WINDOW`（`com.android.shell` 持有）+ WMS 要求 `displayContent.isTrusted()`
+   （vFlow 建屏传了 `TRUSTED(1024)`）——**两道门槛都已满足**。
+   ⚠️ **`LOCAL` 是 0，不是 1**（`LOCAL=0 / FALLBACK_DISPLAY=1 / HIDE=2`）；写错就静默变成别的策略。
+   ⚠️ `IWindowManager` 是隐藏 API，`ShizukuUserService` 里**只能反射调**（`ServiceManager.getService("window")` +
+   `IWindowManager$Stub.asInterface`）。
+2. **虚拟屏中文输入：把虚拟屏分支接回 vFlow IME。** 原先那里**直接**走 `input -d <id> text`（仅 ASCII）并 return，
+   **完全跳过了 vFlow IME**。vFlow IME 是 headless 的（`onCreateInputView()` 返回 null，不显示任何 UI）；
+   IME policy 只决定**键盘窗口画在哪块屏**，`currentInputConnection` 仍指向虚拟屏上获得焦点的客户端
+   ⇒ `commitText` 就能上屏。**⚠️ 这条是推断，真机待验证**（已做回退：IME 不上屏就回落 shell）。
+   配套修了一个**误报成功**：`VFlowImeManager.inputText` 原先返回「广播发出去了没有」，现在返回
+   「IME 真的拿到了 `InputConnection`」（新增 `VFlowIME.lastCommitHadConnection`）—— 否则
+   「没有当前客户端、文字根本没上屏」会被报成成功。
+3. **预览帧流从「单监听者」改成「多消费者」，且谁都不 `recycle()`。** 悬浮窗的小预览与监视 Activity 的大画面
+   可能**同时**存在。⚠️ **生产者也不回收上一帧**：订阅方（`ImageView` / Compose `Image`）何时不再引用它，
+   在主线程上**无法可靠观测**（Compose 重组时机不在我们手里）⇒ 提前回收就是 use-after-recycle 崩溃。
+   代价是每帧一个 ≈10 MB 大对象垃圾（4 fps），交给 GC；嫌重就调大 `PREVIEW_FRAME_INTERVAL_MS`。
+4. **运行控制状态（暂停/取消闸门）从 `AgentOverlayManager` 搬进 `AgentRunMonitor`。** 否则监视器控制不了。
+   悬浮窗改为**委托** ⇒ 两个模块的 4 处 `overlayManager.awaitState()` 调用点**一行都没改**。
+
+| 文件 | 内容 | 归属 |
+|---|---|---|
+| `aidl/.../IShizukuUserService.aidl`（改） | +1 方法 `boolean setDisplayImePolicy(int, int) = 8`（事务码 1..7 已占用） | **手动合并** |
+| `services/ShizukuUserService.kt`（改） | 反射实现 `setDisplayImePolicy`（`ServiceManager` → `IWindowManager$Stub.asInterface`）；失败一律返回 false 不抛 | **手动合并** |
+| `services/ShellManager.kt`（改） | +1 转发方法 `setVirtualDisplayImePolicy`（仅 Shizuku 通道有） | **手动合并** |
+| `core/utils/VirtualDisplayManager.kt`（改） | ① 建屏成功后设 `IME_POLICY_LOCAL`（失败只记 warning，不阻断）；② **预览 API 替换**：`startPreview/stopPreview` → `addPreviewListener/removePreviewListener`（多消费者、主线程发布、不回收） | **手动合并** |
+| `services/VFlowIME.kt`（改） | 新增 `lastCommitHadConnection`（进程内静态标记：IME 是否真的拿到了 `InputConnection`） | **手动合并** |
+| `core/utils/VFlowImeManager.kt`（改） | 返回值由「广播发出去了」改为「**真的上屏了**」（`broadcastSent && committed`） | **手动合并** |
+| `core/workflow/module/interaction/AgentTools.kt`（改） | 虚拟屏输入分支：**先试 `VFlowImeManager`**，失败再回落 `input -d text` | **手动合并** |
+| `ui/overlay/AgentRunMonitor.kt`（**新增**） | fork 独有：运行状态总线（`StateFlow<Snapshot>`：phase/模块名/步数/当前动作/**有界 200 条的完整思考流**）+ 运行控制（`awaitState`/`togglePause`/`requestCancel`） | 我方 |
+| `ui/overlay/AgentMonitorActivity.kt` + `AgentMonitorContent.kt`（**新增**） | fork 独有：监视器（`ComponentActivity` + `setContent { VFlowTheme { … } }`）。虚拟屏画面 + 完整思考流（自动滚到底）+ 暂停/继续 + 两段确认的结束 | 我方 |
+| `ui/overlay/AgentOverlayManager.kt`（改） | ① 构造参数加 `moduleLabel` / `maxSteps`；② `show()/dismiss()` → `AgentRunMonitor.begin/finish`；③ `awaitState/togglePause/handleCancel` 委托总线；④ `updateStatus` 把**完整**文本发总线（自己那行仍截断 30 字）；⑤ 卡片加「监视器」按钮；⑥ `updatePreview` 不再回收帧 | **手动合并** |
+| `AgentModule.kt` / `AutoGLMModule.kt`（改） | ① 构造传 `moduleLabel = metadata.getLocalizedName(...)` + `maxSteps`；② `startPreview` → `addPreviewListener`；③ `display_mode` 补 `acceptsMagicVariable = true` | **手动合并** |
+| `AndroidManifest.xml`（改） | +1 Activity（`resizeableActivity="true"` 显式声明；**刻意不声明** `supportsPictureInPicture`） | **手动合并** |
+| 三语 `res/values{,-en,-ja}/strings.xml`（改） | +8 键（`agent_monitor_*`），一律追加到文件末尾 | **手动合并**（追加条目） |
+| `test/.../ui/overlay/AgentRunMonitorTest.kt`（**新增**，7 例） | 纯 JVM：`begin` 清空、思考原样保留且有界 200、`finish` 保留 ENDED 快照、暂停会挂住 `awaitState`、取消会抛、**暂停态下取消也必须走通**（先解锁再置位） | 我方 |
+| `test/.../ui/overlay/AgentMonitorAndImeWiringTest.kt`（**新增**，6 例） | 源码扫描：`IME_POLICY_LOCAL = 0`、策略在**建屏之后**设置、AIDL 事务码 8、虚拟屏输入**先 IME 后 shell**、悬浮窗**不再持有** `pauseSignal`、manifest 可调大小且无 PiP、三语 8 键齐全 | 我方 |
+| `test/.../ui/overlay/AgentVirtualScreenPreviewWiringTest.kt`（改，6 例） | 随预览 API 替换更新：多消费者、生产/消费**都不 recycle**、发布在主线程 | 我方 |
+
+> ⚠️ **本批把上一批（同日）刚加的 `startPreview` API 替换掉了** —— 两批都还没推远端，无需兼容旧调用。
+>
+> ⚠️ **两处反证已做**：① 把 `IME_POLICY_LOCAL` 改成 1 + 把虚拟屏分支的 IME 调用改成 `if (false)` ⇒
+> 对应 2 条测试变红（其余 17 条保持绿，定位准确）；② 上一批的取帧单消费者/`hideForScreenshot` 两条反证见上一节。
+>
+> ⚠️ **真机未验证（本批最需要上机看的三件事）**：
+> 1. 虚拟屏里点输入框 ⇒ 键盘是否**留在虚拟屏**（`setDisplayImePolicy` 是否真的生效，见机制 1 的两道门槛）；
+> 2. 虚拟屏**中文**能否上屏（机制 2 那条推断 —— 若 IME 拿不到虚拟屏客户端的 `InputConnection`，
+>    会回落成 `input text`，表现为「中文丢字」而不是报错）；
+> 3. 监视器的画面与思考流是否实时；小窗/分屏下是否继续刷新；退出后预览循环是否真的停（`addPreviewListener` 的配对）。
+>
+> ⚠️ **已知未做**：`AgentModule` 的 `display_mode` 虽然补了 `acceptsMagicVariable`，但**折叠触发器分流**
+> 还没实际拼过工作流；`screencap -d` 传逻辑 id 的 bug（见上一节）本批**没修**。
+
+> ⚠️⚠️ **真机反馈修复（同日当晚，装上首版后立刻发现两处）**：
+>
+> **① AutoGLM 输入直接失败** —— `java.lang.SecurityException: Settings key: <enabled_input_methods> is
+> only readable to apps with targetSdkVersion lower than or equal to: 33`。
+> `VFlowImeManager` 直接读 `Settings.Secure.ENABLED_INPUT_METHODS`，而 **Android 14 起该键对 `targetSdk >= 34`
+> 的 App 不可读**（本 App `targetSdk` 36）。
+> ⚠️ **这是既有代码里的老雷，不是本批引入的** —— 本批只是让**虚拟屏**也走到那条路，才把它引爆
+> （真机现象：AutoGLM 走到 `Type` 指令整步失败，报「出错模块 #3」）。
+> ⚠️ 而且它**时好时坏**：那行只在「当前输入法不是 vFlow IME」时才走到 ⇒ 当前输入法恰好是 vFlow IME 时
+> 不报错 —— 这正是用户看到的「**另一个智能体可以正常输入**」。
+> **修法**：受限键一律走 shell 读（`settings get secure <key>`；写那边本来就走 shell），读不到返回 null
+> 由调用方降级；`inputText` 入口加 try/catch 兜底（**异常一旦抛出就会打断整条工作流**）；
+> 顺带加固全仓无调用方的 `isImeEnabled`（同一颗雷）。
+>
+> **② 「监视器」按钮不显示** —— 卡片原先 `WRAP_CONTENT` + 三个**带图标**的按钮，合计 ≈406dp，
+> **超过外屏的 ≈392dp**（1080px ÷ 440dpi）⇒ 卡片居中后两侧被裁，**最右边那个按钮直接被挤出屏幕**。
+> ⚠️ **只在外屏复现**（内屏 871dp 宽，怎么都放得下）—— 典型的"折叠态专属"布局 bug。
+> **修法**：卡片改撑满（留 12dp 边距）+ 三个按钮 `weight = 1f` 分配宽度 + 去掉按钮图标
+> ⇒ 任何屏宽 / 任何文案长度都不会再溢出。
+>
+> 两条都补了**源码扫描型回归测试**并做过**反证**：把受限键读改回 `Settings.Secure.getString` ⇒
+> `ime manager reads restricted secure settings through the shell` 变红；把 `weight` 从 `1f` 改 `0f` ⇒
+> `overlay button row cannot overflow the screen` 变红。
+
+> ⚠️⚠️ **真机反馈第二轮（同日，用户看过监视器页面之后）—— 三项改动 + 两个 bug**：
+>
+> **① 监视器入口：悬浮窗按钮 → 步骤参数。**
+> 新增 `monitor_mode`（ENUM，`overlay` / `activity`，默认 `overlay`）到 `AgentModule` / `AutoGLMModule`；
+> `AgentOverlayManager` **移除**「监视器」按钮（它挤占卡片宽度，外屏上会被裁掉 —— 见上一轮），
+> 改为 `activity` 模式下**自动打开监视器页面**。`activity` 模式下模块**不再注册预览监听者**
+> （画面交给页面，省掉每帧 ≈10 MB 拷贝）—— 由 `AgentOverlayManager.usesOverlayPreview` 把关。
+> ⚠️ 悬浮窗在 `activity` 模式下**仍然显示**：它是"AI 在跑"的指示 + 暂停/结束的兜底，
+> 也顺带提供了一个可见窗口（让后台启动 Activity 更不容易被系统拦下）。
+>
+> **② 两个「结束按钮点了没反应」的 bug**（用户报的，确实是 bug）：
+> - **悬浮窗**：`handleCancel` 的「确定?」原先 **3 秒后自动回退**。用户第一次点完、犹豫超过 3 秒再点，
+>   倒计时已把状态复位 ⇒ 第二次点击被当成"第一次点击"重新起确认 ⇒ 表现就是
+>   **「再点一次仍然没反应，按钮又变回结束」**。已**去掉自动回退**（确认态保留到用户确认或悬浮窗销毁）。
+> - **监视器页面**：`requestCancel()` 原先只改一个 `@Volatile` 布尔、**不进 StateFlow** ⇒ 点完「结束」UI
+>   毫无变化（主循环要等下一次 `awaitState()` 才退出，可能还在一次几十秒的 LLM 调用里）；而且旧实现把
+>   `confirmStop` 立刻置回 false，标签当场变回「结束」—— 看起来就是"点了没反应"。
+>   现改为 `Snapshot.cancelling` 进 StateFlow，按钮显示「正在停止…」并置灰；
+>   并且 **`ENDED` 之后不再显示控制按钮**（主循环已退出，点了也不会有反应 —— 那是"没反应"的另一半来源）。
+>
+> **③ 监视器页面：思考流高度从半屏压到 ≈3 行。**
+> 原先它与预览各占 `weight(1f)`（半屏，用户反馈"太高"）；现固定 `THOUGHT_STREAM_HEIGHT = 72.dp`
+> （约 3 行 `bodySmall`），仍可滚动、仍自动跟到最新，预览拿回剩余空间。
+>
+> 三条都补了回归测试并做过**反证**：把 `cancelling = true` 改回 `false`、并给悬浮窗加回「结束」标签回写 ⇒
+> `stop confirm cannot silently expire and cancel is visible` 与
+> `request cancel is immediately visible in the state flow` 双双变红。
+
+> ⚠️⚠️ **真机反馈第三轮（同日）—— 三处调整**：
+>
+> **① 删掉孤儿字符串 `agent_monitor_open`**（三语）。它是上一轮那个「监视器」按钮的文案，
+> 按钮随参数化一起移除后就没人引用了。
+>
+> **② `activity` 模式下彻底不显示悬浮窗。** 上一轮还保留悬浮窗作"AI 在跑"的指示 + 兜底控制，
+> 用户明确要求**连那张只有文字的卡片也不要** ⇒ `AgentOverlayManager.show()` 在 `activity` 模式下
+> **提前 return**（一个窗口都不建），只做两件事：`AgentRunMonitor.begin()` + `openMonitor()`。
+> ⚠️ **代价**：这条路径下**没有可见窗口**了，`openMonitor()` 的后台启动更容易被 BAL 拦下；
+> 拦下时只有一条日志、用户看不到任何 UI。这是"不要悬浮窗"换来的取舍。
+>
+> **③ 思考流的自动跟滚改为「礼让用户」。** 原先无条件 `animateScrollToItem(最后一条)` ⇒
+> 用户往上翻看历史时，每来一条新思考就被拽回底部，**等于根本不能往上滚**。
+> 现在只在"追加前一刻已经贴着底部"时才滚（读 `LazyListState.layoutInfo` 的**上一次布局**快照判断 ——
+> `LaunchedEffect` 在下一帧 measure 之前跑，拿到的正是追加前的位置）。
+>
+> 补了两条回归断言：`activity` 模式必须**在建窗之前** `return`；自动跟滚必须带 `wasAtBottom` 判断。
+
+> ⚠️⚠️ **真机反馈第四轮（同日）—— 「思考流里只有状态文案」的根治**：
+>
+> 用户反馈：监视器里的"思考流"跟以前一样只有"观察屏幕""计划中"这类简要状态，日志里也不是真正的思考。
+> 查下来是**两个独立问题叠加**：
+>
+> **① 硬编码阶段文案被当思考发布了（本批引入的 bug）。**
+> 每个步骤 `AgentModule` 调 4 次 `updateStatus`，只有 1 次带模型输出；`AutoGLMModule` 6 次里只有 1~2 次。
+> 而上一批把 `updateStatus` 的**第一个参数无条件**当思考发布进总线 ⇒ 流里大半是"分析屏幕…""生成计划"。
+> **修法**：拆成两条通道 ——
+> `updateStatus(status, action)` → `AgentRunMonitor.publishStatus()`，**只更新阶段状态、不进思考流**；
+> `publishModelOutput(text, action)`（新增）→ `publishThought()`，**只有模型输出走这条**。
+> 监视器头部把「阶段状态 · 当前动作」合成一行显示。
+>
+> **② 只抽 think 标签内部，把模型说的话丢掉一大半。**
+> - `AgentModule`：有标签就**只取标签内**（闭合标签之后的文字**直接丢掉**），没标签才整段用 —— 两套行为不一致；
+> - `AutoGLMModule`：`extractTag` 找不到标签**返回空串** ⇒ **什么都不显示**（这是"监视器里只有状态"的另一半原因）。
+>
+> **修法**：改为发**整段原文**，只把标签本身换成空格（`AgentOverlayManager.stripThinkingTags`），
+> **不抽取、不丢弃任何文字**。日志侧本来就是全文（`AI Output: ` / `AutoGLM: `），无需改动。
+>
+> **⚠️⚠️ 一个必须记下的工具陷阱（本轮踩了两次，比"断言先实跑"更隐蔽）**：
+> **尖括号标签的字面量在工具链路里会被渲染层吞掉 —— 连"看"都不可信。**
+> 我 `Get-Content` 看到的是 `" think"`，**字节核对**（`[int]$_`）才发现文件里其实是 `" think"`；
+> 于是照着"看到的"写 patch，**期望文本永远对不上**（`apply_patch` 连续失败两次）；
+> 而唯一"成功"的那次，反而把**没有尖括号的错标签**写进了 `stripThinkingTags` —— **功能静默失效**
+> （去标签什么也没去掉），单测还是绿的（断言也用了同样的错字面量）。
+> ⇒ **规则**：读写含尖括号标签的代码时 —— ① 先**字节核对**（`[int]$_` 或 `-replace '<','[LT]'`）；
+> ② 在 patch/测试里用**拼装构造**（`"<" + "think" + ">"`）或正则通配，**绝不写字面量**。
+> 同源教训见 `backup-webdav-design.md` §1.5。
+
+> ⚠️⚠️ **真机反馈第五轮（同日，拿到完整运行日志后）—— 找到「AI 智能体不输出文字」的确切根因**：
+>
+> 用户原话：「GLM 反而有、AI Agent 反而没有」。日志实证，**两个模块的原因完全不同**：
+>
+> | 模块 | 日志里的模型输出 | 结论 |
+> |---|---|---|
+> | `AutoGLMModule` | `D/AutoGLM: : 用户要求打开哔哩哔哩，搜索"菩萨鱼"并播放…` —— **完整中文推理，每步都有** | 模型本来就写得很好，只是**没有 ` thinking` 标签** ⇒ 旧代码 `extractTag` 返回空串、**UI 里什么都不显示**（本批 D 已修） |
+> | `AgentModule` | `D/AgentModule: AI Output:  ` —— **空白**（10 步里只有 2 步有这一行，且都是空白） | **`tool_choice: "required"` 让 glm-4.6v-flash 完全不写 `content`** |
+>
+> **修法**：`AgentModule` 的 `tool_choice` 由 `"required"` 改为 `"auto"`。
+> 强制工具调用约束的只是"必须产出 `tool_calls`"，**并不禁止 `content`**；但这个模型把它理解成了
+> "你的输出就是那个调用"。改成 `auto` 后模型可以"先写推理再调工具"；万一变成只说不做，
+> 既有的 `noToolCallCount` 兜底会接手（容忍 3 次，中间发 `SYSTEM ERROR: You MUST call a tool.`）。
+> 补了回归断言：不得再出现 `tool_choice=required`，且兜底必须还在。
+>
+> **⚠️ 同一份日志还暴露了一个更严重的问题（本批未修）**：**虚拟屏截图一直失败** ——
+> `W/AgentUtils: 虚拟屏幕 (ID: 39) 内存帧为空，准备回退到 Shell...` →
+> `W/AgentUtils: Shell 截图未能生成文件 (Display 39)` → `E/AgentUtils: 无法获取虚拟屏幕 (ID: 39) 的截图。`
+> **每步都这样** ⇒ **AI 智能体在虚拟屏上是"盲跑"**（只拿到 XML 树、没有截图），而它的系统提示词是重度视觉导向的。
+> 两个候选原因：
+> 1. **shell 回退是坏的（已证实）**：`screencap -d` 要**物理** display id，而代码传的是**逻辑** id
+>    （见 `multi-display-survey.md` §3.3）；
+> 2. **内存帧为空**：预览循环（本批新增，每 250 ms 取一次帧）可能把唯一待取的帧消费掉了 ——
+>    `ImageReader` 只在内容变化时产出帧，静态屏幕下"预览刚取走、agent 立刻要"就会拿到 null。
+>    ⚠️ **这条是本批引入的嫌疑**，需要单独验（关掉预览监听者再跑一次对比）。
+
+> ⚠️⚠️ **真机反馈第六轮（同日）—— 虚拟屏截图「每步都失败」的根治**：
+>
+> 上一轮的日志同时确认了两件事：`tool_choice: "auto"` **生效**（每一步都有模型文字 ✅、任务跑通），
+> 但**截图每一步都在失败**：
+> `虚拟屏幕 (ID: 42) 内存帧为空` → `Shell 截图未能生成文件 (Display 42)` → `无法获取虚拟屏幕的截图`
+> ⇒ **AI 智能体在虚拟屏上一直是盲跑**（只靠 XML 树），而它的系统提示词是重度视觉导向的。
+>
+> **根因（两条叠加）**：
+> 1. **shell 回退必然失败**：`screencap -d` 要**物理** display id，而代码传的是**逻辑** id
+>    （见 `multi-display-survey.md` §3.3）。这条一直就是坏的。
+> 2. **内存帧为空**：`ImageReader` **只在内容变化时产出帧**，而预览循环每 250 ms 就把唯一待取的
+>    那帧取走（`acquireLatestImage` 是单消费者）⇒ Agent 紧接着来取就是 null。
+>    ⚠️ 这条是**本批预览功能引入的**（改之前只有 Agent 一个消费者）。
+>
+> **修法**：`VirtualDisplayManager` 加一层**最近帧缓存**：
+> - `captureCurrentFrame()`（Agent 路径）优先取新帧，**取不到就退回最近一帧的副本**；
+> - 缓存带 **1 s 新鲜度上限** —— 超龄宁可不给，也不能让 Agent 看到自己动作**之前**的屏幕
+>   （那会误判"动作没生效"，**比拿不到图更糟**）；
+> - 预览循环改用 `captureFreshFrameOnly()`（**只吃新帧、不吃缓存**）—— 否则它会把陈旧帧
+>   一遍遍刷成"新鲜"（缓存时间戳被自己刷新），Agent 拿到的就可能是几秒前的画面。
+>
+> 补了回归断言：缓存字段存在、必须有新鲜度上限、Agent 路径必须回退、预览必须走 fresh-only。
+> ⚠️ **shell 回退那条仍未修**（虚拟屏很可能根本没有物理 id，`screencap -d` 对它无解）——
+> 现在的设计是"内存帧路径必须自己站住"，shell 只当不存在。
+
+> ⚠️⚠️ **真机反馈第七轮（同日）—— 监视器两项调整**：
+>
+> 上一轮日志确认**截图缓存生效** ✅（`没有新帧，回退到最近一帧（45ms 前）` / `（145ms 前）`，
+> 且模型文字里出现了"我看到搜索页显示着「菩萨鱼」的历史" ⇒ 它真的看见了）。
+>
+> **① 自动跟滚修好了（上一版是坏的）。** 用户反馈"文字好像没有自动滚动到最新的机制"。
+> 根因：上一版用"**追加前一刻是否贴着底部**"来判断要不要跟滚，而 `LaunchedEffect` 跑的时候
+> `layoutInfo` **已经是新布局**（新条目落在视口外）⇒ 判断恒为 false ⇒
+> **一旦内容超过可视区就再也不跟滚**（前两条还能滚、之后就不动了，正好对应"好像没这个机制"）。
+> **改成显式开关**：默认 `autoFollow = true` 跟到最新；用户在流上**碰一下**（点或滑，
+> `pointerInput` 的 Initial 阶段）就置 false、停止打扰；滚动停下来时若已回到最底自动恢复。
+>
+> **② 布局随可用宽度自适应。** 折叠屏**展开态内屏实测 871dp × 982dp**（≈ 两块手机屏并排），
+> 用户希望"左侧虚拟屏画面、右侧思考过程"。
+> - 新增 `MONITOR_TWO_PANE_MIN_WIDTH = 600.dp`：`BoxWithConstraints` 里 `maxWidth >= 该值` ⇒ **左右分栏**，
+>   否则维持上下堆叠；
+> - 双栏下思考流吃**右侧整列高度**（`weight(1f)`），不再受单栏那 72dp 的限制；
+> - ⚠️ **刻意不复用 `MainComposeShell` 的 840dp**（那是"是否显示侧边导航栏"的判据，还要求宽大于高；
+>   `ChatScreen` 借它当断点踩过坑）。阈值按"宽度够不够并排放两块内容"单独定。
+> - 顺带把内容拆成 `MonitorHeader` / `MonitorPreview` / `MonitorThoughtStream` / `MonitorControls`
+>   四个私有 Composable。
+>
+> 补了两条回归断言：跟滚必须是显式开关（且不得退回"追加前判断"）、布局必须按宽度分支且不得出现 840dp。
+
+> ⚠️ **真机反馈第八轮（同日）—— `screencap -d` 那条尾巴：删掉，而不是修**：
+>
+> 结论：**虚拟屏截图不存在可用的 shell 回退**，所以把回退**删掉**。
+>
+> 依据：
+> - `screencap -d` 要的是 SurfaceFlinger 的 **DisplayId**（物理屏那串大数，如 `4630947024259405956`），
+>   而 `createVirtualDisplay` 返回的是**逻辑** displayId（`42` 这种小整数）⇒ 传逻辑 id 必然报
+>   `Display id 'N' is not valid`（折叠屏探针实测过 `-d 1`，见 `multi-display-survey.md` §3.3）；
+> - 想拿虚拟屏的 SF DisplayId 只能抠 `dumpsys SurfaceFlinger --display-id` 的字符串，而
+>   **dumpsys 是调试接口不是数据接口**（`shortcut-system-overview.md` §4.1 的既有结论）⇒ 不值得；
+> - 代价是实打实的：真机日志里每一步都多花约 **350 ms**（`01:30:00.137 → 01:30:00.485`），
+>   并打一行 `E/无法获取虚拟屏幕的截图` —— 看起来像故障，其实是**预期内的降级**。
+>
+> 改动：
+> - `AgentUtils.captureScreen` 的虚拟屏分支**只保留内存帧路径**；没有可用帧时降级为
+>   **warning**（"本步只靠 UI 树"）而不是 error；
+> - **删除** `captureShellScreenshot`（私有，仅此一处调用）；
+> - 加回归断言：`AgentUtils` 里不得再出现 `screencap -d`，且内存帧路径与降级 warning 必须在。
+>
+> ⚠️ 顺带记录：`captureScreen(displayId)` 这个签名现在**只支持 0（主屏）与虚拟屏**。
+> 若将来真要做"指定物理屏"，得按**物理 DisplayId** 拼 `screencap -d`，不能复用逻辑 id。
+
+---
+
+---
+
 ## 暂未分歧、但日后改动时须登记的敏感点
 
 以下是上游的核心区。目前 fork **尚未改动**它们；一旦改动（尤其是结构性改动），必须在上表登记，并评估合并成本：
