@@ -3744,4 +3744,7 @@
     <string name="summary_vflow_data_inspect_type_prefix">Inspect data type</string>
     <string name="summary_vflow_data_inspect_type_with_expected">Inspect data type · expect %1$s</string>
     <string name="output_vflow_data_inspect_type_value_if_matched_name">Value when matched</string>
+    <string name="param_vflow_ai_agent_monitor_mode_name">Run UI</string>
+    <string name="option_vflow_ai_agent_monitor_overlay">Overlay</string>
+    <string name="option_vflow_ai_agent_monitor_activity">Monitor screen</string>
 </resources>

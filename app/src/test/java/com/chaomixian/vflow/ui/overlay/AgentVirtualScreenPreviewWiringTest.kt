@@ -34,6 +34,29 @@ class AgentVirtualScreenPreviewWiringTest {
     private val agentModule = "core/workflow/module/interaction/AgentModule.kt"
     private val autoGlmModule = "core/workflow/module/interaction/AutoGLMModule.kt"
 
+    /**
+     * ⚠️ 这条锁的是「虚拟屏截图每一步都失败」的**收尾决定**（2026-10-14）：**删掉 shell 回退，而不是修它**。
+     *
+     * 依据：`screencap -d` 要 SurfaceFlinger 的 **DisplayId**（物理屏那串大数），而
+     * `createVirtualDisplay` 返回的是**逻辑** displayId ⇒ 传逻辑 id 必然报
+     * `Display id 'N' is not valid`，每步白花约 350 ms 并打一行假错误。
+     * 想拿虚拟屏的 SF DisplayId 只能抠 `dumpsys SurfaceFlinger` 的字符串，而 dumpsys 是
+     * **调试接口不是数据接口**（`shortcut-system-overview.md` §4.1）⇒ 不值得。
+     */
+    @Test
+    fun `virtual display screenshot never falls back to screencap -d`() {
+        val src = codeOnly("core/workflow/module/interaction/AgentUtils.kt")
+        assertTrue(
+            "⚠️ 不得再出现 `screencap -d` —— 那条回退必然失败（传的是逻辑 id）",
+            !src.contains("screencap -d")
+        )
+        assertTrue("内存帧路径必须保留", src.contains("VirtualDisplayManager.captureCurrentFrame()"))
+        assertTrue(
+            "没有可用帧时必须降级为 warning（不是 error）—— 那是预期内的降级，不是故障",
+            src.contains("本轮没有可用帧")
+        )
+    }
+
     @Test
     fun `frame acquisition stays single consumer`() {
         val src = codeOnly(virtualDisplay)
@@ -64,33 +87,76 @@ class AgentVirtualScreenPreviewWiringTest {
     }
 
     @Test
-    fun `overlay renders preview on the main thread and recycles frames`() {
-        val src = codeOnly(overlay)
-        assertTrue("必须提供 updatePreview", src.contains("fun updatePreview(bitmap: Bitmap)"))
+    fun `preview frames are owned by the producer and never recycled by consumers`() {
+        val overlaySrc = codeOnly(overlay)
+        assertTrue("必须提供 updatePreview", overlaySrc.contains("fun updatePreview(bitmap: Bitmap)"))
         assertTrue(
-            "回调来自后台线程，必须 post 到主线程",
-            src.contains("mainHandler.post")
-        )
-        assertTrue(
-            "替换时必须回收上一帧",
-            src.contains("previous?.takeIf { !it.isRecycled }?.recycle()")
-        )
-        assertTrue(
-            "dismiss 时必须回收当前帧",
-            src.contains("previewBitmap?.takeIf { !it.isRecycled }?.recycle()")
+            "消费方**不得**回收帧 —— 所有权在生产者手里，回收时机由它统一决定",
+            !overlaySrc.contains(".recycle()")
         )
         assertTrue(
             "预览默认不可见（主屏模式全程不显示）",
-            src.contains("visibility = View.GONE")
+            overlaySrc.contains("visibility = View.GONE")
         )
+
+        val vdmSrc = codeOnly(virtualDisplay)
+        assertTrue(
+            "生产者**也不**回收上一帧 —— Compose 的重组时机不在我们手里，提前回收就是 use-after-recycle",
+            !vdmSrc.contains("previous?.takeIf")
+        )
+        assertTrue(
+            "发布必须在主线程（与 ImageView 的绘制同一条线程）",
+            vdmSrc.contains("withContext(Dispatchers.Main)")
+        )
+    }
+
+    /**
+     * ⚠️ 这条锁的是一个**真机现象**（2026-10-14 日志）：虚拟屏截图**每一步都失败** ——
+     * `虚拟屏幕 (ID: 42) 内存帧为空` → shell 回退也失败 ⇒ **AI 智能体在虚拟屏上是盲跑**（只靠 XML 树）。
+     *
+     * 根因：`ImageReader` **只在内容变化时产出帧**，而预览循环每 250 ms 就把唯一待取的那帧取走
+     * （`acquireLatestImage` 是单消费者）⇒ Agent 紧接着来取就是 null。
+     */
+    @Test
+    fun `virtual display falls back to a recent frame instead of none`() {
+        val src = codeOnly(virtualDisplay)
+        assertTrue("必须有最近帧缓存", src.contains("private var lastFrame: Bitmap?"))
+        assertTrue(
+            "缓存必须有**新鲜度上限** —— 否则 Agent 会看到自己动作之前的屏幕，误判动作失败",
+            src.contains("LAST_FRAME_MAX_AGE_MS")
+        )
+        assertTrue(
+            "没有新帧时必须回退到缓存副本",
+            src.contains("takeFrameLocked() ?: cachedFrameCopyLocked()")
+        )
+        assertTrue(
+            "预览循环必须只吃新帧（吃缓存会把陈旧一遍遍刷成'新鲜'）",
+            src.contains("captureFreshFrameOnly()")
+        )
+    }
+
+    @Test
+    fun `preview stream is multi consumer`() {
+        val src = codeOnly(virtualDisplay)
+        assertTrue("必须提供 addPreviewListener", src.contains("fun addPreviewListener(listener: (Bitmap) -> Unit)"))
+        assertTrue("必须提供 removePreviewListener", src.contains("fun removePreviewListener(listener: (Bitmap) -> Unit)"))
+        assertTrue(
+            "第一个监听者到来才启动取帧循环",
+            src.contains("if (previewJob == null) startPreviewLoop()")
+        )
+        assertTrue(
+            "最后一个监听者走掉就停预览（否则空转拷帧）",
+            src.contains("if (previewListeners.isEmpty()) stopPreview()")
+        )
+        assertTrue("stopPreview 必须清空监听者集合", src.contains("previewListeners.clear()"))
     }
 
     @Test
     fun `both virtual-screen modules start the preview inside the cleanup scope`() {
         listOf(agentModule, autoGlmModule).forEach { relative ->
             val src = codeOnly(relative)
-            val startIndex = src.indexOf("VirtualDisplayManager.startPreview")
-            assertTrue("$relative 必须启动虚拟屏预览", startIndex >= 0)
+            val startIndex = src.indexOf("VirtualDisplayManager.addPreviewListener")
+            assertTrue("$relative 必须注册虚拟屏预览监听者", startIndex >= 0)
             assertTrue(
                 "$relative 的预览只能挂在 try 内（否则取消时会没人收尾）",
                 src.indexOf("try {") in 0 until startIndex

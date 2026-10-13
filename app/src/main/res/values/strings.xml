@@ -1789,4 +1789,12 @@
     <string name="model_config_stream_idle_timeout_hint">超过该时间没有收到任何数据就中断本轮。默认 300 秒。</string>
     <string name="model_config_stream_max_retries">最大重试次数</string>
     <string name="model_config_stream_max_retries_hint">仅在还没有收到任何内容时重试；0 表示不重试。默认 2。</string>
+    <string name="agent_monitor_title">运行监视</string>
+    <string name="agent_monitor_empty">当前没有正在运行的 AI 任务。</string>
+    <string name="agent_monitor_pause">暂停</string>
+    <string name="agent_monitor_resume">继续</string>
+    <string name="agent_monitor_stop">结束</string>
+    <string name="agent_monitor_confirm">再点一次确认</string>
+    <string name="agent_monitor_no_preview">主屏模式（无需画面预览）</string>
+    <string name="agent_monitor_stopping">正在停止…</string>
 </resources>

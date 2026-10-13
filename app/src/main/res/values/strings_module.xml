@@ -3751,4 +3751,7 @@
     <string name="summary_vflow_data_inspect_type_prefix">查看数据类型</string>
     <string name="summary_vflow_data_inspect_type_with_expected">查看数据类型 · 期望 %1$s</string>
     <string name="output_vflow_data_inspect_type_value_if_matched_name">匹配时的值</string>
+    <string name="param_vflow_ai_agent_monitor_mode_name">运行界面</string>
+    <string name="option_vflow_ai_agent_monitor_overlay">悬浮窗</string>
+    <string name="option_vflow_ai_agent_monitor_activity">监视器页面</string>
 </resources>

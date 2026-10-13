@@ -152,6 +152,37 @@ class AgentModule : BaseModule() {
                 "虚拟屏幕 (后台)" to DISPLAY_MODE_VIRTUAL,
                 "Virtual Screen (Background)" to DISPLAY_MODE_VIRTUAL
             ),
+            // fork：允许用魔法变量驱动执行环境 —— 折叠触发器（`vflow.trigger.fold`）的
+            // `fold_state` / `is_folded` 因此能分流「展开 ⇒ 主屏（内屏）；折叠 ⇒ 虚拟屏」。
+            // ⚠️ 折叠屏上**没有第二块可承载任务的屏**（`canHostTasks=false` + 面板点不亮，见
+            //    `docs/fork/surveys/multi-display-survey.md`）⇒「指定某块物理屏」已被否决，
+            //    变量驱动是这条需求唯一可落地的形态。
+            acceptsMagicVariable = true,
+            isHidden = false
+        ),
+        // fork：运行界面 —— 悬浮窗（卡片里带虚拟屏预览）/ 监视器页面（画面 + 完整思考流 + 控制）。
+        // 原来是悬浮窗卡片上一个「监视器」按钮，改成参数后：① 按钮不再挤占卡片宽度（外屏上会被裁掉）；
+        // ② 无人值守的工作流也能直接落到页面上。
+        InputDefinition(
+            "monitor_mode",
+            "运行界面",
+            ParameterType.ENUM,
+            AgentOverlayManager.MONITOR_MODE_OVERLAY,
+            options = listOf(
+                AgentOverlayManager.MONITOR_MODE_OVERLAY,
+                AgentOverlayManager.MONITOR_MODE_ACTIVITY
+            ),
+            nameStringRes = R.string.param_vflow_ai_agent_monitor_mode_name,
+            optionsStringRes = listOf(
+                R.string.option_vflow_ai_agent_monitor_overlay,
+                R.string.option_vflow_ai_agent_monitor_activity
+            ),
+            legacyValueMap = mapOf(
+                "悬浮窗" to AgentOverlayManager.MONITOR_MODE_OVERLAY,
+                "Overlay" to AgentOverlayManager.MONITOR_MODE_OVERLAY,
+                "监视器页面" to AgentOverlayManager.MONITOR_MODE_ACTIVITY,
+                "Monitor screen" to AgentOverlayManager.MONITOR_MODE_ACTIVITY
+            ),
             isHidden = false
         ),
         InputDefinition("tools", "工具配置", ParameterType.ANY, isHidden = true, nameStringRes = R.string.param_vflow_ai_agent_tools_name)
@@ -210,6 +241,10 @@ class AgentModule : BaseModule() {
         val maxSteps = context.getVariableAsInt("max_steps") ?: 15
         val rawDisplayMode = context.getVariableAsString("display_mode", DISPLAY_MODE_MAIN)
         val displayMode = inputsById["display_mode"]?.normalizeEnumValue(rawDisplayMode) ?: rawDisplayMode
+        // fork：运行界面（悬浮窗 / 监视器页面）
+        val monitorMode = inputsById["monitor_mode"]?.normalizeEnumValue(
+            context.getVariableAsString("monitor_mode", AgentOverlayManager.MONITOR_MODE_OVERLAY)
+        ) ?: AgentOverlayManager.MONITOR_MODE_OVERLAY
 
         if (apiKey.isBlank()) return ExecutionResult.Failure("配置错误", "API Key 不能为空")
 
@@ -234,7 +269,13 @@ class AgentModule : BaseModule() {
         }
 
         // 初始化悬浮窗
-        val overlayManager = AgentOverlayManager(context.applicationContext)
+        // fork：把模块名与步数上限交给悬浮窗，它会登记进 AgentRunMonitor（监视器要显示这两个）
+        val overlayManager = AgentOverlayManager(
+            context.applicationContext,
+            moduleLabel = metadata.getLocalizedName(context.applicationContext),
+            maxSteps = maxSteps,
+            monitorMode = monitorMode,
+        )
         withContext(Dispatchers.Main) {
             overlayManager.show()
         }
@@ -243,8 +284,11 @@ class AgentModule : BaseModule() {
             // fork：虚拟屏预览（方案 A）。虚拟屏模式下用户在主屏上看不到 AI 正在操作的屏幕，
             // 这里把每一帧推给悬浮窗。只在虚拟屏启动；停止由 finally 里的 release() 负责。
             // ⚠️ 必须放在 try 内：放在 show() 与 try 之间的话，那段窗口里被取消就没人收尾了。
-            if (targetDisplayId > 0) {
-                VirtualDisplayManager.startPreview { frame ->
+            // fork：`activity` 模式下画面交给监视器页面，这里**不再注册**预览监听者（省每帧 ≈10MB 拷贝）
+            if (targetDisplayId > 0 && overlayManager.usesOverlayPreview) {
+                // fork：预览帧流是**多消费者**的（监视 Activity 可能同时在看），所以这里是
+                // 「注册监听者」而不是「启动唯一预览」。注销由 finally 里的 release() 统一做。
+                VirtualDisplayManager.addPreviewListener { frame ->
                     overlayManager.updatePreview(frame)
                 }
             }
@@ -466,7 +510,18 @@ class AgentModule : BaseModule() {
                     put("model", model)
                     put("messages", messages)
                     put("tools", getNativeToolsSchema())
-                    put("tool_choice", "required") // 强制工具调用
+                    // fork：`required` → `auto`。
+                    //
+                    // ⚠️ 真机日志证据（2026-10-14）：`required` 下 glm-4.6v-flash **不输出任何文字** ——
+                    //    日志里 `AI Output:  ` 是**空白**（多数步骤连这一行都没有），所以监视器与日志里
+                    //    都看不到模型说了什么；而同一个工作流里的 **AutoGLM（没有 tool_choice）却有完整的中文推理**。
+                    //    强制工具调用约束的只是"必须产出 tool_calls"，**并不禁止 content** ——
+                    //    但这个模型把 `required` 理解成了"你的输出就是那个调用"。
+                    //
+                    // 改成 `auto` 后模型可以"先写观察与推理、再调工具"。万一它变成只说不做，
+                    // 下面已有的 `noToolCallCount` 兜底会接手（容忍 3 次，中间发一条
+                    // "SYSTEM ERROR: You MUST call a tool."，第 3 次仍未调工具才判失败）。
+                    put("tool_choice", "auto")
                 }
 
                 // 再次检查暂停状态（因为截图和思考可能耗时）
@@ -486,13 +541,10 @@ class AgentModule : BaseModule() {
                 val content = message.optString("content", "")
                 if (content.isNotEmpty()) {
                     DebugLogger.d("AgentModule", "AI Output: $content")
-                    val thoughtDisplay = if (content.contains("<think>")) {
-                        content.substringAfter("<think>").substringBefore("</think>").trim()
-                    } else {
-                        content
-                    }
-                    // 悬浮窗显示想法
-                    overlayManager.updateStatus(thoughtDisplay, "决策中...")
+                    // fork：**整段原文**进思考流。原先只取 think 标签**内部**
+                    // （闭合标签之后的文字被直接丢掉），且"没标签就整段当思考"两套行为不一致。
+                    // 现在统一：原文全留，去标签由 publishModelOutput 做；悬浮窗那行仍截断 30 字。
+                    overlayManager.publishModelOutput(content, "决策中...")
                     onProgress(ProgressUpdate("AI: ${content.take(50)}..."))
                 }
 

@@ -51,25 +51,29 @@ object AgentUtils {
 
         // 针对虚拟屏幕的处理逻辑 (ID > 0)
         if (displayId > 0) {
-            // 优先尝试：从 VirtualDisplayManager 内存抓取 (最快)
+            // ⚠️ fork：虚拟屏**只有内存帧这一条路** —— shell `screencap -d` 那条回退已删除。
+            //
+            // 原因（实测 + AOSP 依据，见 `docs/fork/surveys/multi-display-survey.md` §3.3）：
+            //   `screencap -d` 要的是 SurfaceFlinger 的 **DisplayId**（物理屏那串大数），
+            //   而 `createVirtualDisplay` 返回的是**逻辑** displayId（42 这种小整数）——
+            //   传逻辑 id 必然报 `Display id 'N' is not valid`，每步白花约 350 ms 并打一行假错误
+            //   （真机日志：`Shell 截图未能生成文件 (Display 42)` 每一步都出现）。
+            //   想拿虚拟屏的 SF DisplayId 只能去 `dumpsys SurfaceFlinger --display-id` 里抠字符串，
+            //   而 **dumpsys 是调试接口不是数据接口**（`shortcut-system-overview.md` §4.1 的结论）
+            //   ⇒ 不值得。内存帧路径（带最近帧缓存）已经能自站住。
             if (displayId == VirtualDisplayManager.getCurrentDisplayId()) {
                 val bitmap = VirtualDisplayManager.captureCurrentFrame()
                 if (bitmap != null) {
                     return bitmapToScreenshotResult(bitmap, execContext.workDir, "virtual_display")
-                } else {
-                    DebugLogger.w(TAG, "虚拟屏幕 (ID: $displayId) 内存帧为空，准备回退到 Shell...")
                 }
             }
 
-            // 回退方案：使用 Shell screencap 指定 Display ID (较慢但稳)
-            // 显式指定 -d displayId
-            val shellResult = captureShellScreenshot(context, execContext.workDir, displayId)
-            if (shellResult != null) {
-                return shellResult
-            }
-
-            // 3. 如果都失败了，返回空结果，而不是去截主屏
-            DebugLogger.e(TAG, "无法获取虚拟屏幕 (ID: $displayId) 的截图。")
+            // 这一轮确实没有可用帧（预览与缓存都没给）⇒ **降级为"只靠 UI 树"，不是错误**。
+            // 原先这里打的是 `E/无法获取虚拟屏幕的截图`，看起来像故障，其实是预期内的降级。
+            DebugLogger.w(
+                TAG,
+                "虚拟屏幕 (ID: $displayId) 本轮没有可用帧（预览与缓存都没给）—— 本步只靠 UI 树"
+            )
             return ScreenshotResult(null, null, 0, 0)
         }
 
@@ -107,36 +111,6 @@ object AgentUtils {
             ScreenshotResult(base64, Uri.fromFile(file).toString(), bitmap.width, bitmap.height)
         } finally {
             bitmap.recycle()
-        }
-    }
-
-    /**
-     * 使用 Shell screencap 命令截取指定 Display 的屏幕
-     */
-    private suspend fun captureShellScreenshot(context: Context, workDir: java.io.File, displayId: Int): ScreenshotResult? {
-        val timestamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss_SSS", java.util.Locale.getDefault()).format(java.util.Date())
-        val fileName = "screenshot_vd_${displayId}_$timestamp.png"
-        val cacheFile = java.io.File(workDir, fileName)
-        val path = cacheFile.absolutePath
-
-        // [关键] 显式指定 -d displayId，确保截取的是后台虚拟屏幕
-        val command = "screencap -d $displayId -p \"$path\""
-
-        return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            try {
-                ShellManager.execShellCommand(context, command, ShellManager.ShellMode.AUTO)
-                if (cacheFile.exists() && cacheFile.length() > 0) {
-                    val uri = Uri.fromFile(cacheFile)
-                    val (base64, width, height) = imageUriToBase64(context, uri)
-                    ScreenshotResult(base64, path, width, height)
-                } else {
-                    DebugLogger.w(TAG, "Shell 截图未能生成文件 (Display $displayId)")
-                    null
-                }
-            } catch (e: Exception) {
-                DebugLogger.e(TAG, "Shell 截图异常", e)
-                null
-            }
         }
     }
 

@@ -117,6 +117,31 @@ class AutoGLMModule : BaseModule() {
                 "虚拟屏幕 (后台)" to DISPLAY_MODE_VIRTUAL,
                 "Virtual Screen (Background)" to DISPLAY_MODE_VIRTUAL
             ),
+            // fork：同 AgentModule —— 允许折叠触发器驱动「主屏 / 虚拟屏」分流。
+            acceptsMagicVariable = true,
+            isHidden = false
+        ),
+        // fork：运行界面 —— 同 AgentModule（悬浮窗 / 监视器页面）。
+        InputDefinition(
+            "monitor_mode",
+            "运行界面",
+            ParameterType.ENUM,
+            AgentOverlayManager.MONITOR_MODE_OVERLAY,
+            options = listOf(
+                AgentOverlayManager.MONITOR_MODE_OVERLAY,
+                AgentOverlayManager.MONITOR_MODE_ACTIVITY
+            ),
+            nameStringRes = R.string.param_vflow_ai_agent_monitor_mode_name,
+            optionsStringRes = listOf(
+                R.string.option_vflow_ai_agent_monitor_overlay,
+                R.string.option_vflow_ai_agent_monitor_activity
+            ),
+            legacyValueMap = mapOf(
+                "悬浮窗" to AgentOverlayManager.MONITOR_MODE_OVERLAY,
+                "Overlay" to AgentOverlayManager.MONITOR_MODE_OVERLAY,
+                "监视器页面" to AgentOverlayManager.MONITOR_MODE_ACTIVITY,
+                "Monitor screen" to AgentOverlayManager.MONITOR_MODE_ACTIVITY
+            ),
             isHidden = false
         )
     )
@@ -157,6 +182,10 @@ class AutoGLMModule : BaseModule() {
         val maxSteps = context.getVariableAsInt("max_steps") ?: 30
         val rawDisplayMode = context.getVariableAsString("display_mode", DISPLAY_MODE_MAIN)
         val displayMode = inputsById["display_mode"]?.normalizeEnumValue(rawDisplayMode) ?: rawDisplayMode
+        // fork：运行界面（悬浮窗 / 监视器页面）
+        val monitorMode = inputsById["monitor_mode"]?.normalizeEnumValue(
+            context.getVariableAsString("monitor_mode", AgentOverlayManager.MONITOR_MODE_OVERLAY)
+        ) ?: AgentOverlayManager.MONITOR_MODE_OVERLAY
 
         if (apiKey.isBlank()) return ExecutionResult.Failure("配置错误", "API Key 不能为空")
 
@@ -179,15 +208,24 @@ class AutoGLMModule : BaseModule() {
             DebugLogger.i("AutoGLM", "AutoGLM 将运行在 Display ID: $targetDisplayId")
         }
 
-        val overlayManager = AgentOverlayManager(context.applicationContext)
+        // fork：把模块名与步数上限交给悬浮窗，它会登记进 AgentRunMonitor（监视器要显示这两个）
+        val overlayManager = AgentOverlayManager(
+            context.applicationContext,
+            moduleLabel = metadata.getLocalizedName(context.applicationContext),
+            maxSteps = maxSteps,
+            monitorMode = monitorMode,
+        )
         withContext(Dispatchers.Main) { overlayManager.show() }
 
         try {
             // fork：虚拟屏预览（方案 A）。虚拟屏模式下用户在主屏上看不到 AI 正在操作的屏幕，
             // 这里把每一帧推给悬浮窗。只在虚拟屏启动；停止由 finally 里的 release() 负责。
             // ⚠️ 必须放在 try 内：放在 show() 与 try 之间的话，那段窗口里被取消就没人收尾了。
-            if (targetDisplayId > 0) {
-                VirtualDisplayManager.startPreview { frame ->
+            // fork：`activity` 模式下画面交给监视器页面，这里**不再注册**预览监听者（省每帧 ≈10MB 拷贝）
+            if (targetDisplayId > 0 && overlayManager.usesOverlayPreview) {
+                // fork：预览帧流是**多消费者**的（监视 Activity 可能同时在看），所以这里是
+                // 「注册监听者」而不是「启动唯一预览」。注销由 finally 里的 release() 统一做。
+                VirtualDisplayManager.addPreviewListener { frame ->
                     overlayManager.updatePreview(frame)
                 }
             }
@@ -378,7 +416,6 @@ class AutoGLMModule : BaseModule() {
                 messages.put(message)
 
                 // --- 解析 AutoGLM 格式 ---
-                val think = extractTag(content, "think")
                 var answer = extractTag(content, "answer")
 
                 // 容错提取
@@ -395,7 +432,9 @@ class AutoGLMModule : BaseModule() {
                     }
                 }
 
-                if (think.isNotEmpty()) overlayManager.updateStatus(think, "决策中...")
+                // fork：**整段原文**进思考流。原先只取 think 标签内部 —— 模型不用那个标签就什么都不显示
+                // （`extractTag` 找不到标签返回空串），这是"监视器里只剩状态文案"的直接原因之一。
+                if (content.isNotEmpty()) overlayManager.publishModelOutput(content, "决策中...")
 
                 if (answer.isNotEmpty()) {
                     errorCount = 0

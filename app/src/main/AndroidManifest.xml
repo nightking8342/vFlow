@@ -239,6 +239,18 @@
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.vFlow" />
 
+        <!-- fork：AI 运行监视器（虚拟屏画面 + 完整思考流 + 运行控制）。
+             ⚠️ `resizeableActivity="true"` 是显式声明的 —— 目标是小窗/分屏能正常工作
+             （targetSdk ≥ 24 默认就是 true，这里写出来是为了别被后来的改动悄悄关掉）。
+             ⚠️ 刻意**不**声明 `supportsPictureInPicture`：小窗交给系统手势/最近任务。 -->
+        <activity
+            android:name=".ui.overlay.AgentMonitorActivity"
+            android:exported="false"
+            android:label="@string/agent_monitor_title"
+            android:launchMode="singleTop"
+            android:resizeableActivity="true"
+            android:theme="@style/Theme.vFlow" />
+
         <!-- Chat 悬浮窗（边看屏幕边对话）-->
         <service
             android:name=".ui.chat.ChatFloatWindowService"
