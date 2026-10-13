@@ -1339,6 +1339,68 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 
 ---
 
+### 虚拟屏预览（方案 A，2026-10-13）—— **已实现**（单测 + release 打包通过，真机未验证）
+
+> 需求（用户 2026-10-13）：`vflow.ai.agent` / `vflow.ai.autoglm` 跑在**虚拟屏**时，用户在主屏上
+> 只看到一条彩虹边框 + 两行文字（`AgentOverlayManager` 全部内容），**完全不知道虚拟屏里发生了什么**。
+> 要求把虚拟屏的实时画面显示出来。
+>
+> 选型：三条路 —— **A** 把 `ImageReader` 的内存帧贴到悬浮窗（本期取它）/ **B** 把虚拟屏输出端
+> 直接设成悬浮窗里的 `SurfaceView`（零拷贝但会丢掉给 LLM 的内存取帧路径）/ **C** 再建一块
+> auto-mirror 虚拟屏（要动 AIDL 与 shell 侧，且 OEM 行为不保证）。取 A 的理由：**完全不动建屏逻辑、
+> 不动给 LLM 的取图路径**，只加一条预览支路，风险最小。
+
+| 文件 | 内容 | 归属 |
+|---|---|---|
+| `core/utils/VirtualDisplayManager.kt`（改） | ① 新增 `frameLock` + 把取帧体抽成 `captureLatestFrameLocked()`，`captureCurrentFrame()` 变成 `synchronized(frameLock)` 的薄包装；② 新增 `startPreview(onFrame)` / `stopPreview()`（自带 250 ms 节流、`SupervisorJob + Dispatchers.Default`）；③ `releaseLocked()` 开头 `stopPreview()` | **手动合并**（上游文件，3 处新增 + 1 处重构） |
+| `ui/overlay/AgentOverlayManager.kt`（改） | 控制卡片顶部加预览 `ImageView`（默认 `GONE`，150×320dp，`FIT_CENTER`）；新增 `updatePreview(bitmap)`（`mainHandler.post` + 替换时回收上一帧 + 悬浮窗已关闭时立即回收）；`dismiss()` 摘 drawable 后回收当前帧；新增 `dp()` 私有辅助 | **手动合并**（上游文件） |
+| `core/workflow/module/interaction/AgentModule.kt`、`AutoGLMModule.kt`（改） | ① 各 **7 行**：在 `try` 内、`if (targetDisplayId > 0)` 下 `VirtualDisplayManager.startPreview { overlayManager.updatePreview(it) }`；② ⚠️ **各删 1 行（修既有缺陷）**：见下方「虚拟屏分支不该隐藏悬浮窗」 | **手动合并**（上游文件） |
+| `test/.../ui/overlay/AgentVirtualScreenPreviewWiringTest.kt`（**新增**） | fork 独有：5 例源码扫描型。锁「取帧单消费者」「预览循环节流且随 `releaseLocked` 收尾」「UI 在主线程且帧必回收」「两个模块都接线」「隐藏悬浮窗不得出现在虚拟屏分支」 | 我方 |
+
+> ⚠️⚠️ **顺带修掉一个既有缺陷：虚拟屏分支不该隐藏悬浮窗。**
+> 两个模块原本都在「虚拟屏」分支里调了 `overlayManager.hideForScreenshot()`（`AgentModule.kt:389`、
+> `AutoGLMModule.kt:296`，注释写「隐藏悬浮窗」），而 `restoreAfterScreenshot()` **只写在「主屏」
+> 分支上** ⇒ **整场虚拟屏任务里悬浮窗全程 `INVISIBLE`**：彩虹边框、控制卡片、
+> **暂停/结束按钮**都看不见，用户既无法观察也无法中断（`dismiss()` 之外没有任何恢复路径）。
+> 该调用本身就是多余的 —— 悬浮窗挂在**主屏**、被截的图来自**虚拟屏**，两者互不干扰
+> （这正是本方案能成立的前提，见下方「本期有意不做 ④」）。现已删除并加注释说明。
+> 单测用「`hideForScreenshot` 的每一处都必须与 `targetDisplayId == 0` 绑定」锁住。
+
+> ⚠️ **三条改这块前必须知道的约束**（都写在代码注释里，这里再记一遍）：
+> 1. **`ImageReader` 是单消费者**。Agent 截图与预览循环都会 `acquireLatestImage()`：两条路各自
+>    acquire 会互相抢帧（`maxImages = 2`，抢不到的那条拿到 null），更糟的是**取到 image 却不 close
+>    会把生产者堵死**。所以两条路统一走 `captureCurrentFrame()`，由 `frameLock` 串行化 ——
+>    单测里用「全文件只允许一个 `acquireLatestImage` 调用点」把这条锁住。
+> 2. **预览循环的生命周期挂在 `releaseLocked()` 上**，调用方不需要额外收尾。漏掉它的表现是
+>    **屏幕都销毁了循环还在每 250 ms 拷一张 10 MB 位图** —— 用户只看到"电池掉得快"，没有任何
+>    行为测试会红，所以也进了单测。
+> 3. **回调在后台线程**（`Dispatchers.Default`），Bitmap 所有权随回调转移。UI 侧必须自己 post 到
+>    主线程、并负责回收（`updatePreview` 已按此实现）。
+>
+> ⚠️ **开销旋钮**：`PREVIEW_FRAME_INTERVAL_MS = 250`（4 fps）。每帧是一次 1080×2400 RGBA 的
+> Bitmap 分配 + `copyPixelsFromBuffer`（≈10 MB/帧）。嫌费电就调大这个常量；嫌卡就调小。
+> 真要丝滑应换方案 B/C（硬件合成，零拷贝）。
+>
+> ⚠️ **本期有意不做**：① 预览窗没有标签文案（要动三语 `strings*.xml`，另开一批）；
+> ② 预览不可点击放大；③ 主屏模式不显示预览（用户本来就看得见屏幕）；
+> ④ `AutoGLMModule` 的 `hideForScreenshot()` 逻辑未动 —— 预览窗在主屏、被截的图来自虚拟屏，
+> 两者不互相污染，这一点与主屏模式**相反**，是本方案能成立的前提。
+
+> ⚠️ **顺带发现（本次未改，供后续单独处理）**：`ShizukuUserService.createVirtualDisplay` 里
+> `val flags = 1 or 64 or 1024` 的**注释与真实常量不符**。已对照 AOSP `DisplayManager.java`
+> （`android13-release` / `android14-release` / `android16-release` / `main` 四份数值一致）：
+> `64` 是 `VIRTUAL_DISPLAY_FLAG_SUPPORTS_TOUCH`（1<<6），**不是**注释里写的
+> `DESTROY_CONTENT_ON_REMOVAL`（真值 **256**，1<<8）；`1`(PUBLIC) 与 `1024`(TRUSTED) 注释正确。
+> 即：**注释声称用来"防止应用跳回主屏"的那条 flag 实际没有下发**，而 AOSP 对该 flag 的原文是
+> "Public virtual displays without this flag will move their content to main display stack once
+> they're removed" —— 这很可能正是 `AgentUtils.killTopAppOnDisplay()` 那套
+> `dumpsys` + `am force-stop` 兜底逻辑存在的原因。若要修，应改为 `1 or 64 or 256 or 1024`
+> （`64 = SUPPORTS_TOUCH` 对虚拟屏接受触摸输入有用，不宜去掉）。
+
+---
+
+---
+
 ## 暂未分歧、但日后改动时须登记的敏感点
 
 以下是上游的核心区。目前 fork **尚未改动**它们；一旦改动（尤其是结构性改动），必须在上表登记，并评估合并成本：

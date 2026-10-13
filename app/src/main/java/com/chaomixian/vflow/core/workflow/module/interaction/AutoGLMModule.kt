@@ -183,6 +183,15 @@ class AutoGLMModule : BaseModule() {
         withContext(Dispatchers.Main) { overlayManager.show() }
 
         try {
+            // fork：虚拟屏预览（方案 A）。虚拟屏模式下用户在主屏上看不到 AI 正在操作的屏幕，
+            // 这里把每一帧推给悬浮窗。只在虚拟屏启动；停止由 finally 里的 release() 负责。
+            // ⚠️ 必须放在 try 内：放在 show() 与 try 之间的话，那段窗口里被取消就没人收尾了。
+            if (targetDisplayId > 0) {
+                VirtualDisplayManager.startPreview { frame ->
+                    overlayManager.updatePreview(frame)
+                }
+            }
+
             val agentTools = AgentTools(context)
             val client = OkHttpClient.Builder()
                 .connectTimeout(60, TimeUnit.SECONDS)
@@ -284,7 +293,10 @@ class AutoGLMModule : BaseModule() {
                 val size = VirtualDisplayManager.getCurrentSessionSize()
                 screenWidth = size?.first ?: screenWidth
                 screenHeight = size?.second ?: screenHeight
-                overlayManager.hideForScreenshot() // 隐藏悬浮窗
+                // fork：这里**不能**调 `hideForScreenshot()`。悬浮窗挂在主屏、被截的图来自虚拟屏，
+                // 两者互不干扰；而 `hideForScreenshot()` 之后本分支**永远没有对应的 restore**
+                // （restore 只写在 `targetDisplayId == 0` 那条路上）⇒ 整场任务里悬浮窗
+                // （彩虹边框 + 控制卡片 + 暂停/结束按钮 + 虚拟屏预览）全程不可见。
             }
 
             while (currentStep < maxSteps) {

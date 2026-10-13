@@ -4,6 +4,9 @@ package com.chaomixian.vflow.ui.overlay
 import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.*
+import android.graphics.drawable.GradientDrawable
+import android.os.Handler
+import android.os.Looper
 import android.os.Build
 import android.util.DisplayMetrics
 import android.view.ContextThemeWrapper
@@ -13,6 +16,7 @@ import android.view.View
 import android.view.WindowManager
 import android.view.animation.LinearInterpolator
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.chaomixian.vflow.R
@@ -42,6 +46,12 @@ class AgentOverlayManager(private val context: Context) {
     private var actionText: TextView? = null
     private var btnPause: MaterialButton? = null
     private var btnCancel: MaterialButton? = null
+
+    // fork：虚拟屏预览（方案 A）。
+    // 虚拟屏模式下用户在主屏上看不到 AI 正在操作的屏幕，这里把每一帧贴到控制卡片里。
+    private var previewView: ImageView? = null
+    private var previewBitmap: Bitmap? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     // 状态控制
     private var isPaused = false
@@ -120,6 +130,23 @@ class AgentOverlayManager(private val context: Context) {
             gravity = Gravity.CENTER_HORIZONTAL
         }
 
+        // fork：虚拟屏预览（方案 A）。
+        // 默认 GONE —— 只有真的收到帧（`updatePreview`）才占位显示，主屏模式全程不可见。
+        // 尺寸固定成 150×320dp（虚拟屏是 1080×2400，比例 9:20）而不是按帧比例自适应，
+        // 这样卡片高度不会随帧到达与否跳动；FIT_CENTER 让可能的留白对称分布。
+        previewView = ImageView(themedContext).apply {
+            visibility = View.GONE
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            background = GradientDrawable().apply {
+                cornerRadius = dp(12f).toFloat()
+                setColor(Color.parseColor("#14000000"))
+            }
+            clipToOutline = true
+            layoutParams = LinearLayout.LayoutParams(dp(150f), dp(320f)).apply {
+                bottomMargin = dp(16f)
+            }
+        }
+
         // 状态文本
         statusText = TextView(themedContext).apply {
             textSize = 13f
@@ -169,6 +196,7 @@ class AgentOverlayManager(private val context: Context) {
         buttonLayout.addView(spacer)
         buttonLayout.addView(btnCancel)
 
+        previewView?.let { contentLayout.addView(it) }
         contentLayout.addView(statusText)
         contentLayout.addView(actionText)
         contentLayout.addView(buttonLayout)
@@ -274,6 +302,36 @@ class AgentOverlayManager(private val context: Context) {
         }
     }
 
+    /**
+     * fork：显示一帧虚拟屏预览（方案 A）。
+     *
+     * ⚠️ 本方法会在**后台线程**被调用（`VirtualDisplayManager.startPreview` 的回调在
+     * `Dispatchers.Default` 上），所以内部一律 post 到主线程再碰视图。
+     *
+     * Bitmap 的所有权在进入本方法时转移给视图：主线程替换时回收上一帧（此刻视图已不再
+     * 引用它，主线程上也不会与绘制交错）；若悬浮窗已经关闭，则立即回收，避免泄漏。
+     */
+    fun updatePreview(bitmap: Bitmap) {
+        mainHandler.post {
+            val view = previewView
+            if (view == null) {
+                // 悬浮窗已 dismiss：没有接收方，直接回收
+                if (!bitmap.isRecycled) bitmap.recycle()
+                return@post
+            }
+            val previous = previewBitmap
+            previewBitmap = bitmap
+            view.setImageBitmap(bitmap)
+            view.visibility = View.VISIBLE
+            if (previous !== bitmap) {
+                previous?.takeIf { !it.isRecycled }?.recycle()
+            }
+        }
+    }
+
+    private fun dp(value: Float): Int =
+        (value * context.resources.displayMetrics.density + 0.5f).toInt()
+
     suspend fun hideForScreenshot() = withContext(Dispatchers.Main) {
         if (borderRoot == null) return@withContext
         // 截图时隐藏所有悬浮窗
@@ -296,6 +354,11 @@ class AgentOverlayManager(private val context: Context) {
         } catch (e: Exception) {
             e.printStackTrace()
         } finally {
+            // fork：先摘掉视图对预览帧的引用再回收，避免"已回收的 Bitmap 仍被绘制"
+            previewView?.setImageDrawable(null)
+            previewBitmap?.takeIf { !it.isRecycled }?.recycle()
+            previewBitmap = null
+            previewView = null
             borderRoot = null
             controlRoot = null
         }
