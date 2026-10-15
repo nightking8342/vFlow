@@ -1830,7 +1830,13 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 > **允许向前跳**（回到开头重跑、状态机式编排都是真实需求），用**三层防护**替代方向限制：
 > 单步上限 10 次（超限降级为「继续下一步」+ `W` 日志）/ 执行级总预算 200 次（超限**终止**并报「疑似死循环」）/
 > 编辑器静态环检测（toast 警告，不阻止保存）。**只禁止「向内跳」**（跳进块体内部会让块配对失配：
-> `Loop` 的 End 会**静默 Success**、`ForEach` 的 End 直接 Failure）。
+> `Loop` 的 End 的 `loopStack.peek()` 在空栈上抛 `EmptyStackException`（被执行器 catch 成
+> `Failure("模块执行异常", …)`，**文案零信息量**）、`ForEach` 的 End 直接 Failure）。
+>
+> ⚠️ **两条跳转机制的保护等级现在不一致**：新的 `__skip_jump_target` 有 id 稳定性 + 合法性校验 +
+> `loopStack` 对齐 + 三层防护；而**老的 `vflow.logic.jump` 一条都没有**（插入/删除后序号静默漂移、
+> 无向内跳校验、跨循环跳出不清理 `loopStack`、无环保护）。本批**只保护了新路径**，
+> 老模块按设计稿 §9.2 单独立项（`JumpTargetSupport` 已经把工具函数备好了）。
 
 | 文件 / 范围 | 分歧内容 | 冲突归属 |
 |---|---|---|

@@ -36,10 +36,17 @@ import java.util.Stack
  * - ✅ **允许任意方向**（向前 / 向后都行）：失败后回到开头重跑、回到上一步重做、
  *   状态机式编排都是真实需求，成熟范式也不禁（Step Functions 的 `Choice` 允许回跳）。
  * - ❌ **只禁止「向内跳」**：目标是块体内部时，块的开始/结束配对会失配 ——
- *   跳到 `Loop` 体内 ⇒ 执行到 End Loop 时 `loopState == null` ⇒ **静默 `Success()`**
- *   （`LoopModule.kt:166-168`）；跳到 `ForEach` 体内 ⇒ End ForEach 直接
+ *   跳到 `Loop` 体内 ⇒ 该循环没进 `loopStack` ⇒ End Loop 的 `context.loopStack.peek()`
+ *   在**空栈**上抛 `EmptyStackException` ⇒ 被执行器 catch 成
+ *   `Failure("模块执行异常", "模块执行异常")`（**文案零信息量**）；
+ *   跳到 `ForEach` 体内 ⇒ End ForEach 直接
  *   **`Failure("结束重复模块不在一个'重复每一项'循环内。")`**（`ForEachModule.kt:179-182`）；
  *   跳到 `If` 的中间分支 ⇒ 分支配对失配，行为未定义。
+ *
+ *   ⚠️ 注意 `Loop` 那一条**不是**「静默成功」—— `java.util.Stack.peek()` 空栈**抛异常、不返回 null**
+ *   （`ExecutionContext.loopStack` 是 `java.util.Stack`；实测 `new Stack<>().peek()` →
+ *   `EmptyStackException / null`）⇒ `LoopModule.kt:166` 的 `loopState == null` 是**死代码**。
+ *   设计稿原先的「静默 `Success()`」断言已实测推翻（见该稿 §2.5 的更正段）。
  * - ⚠️ 方向不受限 ⇒ 必须有**环防护**：[MAX_JUMPS_PER_STEP]（单步上限，超限降级为
  *   「继续下一步」+ W 日志）、[MAX_JUMPS_PER_EXECUTION]（执行级总预算，超限**终止**）、
  *   [detectCycles]（编辑器静态环检测，只警告不阻止保存）。

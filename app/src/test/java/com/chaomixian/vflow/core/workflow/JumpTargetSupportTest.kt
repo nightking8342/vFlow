@@ -17,7 +17,8 @@ import java.util.Stack
  *
  * 为什么必须有：这块的失效方式**全是静默的** ——
  *  - 目标解析错 ⇒ 跳到无关步骤（工作流"跑完了"，但做错了事）；
- *  - 向内跳没挡住 ⇒ `Loop` 的 End 变成**静默 Success**、`ForEach` 的 End 直接失败；
+ *  - 向内跳没挡住 ⇒ `Loop` 的 End 抛 `EmptyStackException`（被执行器 catch 成
+ *    「模块执行异常」，**文案零信息量**）、`ForEach` 的 End 直接失败；
  *  - `loopStack` 没对齐 ⇒ 后续步骤读到**过期的循环变量**（既有 `vflow.logic.jump` 的缺陷 B3）；
  *  - 环检测漏报 ⇒ 用户配出死循环，只能等运行期上限才发现。
  *
@@ -107,7 +108,9 @@ class JumpTargetSupportTest {
 
     @Test
     fun `禁止向内跳（目标缩进更深）`() {
-        // 跳到 Loop 体内 ⇒ 执行到 End Loop 时 loopState == null ⇒ **静默 Success**；
+        // 跳到 Loop 体内 ⇒ End Loop 的 `loopStack.peek()` 在空栈上抛 `EmptyStackException`
+        //   （`java.util.Stack.peek()` 空栈**抛异常、不返回 null** ⇒ 被执行器 catch 成
+        //   `Failure("模块执行异常", …)`，文案零信息量）；
         // 跳到 ForEach 体内 ⇒ End ForEach 直接 Failure。必须在入口挡住。
         val steps = listOf(step("outer", 0), step("inner", 1))
         assertFalse(
