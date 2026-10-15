@@ -6,10 +6,13 @@ import com.chaomixian.vflow.core.execution.VariableType
 import com.chaomixian.vflow.core.module.ActionModule
 import com.chaomixian.vflow.core.module.InputDefinition
 import com.chaomixian.vflow.core.module.ModuleRegistry
+import com.chaomixian.vflow.core.module.OutputKeyDefinition
 import com.chaomixian.vflow.core.module.OutputDefinition
 import com.chaomixian.vflow.core.types.VTypeRegistry
 import com.chaomixian.vflow.core.types.parser.VariablePathParser
+import com.chaomixian.vflow.core.workflow.ErrorContext
 import com.chaomixian.vflow.core.workflow.GlobalVariableStore
+import com.chaomixian.vflow.core.workflow.JumpTargetSupport
 import com.chaomixian.vflow.core.workflow.WorkflowManager
 import com.chaomixian.vflow.core.workflow.model.ActionStep
 import com.chaomixian.vflow.core.workflow.model.FunctionParam
@@ -75,6 +78,41 @@ internal class WorkflowEditorMagicVariableCatalogBuilder(
         typeId = VTypeRegistry.STRING.id,
     )
 
+    /**
+     * 错误上下文条目（fork，P0-5）：`[[__error]]` 字典。
+     *
+     * ⚠️ 键名是**机器可读的**（`VDictionary.getProperty` 按 key 精确匹配），
+     * **不是**本地化文案 —— 选择器会把 `OutputKeyDefinition.name` **原样拼进引用路径**
+     * （`MagicVariablePickerSheet` 的 `VariablePathParser.appendPathSegment`），
+     * 写成本地化名字会拼出解析不到的引用（静默取到 VNull）。
+     * 与函数工作流返回值同一约定。
+     */
+    private fun errorContextItem(): MagicVariableItem = MagicVariableItem(
+        variableReference = ErrorContext.VARIABLE_REFERENCE,
+        variableName = context.getString(R.string.error_context_variable_name),
+        originDescription = typeDescription(VTypeRegistry.DICTIONARY.id),
+        typeId = VTypeRegistry.DICTIONARY.id,
+        dictionaryKeys = listOf(
+            OutputKeyDefinition(ErrorContext.FIELD_STEP_INDEX, VTypeRegistry.NUMBER.id),
+            OutputKeyDefinition(ErrorContext.FIELD_STEP_ID, VTypeRegistry.STRING.id),
+            OutputKeyDefinition(ErrorContext.FIELD_MODULE_ID, VTypeRegistry.STRING.id),
+            OutputKeyDefinition(ErrorContext.FIELD_TITLE, VTypeRegistry.STRING.id),
+            OutputKeyDefinition(ErrorContext.FIELD_MESSAGE, VTypeRegistry.STRING.id),
+        ),
+    )
+
+    /**
+     * 本工作流里是否**存在失败跳转**（任意步骤声明了 `__skip_jump_target`）。
+     *
+     * 分组只在这时为真 —— 与 `wantsWholeStepOutputItem` 那条「按提供方 → 消费者精确配对」
+     * 的既有哲学一致：没有失败跳转的工作流里，`[[__error]]` 永远是空字典，列出来只会误导。
+     *
+     * ⚠️ 扫的是**整条**步骤列表（不是 `upToPosition` 之前）：跳转目标常常在失败步骤**之后**，
+     * 而错误上下文是全局注入的，收尾步骤必须能选到它。
+     */
+    private fun hasFailureJump(actionSteps: List<ActionStep>): Boolean =
+        actionSteps.any { JumpTargetSupport.targetIdOf(it) != null }
+
     fun buildNamedVariables(
         actionSteps: List<ActionStep>,
         upToPosition: Int,
@@ -120,6 +158,7 @@ internal class WorkflowEditorMagicVariableCatalogBuilder(
             }
 
         val functionParams = buildFunctionParamsGroup(actionSteps, upToPosition)
+        val errorContextAvailable = hasFailureJump(actionSteps)
 
         val globalVariables = GlobalVariableStore.getAll(context)
         if (globalVariables.isNotEmpty()) {
@@ -142,6 +181,11 @@ internal class WorkflowEditorMagicVariableCatalogBuilder(
                 if (hasAutoTriggers) {
                     put(context.getString(R.string.editor_group_trigger_label), listOf(triggerLabelItem()))
                 }
+                // 错误上下文（fork，P0-5）：固定分组，与触发器标签同构 —— 都是**恒注入**的命名变量，
+                // 区别是它只在工作流里真的存在失败跳转时才出现。
+                if (errorContextAvailable) {
+                    put(context.getString(R.string.editor_group_error_context), listOf(errorContextItem()))
+                }
                 if (availableNamedVariables.isNotEmpty()) {
                     put(
                         context.getString(R.string.editor_group_named_variables),
@@ -158,6 +202,9 @@ internal class WorkflowEditorMagicVariableCatalogBuilder(
             }
             if (hasAutoTriggers) {
                 put(context.getString(R.string.editor_group_trigger_label), listOf(triggerLabelItem()))
+            }
+            if (errorContextAvailable) {
+                put(context.getString(R.string.editor_group_error_context), listOf(errorContextItem()))
             }
             if (availableNamedVariables.isNotEmpty()) {
                 put(context.getString(R.string.editor_group_named_variables), availableNamedVariables.values.toList())

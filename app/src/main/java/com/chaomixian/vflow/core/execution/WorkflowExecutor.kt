@@ -21,6 +21,8 @@ import com.chaomixian.vflow.core.types.basic.VList
 import com.chaomixian.vflow.core.types.basic.VDictionary
 import com.chaomixian.vflow.core.types.complex.VImage
 import com.chaomixian.vflow.core.utils.StorageManager
+import com.chaomixian.vflow.core.workflow.ErrorContext
+import com.chaomixian.vflow.core.workflow.JumpTargetSupport
 import com.chaomixian.vflow.core.workflow.model.ActionStep
 import com.chaomixian.vflow.core.workflow.model.ActionStepExecutionSettings
 import com.chaomixian.vflow.core.workflow.model.FunctionSignatureDefaults
@@ -572,6 +574,19 @@ object WorkflowExecutor {
         var pc = 0 // 程序计数器
         var returnValue: Any? = null // 用于存储子工作流的返回值
 
+        // fork（P0-5）：错误上下文**恒注入**（正常路径是空字典）。
+        // 与 `[[__trigger_label]]` 同因同果 —— 缺键会让 `[[__error.message]]` 被解析成
+        // **字面量**（`VariableResolver` 的兜底分支），`If` 比较恒 false 且**不报错**，
+        // 用户查不到原因；注入空字典则语义明确：`[[__error]] 不为空` ⇔ 有失败被兜住。
+        // 设计依据：`docs/fork/error-handling-extension-design.md` §2.6（决策 D7）。
+        namedVariables[ErrorContext.VARIABLE_NAME] = ErrorContext.EMPTY
+
+        // fork（P0-5）：跳转防护的两级计数器（第三层是编辑器静态环检测，第四层是可选的
+        // 工作流超时）。逐次执行独立 —— 放在这里而不是成员字段，是因为本函数可能被
+        // 并发调用（多条工作流同时跑）。
+        val jumpCountPerStep = mutableMapOf<String, Int>()
+        var jumpCountTotal = 0
+
         while (pc < workflow.steps.size && coroutineContext.isActive) {
             val step = workflow.steps[pc]
             var module = ModuleRegistry.getModule(step.moduleId)
@@ -713,6 +728,16 @@ object WorkflowExecutor {
             val errorPolicy = executionSettings.policy
             val retryCount = executionSettings.retryCount
             val retryInterval = executionSettings.retryIntervalMillis
+            // fork（P0-1 策略链）：`RETRY` 失败时**真正生效**的策略 = 重试用尽后的动作。
+            // 缺省 = `STOP` ⇒ 与改动前逐字相同（原来重试耗尽必然落「终止 + 弹窗」）。
+            //
+            // ⚠️ 只有**结果处理**（跳过分支 / 弹窗门禁）用它；上面那个重试 `while` 仍看 `errorPolicy`
+            //    —— 「要不要重试」与「重试完之后怎么办」是两件事，混用会把重试循环也改掉。
+            // 设计依据：`docs/fork/error-handling-extension-design.md` §2.1 / §3.2 ①。
+            val effectivePolicy = ActionStepExecutionSettings.effectivePolicy(
+                errorPolicy,
+                executionSettings.onRetryExhausted
+            )
 
             var attempt = 0
             var finalResult: ExecutionResult? = null
@@ -757,15 +782,37 @@ object WorkflowExecutor {
             // --- 结果处理 ---
             when (val result = finalResult) {
                 is ExecutionResult.Success -> {
-                    if (result.outputs.isNotEmpty()) {
-                        stepOutputs[step.id] = VObjectFactory.fromMapAny(result.outputs)
+                    // fork（P0-3 状态可见）：成功路径也留下状态 —— 补 `success = true`，
+                    // 但**不覆盖**模块自己给的值（`ClickModule` 会在点击未命中时返回 false）。
+                    // 这样 `IF {{任意步骤.success}} 为假` 才全局可靠（成功 true / 跳过 false）。
+                    // 设计依据：`docs/fork/error-handling-extension-design.md` §2.2。
+                    val successOutputs = StepStatusSupport.withSuccessFlag(result.outputs)
+                    if (successOutputs.isNotEmpty()) {
+                        stepOutputs[step.id] = VObjectFactory.fromMapAny(successOutputs)
                     }
                     pc++
                 }
                 is ExecutionResult.Failure -> {
                     DebugLogger.e("WorkflowExecutor", "模块执行失败: ${result.errorTitle} - ${result.errorMessage}")
 
-                    if (errorPolicy == ActionStepExecutionSettings.POLICY_SKIP) {
+                    // fork（P0-5）：跳转**总预算**用尽 ⇒ 不再走「跳过」路径，改走**终止**
+                    // （设计 §2.5：「比静默继续安全」）。用 `stopReason` 覆盖提示文案，
+                    // 让用户看到的是「疑似死循环」而不是模块自己报的那个错 —— 否则
+                    // 他会去查那个无辜的模块。
+                    val jumpBudgetExhausted = effectivePolicy == ActionStepExecutionSettings.POLICY_SKIP &&
+                        jumpCountTotal >= JumpTargetSupport.MAX_JUMPS_PER_EXECUTION
+                    val stopReason = if (jumpBudgetExhausted) {
+                        DebugLogger.e(
+                            "WorkflowExecutor",
+                            "本次执行的跳转总次数已达上限（${JumpTargetSupport.MAX_JUMPS_PER_EXECUTION}），疑似死循环，终止工作流。"
+                        )
+                        "疑似死循环：跳转总次数超过 ${JumpTargetSupport.MAX_JUMPS_PER_EXECUTION} 次"
+                    } else {
+                        result.errorMessage
+                    }
+
+                    // fork（P0-1）：判的是**有效策略** —— `RETRY` 的「用尽后 = SKIP」也走这里。
+                    if (effectivePolicy == ActionStepExecutionSettings.POLICY_SKIP && !jumpBudgetExhausted) {
                         DebugLogger.w("WorkflowExecutor", "根据策略，跳过错误继续执行。")
 
                         // 1. 如果模块提供了 partialOutputs，使用它们作为基础
@@ -794,10 +841,80 @@ object WorkflowExecutor {
                         }
 
                         stepOutputs[step.id] = skipOutputs
-                        pc++ // 继续下一步
+
+                        // fork（P0-5）：错误上下文 —— 「是谁失败了、错在哪」。
+                        // 一个收尾步骤常被**多个**失败步骤指向，没有它就只能靠猜。
+                        // 正常路径是空字典（见本函数开头），故 `[[__error]] 不为空` 可靠。
+                        namedVariables[ErrorContext.VARIABLE_NAME] = ErrorContext.of(
+                            stepIndex = pc + 1,
+                            stepId = step.id,
+                            moduleId = step.moduleId,
+                            errorTitle = result.errorTitle,
+                            errorMessage = result.errorMessage
+                        )
+
+                        // fork（P0-5 跳过跳转）：`__skip_jump_target` 让失败后**直接落到指定步骤**，
+                        // 而不是「继续下一步」。允许任意方向（含向前跳），防护见 JumpTargetSupport。
+                        //
+                        // ⚠️ 上面那条 W 日志（「根据策略，跳过错误继续执行。」）**必须继续打**：
+                        //    它是 AI 侧判定「有步骤被跳过」的唯一锚点
+                        //    （`ChatMessagePatch.SKIPPED_FAILURE_LINE_PREFIX`）。跳转信息另起一行
+                        //    D 级日志，**不替换**它，否则聊天卡片会把失败**误报成 SUCCESS**。
+                        val jumpTargetId = executionSettings.skipJumpTarget
+                        val jumpTargetIndex = JumpTargetSupport.resolveTargetIndex(workflow.steps, jumpTargetId)
+                        val jumpTargetUsable = jumpTargetIndex >= 0 &&
+                            JumpTargetSupport.isAllowedTarget(
+                                steps = workflow.steps,
+                                targetIndex = jumpTargetIndex,
+                                currentIndentationLevel = step.indentationLevel
+                            )
+                        val jumpsUsedByStep = jumpCountPerStep[step.id] ?: 0
+
+                        when {
+                            // 未设置目标 ⇒ 与改动前逐字相同（向后兼容硬约束）
+                            jumpTargetId == null -> pc++
+
+                            // 目标被删 / id 拼错 / 向内跳 ⇒ **降级为继续下一步**，但必须可见
+                            !jumpTargetUsable -> {
+                                DebugLogger.w(
+                                    "WorkflowExecutor",
+                                    "跳过跳转的目标不可用（target=$jumpTargetId，解析到下标 $jumpTargetIndex），" +
+                                        "已降级为继续执行下一步。"
+                                )
+                                pc++
+                            }
+
+                            // 单步上限（第一层防护）：超限不再跳，但**降级必须可见**
+                            jumpsUsedByStep >= JumpTargetSupport.MAX_JUMPS_PER_STEP -> {
+                                DebugLogger.w(
+                                    "WorkflowExecutor",
+                                    "步骤「${module.metadata.name}」本次执行已跳转 $jumpsUsedByStep 次" +
+                                        "（上限 ${JumpTargetSupport.MAX_JUMPS_PER_STEP}），本次降级为继续执行下一步。"
+                                )
+                                pc++
+                            }
+
+                            else -> {
+                                jumpCountPerStep[step.id] = jumpsUsedByStep + 1
+                                jumpCountTotal++
+                                // ⚠️ 向外跳必须对齐 loopStack：残留的循环状态会让后续步骤读到
+                                //    **过期的循环变量**（既有 `vflow.logic.jump` 的缺陷 B3）。
+                                JumpTargetSupport.alignLoopStack(loopStack, workflow.steps, jumpTargetIndex)
+                                DebugLogger.d(
+                                    "WorkflowExecutor",
+                                    "根据策略，失败后跳转到步骤 #${jumpTargetIndex + 1}" +
+                                        "（${workflow.steps[jumpTargetIndex].moduleId}）。"
+                                )
+                                pc = jumpTargetIndex
+                            }
+                        }
                     } else {
-                        // POLICY_STOP (默认) 或 重试耗尽
-                        ExecutionNotificationManager.updateState(workflow, ExecutionNotificationState.Failed("失败: ${result.errorMessage}"))
+                        // fork（P0-1）：这里的集合由「POLICY_STOP (默认) 或 重试耗尽」扩成
+                        // 「有效策略 ∈ {STOP, STOP_SILENT}」—— 即：直接选 STOP / STOP_SILENT，
+                        // 或选了 RETRY 且用尽后动作是 STOP / STOP_SILENT（含缺省）。
+                        // ⚠️ 文案用 `stopReason`：正常情况下它就是 `result.errorMessage`，
+                        //    只有「跳转预算用尽」时才是那句「疑似死循环」（P0-5）。
+                        ExecutionNotificationManager.updateState(workflow, ExecutionNotificationState.Failed("失败: $stopReason"))
 
                         // 尝试获取 UI 服务并显示错误弹窗
                         // 仅当应用在前台或有悬浮窗权限时，弹窗才会显示（由 ExecutionUIService 处理）
@@ -807,7 +924,14 @@ object WorkflowExecutor {
                         // 用户不点弹窗 ⇒ `postState(Failure)` 永不执行 ⇒ Agent 那条 `await`
                         // 收不到终态、本协程的 `finally`（WakeLock / 工作目录 / 摘除登记）也不执行。
                         // 而 Agent 场景下用户看的是聊天卡片，卡片已完整承载失败详情，弹窗纯属重复。
-                        if (showErrorDialog) {
+                        //
+                        // fork（2026-10-15）：步骤级 `STOP_SILENT` 走同一段抑制逻辑 —— 用户主动
+                        // 选择「终止但不弹窗」时，与 Agent 调试路径共享上面这条正确性收益。
+                        // ⚠️ 只抑制弹窗：通知栏、`postState(Failure)`、日志 E 行都在下面照旧执行。
+                        //
+                        // ⚠️ 传的是 **`effectivePolicy`**（P0-1 起）：这样「RETRY + 用尽后 = STOP_SILENT」
+                        //    与直接选 STOP_SILENT 在弹窗这一层完全等价，不必在两处各判一次。
+                        if (ActionStepExecutionSettings.shouldShowErrorDialog(effectivePolicy, showErrorDialog)) {
                             try {
                                 val localizedAppContext = LocaleManager.applyLanguage(
                                     initialContext.applicationContext,
@@ -821,7 +945,7 @@ object WorkflowExecutor {
                                         pc + 1,
                                         module.metadata.getLocalizedName(localizedAppContext)
                                     ),
-                                    errorMessage = result.errorMessage
+                                    errorMessage = stopReason
                                 )
                             } catch (e: Exception) {
                                 DebugLogger.e("WorkflowExecutor", "显示错误弹窗失败", e)

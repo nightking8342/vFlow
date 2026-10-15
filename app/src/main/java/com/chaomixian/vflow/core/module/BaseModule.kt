@@ -60,7 +60,14 @@ abstract class BaseModule : ActionModule {
      * @return 动态输出参数定义列表。
      */
     override fun getDynamicOutputs(step: ActionStep?, allSteps: List<ActionStep>?): List<OutputDefinition> {
-        return getOutputs(step) // 默认返回静态输出
+        // 默认返回静态输出 + fork 的统一状态输出（`success`）。
+        //
+        // ⚠️ 加在 `getDynamicOutputs` 而不是 `getOutputs`：变量选择器、胶囊渲染
+        // （`VariableInfo.fromMagicVariableWithProperty`）、触发器 `outputSchema` 都读前者；
+        // 而 AI 侧读的是 `getOutputs`（`ChatAgentModuleExecutor`），故那一处也单独接了同一个
+        // 供给层 —— 两边必须同口径，否则「人工能选、AI 看不见」。
+        // 设计依据：`docs/fork/error-handling-extension-design.md` §2.2（决策 D2）。
+        return StepStatusSupport.withSuccessOutput(getOutputs(step))
     }
 
     /**

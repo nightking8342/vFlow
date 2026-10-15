@@ -774,11 +774,25 @@
     <!-- ActionEditorSheet -->
     <string name="editor_edit_parameter">编辑 %s</string>
     <string name="editor_error_policy_stop">执行失败时：停止工作流 (默认)</string>
+    <string name="editor_error_policy_stop_silent">执行失败时：静默停止工作流</string>
     <string name="editor_error_policy_skip">执行失败时：跳过此步骤继续</string>
     <string name="editor_error_policy_retry">执行失败时：尝试重试</string>
     <string name="editor_retry_count">重试次数</string>
     <string name="editor_retry_times">次</string>
     <string name="editor_retry_interval">重试间隔 (毫秒)</string>
+    <string name="editor_retry_exhausted_label">重试次数用尽后</string>
+    <string name="editor_retry_exhausted_stop">停止工作流</string>
+    <string name="editor_retry_exhausted_stop_silent">静默停止工作流</string>
+    <string name="editor_retry_exhausted_skip">跳过此步骤继续</string>
+    <string name="editor_skip_jump_label">失败时跳转到</string>
+    <string name="editor_skip_jump_none">（不跳转，继续下一步）</string>
+    <string name="editor_skip_jump_option">#%1$d %2$s</string>
+    <string name="editor_skip_jump_missing">（已失效：%1$s）</string>
+    <string name="editor_skip_jump_cycle_warning">检测到跳转环：%1$s\n执行时会受跳转次数上限保护，但请确认这是你想要的。</string>
+    <string name="editor_group_error_context">错误上下文</string>
+    <string name="error_context_variable_name">错误信息</string>
+    <string name="settings_error_policy_stop_silent">静默停止</string>
+    <string name="output_common_step_success_name">是否成功</string>
     <string name="editor_more_settings">更多设置</string>
     <string name="tab_workflows">工作流</string>
     <string name="tab_modules">模块</string>

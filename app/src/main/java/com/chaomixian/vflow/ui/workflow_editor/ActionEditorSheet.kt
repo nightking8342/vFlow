@@ -14,7 +14,9 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.isVisible
 import androidx.core.widget.NestedScrollView
 import com.chaomixian.vflow.R
+import com.chaomixian.vflow.core.logging.DebugLogger
 import com.chaomixian.vflow.core.module.*
+import com.chaomixian.vflow.core.workflow.JumpTargetSupport
 import com.chaomixian.vflow.core.workflow.model.ActionStepExecutionSettings
 import com.chaomixian.vflow.core.workflow.model.ActionStep
 import com.chaomixian.vflow.ui.common.ModuleDetailDialog
@@ -23,6 +25,7 @@ import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.slider.Slider
+import com.google.android.material.textfield.TextInputLayout
 
 /**
  * 模块参数编辑器底部表单。
@@ -71,6 +74,9 @@ class ActionEditorSheet : BottomSheetDialogFragment() {
     private var errorPolicyGroup: RadioGroup? = null
     private var retryCountSlider: Slider? = null
     private var retryIntervalSlider: Slider? = null
+    private var retryExhaustedSpinner: TextInputLayout? = null
+    private var skipJumpContainer: LinearLayout? = null
+    private var skipJumpSpinner: TextInputLayout? = null
 
     companion object {
         // 单次编辑会话的展开状态缓存
@@ -182,6 +188,8 @@ class ActionEditorSheet : BottomSheetDialogFragment() {
             // 调用 validate 方法进行验证
             val validationResult = module.validate(stepForValidation, allSteps ?: emptyList())
             if (validationResult.isValid) {
+                // fork（P0-5 第三层防护）：跳转环检测 —— 只**警告**，不阻止保存。
+                warnOnJumpCycle(finalParams)
                 onSave?.invoke(currentParameters.toActionStep(module.id))
                 dismiss()
             } else {
@@ -270,7 +278,10 @@ class ActionEditorSheet : BottomSheetDialogFragment() {
 
     /**
      * 构建异常处理策略的 UI。
-     * 包含一个 RadioGroup 选择策略，以及重试相关的 Slider。
+     * 包含一个 RadioGroup 选择策略（4 种），以及重试相关的 Slider。
+     *
+     * ⚠️ **每新增一种策略都必须同时加一个 radio**：恢复选中态用的 `when` 有 `else -> rbStop`
+     * 兜底，漏加的话存量步骤里已存的那个值会被**静默改成 STOP**（用户看不出任何异常）。
      */
     private fun buildErrorHandlingUi() {
         val context = requireContext()
@@ -280,6 +291,10 @@ class ActionEditorSheet : BottomSheetDialogFragment() {
         val rbStop = RadioButton(context).apply {
             text = getString(R.string.editor_error_policy_stop)
             tag = ActionStepExecutionSettings.POLICY_STOP
+        }
+        val rbStopSilent = RadioButton(context).apply {
+            text = getString(R.string.editor_error_policy_stop_silent)
+            tag = ActionStepExecutionSettings.POLICY_STOP_SILENT
         }
         val rbSkip = RadioButton(context).apply {
             text = getString(R.string.editor_error_policy_skip)
@@ -291,6 +306,7 @@ class ActionEditorSheet : BottomSheetDialogFragment() {
         }
 
         radioGroup.addView(rbStop)
+        radioGroup.addView(rbStopSilent)
         radioGroup.addView(rbSkip)
         radioGroup.addView(rbRetry)
 
@@ -333,9 +349,56 @@ class ActionEditorSheet : BottomSheetDialogFragment() {
         }
         retryContainer.addView(sliderRetryInterval)
 
+        // --- 用尽后（策略链，P0-1）---
+        // ⚠️ **只在选 RETRY 时可见**（它属于 retryContainer）—— 其余策略下这个值没有语义。
+        // ⚠️⚠️ `optionsStringRes` 的**顺序必须与 `ON_RETRY_EXHAUSTED_CHOICES` 一一对应**：
+        //    `bindDropdown` 是按 index 取文案的，错位会让下拉显示与实际存入的值不符（静默写错参数）。
+        //    该顺序由 `RetryExhaustedPolicyWiringTest` 的源码扫描守卫锁死。
+        val exhaustLabel = TextView(context).apply {
+            text = getString(R.string.editor_retry_exhausted_label)
+            setPadding(0, (24 * resources.displayMetrics.density).toInt(), 0, 0)
+        }
+        val spinnerExhausted = StandardControlFactory.createSpinner(
+            context = context,
+            options = ActionStepExecutionSettings.ON_RETRY_EXHAUSTED_CHOICES,
+            selectedValue = executionSettings.onRetryExhausted,
+            // 用尽后动作变了 ⇒ 有效策略可能从 STOP 变成 SKIP（或反过来）⇒ 跳转目标的可见性要跟着变
+            onItemSelectedCallback = { refreshSkipJumpVisibility() },
+            optionsStringRes = listOf(
+                R.string.editor_retry_exhausted_stop,
+                R.string.editor_retry_exhausted_stop_silent,
+                R.string.editor_retry_exhausted_skip
+            )
+        )
+        retryContainer.addView(exhaustLabel)
+        retryContainer.addView(spinnerExhausted)
+
+        // --- 失败时跳转到（P0-5）---
+        // ⚠️ 存的是 **step id**（选项值），显示的是 `#序号 模块名` —— 序号只给人看。
+        //    `StandardControlFactory.createSpinner` 支持 `displayOptions` 与 `options` 分离，
+        //    正好表达这层「给人看 vs 给机器用」的区分。
+        val skipJumpLabel = TextView(context).apply {
+            text = getString(R.string.editor_skip_jump_label)
+        }
+        val (jumpOptionIds, jumpOptionLabels) = buildSkipJumpChoices()
+        val spinnerJump = StandardControlFactory.createSpinner(
+            context = context,
+            options = jumpOptionIds,
+            selectedValue = executionSettings.skipJumpTarget ?: "",
+            displayOptions = jumpOptionLabels
+        )
+        val jumpContainer = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, (24 * resources.displayMetrics.density).toInt(), 0, 0)
+            visibility = View.GONE
+            addView(skipJumpLabel)
+            addView(spinnerJump)
+        }
+
         when (currentPolicy) {
             ActionStepExecutionSettings.POLICY_SKIP -> rbSkip.isChecked = true
             ActionStepExecutionSettings.POLICY_RETRY -> rbRetry.isChecked = true
+            ActionStepExecutionSettings.POLICY_STOP_SILENT -> rbStopSilent.isChecked = true
             else -> rbStop.isChecked = true
         }
         retryContainer.isVisible = (currentPolicy == ActionStepExecutionSettings.POLICY_RETRY)
@@ -344,22 +407,112 @@ class ActionEditorSheet : BottomSheetDialogFragment() {
         val sliderRetryCountView = sliderRetryCount.getChildAt(1) as Slider
         val sliderRetryIntervalView = sliderRetryInterval.getChildAt(1) as Slider
 
+        // 保存引用（必须在 refreshSkipJumpVisibility 之前 —— 它读这两个字段）
+        this.errorPolicyGroup = radioGroup
+        this.retryExhaustedSpinner = spinnerExhausted
+        this.skipJumpContainer = jumpContainer
+        this.skipJumpSpinner = spinnerJump
+        refreshSkipJumpVisibility()
+
         // 监听器
         radioGroup.setOnCheckedChangeListener { _, checkedId ->
             retryContainer.isVisible = (checkedId == rbRetry.id)
+            // 「重试用尽后」也会影响有效策略 ⇒ 跳转目标的可见性要跟着变
+            refreshSkipJumpVisibility()
         }
 
-        // 保存引用
-        this.errorPolicyGroup = radioGroup
         this.retryCountSlider = sliderRetryCountView
         this.retryIntervalSlider = sliderRetryIntervalView
 
         errorSettingsContent?.addView(radioGroup)
         errorSettingsContent?.addView(retryContainer)
+        errorSettingsContent?.addView(jumpContainer)
     }
 
     private fun syncExecutionSettingsFromUi() {
         currentParameters.setExecutionSettings(readExecutionSettingsFromUi())
+    }
+
+    /**
+     * 「失败时跳转到」容器的可见性。
+     *
+     * ⚠️ 判据是**有效策略**（`effectivePolicy`），不是裸的 `policy` ——
+     * 「RETRY + 用尽后 = SKIP」也会走跳过分支，跳转目标对它同样有意义。
+     */
+    private fun refreshSkipJumpVisibility() {
+        val checkedId = errorPolicyGroup?.checkedRadioButtonId ?: -1
+        val selectedPolicy = errorPolicyGroup?.findViewById<View>(checkedId)?.tag as? String
+            ?: ActionStepExecutionSettings.POLICY_STOP
+        val exhausted = retryExhaustedSpinner
+            ?.let { StandardControlFactory.getDropdownValue(it) }
+            ?: ActionStepExecutionSettings.POLICY_STOP
+        val effective = ActionStepExecutionSettings.effectivePolicy(selectedPolicy, exhausted)
+        skipJumpContainer?.isVisible = (effective == ActionStepExecutionSettings.POLICY_SKIP)
+    }
+
+    /**
+     * 跳转目标的候选列表：`（不跳转）` + 所有**允许**的步骤。
+     *
+     * - 过滤用 `JumpTargetSupport.isAllowedTarget`（与运行期**同一把尺**：
+     *   目标缩进 ≤ 当前缩进，且不是块中间/结束模块）⇒ UI 少给错选项，但运行期才是防线。
+     * - 显示 `#序号 模块名`，**存的是 step id** —— 序号只是给人看的。
+     * - ⚠️ 存量值不在候选里（目标被删 / 缩进变了 / 模块未注册）时**必须原样保留**，
+     *   否则用户打开 sheet 一保存就把已存的跳转目标**静默清掉**
+     *   （`bindDropdown` 找不到 selectedValue 会回落第 0 项 =「不跳转」）。
+     */
+    private fun buildSkipJumpChoices(): Pair<List<String>, List<String>> {
+        val steps = allSteps.orEmpty()
+        val currentIndentation = existingStep?.indentationLevel ?: 0
+
+        val ids = mutableListOf("")
+        val labels = mutableListOf(getString(R.string.editor_skip_jump_none))
+
+        steps.forEachIndexed { index, candidate ->
+            if (!JumpTargetSupport.isAllowedTarget(steps, index, currentIndentation)) return@forEachIndexed
+            val moduleName = ModuleRegistry.getModule(candidate.moduleId)
+                ?.metadata?.getLocalizedName(requireContext())
+                ?: candidate.moduleId
+            ids += candidate.id
+            labels += getString(R.string.editor_skip_jump_option, index + 1, moduleName)
+        }
+
+        val stored = currentParameters.getExecutionSettings().skipJumpTarget
+        if (stored != null && stored !in ids) {
+            ids += stored
+            labels += getString(R.string.editor_skip_jump_missing, stored)
+        }
+        return ids to labels
+    }
+
+    /**
+     * **静态环检测**（P0-5 第三层防护）：只**警告**，不阻止保存。
+     *
+     * 为什么不阻止：环也可能是有意的有限循环；运行期还有「单步 10 次 / 单次执行 200 次」
+     * 两级上限兜底。但用户大概率是写错了，所以要在保存时把话说到。
+     */
+    private fun warnOnJumpCycle(finalParams: Map<String, Any?>) {
+        val original = existingStep ?: return
+        val steps = allSteps.orEmpty()
+        val index = steps.indexOfFirst { it.id == original.id }
+        if (index < 0) return // 新步骤还没进列表 ⇒ 建不出图
+
+        val candidate = steps.toMutableList().also { list ->
+            list[index] = list[index].copy(parameters = finalParams)
+        }
+        val cycles = JumpTargetSupport.detectCycles(candidate)
+        if (cycles.isEmpty()) return
+
+        fun labelOf(stepId: String): String {
+            val position = candidate.indexOfFirst { it.id == stepId }
+            return if (position >= 0) "#${position + 1}" else stepId
+        }
+
+        // 首尾都写出来（`#2 → #5 → #2`），一眼能看出环在哪里闭合。
+        val rendered = cycles.joinToString("、") { cycle ->
+            (cycle + cycle.first()).joinToString(" → ") { labelOf(it) }
+        }
+        DebugLogger.w("ActionEditorSheet", "检测到跳转环：$rendered")
+        Toast.makeText(context, getString(R.string.editor_skip_jump_cycle_warning, rendered), Toast.LENGTH_LONG).show()
     }
 
     private fun readExecutionSettingsFromUi(): ActionStepExecutionSettings {
@@ -369,6 +522,14 @@ class ActionEditorSheet : BottomSheetDialogFragment() {
 
         return ActionStepExecutionSettings(
             policy = policy,
+            // ⚠️ 读回的是 tag（序列化值），不是显示文案 —— `getDropdownValue` 已按此约定实现。
+            //    为 null（UI 未构建 / 未选中）时回落 STOP，与 fromParameters 的缺省一致。
+            onRetryExhausted = retryExhaustedSpinner?.let { StandardControlFactory.getDropdownValue(it) }
+                ?: ActionStepExecutionSettings.POLICY_STOP,
+            // 同理：读回的是 step id（tag）。空白（选了「不跳转」）⇒ null ⇒ 删键。
+            skipJumpTarget = skipJumpSpinner
+                ?.let { StandardControlFactory.getDropdownValue(it) }
+                ?.takeIf { it.isNotBlank() },
             retryCount = retryCountSlider?.value?.toInt() ?: ActionStepExecutionSettings.DEFAULT_RETRY_COUNT,
             retryIntervalMillis = retryIntervalSlider?.value?.toLong()
                 ?: ActionStepExecutionSettings.DEFAULT_RETRY_INTERVAL_MS

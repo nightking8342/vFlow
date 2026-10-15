@@ -2,6 +2,7 @@ package com.chaomixian.vflow.core.workflow.module.data
 
 import com.chaomixian.vflow.core.backup.SourceScan
 import com.chaomixian.vflow.core.module.ParameterType
+import com.chaomixian.vflow.core.module.StepStatusSupport
 import com.chaomixian.vflow.core.types.VObject
 import com.chaomixian.vflow.core.types.VTypeRegistry
 import com.chaomixian.vflow.core.types.basic.VBoolean
@@ -354,9 +355,21 @@ class InspectTypeModuleTest {
     /** 条件输出必须真的被 `getDynamicOutputs` 反映（编辑器选择器读的是它）。 */
     @Test
     fun `dynamic outputs follow the conditional outputs`() {
+        val staticIds = module.getOutputs(stepWith(VTypeRegistry.IMAGE.id)).map { it.id }
+        val dynamicIds = module.getDynamicOutputs(stepWith(VTypeRegistry.IMAGE.id), emptyList()).map { it.id }
+
+        // ⚠️ fork（2026-10-15，P0-3 状态可见）：`BaseModule.getDynamicOutputs` 现在会在静态输出
+        //    之后追加**统一的 `success`**（见 `StepStatusSupport`）⇒ 两者不再逐字相等。
+        //    本用例的原意（条件输出必须被动态反映）不变，改为断言「静态输出全部在前 + 尾部恰好多一项」，
+        //    比原来更强（顺带钉住了那多出来的一项是 success，而不是别的）。
+        assertTrue(
+            "动态输出必须以静态输出开头（条件输出没被反映？）",
+            dynamicIds.take(staticIds.size) == staticIds,
+        )
         assertEquals(
-            module.getOutputs(stepWith(VTypeRegistry.IMAGE.id)).map { it.id },
-            module.getDynamicOutputs(stepWith(VTypeRegistry.IMAGE.id), emptyList()).map { it.id },
+            "动态输出 = 静态输出 + 统一的 success",
+            staticIds + StepStatusSupport.SUCCESS_OUTPUT_ID,
+            dynamicIds,
         )
     }
 

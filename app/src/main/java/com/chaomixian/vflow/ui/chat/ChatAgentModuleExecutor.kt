@@ -16,6 +16,7 @@ import com.chaomixian.vflow.core.module.InputDefinition
 import com.chaomixian.vflow.core.module.ModuleRegistry
 import com.chaomixian.vflow.core.module.ParameterType
 import com.chaomixian.vflow.core.module.ProgressUpdate
+import com.chaomixian.vflow.core.module.StepStatusSupport
 import com.chaomixian.vflow.core.types.VObject
 import com.chaomixian.vflow.core.types.basic.VBoolean
 import com.chaomixian.vflow.core.types.basic.VNumber
@@ -26,6 +27,7 @@ import com.chaomixian.vflow.core.types.complex.VImage
 import com.chaomixian.vflow.core.types.complex.VScreenElement
 import com.chaomixian.vflow.core.types.VTypeRegistry
 import com.chaomixian.vflow.core.workflow.model.ActionStep
+import com.chaomixian.vflow.core.workflow.model.ActionStepExecutionSettings
 import com.chaomixian.vflow.core.workflow.model.FunctionSignatureHelper
 import com.chaomixian.vflow.core.workflow.model.Workflow
 import com.chaomixian.vflow.core.workflow.model.WorkflowReentryBehavior
@@ -2816,7 +2818,10 @@ internal class ChatAgentModuleExecutor(
                         appendLine()
                     }
                 }
-                val outputs = module.getOutputs(step)
+                // fork（P0-3 状态可见）：与编辑器**同口径** —— 补上统一的状态输出 `success`。
+                // 模型要能发现这个字段，才谈得上用它写 `{{stepId.success}}` 做失败分流；
+                // 只改编辑器（`getDynamicOutputs`）会造成「人工能选、AI 看不见」的口径分裂。
+                val outputs = StepStatusSupport.withSuccessOutput(module.getOutputs(step))
                 if (outputs.isNotEmpty()) {
                     appendLine()
                     appendLine("outputs:")
@@ -3171,7 +3176,18 @@ internal fun resolveModuleInputDefinitions(
     // 它**不由模块声明**（那样会把它推进编辑器的通用参数表单，与「标签不放参数 sheet」冲突），
     // 故在这里统一补齐 —— 不补的话 buildParameters / applyParameterPatch 会把它判成
     // unknown 并拒绝整个调用（update_workflow 甚至整份补丁不落地）。
-    return if (module.id.startsWith(TRIGGER_MODULE_PREFIX)) base + triggerLabelInputDefinition() else base
+    // 步骤级「执行设置」（异常处理策略等，fork 2026-10-15）：**任何**模块的步骤都可带这些保留键。
+    // 与上面的触发器标签同因同果 —— 不由模块声明（否则会出现在编辑器的通用参数表单里），
+    // 但**必须**在这里补齐，否则 buildParameters / applyParameterPatch 会把它们判成 unknown 并
+    // **拒绝整个调用**（update_workflow 甚至整份补丁不落地）。
+    // 修补前的实际表现：**AI 完全无法配置异常处理策略**（只能读），只能靠人工在编辑器里点。
+    val withStepSettings = base + stepExecutionSettingInputDefinitions()
+
+    return if (module.id.startsWith(TRIGGER_MODULE_PREFIX)) {
+        withStepSettings + triggerLabelInputDefinition()
+    } else {
+        withStepSettings
+    }
 }
 
 /**
@@ -3679,3 +3695,97 @@ private fun environmentVariableTypeName(value: VObject): String = when (value) {
     is VBoolean -> "boolean"
     else -> "string"
 }
+
+/**
+ * 步骤级「执行设置」的保留键（fork，2026-10-15）。
+ *
+ * 这些键**不是模块参数**，而是「异常处理策略」这类**步骤级设置** —— 任何模块的步骤都能带。
+ * 与 [triggerLabelInputDefinition] 同因同果：不由模块声明（否则会被推进编辑器的通用参数表单），
+ * 但必须在 [resolveModuleInputDefinitions] 里补齐，否则 AI 侧会把它们判成 unknown 并**拒绝整个调用**。
+ *
+ * `isHidden = true`：**不进** `ToolSchemaGenerator` 生成的 per-tool JSON Schema ——
+ * 对「直接调用」而言这些键没有意义（`call_module` 没有「步骤」这一层）；
+ * 而 `query_module_schema` 的 `inputs:` 段**不按 isHidden 过滤** ⇒ 模型仍能发现它们。
+ *
+ * ⚠️ **新增保留键时，这里与 [ActionStepExecutionSettings] 的 `KEY_*` 常量必须同时改** ——
+ * `ReservedStepKeyInjectionTest` 会自动枚举常量并核对，漏改会红。
+ *
+ * `name` / `hint` 用英文：`query_module_schema` 的输出整体是面向模型的英文，
+ * 且这里没有 `nameStringRes`（不给人看），与模块作者写的 `inputHints` 同一惯例。
+ */
+private fun stepExecutionSettingInputDefinitions(): List<InputDefinition> = listOf(
+    InputDefinition(
+        id = ActionStepExecutionSettings.KEY_ERROR_POLICY,
+        name = "Error handling policy",
+        staticType = ParameterType.ENUM,
+        defaultValue = ActionStepExecutionSettings.POLICY_STOP,
+        options = listOf(
+            ActionStepExecutionSettings.POLICY_STOP,
+            ActionStepExecutionSettings.POLICY_STOP_SILENT,
+            ActionStepExecutionSettings.POLICY_SKIP,
+            ActionStepExecutionSettings.POLICY_RETRY,
+        ),
+        acceptsMagicVariable = false,
+        acceptsNamedVariable = false,
+        isHidden = true,
+        hint = "What this step does when it fails. " +
+            "STOP = stop the workflow and show an error dialog (default). " +
+            "STOP_SILENT = stop the workflow WITHOUT the dialog " +
+            "(notification, final state and logs still record the failure). " +
+            "SKIP = continue with the next step, writing error and success=false into this step's outputs. " +
+            "RETRY = retry this step, then follow `" +
+            ActionStepExecutionSettings.KEY_ON_RETRY_EXHAUSTED + "`.",
+    ),
+    InputDefinition(
+        id = ActionStepExecutionSettings.KEY_ON_RETRY_EXHAUSTED,
+        name = "What to do after retries are exhausted",
+        staticType = ParameterType.ENUM,
+        defaultValue = ActionStepExecutionSettings.POLICY_STOP,
+        // ⚠️ 取值 = `ON_RETRY_EXHAUSTED_CHOICES`（`RETRY` **不在其中** —— 重试用尽后再重试无意义）。
+        //    与 `__error_policy` 共用同一批字面量，不另起一套。
+        options = ActionStepExecutionSettings.ON_RETRY_EXHAUSTED_CHOICES,
+        acceptsMagicVariable = false,
+        acceptsNamedVariable = false,
+        isHidden = true,
+        hint = "Only used when the policy is RETRY. STOP = stop and show the error dialog (default). " +
+            "STOP_SILENT = stop without the dialog. " +
+            "SKIP = carry on with the next step, writing error and success=false into this step's outputs. " +
+            "Example: policy=RETRY with this set to SKIP means \"retry a few times, then carry on\".",
+    ),
+    InputDefinition(
+        id = ActionStepExecutionSettings.KEY_RETRY_COUNT,
+        name = "Retry count",
+        staticType = ParameterType.NUMBER,
+        defaultValue = ActionStepExecutionSettings.DEFAULT_RETRY_COUNT,
+        acceptsMagicVariable = false,
+        acceptsNamedVariable = false,
+        isHidden = true,
+        hint = "Only used when the policy is RETRY. Total attempts = this value + 1.",
+    ),
+    InputDefinition(
+        id = ActionStepExecutionSettings.KEY_RETRY_INTERVAL,
+        name = "Retry interval (ms)",
+        staticType = ParameterType.NUMBER,
+        defaultValue = ActionStepExecutionSettings.DEFAULT_RETRY_INTERVAL_MS,
+        acceptsMagicVariable = false,
+        acceptsNamedVariable = false,
+        isHidden = true,
+        hint = "Only used when the policy is RETRY.",
+    ),
+    InputDefinition(
+        id = ActionStepExecutionSettings.KEY_SKIP_JUMP_TARGET,
+        name = "Step id to jump to on failure (SKIP only)",
+        staticType = ParameterType.STRING,
+        acceptsMagicVariable = false,
+        acceptsNamedVariable = false,
+        isHidden = true,
+        hint = "A STEP ID (not a step number), e.g. \"cleanup_step\". Only used when the policy " +
+            "resolves to SKIP. When this step fails, execution jumps to that step instead of " +
+            "continuing with the next one — use it to route failures to a cleanup/finish step. " +
+            "The target may be before or after this step, but it must NOT be inside a block body " +
+            "(the target's indentation must be <= this step's). On failure, the target step can " +
+            "read the error through the named variable `[[__error]]` " +
+            "(dictionary: step_index / step_id / module_id / title / message; it is an empty " +
+            "dictionary while nothing has failed).",
+    ),
+)

@@ -107,15 +107,31 @@ class AgentErrorDialogWiringTest {
     fun `executor guards the error dialog behind the flag`() {
         val code = codeOnly(source(EXECUTOR_PATH))
 
-        // ⚠️⚠️ 关键断言：`if (showErrorDialog)` 与 `showError` **必须在同一个函数体内**，
-        // 且 `if` 要在前。只断言「两个字符串都存在」是无效的 —— 注释里到处都有。
+        // ⚠️⚠️ 关键断言：门禁判断与 `showError` **必须在同一个函数体内**，且判断要在前。
+        // 只断言「两个字符串都存在」是无效的 —— 注释里到处都有。
+        //
+        // ⚠️ 形态变更（2026-10-15，fork P0-4「静默终止」）：原先断言的是裸 `if (showErrorDialog)`，
+        //    现在门禁改由 `ActionStepExecutionSettings.shouldShowErrorDialog(policy, showErrorDialog)`
+        //    统一表达 —— 因为它同时要覆盖**步骤级策略** `STOP_SILENT`（用户主动选「终止但不弹窗」）
+        //    与原有的 Agent 调试总开关。两者共用同一条正确性收益：
+        //    弹窗是 suspend 的，被它挡住 ⇒ 终止状态不广播、`finally` 不执行。
+        //    断言随之升级为「必须传**两个**实参」，比原来更强（顺带锁住了策略那一半）。
+        //
+        // ⚠️ 第二次形态变更（2026-10-15，fork P0-1「策略链」）：第一个实参由
+        //    `executionSettings.policy` 改为**展开后的** `effectivePolicy` ——
+        //    `RETRY + 用尽后 = STOP_SILENT` 也必须在弹窗这一层生效。
+        //    这条断言的本意（门禁真的存在、且在 `showError` 之前）没有变化。
         val body = functionBody(code, "private suspend fun executeWorkflowInternal(")
-        val ifIndex = body.indexOf("if (showErrorDialog)")
+        val guardIndex = body.indexOf("shouldShowErrorDialog(effectivePolicy, showErrorDialog)")
         val showIndex = body.indexOf("showError(")
 
         assertTrue("失败分支必须有 showError 调用", showIndex >= 0)
-        assertTrue("showError 必须被 if (showErrorDialog) 包住", ifIndex >= 0)
-        assertTrue("if 判断必须在 showError 调用之前", ifIndex < showIndex)
+        assertTrue(
+            "showError 必须被 shouldShowErrorDialog(policy, showErrorDialog) 包住 —— " +
+                "少了它，Agent 调试会弹窗挂住协程、STOP_SILENT 策略也会失效",
+            guardIndex >= 0,
+        )
+        assertTrue("门禁判断必须在 showError 调用之前", guardIndex < showIndex)
     }
 
     @Test

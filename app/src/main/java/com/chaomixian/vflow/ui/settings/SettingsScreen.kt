@@ -239,6 +239,7 @@ fun SettingsScreen(
     val defaultErrorStrategyTitle = stringResource(R.string.settings_default_error_policy_title)
     val defaultErrorStrategySubtitle = stringResource(R.string.settings_default_error_policy_desc)
     val errorPolicyStopLabel = stringResource(R.string.workflow_action_stop)
+    val errorPolicyStopSilentLabel = stringResource(R.string.settings_error_policy_stop_silent)
     val errorPolicySkipLabel = stringResource(R.string.dialog_button_skip)
     val errorPolicyRetryLabel = stringResource(R.string.common_retry)
     val retryCountLabel = stringResource(R.string.editor_retry_count)
@@ -626,6 +627,7 @@ fun SettingsScreen(
                     retryCount = uiState.defaultRetryCount,
                     retryIntervalMillis = uiState.defaultRetryIntervalMillis,
                     stopLabel = errorPolicyStopLabel,
+                    stopSilentLabel = errorPolicyStopSilentLabel,
                     skipLabel = errorPolicySkipLabel,
                     retryLabel = errorPolicyRetryLabel,
                     retryCountLabel = retryCountLabel,
@@ -895,6 +897,7 @@ private fun DefaultErrorPolicyRow(
     retryCount: Int,
     retryIntervalMillis: Long,
     stopLabel: String,
+    stopSilentLabel: String,
     skipLabel: String,
     retryLabel: String,
     retryCountLabel: String,
@@ -941,6 +944,7 @@ private fun DefaultErrorPolicyRow(
             ) {
                 val options = listOf(
                     ActionStepExecutionSettings.POLICY_STOP to stopLabel,
+                    ActionStepExecutionSettings.POLICY_STOP_SILENT to stopSilentLabel,
                     ActionStepExecutionSettings.POLICY_SKIP to skipLabel,
                     ActionStepExecutionSettings.POLICY_RETRY to retryLabel
                 )
