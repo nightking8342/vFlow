@@ -9,12 +9,12 @@ package com.chaomixian.vflow.core.backup
  * T1 的 [BackupEnvironment] 只有「读写工作流 / 文件夹 / 全局变量」的能力 ——
  * 因为那三类数据本来就存在 `WorkflowManager` / `FolderManager` /
  * `GlobalVariableStore` 里。但 T2 要备份的密钥**全部存在 `SharedPreferences`**
- * （`module_config_prefs` / `ai_config`，见方案 §2.8 的实测表），
+ * （目前都在 `module_config_prefs` 里，见方案 §2.8 的实测表），
  * 而 T1 的接缝里没有任何 prefs 读写能力。
  *
  * 补一个通用的 `SecretStore` 而不是给 [BackupEnvironment] 加一串
  * `getFeishuAppSecret()` 之类的方法，是因为：**密钥的存储位置会变**。
- * 现在有三个 prefs 名，将来加了新集成就可能有第四个 ——
+ * 现在只有一个 prefs 名，将来加了新集成就可能有第二个 ——
  * 每加一个就扩一次 [BackupEnvironment] 接口，会让四个 scope 与两个实现
  * （Android / Fake）全部跟着改。通用键值接口把这类变化收在一处
  * （`SecretsScope.SECRET_SLOTS` 那张白名单表）。

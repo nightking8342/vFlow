@@ -130,17 +130,20 @@ telemetryEnabled, accessibilityDisguiseEnabled, sherpa_ncnn_download_source
 | `is_first_run` / `disclaimer_accepted` | **设备/用户级的确认状态**，跨设备复制语义错误（新设备的用户可能不是同一个人） |
 | `vflow_api_tokens`（独立 prefs） | **默认排除且不提供勾选** —— 可再生、安全敏感 |
 
-#### `chat`（3 个 prefs 文件，7 键）
+#### `chat`（2 个 prefs 文件，4 键）
 
 | prefs | 键 |
 |---|---|
 | `module_config_prefs` | `chat_default_preset_id`、`chat_auto_approve_tools`、`chat_auto_approval_scope` |
 | `chat_session_prefs` | `chat_session_state_json` |
-| `ai_config` | `provider`、`base_url`、`model` |
 
 ⚠️ **`chat_provider_configs_json` / `chat_presets_json`（内含 `apiKey`）不在本 scope** —— 它们归 `secrets`。
-⚠️ **`ai_config.api_key` 同样归 `secrets`**（本 scope 只收 `provider`/`base_url`/`model` 三个非敏感键）。
 这就是「只勾聊天漏勾密钥 ⇒ 泄漏」那条静默失效点的处置：**结构上分开，不靠用户记得同时勾两个**。
+
+> ⚠️ **2026-10-14 变更**：原先本 scope 还收 `ai_config` 的 `provider`/`base_url`/`model`
+> （编辑器「AI 生成」工作流功能的模型配置），对应的密钥 `ai_config.api_key` 在 `secrets` 里。
+> 该功能**已整体删除**（见 `surveys/ai-system-overview.md` §3），故 `ai_config` 两个 scope 的条目一并移除，
+> `secrets` 的槽位数由 10 降为 9。
 
 #### `modules`（2 个 prefs 文件，13 个精确键 + 1 个前缀）
 
@@ -153,11 +156,11 @@ telemetryEnabled, accessibilityDisguiseEnabled, sherpa_ncnn_download_source
 坏 JSON 或元素读不到 `tileIndex` 时**退化为整键替换并记 W**，不整体失败。
 走**文本层合并**（不引 `WorkflowTile` 类）⇒ 保住 `core/backup` 的纯 JVM 纯度。
 
-#### `secrets`（10 个精确槽位 + WebDAV 配置，**sensitive**）
+#### `secrets`（9 个精确槽位 + WebDAV 配置，**sensitive**）
 
 `module_config_prefs` 的飞书七件套（`feishu_app_secret` / `feishu_app_access_token` / `feishu_access_token` /
 `feishu_user_access_token` / `feishu_user_refresh_token` / `feishu_user_auth_code` / `feishu_user_code_verifier`）
-+ `chat_provider_configs_json` + `chat_presets_json` + `ai_config.api_key` + **`webdav_configs`（T6 新增）**。
++ `chat_provider_configs_json` + `chat_presets_json` + **`webdav_configs`（T6 新增）**。
 
 ⚠️ **这是精确清单，不是规则**。新加的集成若把凭证写到别处，**不会自动被备份** —— 新增集成时要回到 `SECRET_SLOTS` 补一行。
 `SecretsScopeTest` 有源码扫描锁住「这些键在当前代码库里确实存在」（防僵尸条目）。

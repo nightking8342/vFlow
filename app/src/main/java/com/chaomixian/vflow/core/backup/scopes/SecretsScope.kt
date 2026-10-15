@@ -217,7 +217,6 @@ class SecretsScope : BackupScope {
          * 键名逐字对应方案 §2.8 的实测结果：
          * - 飞书七件套：`ModuleConfigActivity.PREFS_NAME` + 其键名常量
          * - 聊天配置（JSON 内含 `apiKey`）：`ChatPresetRepository`
-         * - AI 配置：`AiGenerationSheet`（裸字面量，故此处也写裸字面量）
          *
          * 由 `SecretsScopeTest` 的源码扫描用例锁住「这些键在当前代码库里确实存在」，
          * 防止它们随代码演进变成僵尸条目。
@@ -231,8 +230,7 @@ class SecretsScope : BackupScope {
             "module_config_prefs" to "feishu_user_auth_code",
             "module_config_prefs" to "feishu_user_code_verifier",
             "module_config_prefs" to "chat_provider_configs_json",
-            "module_config_prefs" to "chat_presets_json",
-            "ai_config" to "api_key"
+            "module_config_prefs" to "chat_presets_json"
         )
 
         /**

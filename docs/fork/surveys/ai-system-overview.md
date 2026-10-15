@@ -34,21 +34,23 @@
 
 **重要**：本文数字为**人工走查**代码后统计得出，口径见附录 A。仓库内**没有**配套的自动统计脚本，因此数字会随代码漂移；引用前请以代码为准。（v1.0 曾声称"由脚本静态解析得出"，与实际不符，v1.1 已更正。）
 
-**范围声明**：本文的「AI」指**调用 LLM 出网**的链路。项目内的本地模型能力——OCR（`ocr/PpOcrV5*`，PP-OCRv5/ncnn）、语音（`speech/SherpaNcnn*`、Silero VAD）——**不属本文范围**（本地推理、无 LLM 出网），仅在作为工具被聊天 Agent 调用时出现在 §2.4 的模块清单里。全仓库 LLM 出网点共 4 处：`ChatCompletionClient`（链路 A）、`WorkflowAiGenerator`（链路 B）、`AIModule` + `AgentModule`/`AutoGLMModule`（链路 C），**不存在第四条链路**。
+**范围声明**：本文的「AI」指**调用 LLM 出网**的链路。项目内的本地模型能力——OCR（`ocr/PpOcrV5*`，PP-OCRv5/ncnn）、语音（`speech/SherpaNcnn*`、Silero VAD）——**不属本文范围**（本地推理、无 LLM 出网），仅在作为工具被聊天 Agent 调用时出现在 §2.4 的模块清单里。全仓库 LLM 出网点共 **3** 处：`ChatCompletionClient`（链路 A）、`AIModule` + `AgentModule`/`AutoGLMModule`（链路 C）——**不存在第四条链路**。
+
+> ⚠️ **2026-10-14 更新**：原先的第 4 处出网点「AI 生成工作流」（**链路 B**：`ui/workflow_editor/WorkflowAiGenerator.kt` + `AiGenerationSheet.kt` + `res/layout/sheet_ai_generation.xml`）**已整体删除**（见 §3 的删除说明）。删除理由是它被聊天 Agent（链路 A）完全覆盖，却另立一套单轮生成器与一套独立的模型配置（SharedPreferences `ai_config`）。**§1 与 §3 中关于链路 B 的描述保留为历史分析**，不再代表现状。
 
 ---
 
-## 1. 三套互相独立的 AI 链路
+## 1. 三套互相独立的 AI 链路（现为两套 + 一套已删除的历史链路 B）
 
-项目里有三条 AI 链路，**彼此不共享提示词、不共享工具定义**，最容易混淆：
+项目里原有三条 AI 链路，**彼此不共享提示词、不共享工具定义**，最容易混淆（**链路 B 已于 2026-10-14 删除**，见 §3 开头的说明）：
 
 | # | 链路 | 入口文件 | 谁驱动 | 能力范围 |
 |---|---|---|---|---|
 | **A** | 聊天 Agent | `ui/chat/` | LLM 自主多轮调工具 | 观察屏幕、点按、读写剪贴板、跑工作流 |
-| **B** | AI 生成工作流 | `ui/workflow_editor/WorkflowAiGenerator.kt` | 单轮 LLM 生成 JSON | 生成一份工作流配置（生成动作本身不执行工作流；生成结果写入编辑器后由用户保存、可正常执行） |
+| ~~**B**~~ | ~~AI 生成工作流~~ **（2026-10-14 已删除）** | ~~`ui/workflow_editor/WorkflowAiGenerator.kt`~~ | 单轮 LLM 生成 JSON | 生成一份工作流配置（生成动作本身不执行工作流；生成结果写入编辑器后由用户保存、可正常执行） |
 | **C** | 工作流内 AI 模块 | `core/workflow/module/{network,interaction,integration}/*.kt` | 工作流执行时调 LLM（或外部 AI 助手） | 文本问答、视觉 Agent 操作手机、调用外部 AI 助手（Operit） |
 
-**关键区别**：链路 A 和 B 完全不同 —— A 用 `aiMetadata`（模块自声明），B 用 `metadata.description`（遍历全模块）。给 A 加能力**不会**自动让 B 看到，反之亦然。
+**关键区别**：链路 A 和 B 完全不同 —— A 用 `aiMetadata`（模块自声明），B 用 `metadata.description`（遍历全模块）。给 A 加能力**不会**自动让 B 看到，反之亦然。（B 删除后，这句话只作为历史对照。）
 
 **另一重容易忽略的割裂：链路 A 内部还有三套并行的工具体系**（2026-09-13 补充，详见 §2.4）：
 
@@ -804,7 +806,7 @@ else → Ready(..., missingPermissions = module.getRequiredPermissions(step)
 | 多供应商 | OPENAI / DEEPSEEK / ANTHROPIC / OPENROUTER / OLLAMA 五档，另支持自定义 baseUrl；三套 API 形态适配（Chat Completions / Responses / Anthropic Messages） |
 | 安全审批 | 风险四级 + 自动审批五档（默认 OFF） |
 | 富对象传递 | artifact 句柄（图像/坐标/元素/UI 快照） |
-| 停止生成 | `stopAgent()` **真取消**（对比链路 B 不能中断 HTTP） |
+| 停止生成 | `stopAgent()` **真取消**（对比已删除的链路 B —— 它当年无法中断 HTTP） |
 | 提示词节流 | 技能路由，按消息动态选工具（14 技能 + 11 常驻 helper） |
 
 #### 2.10.3 短板（按严重度）
@@ -813,8 +815,8 @@ else → Ready(..., missingPermissions = module.getRequiredPermissions(step)
 2. **静默失败**（可信度风险最高）：未知参数键被丢弃（`buildParameters` `?: return@forEach`）、`requiredInputIds` 运行时不校验、NUMBER/BOOLEAN/ENUM 不解析 `artifact://`（§2.7）。三者叠加 → **模型以为成功、用户看到成功，实际参数被丢或传错**。
 3. **能力发现层缺基础设施**：AI 看不到**用户已有资产**（已保存工作流、函数工作流）。`call_workflow` 不知 `workflow_id` 填什么，`call_function` 的函数参数键进不了 schema（§5）。
 4. **生产无轮数上限**（§2.8）：基准有 24 上限，生产聊天路径零限制，安全默认反了。
-5. **能力视图碎片化**：链路 A 用 `aiMetadata` + `getDynamicInputs`，链路 B 用 `metadata.description` + `getInputs`，同一批模块两套描述；且 `aiMetadata` 本身只覆盖 188 个模块中的 103 个。
-6. **配置割裂**：链路 A 用 `ChatProviderConfig`，链路 B 用 SharedPreferences `ai_config`，同一 API key 要填两遍。
+5. ~~**能力视图碎片化**：链路 A 用 `aiMetadata` + `getDynamicInputs`，链路 B 用 `metadata.description` + `getInputs`，同一批模块两套描述~~ **→ ✅ 2026-10-14：链路 B 已删除，两套描述收敛为一套**；残留的是 `aiMetadata` 本身只覆盖 188 个模块中的 103 个。
+6. ~~**配置割裂**：链路 A 用 `ChatProviderConfig`，链路 B 用 SharedPreferences `ai_config`，同一 API key 要填两遍~~ **→ ✅ 2026-10-14：链路 B 及其 `ai_config` 已删除，此割裂消失**（链路 C 的硬编码模型仍在，见 §7 的 P2）。
 7. **无多模态、无流式**：不能给模型发图片（截图只能转文本）；`stream=false`，长回复整段等待。
 8. ~~**模块目录截断且与 enum 错配**~~（2026-09-11 补充，§2.4.6）：保存工作流 139 个步骤模块只解释前 48 个，高频的 `device` 类被切在最后；模型"知道 id 合法、不知道它是什么"，于是臆造 id 被拒。**→ ✅ 已于 2026-09-12 修复（去除截断）**，代价是 catalog 增至 ~5,779 token。
 9. **无未启用 Prompt 缓存**（2026-09-11 补充，§2.10.4）：全仓库无 `cache_control`/`prompt_cache`，Anthropic 链路 100% 冷启动；技能切换又会让 OpenAI 系前缀从 `tools` 处断裂。
@@ -849,6 +851,20 @@ else → Ready(..., missingPermissions = module.getRequiredPermissions(step)
 ---
 
 ## 3. 链路 B：AI 生成工作流
+
+> ⚠️⚠️ **2026-10-14：本节描述的功能已从代码库整体删除，以下内容仅作历史分析保留。**
+>
+> **删除对象**：`ui/workflow_editor/WorkflowAiGenerator.kt`、`ui/workflow_editor/AiGenerationSheet.kt`、
+> `res/layout/sheet_ai_generation.xml`、其单测 `WorkflowAiGeneratorTest.kt`，以及编辑器「更多选项」
+> sheet 里的**「AI 生成」入口卡片**（`EditorMoreOptionsSheet` + `sheet_editor_more_options.xml`）。
+> 连带清理：`ChatScope` / `SecretsScope` 里为它单列的 `ai_config` 备份槽位（见 `docs/fork/backup-webdav-design.md`）。
+>
+> **删除理由**：该功能被聊天 Agent（链路 A）完全覆盖，却另立一套单轮生成器 + 一套**独立的模型配置**
+> （SharedPreferences `ai_config`，与链路 A 的 `ChatProviderConfig` 不通，同一 API key 要填两遍）。
+> 它属于上游遗留的**残次品**：无工具、无多轮、无验证闭环（见本节 §3.1.3 的短板清单）。
+>
+> **对下游文档的影响**：§2.10.3 短板 5/6、§4.1 的 `getAllWorkflows` 缺口描述、§7 的 P2 条目均随之失效，
+> 已在对应位置标注。
 
 `ui/workflow_editor/WorkflowAiGenerator.kt`（215 行）—— **单轮、无工具调用**。
 
@@ -1038,7 +1054,7 @@ else → Ready(..., missingPermissions = module.getRequiredPermissions(step)
 
 **因此**：它属于门槛 2 的「参数值需运行时决定」情形 ——
 - 声明 `directToolMetadata(...)` → schema 正确生成 `{workflow_id: string}`，**合法且可用**
-- 唯一缺口：AI 看不到工作流清单，**不知道 `workflow_id` 填什么值**（`ui/chat/` 与 `WorkflowAiGenerator` 里搜 `getAllWorkflows` 均零命中）
+- 唯一缺口：AI 看不到工作流清单，**不知道 `workflow_id` 填什么值**（`ui/chat/` 里搜 `getAllWorkflows` 零命中；原先另一处零命中在已删除的 `WorkflowAiGenerator` 里）
 
 > ⚠️ **不要**把它归为「参数键需运行时决定 / 不可救」——它的 `getInputs()` 是静态的，无需 `getDynamicInputs`。
 
@@ -1164,9 +1180,9 @@ val inputs = module.getDynamicInputs(baseStep, listOf(baseStep)).filterNot { it.
 | **P1** | **schema 生成与 `createSteps()` 解耦**：动态参数模块提供专门的 AI 视图输入 | A | 根治 `call_function` 类「动态键进不了 schema」 |
 | **P1** | **修动态输入的空白 step 退化**（§2.4.8，2026-09-13 新增）：catalog 生成（`ChatAgentToolRegistry.kt:734`）与执行校验（`ChatAgentModuleExecutor.kt:1266`）**都改用非退化求值**；至少让 `value1`/`value2` 进入清单 | A | 命中 8 个条件分支式模块（含 `If`/`While`/`DoWhile`）。**执行路径的修复优先级最高**——它决定参数是否被 `?: return@forEach` 静默吞掉 |
 | **P1** | **技能状态会话内持久化**（§2.3.3，2026-09-13 新增）：把"已激活技能"记为会话状态，跨轮保持，而非每轮按最新一句重算 | A | 根治「刚建完工作流、下一轮追问就丢清单」。与上一条同源（都是"该有状态的地方用了无状态函数"） |
-| **P2** | **链路 B 补反馈闭环**：生成结果接 `WorkflowValidator` + dry-run，带报错回炉 | B | 比给 B 加工具调用更贴合其「配置生成器」定位 |
-| **P2** | **统一能力视图**：让 B 复用 A 的 `aiMetadata` + `getDynamicInputs` | A/B | 消除「同一模块两套描述、加能力改两处」 |
-| **P2** | **统一密钥/Provider 配置**：链路 B 的 `ai_config` 与链路 C 的硬编码模型接入 `ChatProviderConfig` | A/B/C | 同一 API key 用户填三遍 |
+| ~~**P2**~~ | ~~**链路 B 补反馈闭环**：生成结果接 `WorkflowValidator` + dry-run，带报错回炉~~ **→ 2026-10-14：链路 B 已删除，本条作废** | ~~B~~ | — |
+| ~~**P2**~~ | ~~**统一能力视图**：让 B 复用 A 的 `aiMetadata` + `getDynamicInputs`~~ **→ 2026-10-14：链路 B 已删除，本条作废** | ~~A/B~~ | — |
+| **P2** | **统一密钥/Provider 配置**：链路 C 的硬编码模型接入 `ChatProviderConfig`（原条目里的链路 B `ai_config` 已于 2026-10-14 随该功能删除） | A/C | 同一 API key 用户仍要填两遍 |
 | **P2** | **收敛链路 C 的双视觉 Agent**：`AgentModule` 与 `AutoGLMModule` 合并或抽公共层 | C | 同类能力两份实现，维护成本翻倍、行为不一致 |
 | **P3** | **统一 scope 判定极性**：三套规则（两白一黑）收敛，或把 `SAVED_WORKFLOW` 纳入枚举 | A | 纯认知负担，无功能影响 |
 | **P3** | **清理遗留**：冗余的 `LEGACY_DIRECT_TOOL_MODULE_IDS`、死代码 `ToolSchemaGenerator.kt` | A | 降低后续走查成本 |
@@ -1225,7 +1241,7 @@ vflow.variable.modify       vflow.variable.random
 | 请求构造 / 供应商适配 | `ui/chat/ChatCompletionClient.kt` |
 | 预设与默认提示词 | `ui/chat/ChatModels.kt`、`ui/chat/ChatPresetRepository.kt` |
 | AI 元数据模型 | `core/module/AiModuleMetadata.kt` |
-| AI 生成工作流 | `ui/workflow_editor/WorkflowAiGenerator.kt` |
+| ~~AI 生成工作流~~（2026-10-14 已删除） | ~~`ui/workflow_editor/WorkflowAiGenerator.kt`~~ —— 改由 `ui/chat/` 的聊天 Agent 承担 |
 | 工作流内 AI 模块 | `core/workflow/module/network/AIModule.kt`（id `vflow.ai.completion`）、`interaction/AgentModule.kt`、`interaction/AutoGLMModule.kt`、`integration/OperitModule.kt` |
 | 基准测试（非生产） | `ui/chat/ChatBenchmark*.kt` |
 | **遗留/死代码** | `core/utils/ToolSchemaGenerator.kt`——把任意模块转成 OpenAI Function Definition 的旧实现，全仓库除自身外**零引用**。与 §2.4 的 `ChatAgentToolRegistry.buildToolDefinition` 是两套并行实现，**当前无人使用**，勿误当作在用链路。 |

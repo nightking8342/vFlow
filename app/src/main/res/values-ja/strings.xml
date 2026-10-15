@@ -574,10 +574,8 @@
     <string name="editor_button_stop">停止</string>
     <string name="editor_toast_workflow_saved">ワークフローが保存されました</string>
     <string name="editor_dialog_overwrite_title">既存のステップを上書きしますか?</string>
-    <string name="editor_dialog_overwrite_message">AI が新しいワークフロー ステップを生成します。現在のエディターのすべてのステップをクリアして、新しく生成されたコンテンツを適用しますか?</string>
     <string name="editor_button_overwrite">カバー</string>
     <string name="editor_button_append_to_end">最後に追加</string>
-    <string name="editor_toast_ai_workflow_applied">AI が生成したワークフローを適用</string>
     <string name="editor_toast_steps_appended">追加されたステップ</string>
     <string name="permission_toast_shizuku_not_started">Shizuku が開始されていません。最初に Shizuku サービスを開始してください。</string>
     <string name="toast_overlay_permission_required">クイック コントロール パネルを表示するには、フローティング ウィンドウの権限が必要です</string>
@@ -747,7 +745,6 @@
     <string name="ai_generate">AIが生成した</string>
     <string name="editor_more_options">その他のオプション</string>
     <string name="editor_more_advanced_settings">詳細設定</string>
-    <string name="editor_more_ai_generate">AIが生成した</string>
     <string name="editor_more_ui_inspector">UI 検査官</string>
     <string name="editor_more_logcat_debugger">logcat デバッガー</string>
     <string name="add_workflow">ワークフローの追加</string>
@@ -898,15 +895,6 @@
     <string name="magic_variable_type_notification">お知らせ</string>
     <string name="magic_variable_type_event">イベント</string>
     <string name="magic_variable_type_app">アプリケーション</string>
-    <string name="ai_generation_requirement_required">要件を入力してください</string>
-    <string name="ai_generation_api_key_required">構成に API キーを入力してください</string>
-    <string name="ai_generation_generating">AI が考えてワークフローを生成します...</string>
-    <string name="ai_generation_invalid_api_key">API キーが無効です</string>
-    <string name="ai_generation_failed">ビルドに失敗しました: %1$s</string>
-    <string name="ai_generation_stop_title">生成を停止しますか?</string>
-    <string name="ai_generation_stop_message">AI が生成されています。中断してもよろしいですか?</string>
-    <string name="ai_generation_continue_waiting">待ってください</string>
-    <string name="ai_generation_stop_and_close">停止して閉じる</string>
     <string name="hint_base_url">ベースURL</string>
     <string name="hint_api_key">API キー</string>
     <string name="text_ready">準備完了</string>

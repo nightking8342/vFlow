@@ -151,7 +151,7 @@ class BackupPipelineTest {
     @Test
     fun `a secret payload round trips so the store is restored`() {
         val env = FakeBackupEnvironment()
-        env.secretStore.putString("ai_config", "api_key", "sk-pref")
+        env.secretStore.putString("module_config_prefs", "feishu_app_secret", "sk-pref")
 
         val text = BackupPipeline.export(env, setOf("secrets"), ctx()).text
         val target = FakeBackupEnvironment()
@@ -161,7 +161,7 @@ class BackupPipelineTest {
         assertEquals(
             "解密必须递归到 payload 顶层 ⇒ 值落回原槽",
             "sk-pref",
-            target.secretStore.getString("ai_config", "api_key"),
+            target.secretStore.getString("module_config_prefs", "feishu_app_secret"),
         )
     }
 
@@ -206,7 +206,7 @@ class BackupPipelineTest {
         //     「解密后的内容不是合法 JSON」⇒ 报**数据损坏**，
         //     于是一个完好的备份被拒绝导入。
         val env = envWith(listOf(workflowWithApiKey("w1", "sk-both")))
-        env.secretStore.putString("ai_config", "api_key", "sk-pref")
+        env.secretStore.putString("module_config_prefs", "feishu_app_secret", "sk-pref")
 
         val text = BackupPipeline.export(env, setOf("workflows", "secrets"), ctx()).text
         val target = FakeBackupEnvironment()
@@ -214,7 +214,7 @@ class BackupPipelineTest {
 
         assertTrue("两种明文形态并存时必须全部解开，实际：$outcome", outcome is BackupPipeline.ImportOutcome.Done)
         assertEquals("sk-both", target.workflowStore.single().steps.single().parameters["api_key"])
-        assertEquals("sk-pref", target.secretStore.getString("ai_config", "api_key"))
+        assertEquals("sk-pref", target.secretStore.getString("module_config_prefs", "feishu_app_secret"))
     }
 
     // ── 口令错 / 篡改 ──────────────────────────────────────
@@ -294,7 +294,7 @@ class BackupPipelineTest {
         //     必然结果 —— 本用例把它明确**锁住**，免得将来有人以为
         //     「应该只跳过 secrets」而把 workflows 的密文当明文导进去。
         val env = envWith(listOf(workflowWithApiKey("w1")))
-        env.secretStore.putString("ai_config", "api_key", "sk-pref")
+        env.secretStore.putString("module_config_prefs", "feishu_app_secret", "sk-pref")
         val text = BackupPipeline.export(env, setOf("workflows", "secrets"), ctx()).text
 
         val target = envWith()
@@ -310,7 +310,7 @@ class BackupPipelineTest {
         assertTrue("加密的 scope 在缺口令时不得写入", target.workflowStore.isEmpty())
         assertNull(
             "加密的 scope 在缺口令时不得写入",
-            target.secretStore.getString("ai_config", "api_key"),
+            target.secretStore.getString("module_config_prefs", "feishu_app_secret"),
         )
     }
 

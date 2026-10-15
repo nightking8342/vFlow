@@ -58,7 +58,6 @@ import kotlin.math.ceil
 class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
 
     var workflow: Workflow? = null
-    var onAiGenerateClicked: (() -> Unit)? = null
     var onUiInspectorClicked: (() -> Unit)? = null
     var onLogcatDebuggerClicked: (() -> Unit)? = null
     var onMetadataSaved: ((Workflow) -> Unit)? = null
@@ -78,7 +77,6 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
     private lateinit var editHomepage: com.google.android.material.textfield.TextInputEditText
     private lateinit var editTags: com.google.android.material.textfield.TextInputEditText
 
-    private lateinit var layoutAiGenerate: MaterialCardView
     private lateinit var layoutUiInspector: MaterialCardView
     private lateinit var layoutLogcatDebugger: MaterialCardView
     private lateinit var cardMoreMetadata: MaterialCardView
@@ -155,7 +153,6 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
         editHomepage = view.findViewById(R.id.edit_workflow_homepage)
         editTags = view.findViewById(R.id.edit_workflow_tags)
 
-        layoutAiGenerate = view.findViewById(R.id.card_ai_generate)
         layoutUiInspector = view.findViewById(R.id.card_ui_inspector)
         layoutLogcatDebugger = view.findViewById(R.id.card_logcat_debugger)
         cardMoreMetadata = view.findViewById(R.id.card_more_metadata)
@@ -264,10 +261,6 @@ class EditorMoreOptionsSheet : BottomSheetDialogFragment() {
             commitMetadataToEditorState(showToast = true)
             metadataCommittedByAction = true
             dismiss()
-        }
-
-        layoutAiGenerate.setOnClickListener {
-            onAiGenerateClicked?.invoke()
         }
 
         layoutUiInspector.setOnClickListener {

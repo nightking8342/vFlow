@@ -599,10 +599,8 @@
     <string name="editor_button_stop">Stop</string>
     <string name="editor_toast_workflow_saved">Workflow saved</string>
     <string name="editor_dialog_overwrite_title">Overwrite existing steps?</string>
-    <string name="editor_dialog_overwrite_message">AI has generated new workflow steps. Do you want to clear all current steps in the editor and apply the newly generated content?</string>
     <string name="editor_button_overwrite">Overwrite</string>
     <string name="editor_button_append_to_end">Append to end</string>
-    <string name="editor_toast_ai_workflow_applied">Applied AI-generated workflow</string>
     <string name="editor_toast_steps_appended">Steps appended</string>
 
     <!-- Permission Activity -->
@@ -790,7 +788,6 @@
     <string name="ai_generate">AI Generate</string>
     <string name="editor_more_options">More options</string>
     <string name="editor_more_advanced_settings">Advanced Settings</string>
-    <string name="editor_more_ai_generate">AI Generate</string>
     <string name="editor_more_ui_inspector">UI Inspector</string>
     <string name="editor_more_logcat_debugger">Logcat Debugger</string>
     <string name="add_workflow">Add workflow</string>
@@ -954,15 +951,6 @@ Try another category or clear the search.</string>
     <string name="magic_variable_type_notification">Notification</string>
     <string name="magic_variable_type_event">Event</string>
     <string name="magic_variable_type_app">App</string>
-    <string name="ai_generation_requirement_required">Please enter your requirement</string>
-    <string name="ai_generation_api_key_required">Please enter an API key in settings</string>
-    <string name="ai_generation_generating">AI is thinking and generating the workflow...</string>
-    <string name="ai_generation_invalid_api_key">Invalid API key</string>
-    <string name="ai_generation_failed">Generation failed: %1$s</string>
-    <string name="ai_generation_stop_title">Stop generation?</string>
-    <string name="ai_generation_stop_message">AI is generating. Do you want to interrupt it?</string>
-    <string name="ai_generation_continue_waiting">Keep waiting</string>
-    <string name="ai_generation_stop_and_close">Stop and close</string>
     <string name="hint_base_url">Base URL</string>
     <string name="hint_api_key">API Key</string>
     <string name="text_ready">Ready</string>

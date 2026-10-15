@@ -612,7 +612,7 @@ if (typeof console === "undefined") {
 |---|---|---|
 | 脚本来源 | 用户自己写 | 自己写 **+ 远程仓库下载 + AI 生成** |
 | 分享机制 | 有远程规则仓库 | ✅ `MODULE_STORE` + `RepositoryScreen` |
-| AI 生成 | 无 | ✅ `WorkflowAiGenerator` |
+| AI 生成 | 无 | ⚠️ 编辑器内「AI 生成工作流」入口（`WorkflowAiGenerator`）**已于 2026-10-14 删除**；现由聊天 Agent 生成工作流（其中可含脚本步骤） |
 
 **两者叠加 ⇒ 恶意脚本是真实威胁面。** ShortX 的「不设防」姿态（`NoSecurityController` 全局关闭
 `SecurityController`）**不可平移到 vFlow**。

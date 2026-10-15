@@ -601,10 +601,8 @@
     <string name="editor_button_stop">停止</string>
     <string name="editor_toast_workflow_saved">工作流已保存</string>
     <string name="editor_dialog_overwrite_title">覆盖现有步骤？</string>
-    <string name="editor_dialog_overwrite_message">AI 生成了新的工作流步骤。是否要清空当前编辑器的所有步骤并应用新生成的内容？</string>
     <string name="editor_button_overwrite">覆盖</string>
     <string name="editor_button_append_to_end">追加到末尾</string>
-    <string name="editor_toast_ai_workflow_applied">已应用 AI 生成的工作流</string>
     <string name="editor_toast_steps_appended">已追加步骤</string>
 
     <!-- Permission Activity -->
@@ -792,7 +790,6 @@
     <string name="ai_generate">AI 生成</string>
     <string name="editor_more_options">更多选项</string>
     <string name="editor_more_advanced_settings">高级设置</string>
-    <string name="editor_more_ai_generate">AI 生成</string>
     <string name="editor_more_ui_inspector">UI 检查器</string>
     <string name="editor_more_logcat_debugger">logcat 调试器</string>
     <string name="add_workflow">添加工作流</string>
@@ -956,15 +953,6 @@
     <string name="magic_variable_type_notification">通知</string>
     <string name="magic_variable_type_event">事件</string>
     <string name="magic_variable_type_app">应用</string>
-    <string name="ai_generation_requirement_required">请输入需求</string>
-    <string name="ai_generation_api_key_required">请在配置中输入 API Key</string>
-    <string name="ai_generation_generating">AI 正在思考并生成工作流...</string>
-    <string name="ai_generation_invalid_api_key">API Key 无效</string>
-    <string name="ai_generation_failed">生成失败: %1$s</string>
-    <string name="ai_generation_stop_title">停止生成？</string>
-    <string name="ai_generation_stop_message">AI 正在生成中，确定要中断吗？</string>
-    <string name="ai_generation_continue_waiting">继续等待</string>
-    <string name="ai_generation_stop_and_close">停止并关闭</string>
     <string name="hint_base_url">Base URL</string>
     <string name="hint_api_key">API Key</string>
     <string name="text_ready">准备就绪</string>

@@ -62,12 +62,12 @@ class ChatScopeTest {
         )
     }
 
-    // ── 三个 prefs 文件 ─────────────────────────────────────
+    // ── 两个 prefs 文件 ─────────────────────────────────────
 
     @Test
-    fun `covers exactly three prefs files`() {
+    fun `covers exactly two prefs files`() {
         assertEquals(
-            setOf("module_config_prefs", "chat_session_prefs", "ai_config"),
+            setOf("module_config_prefs", "chat_session_prefs"),
             scope.specs.map { it.prefsName }.toSet(),
         )
     }
@@ -86,12 +86,6 @@ class ChatScopeTest {
         assertFalse(
             "chat_provider_configs_json 含 apiKey ⇒ 必须在 secrets scope 里",
             moduleSpec.matches("chat_provider_configs_json"),
-        )
-
-        val aiSpec = scope.specs.first { it.prefsName == "ai_config" }
-        assertFalse(
-            "ai_config.api_key ⇒ 必须在 secrets scope 里",
-            aiSpec.matches("api_key"),
         )
     }
 
@@ -123,17 +117,12 @@ class ChatScopeTest {
 
         val sessionSpec = scope.specs.first { it.prefsName == "chat_session_prefs" }
         assertTrue(sessionSpec.matches("chat_session_state_json"))
-
-        val aiSpec = scope.specs.first { it.prefsName == "ai_config" }
-        assertTrue(aiSpec.matches("provider"))
-        assertTrue(aiSpec.matches("base_url"))
-        assertTrue(aiSpec.matches("model"))
     }
 
     // ── 端到端 ──────────────────────────────────────────────
 
     @Test
-    fun `the three prefs files round trip`() {
+    fun `the two prefs files round trip`() {
         val env = FakeBackupEnvironment()
         val store = env.prefs as FakeBackupEnvironment.InMemoryPrefs
         store.data["module_config_prefs"] = linkedMapOf<String, Any?>(
@@ -143,20 +132,15 @@ class ChatScopeTest {
         store.data["chat_session_prefs"] = linkedMapOf<String, Any?>(
             "chat_session_state_json" to """{"conversations":[]}""",
         )
-        store.data["ai_config"] = linkedMapOf<String, Any?>(
-            "provider" to "bigmodel",
-            "base_url" to "https://example.invalid/v4",
-            "model" to "glm-4.5-flash",
-        )
 
         val payload = scope.export(env, null)!!
-        // 三个文件都有数据 ⇒ count = 3
-        assertEquals(3, payload.count)
+        // 两个文件都有数据 ⇒ count = 2
+        assertEquals(2, payload.count)
 
         val importing = FakeBackupEnvironment()
         val result = scope.import(importing, payload, ImportMode.MERGE)
         assertEquals(ImportStatus.IMPORTED, result.status)
-        assertEquals(6, result.imported)
+        assertEquals(3, result.imported)
 
         val after = (importing.prefs as FakeBackupEnvironment.InMemoryPrefs).data
         assertEquals("preset-1", after["module_config_prefs"]?.get("chat_default_preset_id"))
@@ -164,7 +148,6 @@ class ChatScopeTest {
             """{"conversations":[]}""",
             after["chat_session_prefs"]?.get("chat_session_state_json"),
         )
-        assertEquals("bigmodel", after["ai_config"]?.get("provider"))
     }
 
     @Test
@@ -204,7 +187,7 @@ class ChatScopeTest {
 
         val keys = listOf(
             "chat_default_preset_id", "chat_auto_approve_tools", "chat_auto_approval_scope",
-            "chat_session_state_json", "provider", "base_url", "model",
+            "chat_session_state_json",
         )
         val missing = keys.filterNot { text.contains("\"$it\"") }
         assertTrue(

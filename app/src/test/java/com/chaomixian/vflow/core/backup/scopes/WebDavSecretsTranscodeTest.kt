@@ -163,7 +163,7 @@ class WebDavSecretsTranscodeTest {
         store.undecryptableIds += "cfg-broken"
         // 同时放一个普通密钥槽，证明「密钥部分照样导得出去」。
         (env.secretStore as FakeBackupEnvironment.InMemorySecretStore)
-            .data["ai_config"] = linkedMapOf("api_key" to "sk-live")
+            .data["module_config_prefs"] = linkedMapOf("feishu_app_secret" to "sk-live")
 
         val payload = scope.export(env, ctx())!!
 
@@ -350,14 +350,14 @@ class WebDavSecretsTranscodeTest {
         val payload = ScopePayload(
             1,
             JsonParser.parseString(
-                """{"ai_config.api_key":"sk","webdav_configs":[{"id":"c","name":"n","baseUrl":"https://x"}]}"""
+                """{"module_config_prefs.feishu_app_secret":"sk","webdav_configs":[{"id":"c","name":"n","baseUrl":"https://x"}]}"""
             ),
         )
 
         val result = scope.import(env, payload, ImportMode.MERGE)
 
         assertEquals(ImportStatus.IMPORTED, result.status)
-        assertEquals("密钥部分照样导入", "sk", env.secretStore!!.getString("ai_config", "api_key"))
+        assertEquals("密钥部分照样导入", "sk", env.secretStore.getString("module_config_prefs", "feishu_app_secret"))
         assertTrue(
             "❌ 本环境写不了 WebDAV 时必须留日志，不能静默丢弃",
             env.logs.any { it.second.contains("WebDAV") },
@@ -372,7 +372,7 @@ class WebDavSecretsTranscodeTest {
         val payload = ScopePayload(
             1,
             JsonParser.parseString(
-                """{"ai_config.api_key":"sk","webdav_configs":[{"id":"c","name":"n","baseUrl":"https://x","password":"p"}]}"""
+                """{"module_config_prefs.feishu_app_secret":"sk","webdav_configs":[{"id":"c","name":"n","baseUrl":"https://x","password":"p"}]}"""
             ),
         )
 
@@ -427,8 +427,8 @@ class WebDavSecretsTranscodeTest {
         // ⚠️ WebDAV **不是**一个「键→值」的字符串槽，是一个需要转档的结构。
         //    它进了 SECRET_SLOTS 反而会走错路径（照搬 Keystore 密文）。
         assertEquals(
-            "SECRET_SLOTS 仍然是 10 项（WebDAV 不进去）",
-            10, SecretsScope.SECRET_SLOTS.size,
+            "SECRET_SLOTS 是 9 项（WebDAV 不进去；原 10 项里的 `ai_config.api_key` 随 AI 生成工作流功能一起删除）",
+            9, SecretsScope.SECRET_SLOTS.size,
         )
         assertTrue(
             "`webdav_configs` 必须与 SECRET_SLOTS / EXCLUDED_PREFS 同处，让「秘密范围的全部键」可见",

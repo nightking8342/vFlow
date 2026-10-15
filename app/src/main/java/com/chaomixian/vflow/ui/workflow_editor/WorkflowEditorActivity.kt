@@ -2350,10 +2350,6 @@ class WorkflowEditorActivity : BaseActivity() {
         }
         val sheet = EditorMoreOptionsSheet()
         sheet.workflow = currentWorkflow
-        sheet.onAiGenerateClicked = {
-            dismissAllSheets()
-            showAiCreationSheet()
-        }
         sheet.onUiInspectorClicked = {
             dismissAllSheets()
             inspectorInsertController.startInspector()
@@ -2376,63 +2372,4 @@ class WorkflowEditorActivity : BaseActivity() {
         }
     }
 
-    private fun showAiCreationSheet() {
-        val sheet = AiGenerationSheet()
-        sheet.onWorkflowGenerated = { generatedWorkflow ->
-            applyGeneratedWorkflow(generatedWorkflow)
-        }
-        sheet.show(supportFragmentManager, "AiGenerationSheet")
-    }
-
-    private fun applyGeneratedWorkflow(workflow: Workflow) {
-        val generatedTriggers = workflow.triggers.orEmpty()
-        val generatedSteps = workflow.steps.orEmpty()
-        val undoSnapshot = createEditorSnapshot()
-        var undoRecorded = false
-        fun recordGeneratedUndo() {
-            if (!undoRecorded) {
-                pushUndoSnapshot(undoSnapshot)
-                undoRecorded = true
-            }
-        }
-
-        // 如果生成了名字且当前名字为空，则使用生成的名字
-        if (nameEditText.text.isBlank() && workflow.name.isNotBlank()) {
-            recordGeneratedUndo()
-            suppressUndoCapture = true
-            nameEditText.setText(workflow.name)
-            suppressUndoCapture = false
-        }
-
-        // 覆盖现有步骤（策略可以是追加，但通常用户希望重写）
-        if (triggerSteps.isNotEmpty() || actionSteps.isNotEmpty()) {
-            MaterialAlertDialogBuilder(this)
-                .setTitle(R.string.editor_dialog_overwrite_title)
-                .setMessage(R.string.editor_dialog_overwrite_message)
-                .setPositiveButton(R.string.editor_button_overwrite) { _, _ ->
-                    recordGeneratedUndo()
-                    triggerSteps.clear()
-                    actionSteps.clear()
-                    triggerSteps.addAll(generatedTriggers)
-                    actionSteps.addAll(generatedSteps)
-                    recalculateAndNotify()
-                    toast(R.string.editor_toast_ai_workflow_applied)
-                }
-                .setNeutralButton(R.string.editor_button_append_to_end) { _, _ ->
-                    recordGeneratedUndo()
-                    triggerSteps.addAll(generatedTriggers)
-                    actionSteps.addAll(generatedSteps)
-                    recalculateAndNotify()
-                    toast(R.string.editor_toast_steps_appended)
-                }
-                .setNegativeButton(R.string.common_cancel, null)
-                .show()
-        } else {
-            recordGeneratedUndo()
-            triggerSteps.addAll(generatedTriggers)
-            actionSteps.addAll(generatedSteps)
-            recalculateAndNotify()
-            toast(R.string.editor_toast_ai_workflow_applied)
-        }
-    }
 }

@@ -84,7 +84,7 @@ class SecretsScopeTest {
     fun `export returns null when there is no passphrase`() {
         // ⚠️⚠️ 本 scope 的**安全闸**。删掉它 ⇒ 没勾密钥的用户照样把全部凭证明文
         //      写进备份文件（反证 R7 锁住这条）。
-        val env = envWithSecrets(mapOf("ai_config.api_key" to "sk-live"))
+        val env = envWithSecrets(mapOf("module_config_prefs.feishu_app_secret" to "sk-live"))
 
         assertNull(
             "无口令时 export 必须返回 null —— 绝不明文写出密钥",
@@ -108,7 +108,7 @@ class SecretsScopeTest {
 
     @Test
     fun `export seals the whole payload and never leaks plaintext`() {
-        val env = envWithSecrets(mapOf("ai_config.api_key" to "sk-THIS-MUST-NOT-APPEAR"))
+        val env = envWithSecrets(mapOf("module_config_prefs.feishu_app_secret" to "sk-THIS-MUST-NOT-APPEAR"))
         val payload = scope.export(env, ctx())
 
         assertNotNull(payload)
@@ -125,7 +125,7 @@ class SecretsScopeTest {
     @Test
     fun `export round trip restores exactly the values that were exported`() {
         val original = linkedMapOf(
-            "ai_config.api_key" to "sk-live-123",
+            "module_config_prefs.feishu_access_token" to "sk-live-123",
             "module_config_prefs.feishu_app_secret" to "fs-secret",
             "module_config_prefs.chat_provider_configs_json" to """{"k":{"apiKey":"inner"}}""",
         )
@@ -184,7 +184,7 @@ class SecretsScopeTest {
         val env = FakeBackupEnvironment()
         val payload = SecretsScope.slotPayload(
             mapOf(
-                "ai_config.api_key" to "sk-restored",
+                "module_config_prefs.feishu_access_token" to "sk-restored",
                 "module_config_prefs.feishu_app_secret" to "fs-restored",
             )
         )
@@ -193,7 +193,7 @@ class SecretsScopeTest {
 
         assertEquals(ImportStatus.IMPORTED, result.status)
         assertEquals(2, result.imported)
-        assertEquals("sk-restored", env.secretStore.getString("ai_config", "api_key"))
+        assertEquals("sk-restored", env.secretStore.getString("module_config_prefs", "feishu_access_token"))
         assertEquals("fs-restored", env.secretStore.getString("module_config_prefs", "feishu_app_secret"))
     }
 
@@ -204,7 +204,7 @@ class SecretsScopeTest {
         val env = FakeBackupEnvironment()
         val payload = SecretsScope.slotPayload(
             mapOf(
-                "ai_config.api_key" to "ok",
+                "module_config_prefs.feishu_access_token" to "ok",
                 "module_config_prefs.network_proxy" to "evil",   // 白名单外
                 "some_other_prefs.whatever" to "evil",           // prefs 名都不认识
             )
@@ -229,19 +229,19 @@ class SecretsScopeTest {
         //     代价是 REPLACE 不删本地多余的密钥键 —— 故这条断言锁住那个代价。
         val env = envWithSecrets(
             mapOf(
-                "ai_config.api_key" to "local-key",
-                "module_config_prefs.feishu_app_secret" to "local-only",
+                "module_config_prefs.feishu_access_token" to "local-key",
+                "module_config_prefs.feishu_user_access_token" to "local-only",
             )
         )
-        val payload = SecretsScope.slotPayload(mapOf("ai_config.api_key" to "from-backup"))
+        val payload = SecretsScope.slotPayload(mapOf("module_config_prefs.feishu_access_token" to "from-backup"))
 
         scope.import(env, payload, ImportMode.REPLACE)
 
-        assertEquals("from-backup", env.secretStore.getString("ai_config", "api_key"))
+        assertEquals("from-backup", env.secretStore.getString("module_config_prefs", "feishu_access_token"))
         assertEquals(
             "REPLACE 也不得删除本地多余的密钥键（否则会误删用户的非密钥设置）",
             "local-only",
-            env.secretStore.getString("module_config_prefs", "feishu_app_secret"),
+            env.secretStore.getString("module_config_prefs", "feishu_user_access_token"),
         )
         assertTrue(
             "REPLACE 下应当记一条 W 说明这个偏差",
@@ -260,14 +260,14 @@ class SecretsScopeTest {
     // ── 白名单与源码一致性（反僵尸）────────────────────────
 
     @Test
-    fun `the ten whitelist slots match the keys actually used in the codebase`() {
+    fun `the nine whitelist slots match the keys actually used in the codebase`() {
         // ⚠️ 白名单是**人工维护**的 —— 一个陈旧的条目（键名改了）会让备份
         //     静默地什么也备不到，而「导出成功、count=0」看起来毫无异常。
         // ⚠️ 扫源码而不读外部清单文件：那份文件在主仓库 `.mindfs/` 下，
         //     不在本 worktree，单测工作目录解析不到。
         assertEquals(
-            "方案 §2.8 的实测表是 10 个槽",
-            10, SecretsScope.SECRET_SLOTS.size,
+            "方案 §2.8 的实测表原有 10 个槽，`ai_config.api_key` 随 AI 生成工作流功能一起删除后为 9 个",
+            9, SecretsScope.SECRET_SLOTS.size,
         )
 
         val keys = SecretsScope.SECRET_SLOTS.map { it.second }.toSet()
