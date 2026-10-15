@@ -787,6 +787,7 @@
     <string name="editor_skip_jump_option">#%1$d %2$s</string>
     <string name="editor_skip_jump_missing">(missing: %1$s)</string>
     <string name="editor_skip_jump_cycle_warning">Jump loop detected: %1$s\nExecution is capped by the jump limits, but please check that this is intended.</string>
+    <string name="editor_toast_delete_blocked_by_jump">Another step jumps to this one, so it cannot be deleted. Change the target of that jump step first.</string>
     <string name="editor_group_error_context">Error context</string>
     <string name="error_context_variable_name">Error info</string>
     <string name="settings_error_policy_stop_silent">Silent stop</string>

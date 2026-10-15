@@ -13,6 +13,7 @@ import com.chaomixian.vflow.core.types.basic.VNumber
 import com.chaomixian.vflow.core.types.VTypeRegistry
 import com.chaomixian.vflow.core.types.basic.VNull
 import com.chaomixian.vflow.core.types.basic.VString
+import com.chaomixian.vflow.core.workflow.JumpTargetSupport
 import com.chaomixian.vflow.ui.workflow_editor.PillUtil
 
 /**
@@ -75,7 +76,27 @@ class JumpModule : BaseModule() {
             return ValidationResult(false, "步骤编号必须大于等于 1。")
         }
 
-        // 注意：无法在这里验证索引是否超出范围，因为工作流的步骤列表是动态的
+        // fork（B2 修复，2026-10-15）：**向内跳**（跳到块体内部）在保存时就挡住。
+        //
+        // 为什么要挡：它会把块的开始/结束配对打乱，而**症状随块类型不同**（见
+        // `JumpTargetSupport` 的 KDoc）—— 跳到 `Loop` 体内 ⇒ End Loop 的 `loopStack.peek()`
+        // 在空栈上抛 `EmptyStackException`（被执行器 catch 成「模块执行异常」，零信息量）；
+        // 跳到 `ForEach` 体内 ⇒ End ForEach 直接 `Failure`；跳到 `If` 中间分支 ⇒ 行为未定义。
+        //
+        // ⚠️ 只在能拿到步骤列表时校验（`allSteps` 为空 = 调用方没给上下文）；
+        // ⚠️ 越界目标不在这里报（列表是动态的），运行期 `execute` 里有更准确的判据。
+        val displayIndex = index.toInt()
+        if (allSteps.isNotEmpty() && displayIndex <= allSteps.size) {
+            val currentIndentation = allSteps.firstOrNull { it.id == step.id }?.indentationLevel
+                ?: step.indentationLevel
+            if (!JumpTargetSupport.isAllowedTarget(allSteps, displayIndex - 1, currentIndentation)) {
+                return ValidationResult(
+                    false,
+                    "不能跳到块体内部的步骤（会打乱循环 / 条件块的结构）。请改跳到块外的步骤。"
+                )
+            }
+        }
+
         return ValidationResult(true)
     }
 
@@ -116,6 +137,22 @@ class JumpModule : BaseModule() {
             return ExecutionResult.Failure(
                 "无效的步骤编号",
                 "目标步骤编号 $displayStepNumber 无效或超出范围。"
+            )
+        }
+
+        // fork（B2 修复，2026-10-15）：**运行期兜底** —— 向内跳（目标在块体内部）会让块的
+        // 开始/结束配对失配，症状随块类型不同（见 `JumpTargetSupport` 的 KDoc）。
+        //
+        // ⚠️ 这里才是**防线**：`validate` 只覆盖「编辑器保存静态数字」这一条路，
+        //    存量工作流（改动前存下的）与**变量型目标**（`{{vars.x}}`，静态算不出）都会绕过它。
+        val currentIndentation = context.allSteps
+            .getOrNull(context.currentStepIndex)
+            ?.indentationLevel
+            ?: 0
+        if (!JumpTargetSupport.isAllowedTarget(context.allSteps, targetIndex, currentIndentation)) {
+            return ExecutionResult.Failure(
+                "无效的跳转目标",
+                "不能跳到块体内部的步骤（会打乱循环 / 条件块的结构）。"
             )
         }
 

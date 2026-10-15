@@ -3,6 +3,7 @@ package com.chaomixian.vflow.core.workflow
 import com.chaomixian.vflow.core.execution.LoopState
 import com.chaomixian.vflow.core.workflow.model.ActionStep
 import com.chaomixian.vflow.core.workflow.model.ActionStepExecutionSettings
+import com.chaomixian.vflow.core.workflow.module.logic.JumpModule
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -26,6 +27,14 @@ import java.util.Stack
  * `ShapeResolver`（生产读 `ModuleRegistry`，这里读假表），在 JVM 里逐个钉住。
  */
 class JumpTargetSupportTest {
+
+    @Test
+    fun `模块 id 常量与 JumpModule 逐字一致`() {
+        // ⚠️ 执行器靠这个常量把「`vflow.logic.jump` 发起的跳转」与「块结构发起的跳转」
+        // 分开（见 WorkflowExecutor 的 ExecutionSignal.Jump 分支）—— 字面量写错会让
+        // 跳转计数与循环栈对齐**静默失效**，或反过来把正常循环掐死。
+        assertEquals(JumpModule().id, JumpTargetSupport.JUMP_MODULE_ID)
+    }
 
     private val PLAIN = "vflow.device.delay"
     private val LOOP_START = "vflow.logic.loop.start"

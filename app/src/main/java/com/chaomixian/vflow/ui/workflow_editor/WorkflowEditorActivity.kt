@@ -51,6 +51,7 @@ import com.chaomixian.vflow.core.workflow.FolderManager
 import com.chaomixian.vflow.core.workflow.WorkflowEnumMigration
 import com.chaomixian.vflow.core.workflow.WorkflowJumpReferenceUpdater
 import com.chaomixian.vflow.core.workflow.WorkflowManager
+import com.chaomixian.vflow.core.workflow.WorkflowPatch
 import com.chaomixian.vflow.core.workflow.WorkflowVisuals
 import com.chaomixian.vflow.core.workflow.model.ActionStep
 import com.chaomixian.vflow.core.workflow.model.TriggerLabel
@@ -744,7 +745,10 @@ class WorkflowEditorActivity : BaseActivity() {
         }
         val safeInsertPosition = insertPosition.coerceIn(0, actionSteps.size)
         pushUndoSnapshot()
+        // fork（B1 修复）：粘贴会插入步骤 ⇒ 后续序号整体后移 ⇒ 必须重映射 jump 目标
+        val stepsBeforePaste = actionSteps.toList()
         actionSteps.addAll(safeInsertPosition, stepsToPaste)
+        remapJumpReferencesAfterEdit(stepsBeforePaste)
         recalculateAndNotify()
         recyclerView.smoothScrollToPosition(safeInsertPosition)
         toast(getString(R.string.editor_toast_workflow_pasted, stepsToPaste.size))
@@ -1150,13 +1154,17 @@ class WorkflowEditorActivity : BaseActivity() {
      */
     private fun addStepsWithDefineFunctionRule(steps: List<ActionStep>): Int {
         if (steps.isEmpty()) return actionSteps.size
+        // fork（B1 修复）：本函数会插入步骤 ⇒ 重映射 jump 目标
+        val stepsBeforeAppend = actionSteps.toList()
         val containsDefineFunction = steps.any { it.moduleId == DEFINE_FUNCTION_MODULE_ID }
         if (containsDefineFunction) {
             actionSteps.addAll(0, steps)
+            remapJumpReferencesAfterEdit(stepsBeforeAppend)
             return 0
         } else {
             val start = actionSteps.size
             actionSteps.addAll(start, steps)
+            remapJumpReferencesAfterEdit(stepsBeforeAppend)
             return start
         }
     }
@@ -1428,7 +1436,20 @@ class WorkflowEditorActivity : BaseActivity() {
                 val step = actionSteps[position]
                 ModuleRegistry.getModule(step.moduleId)?.let { module ->
                     val undoSnapshot = createEditorSnapshot()
+                    // fork（B1 修复，2026-10-15）：删除会**移动后续步骤的显示序号**，
+                    // 而 `vflow.logic.jump` 的目标存的正是显示序号 ⇒ 删完必须重映射，
+                    // 否则那个跳转**静默指到别的步骤**（不报错、不提示）。
+                    val stepsBeforeDelete = actionSteps.toList()
                     if (module.onStepDeleted(actionSteps, position)) {
+                        if (!remapJumpReferencesAfterEdit(stepsBeforeDelete)) {
+                            // 有跳转（或 `__skip_jump_target`）的目标**就是被删的这一步** ⇒ 拒绝删除。
+                            // 与 AI 侧补丁同语义：静默保留悬空引用比拒绝危险得多。
+                            actionSteps.clear()
+                            actionSteps.addAll(stepsBeforeDelete)
+                            recalculateAndNotify()
+                            toast(R.string.editor_toast_delete_blocked_by_jump)
+                            return@let
+                        }
                         pushUndoSnapshot(undoSnapshot)
                         recalculateAndNotify()
                         // 决策 23：删除「定义函数」卡片时清空函数签名并提示引用方警告
@@ -1485,6 +1506,10 @@ class WorkflowEditorActivity : BaseActivity() {
         // 使用现有的逻辑找到块的范围
         val (blockStart, blockEnd) = BlockStructureHelper.findBlockRange(actionSteps, position)
 
+        // fork（B1 修复，2026-10-15）：复制会在原块后面**插入**若干步骤 ⇒ 后续步骤的显示序号
+        // 全体后移 ⇒ jump 目标会漂移。复制本身不删步骤，故这里不可能触发"目标被删"。
+        val stepsBeforeDuplicate = actionSteps.toList()
+
         // 创建副本列表
         val stepsToDuplicate = actionSteps.subList(blockStart, blockEnd + 1).map { step ->
             // 必须为副本生成新的 UUID，否则会导致变量引用混乱和 DiffUtil 错误
@@ -1495,12 +1520,44 @@ class WorkflowEditorActivity : BaseActivity() {
         val insertPosition = blockEnd + 1
         pushUndoSnapshot()
         actionSteps.addAll(insertPosition, stepsToDuplicate)
+        remapJumpReferencesAfterEdit(stepsBeforeDuplicate)
 
         recalculateAndNotify()
         toast(getString(R.string.editor_toast_steps_duplicated, stepsToDuplicate.size))
 
         // 滚动到新复制的位置
         recyclerView.smoothScrollToPosition(insertPosition)
+    }
+
+    /**
+     * **编辑后重映射跳转引用**（fork，2026-10-15，B1 修复）。
+     *
+     * ## 为什么每一处结构变更后都必须调用
+     *
+     * `vflow.logic.jump` 的目标存的是**显示序号**（位置引用）。在它**前面**增删一步 ⇒
+     * 序号整体漂移 ⇒ 那个跳转**静默指到别的步骤**：不报错、不提示，用户只会看到
+     * 「工作流跑完了，但做错了事」。本仓库此前只有**拖拽**路径做了重映射，而且用的是
+     * 上游的 `WorkflowJumpReferenceUpdater.remapAfterReorder` —— 它开头就
+     * `if (originalSteps.size != reorderedSteps.size) return`，**只为等长重排设计**，
+     * 插入/删除一律不处理。
+     *
+     * ## 为什么用 fork 版
+     *
+     * [WorkflowPatch.remapJumpReferences] 按 **step id** 建映射，**支持增删**；
+     * 拖拽路径继续用上游那版（等长重排本就是它的设计场景，两边结果一致 ——
+     * 由 `WorkflowJumpRemapContractTest` 锁住）。这样上游文件
+     * `WorkflowJumpReferenceUpdater.kt` **一行不动**，符合本 fork 的「控制 diff 面积」。
+     *
+     * @param before 本次结构变更**之前**的步骤列表。
+     * @return `true` = 已应用（或无需改动）；`false` = **有步骤的跳转目标就是被删掉的那一步**
+     *   ⇒ 调用方**必须回滚并提示**（静默保留悬空引用会让那个跳转跳飞，比拒绝危险得多；
+     *   与 AI 侧补丁的 `Rejected` 同语义）。
+     */
+    private fun remapJumpReferencesAfterEdit(before: List<ActionStep>): Boolean {
+        val remapped = WorkflowPatch.remapJumpReferences(before, actionSteps.toList()) ?: return false
+        actionSteps.clear()
+        actionSteps.addAll(remapped)
+        return true
     }
 
     private fun toggleStepEnabled(position: Int) {
@@ -1540,7 +1597,10 @@ class WorkflowEditorActivity : BaseActivity() {
         }
 
         pushUndoSnapshot()
+        // fork（B1 修复）：恢复缺失块成员会插入步骤 ⇒ 重映射 jump 目标
+        val stepsBeforeRestore = actionSteps.toList()
         actionSteps.addAll(insertPosition, restoredSteps)
+        remapJumpReferencesAfterEdit(stepsBeforeRestore)
         recalculateAndNotify()
         toast(getString(R.string.editor_toast_block_parts_restored, restoredSteps.size))
         recyclerView.smoothScrollToPosition(insertPosition)
@@ -1821,8 +1881,14 @@ class WorkflowEditorActivity : BaseActivity() {
         if (removedCount > 0) {
             triggerSteps.clear()
             triggerSteps.addAll(cleanedTriggerSteps)
+            // fork（B1 修复）：清理未注册模块会**删掉步骤** ⇒ 重映射 jump 目标。
+            // ⚠️ 若被删的正好是某个 jump 的目标，`remapJumpReferencesAfterEdit` 会返回 false
+            //    （悬空引用）；这里是**加载期的修复动作**，不适合反过来拒绝加载 ⇒ 保持原样，
+            //    该跳转在运行期会降级为「继续下一步」+ W 日志（可见，且不会跳飞）。
+            val stepsBeforeCleanup = actionSteps.toList()
             actionSteps.clear()
             actionSteps.addAll(cleanedActionSteps)
+            remapJumpReferencesAfterEdit(stepsBeforeCleanup)
             toast(getString(R.string.editor_toast_unknown_modules_removed, removedCount))
         }
         recalculateAndNotify()
@@ -2038,6 +2104,8 @@ class WorkflowEditorActivity : BaseActivity() {
         }
         sheet.onSave = { newValue, newBranches ->
             pushUndoSnapshot() // ⚠️ 在改动之前
+            // fork（B1 修复）：Switch 骨架会插入一整块步骤 ⇒ 重映射 jump 目标
+            val stepsBeforeSwitchInsert = actionSteps.toList()
             val configured: List<ActionStep> = skeleton.toMutableList().also { steps ->
                 if (steps.isEmpty()) return@also
                 steps[0] = steps[0].copy(
@@ -2059,6 +2127,8 @@ class WorkflowEditorActivity : BaseActivity() {
             // 按 branches 重建分支区：能对上 id 的取回原体（骨架的体是空的）、对不上的建空卡
             // ⇒ 最终结构 = 用户在 sheet 里编好的形状。
             SwitchBlockSupport.reconcileBranches(actionSteps, actualStart)
+            // ⚠️ 放在 `reconcileBranches` **之后**：它自己也会增删步骤（分支区重建）
+            remapJumpReferencesAfterEdit(stepsBeforeSwitchInsert)
             recalculateAndNotify()
         }
         sheet.show(supportFragmentManager, "SwitchEditorNew")
@@ -2088,7 +2158,10 @@ class WorkflowEditorActivity : BaseActivity() {
             if (module.metadata.getResolvedCategoryId() == ModuleCategories.TEMPLATE) {
                 val newSteps = module.createSteps()
                 pushUndoSnapshot()
+                // fork（B1 修复）：模板会插入多个步骤 ⇒ 重映射 jump 目标
+                val stepsBeforeTemplate = actionSteps.toList()
                 actionSteps.addAll(newSteps)
+                remapJumpReferencesAfterEdit(stepsBeforeTemplate)
                 recalculateAndNotify()
             } else if (isTriggerPicker) {
                 showTriggerPickerAtPosition(getTriggerInsertPosition(), module)
@@ -2136,7 +2209,10 @@ class WorkflowEditorActivity : BaseActivity() {
             if (module.metadata.getResolvedCategoryId() == ModuleCategories.TEMPLATE) {
                 val newSteps = module.createSteps()
                 pushUndoSnapshot()
+                // fork（B1 修复）：模板会插入多个步骤 ⇒ 重映射 jump 目标
+                val stepsBeforeTemplateInsert = actionSteps.toList()
                 actionSteps.addAll(insertPosition, newSteps)
+                remapJumpReferencesAfterEdit(stepsBeforeTemplateInsert)
                 recalculateAndNotify()
             } else {
                 // 显示参数编辑器，传入插入位置
@@ -2170,6 +2246,9 @@ class WorkflowEditorActivity : BaseActivity() {
 
         editor.onSave = { newStepData ->
             pushUndoSnapshot()
+            // fork（B1 修复，2026-10-15）：插入会移动后续步骤的显示序号 ⇒ 插完重映射 jump 目标
+            // （纯插入不删除任何步骤 ⇒ 那两个引用检查不可能失败，返回值这里用不上）。
+            val stepsBeforeInsert = actionSteps.toList()
             val stepsToAdd = module.createSteps()
             if (targetIndex > 0 && targetIndex < stepsToAdd.size) {
                 val configuredSteps = stepsToAdd.toMutableList()
@@ -2183,6 +2262,10 @@ class WorkflowEditorActivity : BaseActivity() {
                 }
             }
             syncDynamicBlockAfterSave(module, insertPosition)
+            // ⚠️ 顺序要紧：`syncDynamicBlockAfterSave` 会调 `MenuBlockSupport` /
+            // `SwitchBlockSupport` 的 `reconcileBranches`，**它自己也会增删步骤** ⇒
+            // 重映射必须放在它**之后**，否则那些增删又会把序号挪一次。
+            remapJumpReferencesAfterEdit(stepsBeforeInsert)
             recalculateAndNotify()
         }
 

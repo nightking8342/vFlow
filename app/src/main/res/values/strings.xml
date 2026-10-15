@@ -789,6 +789,7 @@
     <string name="editor_skip_jump_option">#%1$d %2$s</string>
     <string name="editor_skip_jump_missing">（已失效：%1$s）</string>
     <string name="editor_skip_jump_cycle_warning">检测到跳转环：%1$s\n执行时会受跳转次数上限保护，但请确认这是你想要的。</string>
+    <string name="editor_toast_delete_blocked_by_jump">有步骤的跳转指向它，不能删除。请先改掉那个「跳转步骤」的目标。</string>
     <string name="editor_group_error_context">错误上下文</string>
     <string name="error_context_variable_name">错误信息</string>
     <string name="settings_error_policy_stop_silent">静默停止</string>

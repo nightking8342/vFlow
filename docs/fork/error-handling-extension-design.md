@@ -353,27 +353,46 @@ pc = if (target != null && allowJump(step.id)) {
 
 | 编号 | 缺陷 | 证据 | 本次处理 |
 |---|---|---|---|
-| **B1** | 插入/删除步骤后目标**静默漂移**（人工路径不重映射） | §5.3；实测：删除路径 `WorkflowEditorActivity.kt:1427-1441` 只调 `module.onStepDeleted`、插入路径 `:2171-2187` 只 `actionSteps.add/addAll`，**两处都没有 remap**；唯一调用点 `:1631` 走的 `remapAfterReorder` 开头就 `if (size != size) return` | ❌ **本次未修**（§9.2 单独立项） |
-| **B2** | 跨块/向内跳**无校验** ⇒ 破坏块结构，症状随块类型不同 | `JumpModule.kt:59-80`（validate 只查整数与 `≥1`）、`:115-120`（execute 只查 `in indices`）；`LoopModule.kt:166`（空栈 ⇒ `EmptyStackException` ⇒ 文案是「模块执行异常」；**不是**静默 Success，见 §2.5 的实测更正）vs `ForEachModule.kt:179-182`（Failure，文案清楚） | ❌ **本次未修**（P0-5 只给**新路径** `__skip_jump_target` 加了 `isAllowedTarget` 校验；`vflow.logic.jump` 本身仍无校验） |
-| **B3** | 跨循环跳出后 `loopStack` **不清理**（执行器侧） | `WorkflowExecutor` 的 `is ExecutionSignal.Jump -> { pc = signal.pc; continue }`（只改 pc，不碰 loopStack）；`LoopState` 不记起始位置（`ExecutionContext.kt:25-35`） | ❌ **本次未修**（`alignLoopStack` 只接在 P0-5 的新跳转路径上；`ExecutionSignal.Jump` 未动） |
-| **B4** | **无环保护**（自跳 / A→B→A） | 唯一兜底是**可选**的工作流超时（`WorkflowExecutor` 的 `withTimeout(maxExecutionTime)`，且它不是硬超时）；`vflow.logic.jump` 执行器侧无任何跳转计数 | ❌ **本次未修**（三层防护只覆盖 P0-5 的新跳转路径） |
-| **B5** | 跳到**已禁用**步骤 ⇒ 目标静默变成「其后第一个可执行步骤」 | `WorkflowExecutor.kt:588-603` | 只登记（影响面小） |
-| **B6** | `success` **声明了却从不返回**（Signal 分支不写 `stepOutputs`） | `JumpModule.kt:48` vs `WorkflowExecutor.kt:852` | 只登记（P0-3 不会自动修好它） |
-| **B7** | **测试几乎为零**：`JumpModuleTest` 只有 2 例（都只测「接受命名变量」）；`WorkflowJumpReferenceUpdaterTest` 只有 3 例（全在等长重排分支） | 实测 | ❌ **本次未修**（§9.2） |
+| **B1** | 插入/删除步骤后目标**静默漂移**（人工路径不重映射） | §5.3；实测：删除路径 `WorkflowEditorActivity.kt` 只调 `module.onStepDeleted`、插入路径只 `actionSteps.add/addAll`，**两处都没有 remap**；唯一调用点走的 `remapAfterReorder` 开头就 `if (size != size) return` | ✅ **已修**（B 批次，2026-10-15）：插入 / 删除 / **复制**三条路径接上 fork 版 `remapJumpReferences`；撞上跳转目标 ⇒ **拒绝删除** + 提示 + 回滚；拖拽继续用上游版（见下） |
+| **B2** | 跨块/向内跳**无校验** ⇒ 破坏块结构，症状随块类型不同 | `JumpModule.validate` 只查整数与 `≥1`、`execute` 只查 `in indices`；`LoopModule.kt:166`（空栈 ⇒ `EmptyStackException` ⇒ 文案是「模块执行异常」；**不是**静默 Success，见 §2.5 的实测更正）vs `ForEachModule.kt:179-182`（Failure，文案清楚） | ✅ **已修**：`validate`（保存时，静态数字）+ `execute`（**运行期兜底**，覆盖存量工作流与变量型目标）各接一次 `isAllowedTarget` |
+| **B3** | 跨循环跳出后 `loopStack` **不清理**（执行器侧） | `ExecutionSignal.Jump` 分支只改 `pc`、不碰 `loopStack`；`LoopState` 不记起始位置（`ExecutionContext.kt`） | ✅ **已修**：该分支加 `alignLoopStack` —— ⚠️ **按模块 id 收窄**，见下 |
+| **B4** | **无环保护**（自跳 / A→B→A） | 唯一兜底是**可选**的工作流超时（`withTimeout(maxExecutionTime)`，且它不是硬超时）；执行器侧无任何跳转计数 | ✅ **已修**：该分支加跳转计数 —— ⚠️ **只接执行级总预算（200），刻意不接单步上限（10）**，理由见 §9.2 实现记录 |
+| **B5** | 跳到**已禁用**步骤 ⇒ 目标静默变成「其后第一个可执行步骤」 | `WorkflowExecutor` 的已禁用步骤跳过分支 | 只登记（影响面小） |
+| **B6** | `success` **声明了却从不返回**（Signal 分支不写 `stepOutputs`） | `JumpModule.getOutputs` vs `WorkflowExecutor` 的 Signal 分支 | 只登记（P0-3 不会自动修好它；修它要给**所有**发 Signal 的块模块写 `stepOutputs`，牵动面大） |
+| **B7** | **测试几乎为零**：`JumpModuleTest` 只有 2 例（都只测「接受命名变量」）；`WorkflowJumpReferenceUpdaterTest` 只有 3 例（全在等长重排分支） | 实测 | **部分修**：`JumpModuleTest` 2 → 7 例（新增 validate 的块结构校验）、`WorkflowPatchTest` +3 例、**新增契约一致性测试 5 例**（§8 #17）、两条接线守卫 8 例。⚠️ `WorkflowJumpReferenceUpdaterTest` 仍是 3 例（上游文件未动） |
 
-> ⚠️⚠️ **回填更正（2026-10-15，P0-5 落地后）**：上表 B1–B4 原先都写着「**本次修**」，
-> 但 P0-5 的实现**只保护了新路径**（`__skip_jump_target`）—— `vflow.logic.jump` 本体**一行未动**。
-> 原因是实施顺序：先把新能力做出来、把工具函数（`JumpTargetSupport`）的形状钉死，
-> 再按 §9.2 单独立项去修既有模块（那里明确写了「与新功能**分开提交**」）。
-> **代价是现在两条跳转机制的保护等级不一致**（新的有 id 稳定性 + 合法性校验 + `loopStack` 对齐 + 三层防护；
-> 老的一条都没有）—— 这是最容易让人踩坑的形态，故 B1–B4 的优先级实际上被这次实施**抬高了**。
+#### ⚠️⚠️ 实现期发现：`ExecutionSignal.Jump` 是**共用**信号，B3/B4 必须按模块 id 收窄
+
+本稿原先写「本次修（`alignLoopStack`）」，默认该分支只服务 `vflow.logic.jump` —— **实际不是**：
+
+| 谁在发 `ExecutionSignal.Jump` | 用途 |
+|---|---|
+| `JumpModule` | 用户显式跳转（本批要修的对象） |
+| `IfModule` | 跳 Else / EndIf |
+| `SwitchModule` / `ChooseFromMenuModule` | 跳匹配分支 |
+| `LoopModule` / `WhileModule` / `DoWhileModule` / `ForEachModule` | 跳回循环体开头 / 跳出块 |
+| `CreateActivityModule` / `CreateFloatWindowModule` / `UiListenerModules` | UI 块的进出 |
+
+那些是**结构性跳转**，**每次迭代都会发生**。若对整条信号无条件生效：
+
+- **计数** ⇒ 正常循环在第 10 次迭代被**掐死**（降级为「继续下一步」）；
+- **对齐循环栈** ⇒ 「块内跳到块外」时会把外层循环状态弹掉 ⇒ 该循环的 End 再 `peek()` 空栈 ⇒ `EmptyStackException`。
+
+⇒ 实现里加了 `if (step.moduleId != JumpTargetSupport.JUMP_MODULE_ID)` 收窄判据，
+并由 `test/core/execution/JumpCapsWiringTest.kt` 断言「**收窄必须发生在计数与对齐之前**」
+（这条断言是源码扫描型 —— 它保护的正是「保护加到错误范围上」这类不会报编译错、也测不出来的失效）。
 
 **修 B1 的两个选项**：
 
-- **甲（推荐，符合本 fork 做法）**：把编辑器的调用点切到 `WorkflowPatch.remapJumpReferences`（public、在 `core/workflow`、无 Android 依赖）—— 插入/删除路径新增调用 + 拖拽路径一并切（fork 版「纯重排也能走」）；**上游文件 `WorkflowJumpReferenceUpdater.kt` 仍然不动**，保持 `FORK.md` 里的「（暂未分歧）」。
-- **乙（彻底）**：jump 也改成存 id（§5.4 双字段 + 双写）—— 属**数据迁移**，且要动上游模块的参数语义，风险更大。建议**单独立项**。
+- **甲（推荐，符合本 fork 做法）** ⇒ ✅ **已采用**：编辑器的插入 / 删除 / 复制三条路径接上 `WorkflowPatch.remapJumpReferences`（public、在 `core/workflow`、无 Android 依赖）；**上游文件 `WorkflowJumpReferenceUpdater.kt` 一行不动**，保持 `FORK.md` 里的「（暂未分歧）」。
+  > ⚠️ **与原文的一处偏差（2026-10-15）**：甲方案原写「**拖拽路径一并切**」，实现时**没有切** —— 拖拽是等长重排，正是上游那个函数的设计场景，切过去会让它在生产代码里**变成死代码**（只剩测试引用），反而更容易静默腐坏。两条路都在生产里活着 + 契约一致性测试锁住共同部分，比「留一份没人用的实现」更稳。
+- **乙（彻底）**：jump 也改成存 id（§5.4 双字段 + 双写）—— 属**数据迁移**，且要动上游模块的参数语义，风险更大。**仍未做**，建议单独立项。
 
-**长期风险**：两份语义相近的实现并存 ⇒ 未来改 jump 引用语义时**极易只改一处**（本仓库吃过「两份实现必须同时改」的亏，见 `FORK.md` 里 core 侧 logcat 移植版那条）。建议加一条 **fork 侧的契约一致性测试**（同样输入，两版对「变量型目标/越界目标」的处理必须一致）—— 纯新增测试文件，不动上游。
+**长期风险** ⇒ ✅ **已缓解**：两份语义相近的实现并存 ⇒ 未来改 jump 引用语义时**极易只改一处**
+（本仓库吃过「两份实现必须同时改」的亏，见 `FORK.md` 里 core 侧 logcat 移植版那条）。
+已新增 **fork 侧的契约一致性测试** `test/core/workflow/WorkflowJumpRemapContractTest.kt`（5 例，§8 #17）：
+等长重排两份必须**逐字相同**、变量型目标与越界目标两份都必须**原样不动**，
+并把「长度变化时分工不同」这条**刻意的差异**也显式锁住（免得将来被当成 bug 顺手"修"坏）。
 
 **顺带发现（文档漂移，建议下次修订回填）**：`workflow-read-write-tools.md` 里 §3.1.3 的函数名仍是设计期名 `remapAfterStructuralChange`（`:143` / `:778` / `:808` / `:848`），实现叫 `remapJumpReferences`；`:139` 写的调用点 `WorkflowEditorActivity.kt:1428` 实测为 `:1631`。
 
@@ -512,7 +531,7 @@ pc = if (target != null && allowJump(step.id)) {
 | 变量选择器 | `WorkflowEditorMagicVariableCatalogBuilder` 新增「错误上下文」固定分组（一个 `[[__error]]` 条目 + `dictionaryKeys` 五个字段），**仅当工作流里真的存在失败跳转时**出现 |
 | AI 侧 | `stepExecutionSettingInputDefinitions()` 补 `__skip_jump_target`（STRING，hint 里写明「是 step id 不是序号」「只能 SKIP 用」「不能跳进块体」「目标步骤可用 `[[__error]]` 读错误」）；`update_workflow` 描述同步 |
 | 测试 | `JumpTargetSupportTest`（18 例纯函数：解析 / 四类合法性 / 嵌套深度 8 个位置 / `loopStack` 对齐 4 例 / 环检测 5 例）+ `ErrorContextTest`（7 例，含**实跑 `ConditionEvaluator`** 验证「为空/不为空」真的可用）+ `SkipJumpWiringTest`（7 例源码扫描，含**跨文件**断言「跳过日志行与 `ChatMessagePatch` 锚点逐字一致」）+ `ActionStepExecutionSettingsTest` +3 例 |
-| 未做项（登记） | ① 「卡片标红」的环警告（只做了 toast）；② `PickerType.STEP` 选择器类型；③ 目标被删时的**引用重映射**（现降级为 `pc++` + W 日志；`WorkflowPatch.remapJumpReferences` 只认 `vflow.logic.jump` 的序号字段）—— 与 §9.2 的 B1 一起做更合适 |
+| 未做项（登记） | ① 「卡片标红」的环警告（只做了 toast）；② `PickerType.STEP` 选择器类型；~~③ 目标被删时的**引用重映射**~~ ⇒ **已在 B 批次做掉**（`WorkflowPatch.remapJumpReferences` 现在同时检查 `__skip_jump_target`，悬空即拒绝整个补丁；编辑器删除撞上跳转目标时**拒绝 + 提示 + 回滚**） |
 | 验证 | `./gradlew test` **3126 例**，仅剩 `AGENTS.md` 记录的既有失败；`./gradlew assembleRelease` 通过，`apksigner` 显示 `CN=vFlow Fork, O=nightking8342`。**真机未验证** |
 
 ### 9.2 P0 之后的既有缺陷修复（单独立项）
@@ -520,9 +539,7 @@ pc = if (target != null && allowJump(step.id)) {
 - 修 `vflow.logic.jump` 的 **B1 / B2 / B3 / B4**（复用 `JumpTargetSupport`）—— 与新功能**分开提交**，但**设计一次做完**（工具函数的形状要同时满足两边）。
 - 补 **B7** 的测试。
 
-**现状（2026-10-15，P0 全部落地后）**：P0-5 已交付可复用的 `JumpTargetSupport`（形状已钉死），
-但 **`vflow.logic.jump` 本体一行未动** ⇒ **B1–B4 全部仍未修**。
-建议顺序（按「修起来便宜 + 后果重」排）：
+**状态（2026-10-15）：✅ B1–B4 已全部修完**（见下方实现记录）。当时的排期依据（「修起来便宜 + 后果重」）：
 
 | 顺序 | 项 | 成本 | 理由 |
 |---|---|---|---|
@@ -530,6 +547,36 @@ pc = if (target != null && allowJump(step.id)) {
 | 2 | **B2** | `JumpModule.validate` + `execute` 各加一次 `isAllowedTarget` | 症状最乱（三种块三种结果，其中一种文案是零信息量的「模块执行异常」）；判据现成 |
 | 3 | **B1** | 编辑器插入/删除路径接上 fork 版 `remapJumpReferences`（不动上游文件） | 触发频率高（编辑工作流时增删步骤是常态），后果是「静默跳错步骤」 |
 | 4 | **B4** | 给 `ExecutionSignal.Jump` 也接上 P0-5 的跳转计数与上限 | 环是用户显式写的（不像 B1 随手就中招），但后果最重（死循环 + 副作用重复）；机制已建好，复用成本低 |
+
+#### B1–B4 实现记录（2026-10-15）
+
+| 项 | 落点 | 要点 |
+|---|---|---|
+| **B3** | `WorkflowExecutor` 的 `ExecutionSignal.Jump` 分支 | 加 `alignLoopStack(loopStack, workflow.steps, signal.pc)`。⚠️ **按模块 id 收窄**（见 §6 的实现期发现）—— 否则会把块结构跳转也一起对齐，`ForEach` 跳出块时弹掉外层循环状态 ⇒ `EmptyStackException` |
+| **B4** | 同上 | 复用 P0-5 的 `jumpCountTotal` 与 `MAX_JUMPS_PER_EXECUTION`（200）；超限**终止**并报「疑似死循环」。⚠️⚠️ **刻意不套单步上限（10）** —— 见下方说明 |
+| **收尾抽取** | `WorkflowExecutor.terminateWithFailure(...)`（**新增私有 `suspend` 函数**） | 把失败终止的收尾（注销 + `ExecutionStateBus.postState(Failure)`）从 STOP 分支抽出来，供**两个**调用点共用（失败分支 / 跳转总预算用尽）。⚠️ **弹窗刻意留在 `executeWorkflowInternal` 内联**：`AgentErrorDialogWiringTest` 按**函数体**扫描弹窗门禁，搬走会让那条守卫失效。⚠️ 必须是 `suspend`（`postState` 是挂起函数）—— 照抄内联代码时容易漏 |
+| **B2** | `JumpModule.validate` + `JumpModule.execute` | 保存时（静态数字）+ **运行期兜底**（覆盖存量工作流与 `{{vars.x}}` 变量型目标）各接一次 `isAllowedTarget`。`validate` 里只在「拿得到步骤列表」时校验（`allSteps` 为空 = 调用方没给上下文），越界目标仍留给运行期报 |
+| **B1** | `WorkflowEditorActivity` | 新增 `remapJumpReferencesAfterEdit(before)` 助手，接在**插入 / 删除 / 复制**三条路径上；删除撞上跳转目标 ⇒ **拒绝 + toast + 回滚**（新文案 `editor_toast_delete_blocked_by_jump` 三语）。拖拽继续用上游版（见 §6 的偏差说明） |
+| **未做项①** | `WorkflowPatch.remapJumpReferences` | 新增 `findSkipJumpTargetsDeleted(...)`：`__skip_jump_target` 指向被删步骤 ⇒ 返回 `null` ⇒ 补丁被拒（AI 路径）/ 删除被拒（编辑器路径）。它存 id ⇒ 插入/重排天然不漂移，只有「目标被删」要管。AI 侧的拒绝信息同时**指名道姓**列出悬空的步骤 id |
+| AI 侧 | `ChatAgentToolRegistry` 的 `delete` 参数描述 | 补一句「被 `__skip_jump_target` 指向的步骤也不能删，否则整份补丁被拒」 |
+| 测试 | 6 个文件 / +22 例 | `JumpModuleTest` 2 → 7（validate 的块结构校验：向内跳拒 / 同级与向外放行 / 缺列表跳过 / 原有校验不被挤掉）；`WorkflowPatchTest` +3（悬空 `__skip_jump_target` 拒绝 / 目标存活时原样保留 / 指名道姓）；**新增 `WorkflowJumpRemapContractTest`** 5 例（§8 #17 契约一致性）；**新增 `JumpCapsWiringTest`** 4 例（收窄判据在计数与对齐之前 / 两条路径共用阈值与收尾 / `terminateWithFailure` 恰 3 处 / 终态广播只 1 处）；**新增 `JumpRemapWiringTest`** 4 例（三条路径都接了 / 拖拽仍用上游 / 拒绝删除时回滚 / 三语文案）；`JumpTargetSupportTest` +1（`JUMP_MODULE_ID` 与 `JumpModule().id` 逐字一致） |
+
+> ⚠️⚠️ **实现期决定：B4 只给 `vflow.logic.jump` 接「执行级总预算」，不接「单步上限」** ——
+> 两个上限在新旧路径上的**语义不同**：
+>
+> | | P0-5 的失败跳转路径 | `vflow.logic.jump` |
+> |---|---|---|
+> | 跳转是什么 | **失败兜底动作**（策略 = SKIP 时跳到收尾步骤） | **控制流原语**（goto） |
+> | 用户能用它写循环吗 | 不该 —— 同一个失败步骤重复跳 >10 次几乎只可能是环 | **能**（「跳回第 2 步直到成功」是常见写法） |
+> | 单步上限的后果 | 超限降级为「继续下一步」= 安全的兜底 | **第 11 次起静默改变存量工作流的行为**（循环提前结束、结果不完整，只有一条 W 日志） |
+>
+> ⇒ 对 `vflow.logic.jump` 只保留**总预算**：任何环最多跳 200 次 ⇒ **终止并报「疑似死循环」**
+> （响亮、可定位），而 ≤200 跳的既有工作流**行为逐字不变**。这也是本分支此前**完全没有**的保护。
+> 该决定由 `JumpCapsWiringTest` 的**反向断言**锁死（「单步上限不得出现在 Jump 分支」）。
+>
+> 验证：`./gradlew test` **3150 例**，仅剩 `AGENTS.md` 记录的既有失败；`./gradlew assembleRelease` 通过。**真机未验证**。
+>
+> 剩余（仍未做）：**B5**（跳到已禁用步骤 ⇒ 目标静默顺延）、**B6**（Signal 分支不写 `stepOutputs` ⇒ 声明了 `success` 的块模块读不到）、**B7 的一部分**（`WorkflowJumpReferenceUpdaterTest` 仍 3 例，上游文件未动）、**乙方案**（jump 改存 id 的数据迁移）、以及 §9.1 的两个未做项（卡片标红 / `PickerType.STEP`）。
 
 ### 9.3 仅登记（P1 / P2）
 
@@ -559,6 +606,16 @@ pc = if (target != null && allowJump(step.id)) {
 | `ui/workflow_editor/WorkflowEditorMagicVariableCatalogBuilder.kt`（改，P0 时） | 注入 `[[__error]]` 固定分组（仅存在失败跳转时） | **手动合并**（追加） |
 | `ui/chat/ChatAgentModuleExecutor.kt`（改，P0 时） | `resolveModuleInputDefinitions` 注入全部保留键 | **手动合并**（追加） |
 | `core/workflow/WorkflowJumpReferenceUpdater.kt` | ⚠️ **本设计不改它**（保持「暂未分歧」）；B1 走「编辑器调用点切到 fork 版」的甲方案 | （暂未分歧） |
+| `core/workflow/JumpTargetSupport.kt`（改，B 批次） | +`JUMP_MODULE_ID`（执行器据此把「模块发起的跳转」与「块结构发起的跳转」分开） | 我方 |
+| `core/execution/WorkflowExecutor.kt`（改，B 批次） | `ExecutionSignal.Jump` 分支：按模块 id 收窄 + 跳转计数 + `alignLoopStack`；新增私有 `suspend fun terminateWithFailure(...)`（失败终止收尾，2 个调用点共用） | **手动合并**（上游热路径） |
+| `core/workflow/module/logic/JumpModule.kt`（改，B 批次） | `validate` + `execute` 各接一次 `JumpTargetSupport.isAllowedTarget`（向内跳） | **手动合并**（追加校验） |
+| `core/workflow/WorkflowPatch.kt`（改，B 批次） | +`findSkipJumpTargetsDeleted`；`remapJumpReferences` 增查 `__skip_jump_target` 悬空；AI 侧拒绝信息指名道姓 | 我方（fork 文件） |
+| `ui/workflow_editor/WorkflowEditorActivity.kt`（改，B 批次） | +`remapJumpReferencesAfterEdit` 助手；插入 / 删除 / 复制三条路径接上；删除撞上跳转目标 ⇒ 拒绝 + 提示 + 回滚 | **手动合并** |
+| `ui/chat/ChatAgentToolRegistry.kt`（改，B 批次） | `delete` 参数描述补「被 `__skip_jump_target` 指向的步骤也不能删」 | **手动合并**（追加描述） |
+| `res/values{,-en,-ja}/strings.xml`（改，B 批次） | +`editor_toast_delete_blocked_by_jump` 三语 | **手动合并**（追加） |
+| `test/core/workflow/WorkflowJumpRemapContractTest.kt`（**新增**，B 批次） | fork 独有：两份重映射实现的契约一致性（§8 #17） | 我方 |
+| `test/core/execution/JumpCapsWiringTest.kt`（**新增**，B 批次） | fork 独有：跳转计数/对齐的**收窄判据**接线（源码扫描） | 我方 |
+| `test/ui/workflow_editor/JumpRemapWiringTest.kt`（**新增**，B 批次） | fork 独有：编辑器三条路径都接了重映射 + 拒绝删除的回滚（源码扫描） | 我方 |
 
 ---
 
@@ -566,6 +623,7 @@ pc = if (target != null && allowJump(step.id)) {
 
 | 版本 | 日期 | 内容 |
 |---|---|---|
+| v1.6 | 2026-10-15 | **B1–B4 全部修完**（§6 的「本次处理」由「本次未修」改为「已修」，§9.2 补实现记录）+ **P0-5 未做项①（目标被删时的引用重映射）一并做掉**。⚠️ **实现期发现并纠正本稿一处设计疏漏**：`ExecutionSignal.Jump` 是 `If`/`Switch`/`Loop`/`ForEach`/`While`/`DoWhile`/UI 块**共用**的信号，B3/B4 必须**按模块 id 收窄**（无条件计数会掐死正常循环、无条件对齐循环栈会让 `ForEach` 跳出块后抛 `EmptyStackException`）；⚠️ 与甲方案的偏差：拖拽路径**没有**切到 fork 版（切了会让上游实现变成生产死代码），改为保留两份 + 新增契约一致性测试（§8 #17）。⚠️ **B4 只给 `vflow.logic.jump` 接执行级总预算（200），刻意不接单步上限（10）** —— 两个上限在新旧路径上语义不同（失败兜底动作 vs 控制流原语），套单步上限会**静默截断**存量工作流里用 jump 手写的循环；由 `JumpCapsWiringTest` 的反向断言锁死。新增 `WorkflowJumpRemapContractTest` / `JumpCapsWiringTest` / `JumpRemapWiringTest` 三个测试文件；`./gradlew test` 3150 例 |
 | v1.5 | 2026-10-15 | **两处实测更正 + 一处回填**：① §2.5 的「跳到 `Loop` 体内 ⇒ 静默 `Success()`」**被实测推翻** —— `java.util.Stack.peek()` 空栈**抛 `EmptyStackException` 而非返回 null**（实跑 `javac`+`java` 验证）⇒ `LoopModule.kt:166` 的 `loopState == null` 是死代码，真实症状是「文案零信息量的 `Failure("模块执行异常")`」；② §6 的 B1–B4「本次处理」由「本次修」**更正为「本次未修」** —— P0-5 只保护了新路径（`__skip_jump_target`），`vflow.logic.jump` 本体一行未动，故两条跳转机制的保护等级**不一致**（这是本批留下的最大缺口）；③ §9.2 补 B1–B4 的建议修复顺序与成本 |
 | v1.4 | 2026-10-15 | **P0-1 策略链 + P0-5 跳过跳转已实现**（§9.1 实现记录）⇒ **四项 P0 全部落地**。新增两个 fork 文件（`core/workflow/JumpTargetSupport.kt`、`core/workflow/ErrorContext.kt`）+ 9 条新决策（D10~D14 等）；回填三处实现期更正：① 「不是块中间/结束」≠「必须是 NONE」（块**开始**可以当目标）；② `enclosingLoopCount` 必须从 `position - 1` 起搜；③ 编辑器用**下拉**而不是新 `PickerType.STEP`。⚠️ 触发并更新了 `StopSilentPolicyWiringTest` / `AgentErrorDialogWiringTest` / `RetryExhaustedPolicyWiringTest` 三处既有守卫断言 |
 | v1.3 | 2026-10-15 | **集成点 §4.1 提前完成**：AI 侧现在认识 `__error_policy` / `__retry_count` / `__retry_interval`（对**所有**模块注入、`isHidden = true`、`update_workflow` 描述补说明）⇒ 模型能自己配策略、也能给临时工作流步骤配策略。新增 `ReservedStepKeyInjectionTest`（4 例，含两条自动枚举守卫） |

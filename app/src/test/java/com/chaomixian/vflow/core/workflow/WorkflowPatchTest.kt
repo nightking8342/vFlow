@@ -1,6 +1,7 @@
 package com.chaomixian.vflow.core.workflow
 
 import com.chaomixian.vflow.core.workflow.model.ActionStep
+import com.chaomixian.vflow.core.workflow.model.ActionStepExecutionSettings
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -399,10 +400,57 @@ class WorkflowPatchTest {
         assertEquals("{{vars.STATE}}", merged["source"])
     }
 
+    // ─────────── `__skip_jump_target` 的悬空引用（fork，P0-5 未做项①）───────────
+
+    @Test
+    fun remapJumpReferences_returnsNullWhenSkipJumpTargetWasDeleted() {
+        // ⚠️ `__skip_jump_target` 存的是 **step id** ⇒ 插入 / 重排都**天然不漂移**，
+        // 唯一要管的就是「目标被删」：悬空 id 在运行期只会降级成「继续下一步」+ W 日志，
+        // 用户很难联想到是「删了某一步」造成的 ⇒ 必须在编辑/补丁那一刻就拒绝。
+        val failing = skipJumpStep("failing", targetId = "cleanup")
+        val target = step("cleanup")
+        val original = listOf(failing, target)
+        val newSteps = listOf(failing) // cleanup 被删了
+
+        assertNull(WorkflowPatch.remapJumpReferences(original, newSteps))
+    }
+
+    @Test
+    fun remapJumpReferences_keepsSkipJumpTargetWhenItSurvives() {
+        // 目标还在（哪怕它换了位置）⇒ id 引用天然不漂移，既不报错也不该改写它
+        val failing = skipJumpStep("failing", targetId = "cleanup")
+        val target = step("cleanup")
+        val original = listOf(failing, target)
+        val newSteps = listOf(step("inserted"), failing, target)
+
+        val result = WorkflowPatch.remapJumpReferences(original, newSteps)
+
+        assertNotNull(result)
+        assertEquals("cleanup", result!![1].parameters["__skip_jump_target"])
+    }
+
+    @Test
+    fun findSkipJumpTargetsDeleted_namesTheStepThatLostItsTarget() {
+        // 与 findJumpsWithDeletedTarget 同因同果：让调用方能**指名道姓**地报错
+        val failing = skipJumpStep("failing", targetId = "cleanup")
+        val other = skipJumpStep("other", targetId = "alive")
+        val original = listOf(failing, other, step("alive"))
+
+        val dangling = WorkflowPatch.findSkipJumpTargetsDeleted(original, setOf("other", "alive"))
+
+        assertEquals(listOf("failing"), dangling.map { it.id })
+    }
+
     private fun step(
         id: String,
         moduleId: String = "vflow.device.delay",
     ): ActionStep = ActionStep(moduleId = moduleId, parameters = emptyMap(), id = id)
+
+    private fun skipJumpStep(id: String, targetId: String): ActionStep = ActionStep(
+        moduleId = "vflow.device.delay",
+        parameters = mapOf(ActionStepExecutionSettings.KEY_SKIP_JUMP_TARGET to targetId),
+        id = id,
+    )
 
     private fun jumpStep(id: String, target: Number): ActionStep = ActionStep(
         moduleId = "vflow.logic.jump",

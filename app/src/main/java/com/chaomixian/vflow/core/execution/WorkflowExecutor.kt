@@ -952,31 +952,59 @@ object WorkflowExecutor {
                             }
                         }
 
-                        // 获取完整日志并广播失败状态
-                        val fullLog = executionLogs[initialContext.workflowStack.first()]?.toString() ?: ""
-
-                        val hasActiveExecutions = unregisterExecution(workflow.id, executionInstanceId)
-                        failedExecutions[executionInstanceId] = true
-                        stoppedWorkflows.remove(executionInstanceId)
-                        if (!hasActiveExecutions) {
-                            executionLogs.remove(workflow.id)
-                            logLevelsByWorkflow.remove(workflow.id)
-                        }
-                        ExecutionStateBus.postState(
-                            ExecutionState.Failure(
-                                workflowId = workflow.id,
-                                executionInstanceId = executionInstanceId,
-                                stepIndex = pc,
-                                detailedLog = fullLog
-                            )
-                        )
-                        return null
+                        // fork（2026-10-15，B4 修复）：收尾（注销本次执行 + 广播终态）抽成
+                        // `terminateWithFailure` —— 它现在有**两个**调用点（这里 + 跳转总预算用尽的
+                        // 疑似死循环）。各写一份的话，将来改注销/广播语义时极易只改一处。
+                        return terminateWithFailure(workflow, initialContext, executionInstanceId, pc)
                     }
                 }
                 is ExecutionResult.Signal -> {
                     DebugLogger.d("WorkflowExecutor", "信号: ${result.signal}")
                     when (val signal = result.signal) {
                         is ExecutionSignal.Jump -> {
+                            // fork（B3 / B4 修复，2026-10-15）：`vflow.logic.jump` 的跳转要
+                            // ① 对齐循环栈、② 受跳转次数上限约束。
+                            //
+                            // ⚠️⚠️ **必须按模块 id 收窄**，不能对整条 `ExecutionSignal.Jump` 生效 ——
+                            // 这个信号被 `If` / `Switch` / `Loop` / `ForEach` / `While` / `DoWhile` /
+                            // UI 块模块**共用**，那些是**结构性跳转**（`IfModule` 跳 Else/EndIf、
+                            // `ForEachModule` 跳回循环体开头 / 跳出块），每次迭代都会发生：
+                            //   - 计数 ⇒ 正常循环会在第 10 次迭代被**掐死**（降级为继续下一步）；
+                            //   - 对齐循环栈 ⇒ 「块内跳到块外」时会把外层循环状态弹掉 ⇒
+                            //     该循环的 End 再 `peek()` 空栈 ⇒ `EmptyStackException`。
+                            // 设计依据：`docs/fork/error-handling-extension-design.md` §6 B3 / B4。
+                            if (step.moduleId != JumpTargetSupport.JUMP_MODULE_ID) {
+                                pc = signal.pc
+                                continue
+                            }
+
+                            // ⚠️ **只接执行级总预算，不接单步上限**（与 P0-5 的新跳转路径**刻意不同**）：
+                            //
+                            //   - 新路径的跳转是**失败兜底动作** —— 同一个失败步骤重复跳 >10 次几乎只可能是环，
+                            //     故那里套了单步上限（超限降级为「继续下一步」）；
+                            //   - `vflow.logic.jump` 是**控制流原语**（goto）—— 用户可以用它手写循环
+                            //     （「跳回第 2 步直到成功」）。对它套单步上限会在第 11 次**静默改变
+                            //     存量工作流的行为**（循环提前结束、结果不完整，只有一条 W 日志），
+                            //     那是修缺陷时最不该做的事。
+                            //
+                            // 终止性仍由总预算保证：任何环最多跳 200 次 ⇒ **终止并报「疑似死循环」**
+                            // （响亮、可定位）。这也是本分支此前**完全没有**的保护。
+                            if (jumpCountTotal >= JumpTargetSupport.MAX_JUMPS_PER_EXECUTION) {
+                                DebugLogger.e(
+                                    "WorkflowExecutor",
+                                    "本次执行的跳转总次数已达上限（${JumpTargetSupport.MAX_JUMPS_PER_EXECUTION}），疑似死循环，终止工作流。"
+                                )
+                                return terminateWithFailure(
+                                    workflow,
+                                    initialContext,
+                                    executionInstanceId,
+                                    pc
+                                )
+                            }
+                            jumpCountTotal++
+                            // B3：跨循环跳出后必须对齐循环栈，否则残留条目会让后续步骤
+                            //     读到**过期的循环变量**（`loop_index` / `item`）—— 无声出错。
+                            JumpTargetSupport.alignLoopStack(loopStack, workflow.steps, signal.pc)
                             pc = signal.pc
                             continue
                         }
@@ -1047,6 +1075,53 @@ object WorkflowExecutor {
             }
         }
         return returnValue // 返回子工作流的结果
+    }
+
+    /**
+     * **失败终止的收尾**：注销本次执行 + 广播 `ExecutionState.Failure`（fork，2026-10-15）。
+     *
+     * ⚠️ 抽出来的唯一理由是它现在有**两个**调用点：
+     * ① 步骤失败且有效策略 ∈ {STOP, STOP_SILENT}（原本内联在失败分支里）；
+     * ② `vflow.logic.jump` 的跳转总预算用尽（疑似死循环，B4 修复）。
+     * 两处各写一份的话，将来改「注销 / 广播」语义时**极易只改一处** —— 而这两件事
+     * 正是首页「最近日志」、磁贴与 Chat 卡片的状态来源，改漏了不会报错、只会状态错。
+     *
+     * ⚠️ **弹窗不在这里**（它留在 `executeWorkflowInternal` 里内联）：`AgentErrorDialogWiringTest`
+     * 按**函数体**扫描弹窗门禁（要求 `shouldShowErrorDialog(...)` 出现在 `showError(` **之前**
+     * 且同在一个函数体内），把弹窗也搬进来会让那条守卫失效。
+     *
+     * ⚠️ **必须是 `suspend`**：`ExecutionStateBus.postState` 是挂起函数（照抄原内联代码时容易漏，
+     * 编译器会当场报错）。
+     *
+     * @param stepIndex 失败/触发终止的步骤下标（0-based，写进终态供 UI 定位）。
+     * @return **恒为 `null`** —— 调用点直接写 `return terminateWithFailure(...)`，
+     *   与 `executeWorkflowInternal` 的「返回 null = 失败终止」契约一致。
+     */
+    private suspend fun terminateWithFailure(
+        workflow: Workflow,
+        initialContext: ExecutionContext,
+        executionInstanceId: String,
+        stepIndex: Int
+    ): Any? {
+        // 获取完整日志并广播失败状态
+        val fullLog = executionLogs[initialContext.workflowStack.first()]?.toString() ?: ""
+
+        val hasActiveExecutions = unregisterExecution(workflow.id, executionInstanceId)
+        failedExecutions[executionInstanceId] = true
+        stoppedWorkflows.remove(executionInstanceId)
+        if (!hasActiveExecutions) {
+            executionLogs.remove(workflow.id)
+            logLevelsByWorkflow.remove(workflow.id)
+        }
+        ExecutionStateBus.postState(
+            ExecutionState.Failure(
+                workflowId = workflow.id,
+                executionInstanceId = executionInstanceId,
+                stepIndex = stepIndex,
+                detailedLog = fullLog
+            )
+        )
+        return null
     }
 
     private fun executionExceptionToFailure(error: Exception): ExecutionResult.Failure {

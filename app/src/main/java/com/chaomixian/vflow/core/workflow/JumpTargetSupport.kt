@@ -54,6 +54,19 @@ import java.util.Stack
 object JumpTargetSupport {
 
     /**
+     * `vflow.logic.jump` 的模块 id。
+     *
+     * ⚠️ **执行器要按它把「模块发起的跳转」与「块结构发起的跳转」区分开** ——
+     * `ExecutionSignal.Jump` 这个信号被 `If` / `Switch` / `Loop` / `ForEach` / `While` /
+     * `DoWhile` / UI 块模块**共用**，那些是**结构性跳转**（每次迭代都发生），
+     * 对它们计数会把正常循环掐死（详见 `WorkflowExecutor` 里该分支的注释）。
+     *
+     * ⚠️ 字面量与 `JumpModule.id` 重复是**刻意**的（本对象不依赖模块类，保持纯函数层可单测）；
+     * 两者必须相等，由 `JumpTargetSupportTest` 断言锁死。
+     */
+    const val JUMP_MODULE_ID = "vflow.logic.jump"
+
+    /**
      * 单**步骤**在**一次执行**内的跳转次数上限。
      *
      * 超限 ⇒ **不再跳转**，降级为 `pc++` 并打 `W` 日志（降级必须可见，不能静默）。

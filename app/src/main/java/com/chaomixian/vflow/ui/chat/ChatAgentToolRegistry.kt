@@ -1024,7 +1024,9 @@ internal class ChatAgentToolRegistry(context: Context) {
                             "description",
                             "Remove steps by id. Deleting a block member requires removing all members " +
                                 "in the same call — a half-deleted block is an invalid structure. " +
-                                "A step that a `vflow.logic.jump` targets cannot be deleted."
+                                "A step that a `vflow.logic.jump` targets cannot be deleted, and neither " +
+                                "can a step that another step names in `__skip_jump_target` — in both cases " +
+                                "the whole patch is rejected."
                         )
                         put("items", buildJsonObject { put("type", "string") })
                     })

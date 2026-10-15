@@ -94,6 +94,10 @@ object WorkflowPatch {
      * - **变量引用**（`{{vars.x}}` 等）：原样返回，不尝试、不猜测——静态算不出来
      * - **指向的步骤被删**：返回 `null`，由调用方报错拒绝（静默保留旧序号会让触发器跳飞）
      *
+     * fork（2026-10-15，P0-5 未做项①）：**同样处理 `__skip_jump_target`**。
+     * 它存的是 **step id**（决策 D4）⇒ 插入 / 重排**天然不漂移**，唯一要管的就是「目标被删」：
+     * 悬空 id 在运行期会降级为「继续下一步」+ `W` 日志，而这里能**在编辑/补丁那一刻就拒绝**。
+     *
      * @return 重映射后的步骤列表，或 `null` 表示有 jump 的目标已被删除、补丁应被拒绝
      */
     fun remapJumpReferences(
@@ -104,6 +108,8 @@ object WorkflowPatch {
         // 不能靠逐个 step 处理时才发现（那时错误信息已经丢掉了是哪一步）。
         val newStepIds = newSteps.mapTo(mutableSetOf()) { it.id }
         if (findJumpsWithDeletedTarget(originalSteps, newStepIds).isNotEmpty()) return null
+        // fork（P0-5 未做项①）：`__skip_jump_target` 指向的步骤被删 ⇒ 同样拒绝（见上方 KDoc）
+        if (findSkipJumpTargetsDeleted(originalSteps, newStepIds).isNotEmpty()) return null
 
         val newDisplayIndexByStepId = newSteps
             .mapIndexed { index, step -> step.id to (index + 1) }
@@ -163,6 +169,25 @@ object WorkflowPatch {
             if (targetDouble.isNaN() || targetDouble % 1.0 != 0.0) return@filter false
             val targetStepId = originalSteps.getOrNull(targetDouble.toInt() - 1)?.id ?: return@filter false
             targetStepId !in newStepIds
+        }
+    }
+
+    /**
+     * 找出所有 `__skip_jump_target` 指向「已被删除的步骤」的步骤（fork，2026-10-15）。
+     *
+     * 与 [findJumpsWithDeletedTarget] 分开提供，理由相同：让调用方在**应用之前**就能给出
+     * 可读的错误信息（指名是哪一步的跳转目标没了），而不是只拿到一个 `null`。
+     *
+     * ⚠️ 目标存的是 step id ⇒ **不需要**重映射序号（插入/重排都不漂移），
+     *    只有「目标被删」这一种情形要管。
+     */
+    fun findSkipJumpTargetsDeleted(
+        originalSteps: List<ActionStep>,
+        newStepIds: Set<String>,
+    ): List<ActionStep> {
+        return originalSteps.filter { step ->
+            val target = JumpTargetSupport.targetIdOf(step) ?: return@filter false
+            target !in newStepIds
         }
     }
 
@@ -332,11 +357,21 @@ fun applyStepListPatch(
     }
 
     // ── jump 重映射 ───────────────────────────────────────────────────────
+    // fork（2026-10-15）：把「到底是谁的引用悬空了」查出来，好让拒绝信息**指名道姓** ——
+    // 只回一句「有跳转指向了不存在的步骤」时，模型/用户得自己再翻一遍整条工作流。
+    val survivingStepIds = working.mapTo(mutableSetOf()) { it.id }
+    val danglingReferences = (
+        WorkflowPatch.findJumpsWithDeletedTarget(original, survivingStepIds) +
+            WorkflowPatch.findSkipJumpTargetsDeleted(original, survivingStepIds)
+        ).distinctBy { it.id }
+
     val remapped = WorkflowPatch.remapJumpReferences(original, working)
         ?: return StepPatchOutcome.Rejected(
             listOf(
-                "A `vflow.logic.jump` step points at a step that no longer exists. " +
-                    "Adjust or remove that jump step in the same patch."
+                "This patch deletes a step that other steps reference: " +
+                    danglingReferences.joinToString(", ") { "`${it.id}`" } +
+                    ". A `vflow.logic.jump` target and a `__skip_jump_target` must both keep " +
+                    "existing — adjust or remove those references in the same patch."
             )
         )
 

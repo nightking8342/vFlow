@@ -1836,7 +1836,7 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 > ⚠️ **两条跳转机制的保护等级现在不一致**：新的 `__skip_jump_target` 有 id 稳定性 + 合法性校验 +
 > `loopStack` 对齐 + 三层防护；而**老的 `vflow.logic.jump` 一条都没有**（插入/删除后序号静默漂移、
 > 无向内跳校验、跨循环跳出不清理 `loopStack`、无环保护）。本批**只保护了新路径**，
-> 老模块按设计稿 §9.2 单独立项（`JumpTargetSupport` 已经把工具函数备好了）。
+> 老模块按设计稿 §9.2 单独立项（`JumpTargetSupport` 已经把工具函数备好了）—— **已在下一节修完**。
 
 | 文件 / 范围 | 分歧内容 | 冲突归属 |
 |---|---|---|
@@ -1860,8 +1860,58 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 > **真机未验证**。
 >
 > ⚠️ **未做项（已登记，见设计稿 §9.1 / §11）**：① 环警告只有 toast，没有「卡片标红」（要动上游编辑器列表绑定）；
-> ② `PickerType.STEP` 选择器类型（改用既有下拉，见决策 D10）；③ 目标步骤被删时的**引用重映射**
-> （现降级为「继续下一步」+ `W` 日志）—— 建议与设计稿 §9.2 的 `vflow.logic.jump` 缺陷 B1 一起做。
+> ② `PickerType.STEP` 选择器类型（改用既有下拉，见决策 D10）；
+> ~~③ 目标步骤被删时的**引用重映射**~~ ⇒ **已在下一节做掉**。
+
+### `vflow.logic.jump` 既有缺陷 **B1–B4 修复** + 跳过跳转的悬空引用（2026-10-15）—— **已实现**（单测 + release 打包通过，真机未验证）
+
+> 上一节把**新**的跳过跳转（`__skip_jump_target`）做齐了，但**老的 `vflow.logic.jump` 一条保护都没有**
+> ⇒ 两条跳转机制的保护等级不一致，是最容易让人踩坑的形态。本节把老模块补齐（设计稿 §6 / §9.2）：
+>
+> - **B1**：插入 / 删除 / 复制步骤后，jump 的**显示序号目标静默漂移**（此前只有拖拽路径重映射，
+>   且用的是「长度变了就直接返回」的上游实现）⇒ 三条路径都接上 fork 版 `remapJumpReferences`；
+>   删除撞上跳转目标时**拒绝删除 + 提示 + 回滚**（与 AI 侧补丁的 `Rejected` 同语义）。
+> - **B2**：向内跳（跳进块体内部）**无校验** ⇒ `validate`（保存时）+ `execute`（**运行期兜底**）各接一次
+>   `isAllowedTarget`。
+> - **B3**：跨循环跳出后 `loopStack` **不清理** ⇒ 后续步骤读到**过期的循环变量**（无声出错）⇒ 加 `alignLoopStack`。
+> - **B4**：**无环保护**（自跳 / A→B→A 会无限循环）⇒ 接上与 P0-5 **共用**的执行级总预算（200）。
+>   ⚠️ **刻意不套单步上限（10）**：两个上限在新旧路径上语义不同 —— 新路径的跳转是**失败兜底动作**
+>   （重复 >10 次几乎只可能是环），而 `vflow.logic.jump` 是**控制流原语**，用户可以用它手写循环
+>   （「跳回第 2 步直到成功」）⇒ 套单步上限会在第 11 次**静默改变存量工作流的行为**（循环提前结束、
+>   结果不完整，只有一条 W 日志）。只保留总预算：任何环最多 200 跳 ⇒ 响亮地终止，而 ≤200 跳的
+>   既有工作流行为逐字不变。该决定由 `JumpCapsWiringTest` 的反向断言锁死。
+> - **未做项①**：`__skip_jump_target` 指向的步骤被删 ⇒ 悬空 id（运行期降级为「继续下一步」+ `W` 日志）
+>   ⇒ `WorkflowPatch.remapJumpReferences` 现在**同时**检查它，悬空即拒绝。
+>
+> ⚠️⚠️ **实现期发现（已回填设计稿 §6）**：`ExecutionSignal.Jump` **不是** `vflow.logic.jump` 专用 ——
+> `If` / `Switch` / `Loop` / `ForEach` / `While` / `DoWhile` / UI 块模块**全都发这个信号**做**结构性跳转**。
+> 对整条信号无条件生效会：**计数** ⇒ 正常循环在第 10 次迭代被掐死；**对齐循环栈** ⇒ 「块内跳到块外」时
+> 弹掉外层循环状态 ⇒ 该循环的 End `peek()` 空栈 ⇒ `EmptyStackException`。故实现里加了
+> `if (step.moduleId != JumpTargetSupport.JUMP_MODULE_ID)` 收窄，并由源码扫描型测试断言
+> **收窄发生在计数与对齐之前**（这类「保护加到错误范围上」的失效既不报编译错、也测不出来）。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `core/workflow/JumpTargetSupport.kt`（改） | +`JUMP_MODULE_ID` 常量（执行器据此把「模块发起的跳转」与「块结构发起的跳转」分开；与 `JumpModule.id` 的一致性由单测锁死） | 我方 |
+| `core/execution/WorkflowExecutor.kt`（改） | ① `ExecutionSignal.Jump` 分支：**按模块 id 收窄** + 跳转计数 + `alignLoopStack`；② 新增私有 **`suspend`** 函数 `terminateWithFailure(...)`，把失败终止的收尾（注销 + `postState(Failure)`）抽出来供**两个**调用点共用（失败分支 / 跳转总预算用尽） | **手动合并**（上游热路径） |
+| `core/workflow/module/logic/JumpModule.kt`（改） | `validate` + `execute` 各接一次 `JumpTargetSupport.isAllowedTarget`（`validate` 只在拿得到步骤列表时校验；`execute` 是**运行期防线**，覆盖存量工作流与 `{{vars.x}}` 变量型目标） | **手动合并**（追加校验） |
+| `core/workflow/WorkflowPatch.kt`（改） | +`findSkipJumpTargetsDeleted`；`remapJumpReferences` 增查 `__skip_jump_target` 悬空；AI 侧拒绝信息**指名道姓**列出悬空的步骤 id | 我方（fork 文件） |
+| `ui/workflow_editor/WorkflowEditorActivity.kt`（改） | +`remapJumpReferencesAfterEdit(before)` 助手，接在**插入 / 删除 / 复制**三条路径；删除撞上跳转目标 ⇒ 拒绝 + toast + 回滚。⚠️ **拖拽路径仍用上游 `remapAfterReorder`**（等长重排正是它的设计场景；切过去会让上游实现变成生产死代码） | **手动合并** |
+| `ui/chat/ChatAgentToolRegistry.kt`（改） | `delete` 参数描述补「被 `__skip_jump_target` 指向的步骤也不能删，否则整份补丁被拒」 | **手动合并**（追加描述） |
+| `res/values{,-en,-ja}/strings.xml`（改） | +`editor_toast_delete_blocked_by_jump` 三语 | **手动合并**（追加） |
+| `test/core/workflow/WorkflowJumpRemapContractTest.kt`（**新增**） | fork 独有：**两份重映射实现的契约一致性**（等长重排必须逐字相同 / 变量型与越界目标都必须原样不动 / 「长度变化时分工不同」这条刻意差异也显式锁住）—— 设计稿 §8 #17 | 我方 |
+| `test/core/execution/JumpCapsWiringTest.kt`（**新增**） | fork 独有：**收窄判据必须在计数与对齐之前** / 两条路径共用同一批阈值 / `terminateWithFailure` 恰 3 处（1 定义 + 2 调用）/ 终态广播只 1 处 | 我方 |
+| `test/ui/workflow_editor/JumpRemapWiringTest.kt`（**新增**） | fork 独有：编辑器三条路径都接了重映射 / 拖拽仍用上游版 / 拒绝删除时回滚 + 刷新 / 三语文案 | 我方 |
+| `test/core/workflow/module/logic/JumpModuleTest.kt`（改） | 2 → 7 例（新增 `validate` 的块结构校验：向内跳拒 / 同级与向外放行 / 缺列表时跳过 / 原有校验不被挤掉） | **手动合并**（追加） |
+| `test/core/workflow/WorkflowPatchTest.kt`（改） | +3 例（悬空 `__skip_jump_target` 拒绝 / 目标存活时原样保留 / `findSkipJumpTargetsDeleted` 指名道姓） | **手动合并**（追加） |
+| `test/core/workflow/JumpTargetSupportTest.kt`（改） | +1 例（`JUMP_MODULE_ID` 与 `JumpModule().id` 逐字一致） | 我方 |
+
+> 验证：`./gradlew test` **3150 例**（本批 +24），仅剩 `AGENTS.md` 记录的既有失败（`VObjectPropertyTest`）；
+> `./gradlew assembleRelease` 通过。**真机未验证**。
+>
+> **仍未做**：B5（跳到已禁用步骤 ⇒ 目标静默顺延）、B6（Signal 分支不写 `stepOutputs` ⇒ 声明了 `success`
+> 的块模块读不到）、B7 的一部分（`WorkflowJumpReferenceUpdaterTest` 仍 3 例，上游文件未动）、
+> 乙方案（jump 改存 id 的数据迁移）、环警告「卡片标红」、`PickerType.STEP`。
 
 ### 执行终止语义现状梳理（2026-10-14）—— **仅文档，无代码改动**
 
@@ -1882,7 +1932,7 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 
 | 文件 / 范围 | 分歧内容 | 冲突归属 |
 |---|---|---|
-| `docs/fork/ai-capability-unification.md`（**新增**） | fork 独有：**AI 能力统一设计稿（多模态 · 多协议 · 配置引用）**。**现状走查**——两条 AI 链路 3 出网点、ChatAgent 传输能力清单、三个 AI 模块同源重复逐项对照、多模态「**只有 UI 一层**」的六层状态表、**ChatAgent 截图后模型只收到 `image artifact available` 占位串**（无法读图，只能「截图→OCR」两步）、AutoGLM 的**传输协议（OpenAI 兼容）vs 文本动作协议（`do(action=…)`，不走 function calling）**、工作流内 `api_key` 的密钥/备份现状。**设计空间**——共享边界（一次 LLM 往返）/ 多模态数据模型（3 选项）/ 通用工具 schema（3 选项）/ 共享层落点（甲就地改 · 乙抽 `core/ai/`）/ 配置引用（粒度·跟随·UI·删除行为）。**§4 十项待决策点（D1–D10；仅 D5 的「渲染图片」已定「支持」，其余未决）** + **§5 八个任务草案（T1–T8，含依赖图）** + **§6 八条风险**。上游无此文件 | 我方 |
+| `docs/fork/ai-capability-unification.md`（**新增**） | fork 独有：**AI 能力统一设计稿（多模态 · 多协议 · 配置引用）**。**现状走查**——两条 AI 链路 3 出网点、ChatAgent 传输能力清单、三个 AI 模块同源重复逐项对照、多模态「**只有 UI 一层**」的六层状态表、**ChatAgent 截图后模型只收到 `image artifact available` 占位串**（无法读图，只能「截图→OCR」两步）、AutoGLM 的**传输协议（OpenAI 兼容）vs 文本动作协议（`do(action=…)`，不走 function calling）**、工作流内 `api_key` 的密钥/备份现状、**底层动作/观察已三方共用（`AgentTools`/`AgentUtils`）且协议归属三分**（§1.8，含 5 条既有漂移 D-a~D-e）。**设计空间**——共享边界（一次 LLM 往返）/ 多模态数据模型（3 选项）/ 通用工具 schema（3 选项）/ 共享层落点（甲就地改 · 乙抽 `core/ai/`）/ 配置引用（粒度·跟随·UI·删除行为）。**§4 十项待决策点（D1–D10；仅 D5 的「渲染图片」已定「支持」，其余未决）** + **§5 八个任务草案（T1–T8，含依赖图）** + **§6 八条风险**。上游无此文件 | 我方 |
 
 ---
 
