@@ -31,6 +31,15 @@ This file provides guidance to coding agents when working with code in this repo
   - ⚠️ §8.1 记录一处**既有缺陷**：关闭后台服务通知会使 `TriggerService` 降级，**所有传感器类触发器**（本功能、姿态、敲击）都会静默失效 —— 排查「触发器不触发」时先查这个。
   - 跨机型复测用 `scripts/fold-trigger-verify.sh`（adb 零代码）。
 
+- `docs/fork/error-handling-extension-design.md` —— **异常处理策略扩展设计 + 实现状态**（**四项 P0 已实现，真机未验证**）。步骤级策略模型：`__error_policy`（`STOP` / `STOP_SILENT` / `SKIP` / `RETRY`）+ `__on_retry_exhausted`（重试用尽后怎么办）+ `__skip_jump_target`（失败后**跳到哪一步**，**存 step id 不存序号**）+ 恒注入的 `[[__error]]` 错误上下文字典（正常路径是空字典）。
+  - **改动前先读这份**（凡涉及 `WorkflowExecutor` 的失败/跳过分支、`ActionStepExecutionSettings`、编辑器「异常处理」区、`vflow.logic.jump`）：含 14 条语义定案（D1–D14）、5 条**否决项**（X1–X5，含「重试退避」的否决理由与重提条件）、跳转三层防护（单步 10 次 / 执行级 200 次 / 编辑器静态环检测）、§5 对「上游为什么用序号存跳转目标」的时间线考据、§6 的 `vflow.logic.jump` 七条既有缺陷清单。
+  - 背景调研：`docs/fork/surveys/module-error-status-survey.md`（206 个模块「会报错 / 兜得住 / 判得出」的判据矩阵）。
+  - ⚠️ **已知未做项**（改这块时留意）：环警告只有 toast（无「卡片标红」）、`PickerType.STEP` 选择器类型、目标步骤被删时的**引用重映射**（现降级为「继续下一步」+ `W` 日志）、`vflow.logic.jump` 的既有缺陷 B1–B4。
+
+- `docs/fork/ai-capability-unification.md` —— **AI 能力统一设计稿（多模态 · 多协议 · 配置引用）**（**讨论稿 · 决策点绝大多数未决**）。目标：让工作流内的 AI 模块（`AIModule` / `AgentModule` / `AutoGLMModule`）**复用 ChatAgent 的请求传输层**（「一次改动处处生效」），并支持**引用「模型配置」里的配置**（同时保留手动配置）。
+  - **现状走查**：3 个出网点、三个模块同源重复逐项对照、**多模态「只有 UI 一层」**（附件面板已实现，发送/模型/渲染/持久化四层全空）、**ChatAgent 截图后模型只收到 `image artifact available` 占位串**（看不到图，只能「截图→OCR」两步）、AutoGLM 的**传输协议（OpenAI 兼容）vs 文本动作协议（`do(action=…)`，不走 function calling）**。
+  - **§4 = 十项待决策点（D1–D10；仅 D5 的「渲染图片」已定「支持」，其余未决）**；**§5 = 八个任务草案（T1–T8，含依赖图）**；**§6 = 八条风险**。**做 AI 能力统一（多模态 / 多协议 / 配置引用）前先读这份**；它与 `surveys/ai-system-overview.md` §7 的两条 P2 同源。
+
 ---
 
 ## 项目定位
@@ -303,5 +312,5 @@ adb -s <serial> install -r app/build/outputs/apk/release/app-arm64-v8a-release.a
 - **AI Chat 目前不支持流式**（`ChatCompletionClient.kt` 里 `put("stream", false)`）。若要做流式，需改 OkHttp 事件流 + StateFlow 推送，是大改动。
 - **WebSocket 是占位**（`WebSocketSupport.kt` 全 TODO），无实时推送。
 - **远程 API 需手动开启**「远程 Web 服务」（默认 8080）才可用。
-- **AI 调试→生成工作流目前未闭环**：`WorkflowAiGenerator` 只吃 `requirement: String`，不吃调试数据；`artifact://` 句柄不允许写入工作流。这是在 fork 上可做的方向。
+- **编辑器内的「AI 生成工作流」已于 2026-10-14 整体删除**（`AiGenerationSheet` / `WorkflowAiGenerator` / `sheet_ai_generation.xml` + 「更多选项」sheet 里的入口卡片）。该能力由 **Chat Agent** 承接；原先它自带一套独立模型配置（SharedPreferences `ai_config`，已连同 `ChatScope`/`SecretsScope` 的备份槽位一并清理）。若要「AI 调试→生成工作流」闭环，应在 Chat Agent 侧做：`artifact://` 句柄目前仍不允许写入工作流。
 - 合并上游前先读 **FORK.md**，尤其「敏感点」和「同步流程」。

@@ -44,6 +44,7 @@
 | `docs/fork/logcat-trigger-design.md` | fork 独有：**logcat 触发器设计文档**（Core 侧匹配架构、多触发器共享一条流、`LogcatCondition` 条件数据结构、**§6.5 双工协议扩展**、**§7.1 必须继承 `BaseTriggerHandler`**、降级语义、背压/隐私风险、14 项真机场景）。2026-09-17 修订过三处硬伤；尚未实现；上游无此文件 | 我方 |
 | `docs/fork/xposed-channel-design.md` | fork 独有：**Xposed 通道架构设计**（**v2.0**，设计阶段未实现）。第四条通道 = 事件源 + `MethodHook`。基于 **ShortX 反编译源码逐动作判定** + vFlow 侧代码直读 + **本机真机探针实测**。核心结论：**不照抄 ShortX**（权威进程在 system_server，搬走会丢权限分档与崩溃隔离，§1.0）；**撤回初稿「无界 hook 导致 AI 契约失效」的论证**（`shell_command`/`js` 已是反例，§1.1）；Xposed 真正独占的只有四类，仅 ②（IME/输入内部状态，**是触发器的事件源**）与 ③（系统栏/窗口内部方法）值得做（§2.1/2.2）。**v2.0（探针实测驱动，§4.2 整体重写）**——本轮修正了一处**方向性错误**并定案通道选型：① ⚠️ **此前把「hook 目标 App（5a）」的结论套到了「hook system_server（5b）」上**，而我们要做的 `activity_changed` 是 5b。**AOSP 源码** `AppsFilterBase.shouldFilterApplication` 首行 `callingAppId < FIRST_APPLICATION_UID ⇒ return false`（不过滤）⇒ **uid 1000 完全豁免包可见性**；② **主通道定为 `bindService`（AIDL）**，广播降为备选——理由是 5b 不受可见性限制（源码）、**连接状态天然就是 §3.3 要的「hook 挂载态」判据**、双向且无广播的频率/大小限制；③ **实测证实**：`broadcastPermission` 方向 =「发送方需持有」（v1.6 曾标「未逐字核实」）、`signature` 权限**能挡住异签方**（对照矩阵）、**广播不受包可见性影响**（对 vFlow 完全不可见的 App 发广播，vFlow 照收）、**共享文件读不到**（`EACCES`）、`bindService` 在 5a 需可见性（A 组 false / C 组 true）；④ 更正两处仓库侧论据（`postWindowChangeEvent` 第三参数**未进事件流**、`AppStart` 去重**不是缺陷**，§4.1）与一处风险低估（**hook 目标 App 可读其全部内存，信息面高于 root**，§5.3）；⑤ 新增 §4.4.1 **Xposed API 选型**（ShortX 实测两套并存：传统 `xposed_init` vs 新 `libxposed.service.XposedProvider`，**文档此前写死了前者，需修正**）；⑥ §4.2.8 记录一处**官方未记载的行为**（声明某权限 ⇒ 其**定义方**可见，v4/v5 决定性证据：名字前缀不算、`sourcePackage` 才算——**不要当规则用**）。**§8 地基项由 3 条收敛为 2 条**：**system_server 内能否 `bindService`**（含主线程重入/阻塞风险）、**system_server 能否持有 vFlow 的 `signature` 权限**——两者都**必须真注入 system_server 才能验，有整机软重启风险**，§6 给出渐进推进方案（1a 只打日志 → 1b 加通信 → 1c 验权限 → 1d 换真 hook 点）。**教训入册（决策 19/20/21）**：① **必须区分 5a/5b 的可见性处境，不得混用结论**（混用导致通道排序整体错了一轮）；② **平台行为结论必须先查文档/源码，再用实验验细节**——前几轮用「实验 + 推理」替代查文档，导致每被追问一次就翻一次结论（实验只回答「此条件下发生什么」，不是普适规律）；③ **每条结论标注证据类型**（【文档】/【源码】/【实测】/【推断】）。**新增 §3.4 可扩展性架构（决策 22–26）**——**`activity_changed` 只是引子**，长期要加很多触发器/模块，评价标准是「加到第 30 个时还站不站得住」：① **三层层级**（适配器 HookSource / 统一信封 / 可替换 Transport，§3.4.1）；② **事件信封** `{topic, seq, ts, payload}`，`seq` 使丢包可检测（§3.4.2）；③ **新增触发器 = 框架 + 适配器**，**复用现有 `TriggerHandlerRegistry` 规范不另立平行体系**（§3.4.3）；④ **背压/丢弃必须在框架层统一**（各写各的必然出现「阻塞拖垮 system_server / 无界 OOM / 静默丢」，按 `LogcatEventQueue` 语义，§3.4.4）；⑤ **协议版本协商**（App 与 hook 层生命周期独立、hook 无热更新 ⇒ 版本错配是常态，未知 topic 必须忽略而非崩溃，§3.4.5）。§3.1 架构图同步重画（旧图引用的是已废弃的「方案 A/B」，且只画了单触发器结构，扩展不了）。**§4.4.1 定 API 选型**（决策 27）：用 **`io.github.libxposed:api:102.0.0`**（Maven Central 最新），**非传统 `xposed_init`**——反编译 ShortX（用 101）实证新 API 是主路径，且**其入口分工（`onModuleLoaded` 初始化运行时 + 可替换 adapter / `onSystemServerStarting` 进 system_server）与 §3.4 三层架构天然吻合**。**102 已在目标设备验证可用**（【实测】HyperCeiler / InxLocker 均使用 102 独有符号 `HotReloadedParam`/`getOldHookHandles`/`replaceHook` 并正常运行）。**⚠️ v2.1 推翻一处旧结论**：旧版 §4.6 断言「`MethodHook` **无**热更新」，依据仅是 ShortX（101）的 `MethodHookLifecycle` 只有两值、全仓无 reload API——**那是「反编译一家实现没做 X」，被我当成了「平台做不到 X」**。实际 **102 原生支持热更新**（源码逐字 `Hot reload allows modules to be updated without restarting the process`，回调 `onHotReloading`/`onHotReloaded` + `replaceHook`）⇒ **§4.6 重写**，并连带修正 §3.3（`PENDING_RESTART` → `PENDING_APPLY`）与 §3.4.5（协议版本前提）。新增约束：**选 102 就不能混用传统 `de.robv.android.xposed` API**（官方行为变更，决策 29）。§6 阶段 0 重新定位为验 **hot reload 实际行为** + `onSystemServerStarting` 注册形态（「102 能否加载」已不必验）；§8 新增两条待验（**hot reload 对 system_server 是否适用**、**`onSystemServerStarting` 在 Android 17 是否触发**）。**v2.2（P0 探针实测，新增 §4.2.9）**：**通道核心能力已实证** —— ⭐ **能拿到 Activity 的 Intent（含 extras）**，这是本通道存在的理由（前三条通道做不到）。hook 点 = `com.android.server.wm.ActivityRecord.activityResumedLocked(IBinder, boolean)`，经 **`ActivityRecord.forToken(IBinder)`** 反查实例后读 `intent`。**两条实现级坑（都靠实测才发现）**：**类名必须是 `com.android.server.wm.*`**（`android.app.*` 是错的 ⇒ `ClassNotFoundException`）；该方法是 **`static`、没有 `this`** ⇒ **不能用 `getThisObject()` 取值**（曾误判为「hook 失败」）。**实测事实（非规则）**：`onSystemServerStarting` 时**系统服务尚未就绪**（`PackageManager`/`IActivityManager` 均为 null），**约 11 秒后**才可用 ⇒ **启动期做 IPC 要带重试/等待**（⚠️ 注意：这是「要等就绪」的事实，**不是「禁止 IPC」**——探针实测在启动期做 IPC 完全可行，见下文「三次模块不加载」）。<br/>⚠️ **另有一条必须做的**：hook 层要等 **`UserManager.isUserUnlocked()`** 再通信（目标组件 `directBootAware=false`，未解锁时解析不到）。**调试方法（能省大量时间）**：**`adb logcat` 读不到启动期日志** —— 真因是**开机洪流把 2 MiB 环形缓冲填满**、启动日志第一个被挤掉（实测：启动 14 分钟后，18:54 的事件日志都在、启动期的 `════` 标记一条不剩；量化：开机 15 秒内约 10400 条）；抓启动期日志**必须重启后立刻抓**或用 LSPosed 管理器导出的 verbose 日志（**唯一正路**，实测 `logcat -G 16M` 重启即失效），**不要为绕过它而改探针代码**。**⚠️ 三次「模块不加载」（真因未查明，勿当规则用）**：探针 P0 期间改三次、每次都不加载（写文件 / 静态缓存+回调 flush / 写 `Settings.Global`）。⚠️ **我曾据「共性都在启动期」写成铁律「启动期整条路径不要新增 IPC / I/O」——该结论【已被反证】**：当前已实测可用的探针版本，启动期路径上就有**四处跨进程调用**（含 `isUserUnlocked()`），运行正常。**真因未查明**——三次都只做整体回退、**从未二分定位**（第 2 轮还一次改了三处）。**保留的唯一纪律是「一次只改一处 + 始终保留可回退版本」**（依据是三次失败的直接教训，约束的是改动方式而非平台行为）。§4.4.1 补齐**两个必需依赖**（`api` + **`service`**，后者提供 `XposedProvider` 实现类、必须打进 dex）与 **`module.prop` 的 `minApiVersion` 要写 101** 的坑。§8 中 **#1/#18 转为已答**。**v2.5（主通道已实证）**：① ✅✅ **`bindService` 主通道成立** —— system_server 内 `bindService` 到第三方 App **拿到 `BinderProxy@1adc174`**（P0 期间**唯一没实测过、只凭 AOSP 源码推断**的环节，现已实证）。**v2.3/v2.4 曾写的「实测推翻核心论据」「选型进入重评」【都是错的，已撤回】**。**真因是探针跑得比设备解锁早**（约早 47 秒），而目标 Service `directBootAware=false` ⇒ **未解锁时组件在 package 解析阶段就被排除**，表现与「包不可见」**一模一样**（`resolveService` 返 `null`、`getServiceInfo` 抛 `NameNotFoundException`、`bindService` 返 `false`）；加 `UserManager.isUserUnlocked()` 判据后通过。⚠️ **这条同时是正式实现的必需环节**：hook 层必须等用户解锁再通信，否则得到**假的「连不上」**。② ❌ **#15 取不到有效结论** —— 目标权限 + 两个无关第三方 signature 权限**全 GRANTED** ⇒「自己查自己一律放行」，`checkPermission(自己pid, 自己uid)` 方法本身无效。③ ✅ **读取途径定案**：`adb logcat` 拿不到（实测 `main` 缓冲仅覆盖约 **50 秒**、开机高峰 1220 条/秒），`logcat -G 16M` 重启即失效 ⇒ **唯一正路是 LSPosed 管理器导出的 verbose 日志**（**文档 §4.1 早就写着，我却绕了三轮才用上**）。④ ❌❌ **归因反面教材（本轮连错两次、方向还相反）**：先据一次**无对照**的 `null` 就写成「推翻核心论据」并改了选型；后又怀疑「组件没装」。**两次都没排除时序变量。** 教训入册：**排查顺序应为「先时序/状态（解锁、stopped、进程存活）→ 再能力/权限 → 最后平台行为」；`null`/`false`/异常必须先做对照项框范围再下结论**。另记几个陷阱：`getServiceInfo` 的 `NameNotFoundException` **不代表组件不存在**（被过滤/未解锁时也抛）；`dumpsys | grep` 判断组件存在性不可靠（`Service Resolver Table` **只列带 `<intent-filter>` 的组件**）；`query-services -p <包>` 的 `-p` 是「按 ACTION 查并限定包」，查具体组件要用 `-n`。**⑤ 方法收获（来自用户提醒而非我的推理）**：本轮能查清靠的是**用户提出「能不能延迟一下」**的**时序**方向 —— **用户对系统行为的直觉多次比我的源码推理准**。**v2.6（#17 热更新实测通过）**：✅✅ **`autoHotReload=true` + 重装 APK ⇒ 在 system_server 里触发热更新、无需重启手机**；`HookHandle.replaceHook()` **原子替换成功**，之后 hook 立刻恢复命中。**推翻 §4.6 旧「推断」**（曾怀疑框架对 system_server 策略不同）。⚠️ **两条实现要点**（实测才发现）：① **`HotReloadedParam` 没有 `getClassLoader()`**（全 API 仅 `PackageReadyParam`/`SystemServerStartingParam` 有）；② **不能用静态字段传跨代际状态** —— 热更新是**新 classloader 加载新代码，静态字段在新代际是全新的**（实测缓存 ClassLoader 到静态字段 ⇒ 新代际读到 `null`，印证官方「saved state must not contain objects created under the old module classloader」）。**正解：`replaceHook()` 不需要 ClassLoader；回调需的类从 `chain.getExecutable().getDeclaringClass()` 推；且回调必须 `proceed()`**（否则破坏整机行为）。**P0 五条验证项全部有结论：#1/#14/#17/#18 通过，#15 方法无效。** **v2.7（`getRemotePreferences` 已查清）**：① ❌ **它不能做事件上行** —— 官方源码逐字「**read-only in hooked apps**」（`XposedInterface`），**只有模块 App 能写**（`XposedService` 侧）⇒ 数据流是「App 写 → hook 读」，**与事件上行方向相反**（新增 §4.2.2.1）。② ⚠️ **新增 §4.6.1「热更新 ≠ 配置通道」**（官方明文：「Hot reload is intended for loading a new module generation after the module app is updated. **It should not be used to propagate configuration changes.**」）⇒ **两条链路必须分开**：hook **定义**变了走热更新（低频）、hook **规则**变了走通信通道（高频）；本方案架构天然避开此坑（§3.4.1 硬约束「Hook 层不知道工作流的存在」）。③ ✅ **独立印证 §4.2.2 选型**：`bindService` 仍是 Xposed 通道里**唯一的双向通道**。④ ⚠️ **一处未能判定**（两份来源冲突、未实测）：system_server 里 `RemotePreferences` 的变更回调是否投递（项目方实测断言「不投递」vs 源码分析「会投递」）—— **仅影响配置下行实时性，不影响事件上行**。上游无此文件 | 我方 |
 | `docs/fork/logcat-debug-tool.md` | fork 独有：**logcat 调试工具设计文档**（前置工具，用于采集日志调试触发器）。核心是「开关式后台采集（shell 侧写文件、`-r`/`-n` 轮转）+ 快照兜底」，**全程走普通 `exec`、不碰流式协议**。含**两条已真机实测证实**的硬约束（Binder 传输上限；后台进程不切断 stdio 会永久挂起）、三态采集状态机（`IDLE`/`CAPTURING`/`STALE`）、单一刷新按钮与 TAG 统计绕过过滤、降级行与日志头标记行处理、与触发器的纯函数复用关系。**§4.2.3 记录实现期踩出的三个静默失效坑**（`StateFlow` 等值去重不发射、`timeout` 自然收尾同样留 `STALE` 导致假异常提示、自动停止不可在 ticker 协程内取消自己）。**部分实现**：纯函数层 + 超级岛层 + 采集控制器 + 岛按钮接收器已完成，查看器 UI 与导出待做；上游无此文件 | 我方 |
+| `docs/fork/network-change-trigger-design.md` | fork 独有：**网络变化触发器设计**（`vflow.trigger.network_change`，**设计定稿、未实现**）。核心决策：**通道选 app 层**（判据是「这个信号 app 层拿得到吗」——`registerDefaultNetworkCallback` 零权限，Core/xposed 零收益）；**模块划分的分界线是「事件源」而非「能力清单」**（同一事件源 → 一个模块 + `trigger_type` 枚举；跨事件源 → 拆开；电话域另计）；**「切换 A→B」必须是一等事件**（否则一次切换触发两次、第二次被 `BLOCK_NEW` 静默吞掉）。含**五层变化模型**（L0 开关 / L1 连通性 / L2 接入方式 / **L3 网络身份** / L4 能力）与两条推论（**L2 不变时按 transport 判定必然失效**；**IP 不是身份键**——DHCP 重租与私有网段重复导致两个方向都会错）；**15 条平台行为断言逐条标注证据等级**（【文档】/【推断·待实测】，未实测不得升格为设计依据）；**权限按 step 动态声明的代码路径证据**（`PermissionManager.kt:793` 遍历 `workflow.allSteps` ⇒ `getRequiredPermissions(step)`，「一个模块逼所有人授权」不成立）；**15 条静默失效点清单**。顺带记录一处**既有缺陷**：`WifiTriggerModule` 的 `bssid` 输出**恒为空串**（全仓无人写过该变量）⇒「同 SSID 换 AP」目前无法判定。上游无此文件 | 我方 |
 | `core/workflow/module/triggers/DoNotDisturbTriggerModule.kt`、`.../handlers/DoNotDisturbTriggerHandler.kt`（均新增） | fork 独有：免打扰触发器。走 `ACTION_INTERRUPTION_FILTER_CHANGED` 广播，只需 `NOTIFICATION_POLICY` 权限（不需通知使用权）。含顶层纯函数 `isDndFilterEnabled` / `isDndEnabled` / 日志探针 `probeDndState` | 我方 |
 | `res/drawable/rounded_do_not_disturb_on_24.xml`、`res/drawable/rounded_do_not_disturb_moon_24.xml`（均新增） | fork 独有：**勿扰图标**。⚠️ `rounded_do_not_disturb_on_24` 是 Material Symbols 的**正式名字**（「勿扰已开启」的圆圈加横杠），图标选择器按**字符串名** + `getIdentifier` 解析它，**不得改其图形**（改了会让选择器里的 `do_not_disturb_on` 显示成别的东西）。`rounded_do_not_disturb_moon_24` 是 **2026-10-10 加的月牙，厚度调过两轮**（用户真机反馈驱动）：初版最厚 171（≈45%R）被判「太细、要半月那种」，现为 **280（≈74%R）**。几何：本体圆 R380、咬口圆**同为 R380** 沿 -45° 偏 280，两圆交点即两个尖角（345.20,115.21）/（844.79,614.80），开口张角 136.8°。⚠️ **两条弧的 `large-arc` 不同**（外弧扫 223.2°⇒1、内弧扫 136.8°⇒0）—— 初版 45% 时内弧是 1，**厚度一改这个标志位就翻面**，写错不报错、只画出别的图形。⚠️ 刻意**不复用** Material 的月亮：`dark_mode` / `nightlight_fill` 是「近似满月」（咬口太浅），`mode_night_fill` 是「厚 C 环」（最厚 400 对高 806），都偏满月，与用户「不要满月」相反 | 我方 |
 | `core/workflow/module/system/DoNotDisturbModule.kt`（改） | 3 行（+注释）：① `iconRes` 由 `rounded_notifications_unread_24`（铃铛 + 红点，语义是「未读通知」，与「勿扰」不符）改为 `rounded_do_not_disturb_moon_24`，与勿扰触发器统一；② `name` / `description` 两处 **Kotlin fallback** 由「免打扰」改为「勿扰」。⚠️ 这是**上游文件**，改动刻意只有 3 行 + 注释 | **手动合并**（3 行 + 注释） |
@@ -808,7 +809,7 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 | 三语 `res/values{,-en,-ja}/strings.xml`（改） | 追加触发器标签文案 **6 条 ×3 语言**：`trigger_label_button_desc` / `_sheet_title` / `_sheet_clear` / `editor_group_trigger_label` / `trigger_label_variable_name` / `trigger_label_input_name`。<br/>⚠️ **2026-10-05 交互调整删掉两条**：① `trigger_label_display_prefix`（`🏷 %1$s`）—— 卡片回显改为**胶囊**（图标 + 文字），不再用前缀文本；② `trigger_label_sheet_hint`（含 `[[__trigger_label]]` 语法说明）—— 人工一律从魔法变量选择器**点选**，不需要在输入框里教语法，布局的 `android:hint` 一并去掉。⚠️ **删 hint 对 AI 零影响**：该键只在布局里被引用、无任何代码调用点，AI 侧走的是 `trigger_label_input_name`（`query_module_schema` 字段名）与 `trigger_label_variable_name`（选择器条目名） | **手动合并**（追加条目） |
 | `test/.../core/workflow/model/TriggerLabelTest.kt`（新增，19 例）、`test/.../ui/workflow_editor/TriggerLabelWiringTest.kt`（新增，12 例）、`test/.../ui/chat/TriggerLabelAgentInjectionTest.kt`（新增，11 例） | fork 独有：**纯函数语义 + 源码扫描型接线锚定 + 全仓反向断言**。⚠️ 重点锁「改错了不报错、只静默变差」的地方：`withLabel` 空白**删键**、`labelOf` 非 String 返回空串、`VARIABLE_NAME == KEY`、**`[[ ]]` 引用真的走命名变量解析分支**（喂真实字符串给真实 `TemplateParser` + 真实 `VariableResolver`，不构造 `mapOf`）、空标签解析成空串而**非** `{...}` 字面量。源码扫描锁定：缺陷① 已修（且不含整表替换文本）、`showActionEditor` **保持原样**（保护性断言）、注入落在 `execute()` 的 `initialContext` 上（结构锚定，**不用字符窗口** —— 剥注释保留长度会让阈值无声翻转）、操作区不再按 `isDeletable` 门控、标签按钮显隐由 `isActionStep` 驱动、`pushUndoSnapshot()` 在改动之前、选择器分组与调用点、三语键齐全。全仓反向断言：**不得出现单下划线 `"trigger_label"` 字面量**。⚠️ **反证 5/5 全部实际执行并变红**；另有一条**第一版断言写错、反证不变红、当场改掉**的记录（见交付说明） | 我方 |
 
-| `ui/chat/ChatAgentModuleExecutor.kt`（改，**AI 存盘工作流取随机主题色**，2026-10-05） | `buildWorkflowForSave`（临时工作流「存为工作流」）与 `prepareSaveWorkflow`（`vflow_agent_save_workflow` 工具）两处 `Workflow(...)` 构造各补 `cardIconRes = WorkflowVisuals.defaultIconResName()` + `cardThemeColor = WorkflowVisuals.randomThemeColorHex()`，新增 1 个 import，共 +4 行。⚠️⚠️ **这两处此前什么都不传 ⇒ 落 `Workflow` 的字段默认值**，于是**所有 AI 建的工作流卡片都是同一个默认蓝**，而手动新建（`WorkflowEditorActivity.createDraftWorkflow`）与远程 API（`api/handler/WorkflowHandler.kt:230`）都是随机的 —— 三种建法取色口径互不一致。⚠️ **这是「改错了不报错、只静默变差」的形态**：不传也能编译、能存盘、能显示，只是颜色撞车，**没有任何行为测试会因此变红** ⇒ 只能靠源码扫描锚定（见下条测试）。⚠️ **刻意不改 `Workflow` 的字段默认值** —— 改它会把导入 / 备份恢复 / 远程 API 等所有构造点一起改掉取色语义，而它们各自有既定期望（导入保留原色，经 `WorkflowJsonImportParser`）。⚠️ 编辑器内的 AI 生成（`WorkflowAiGenerator` → `applyGeneratedWorkflow`）**不在本改动范围** —— 它只往编辑器回填步骤、不直接落盘。 | **手动合并**（4 行 + 1 import） |
+| `ui/chat/ChatAgentModuleExecutor.kt`（改，**AI 存盘工作流取随机主题色**，2026-10-05） | `buildWorkflowForSave`（临时工作流「存为工作流」）与 `prepareSaveWorkflow`（`vflow_agent_save_workflow` 工具）两处 `Workflow(...)` 构造各补 `cardIconRes = WorkflowVisuals.defaultIconResName()` + `cardThemeColor = WorkflowVisuals.randomThemeColorHex()`，新增 1 个 import，共 +4 行。⚠️⚠️ **这两处此前什么都不传 ⇒ 落 `Workflow` 的字段默认值**，于是**所有 AI 建的工作流卡片都是同一个默认蓝**，而手动新建（`WorkflowEditorActivity.createDraftWorkflow`）与远程 API（`api/handler/WorkflowHandler.kt:230`）都是随机的 —— 三种建法取色口径互不一致。⚠️ **这是「改错了不报错、只静默变差」的形态**：不传也能编译、能存盘、能显示，只是颜色撞车，**没有任何行为测试会因此变红** ⇒ 只能靠源码扫描锚定（见下条测试）。⚠️ **刻意不改 `Workflow` 的字段默认值** —— 改它会把导入 / 备份恢复 / 远程 API 等所有构造点一起改掉取色语义，而它们各自有既定期望（导入保留原色，经 `WorkflowJsonImportParser`）。⚠️ 编辑器内的 AI 生成（`WorkflowAiGenerator` → `applyGeneratedWorkflow`）**不在本改动范围** —— 它只往编辑器回填步骤、不直接落盘。⚠️ **2026-10-14 补**：该链路已整体删除（见本表末「删除上游的 AI 生成工作流」条目），这条历史判断不再有实际影响。 | **手动合并**（4 行 + 1 import） |
 | `test/.../ui/chat/ChatSavedWorkflowVisualsTest.kt`（新增，3 例） | fork 独有：**源码扫描型接线锚定**（形态照 `ChatTemporaryWorkflowTruncationTest` / `AgentErrorDialogWiringTest`）。⚠️ **存在理由**：如上条所述，漏传颜色**不会有任何行为测试变红**（`Workflow` 有默认值、编译与存盘都正常），只能扫源码。三条断言：两条入参路径（`buildWorkflowForSave` / `prepareSaveWorkflow`）各自函数体内**必须**同时含 `cardThemeColor = WorkflowVisuals.randomThemeColorHex()` 与 `cardIconRes = WorkflowVisuals.defaultIconResName()`（含**防空转**断言）；第三条锁 import。⚠️ **反证已实际做过**：删掉两处 `cardThemeColor` 赋值 ⇒ **两条断言同时变红**（先确认会红、改回后复绿） | 我方 |
 > ⚠️ **`docs/fork/trigger-label-design.md` 是主仓库已提交的文件**，实现分支（worktree）内
 > 刻意**不创建、不修改、不复制**它（会形成 add/add 冲突）；其「实现状态」段由父会话在集成时
@@ -1491,6 +1492,12 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 | `test/.../ui/overlay/AgentMonitorAndImeWiringTest.kt`（**新增**，6 例） | 源码扫描：`IME_POLICY_LOCAL = 0`、策略在**建屏之后**设置、AIDL 事务码 8、虚拟屏输入**先 IME 后 shell**、悬浮窗**不再持有** `pauseSignal`、manifest 可调大小且无 PiP、三语 8 键齐全 | 我方 |
 | `test/.../ui/overlay/AgentVirtualScreenPreviewWiringTest.kt`（改，6 例） | 随预览 API 替换更新：多消费者、生产/消费**都不 recycle**、发布在主线程 | 我方 |
 
+> ⚠️ **2026-10-14 新增分歧（删除上游功能）**：
+>
+> | 文件 / 范围 | 分歧内容 | 冲突归属 |
+> |---|---|---|
+> | **删除**：`ui/workflow_editor/AiGenerationSheet.kt`、`ui/workflow_editor/WorkflowAiGenerator.kt`、`res/layout/sheet_ai_generation.xml`、`test/.../ui/workflow_editor/WorkflowAiGeneratorTest.kt`；**改**：`EditorMoreOptionsSheet.kt`、`res/layout/sheet_editor_more_options.xml`、`WorkflowEditorActivity.kt`、三语 `strings.xml`、`core/backup/scopes/{ChatScope,SecretsScope}.kt`、`core/backup/SecretStore.kt`（KDoc）+ 4 个备份测试 | **删除上游的「AI 生成工作流」功能**（本文档 `docs/fork/surveys/ai-system-overview.md` 的**链路 B**）。理由：它被聊天 Agent（链路 A）完全覆盖，却另立一套**单轮、无工具、无验证闭环**的生成器，并**单独存一份模型配置**（SharedPreferences `ai_config`，与链路 A 的 `ChatProviderConfig` 不通 ⇒ 同一 API key 要填两遍）。删除范围：①「更多选项」sheet 的 `card_ai_generate` 入口卡片（工具网格由两行合并为**一行**：UI 检查器 + logcat 调试器）；② `EditorMoreOptionsSheet.onAiGenerateClicked`；③ `WorkflowEditorActivity.showAiCreationSheet()` / `applyGeneratedWorkflow()`（后者是「覆盖 / 追加到末尾」确认弹窗）；④ 该功能**专属**字符串：`editor_more_ai_generate`、`ai_generation_*`（9 个）、`editor_dialog_overwrite_message`、`editor_toast_ai_workflow_applied`（三语同步删）。⚠️ **刻意保留**同批但通用的孤儿字符串（`editor_dialog_overwrite_title` / `editor_button_overwrite` / `editor_button_append_to_end` / `editor_toast_steps_appended` / `label_generate_workflow`）以及上游本就孤儿的 `toast_please_enter_*` / `dialog_stop_generation_*` —— 按「孤儿字符串故意保留」的既有约定不动它们。⚠️⚠️ **连带必改（否则单测当场变红）**：`ChatScope` 的 `ai_config` spec 与 `SecretsScope.SECRET_SLOTS` 里的 `ai_config.api_key`（槽位数 10 → **9**）—— 这两处各有一条**源码扫描型反僵尸测试**（`ChatScopeTest.every whitelisted key still exists in the codebase` / `SecretsScopeTest.the nine whitelist slots match...`），断言每个白名单键**在当前源码里逐字存在**，而 `"api_key"` / `"provider"` / `"base_url"` 三个字面量全仓库只出现在被删的两个文件里。`BackupPipelineTest` / `WebDavSecretsTranscodeTest` 里的样例槽位改用 `module_config_prefs.feishu_*`。**合并上游时**：若上游仍在维护这条链路，冲突按**我方**处理（保持删除）；若上游也已删除，取上游并核对三语 `strings.xml` 的键位 | **我方** |
+
 > ⚠️ **本批把上一批（同日）刚加的 `startPreview` API 替换掉了** —— 两批都还没推远端，无需兼容旧调用。
 >
 > ⚠️ **两处反证已做**：① 把 `IME_POLICY_LOCAL` 改成 1 + 把虚拟屏分支的 IME 调用改成 `if (false)` ⇒
@@ -1701,6 +1708,175 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 >
 > ⚠️ 顺带记录：`captureScreen(displayId)` 这个签名现在**只支持 0（主屏）与虚拟屏**。
 > 若将来真要做"指定物理屏"，得按**物理 DisplayId** 拼 `screencap -d`，不能复用逻辑 id。
+
+### 模块异常处理策略现状梳理（2026-10-14）—— **仅文档，无代码改动**
+
+> 起因：用户问「想兜住报错、按结果走不同路径该选什么策略」。走查发现**仓库既有文档推荐的那套写法不成立**，
+> 且「跳过时注入的状态」在编辑器里根本选不到。本文档只固定现状，**未改任何代码**。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `docs/fork/surveys/module-error-status-survey.md`（**新增**） | fork 独有：**异常处理策略 × 全模块状态判据现状**。① 三种策略的实际语义（**只有 SKIP 能让流程继续；RETRY 耗尽落 STOP，没有「重试失败再跳过」的降级**；参数解析失败的重试是空转——`preExecutionFailure` 在重试循环外算好）；② 跳过时注入的 `error`/`success` **在大多数模块上都不是「声明输出」**（全仓声明 `success` 的 73 个、声明 `error` 的 **9** 个，且 `error` 的声明**全是位置参数写法**）⇒ 对**其余模块**选择器不列、步骤 id 是 UUID、AI 侧不知情、文档也没写 ⇒ 四处都读不到；③ **IF 运算符陷阱**：`存在/不存在` 在 IF 里恒 true/false（`ConditionEvaluator` 只在 Kotlin `null` 时判"不存在"，而 `getVariable` 永远返回非空 `VObject`）、`VNull` 参与 `为空` 恒 false（`:78` 早退）⇒ `docs/EXCEPTION_HANDLING.md:365-397` 与 `docs/VOBJECT_SEMANTICS.md:338/634/656` 推荐的 `不存在` 写法**不成立**；④ **206 个注册模块全量清单**（A 组 77 个「能兜 + 能判」/ B 组 65 个「会报错但兜不住」/ C 组 64 个「无显式失败出口」，含每组的判据写法）；⑤ 附带发现：`partialOutputs` 全仓只有 7 个模块实现且**只覆盖业务未命中不覆盖技术错误**、`vflow.logic.jump` 声明了 `success` 却从不返回（判据恒真）、**子工作流失败不冒泡**（`CallWorkflowModule.kt:143` 恒返回 Success）、`ModuleRegistry` 触发器段注册 **30** 个而 `AGENTS.md` 记 24 个。⑥ 复算脚本 + 4 条统计陷阱（`error` 的声明**全是位置参数写法**，用 `id = "error"` grep 会误得"一个都没有"——本次实际踩过）。**未实施任何改动**；§7 列出「成功路径也注入 `success=true`」等三个候选方案及代价。上游无此文件 | 我方 |
+| `docs/fork/surveys/README.md`（改） | 索引追加 `module-error-status-survey.md` 一行 + 「候选梳理方向」补注（「工作流引擎」候选里的「错误恢复」部分已覆盖） | **手动合并**（追加） |
+
+### 异常处理策略扩展设计（2026-10-15）—— **设计稿（仅文档；P0-4 已实现，见下节）**
+
+> 起因：用户要扩展异常处理策略（现只有 停止 / 跳过 / 重试 三种），并提了两个新想法：**「终止但不弹窗」**、
+> **「跳过时直接跳到某一步」**。走查后确认 P0-2（重试退避）**没必要**（用户判断正确，已否决并记理由），
+> 其余四项 + 三个「不做就静默失效」的集成点 + `vflow.logic.jump` 的 7 条既有缺陷，全部落成设计稿。
+> ⚠️ 本节只登记**设计稿本身**；**P0-4（静默终止）随后已实现**，实现登记见下一节。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `docs/fork/error-handling-extension-design.md`（**新增**） | fork 独有：**异常处理策略扩展设计**。四项 P0 的语义定案：① **P0-3 状态可见**（成功路径也注入 `success`，且**加在 `BaseModule.getDynamicOutputs` 默认实现**里 —— 选择器/pill/AI catalog/`outputSchema` 四处共用该口径，只改 UI 侧则 AI 看不见、pill 退化成原文）；② **P0-1 策略链**（新增 `__on_retry_exhausted`，`RETRY` 不再必然落 `STOP`）；③ **P0-4 静默终止**（新增第 4 种策略 `STOP_SILENT`：只静默弹窗，通知栏/终态/日志全保留 —— 与既有工作流级 `Workflow.silentExecution` **正交**且遵循同一条"失败豁免"原则；顺带修掉"用户不点弹窗则终态不广播、`finally` 不执行"的阻塞路径）；④ **P0-5 跳过跳转**（错误分支轻量版：目标**存 step id 不存序号** ⇒ 插入/删除不漂移；**允许向前跳** + 三层防护[单步上限/全局预算/静态环检测警告]替代方向限制；**只禁止向内跳**；跳转时**恒注入 `[[__error]]` 字典**（正常路径空字典 ⇒ `不为空` 判据可靠，绕开 `VNull` 陷阱）作为错误上下文，与 P1 工作流级错误处理器共用字段）。另含：**三个静默失效的集成点**（AI 侧未知键**整单拒绝** ⇒ 今天 AI 完全无法配策略；编辑路径整表替换吃保留键；SKIP 日志行是 AI 卡片唯一锚点）、**上游为什么用序号存的分析**（含 `e42e6ff9`/`c17be0aa`/`a457d5ff` 时间线证据 + 双字段双写迁移方案）、**`vflow.logic.jump` 7 条既有缺陷**（B1 插入删除后静默漂移 / B2 向内跳无校验 / B3 `loopStack` 不清理 / B4 无环保护 …）、**决策台账 9 定案 + 5 否决**（否决：退避 / `ErrorEquals` / label / 全量 Saga / 彻底静默）、**19 例测试清单**、分期与交接 | 我方 |
+| `docs/fork/surveys/module-error-status-survey.md`（改） | §7 扩展落点：把 v1.0 的「UI 侧注入伪项」改为**定案 D2（注入 `BaseModule.getDynamicOutputs`）**并标注 v1.0 描述已过期；追加指向设计文档的链接 | **手动合并**（追加） |
+| `core/workflow/WorkflowJumpReferenceUpdater.kt` | ⚠️ **本设计明确不改它**（保持「暂未分歧」）：B1 走「把编辑器调用点切到 fork 版 `WorkflowPatch.remapJumpReferences`」的甲方案 | （暂未分歧） |
+
+### 异常处理策略扩展 · **P0-4 静默终止**（2026-10-15）—— **已实现**（单测 + release 打包通过，真机未验证）
+
+> 新增第 4 种策略 `STOP_SILENT`：**终止，但不弹错误弹窗**。只抑制那个**阻塞式**弹窗 ——
+> 通知栏 `Failed`、`ExecutionState.Failure` 广播、日志 `E/模块执行失败` 行**全部保留**
+> （与既有工作流级 `Workflow.silentExecution` 同一条原则：「静默的语义是别打扰我，不是炸了也别告诉我」）。
+> 附带修掉一条既有隐患：弹窗是 `suspend` 的，被它挡住 ⇒ 终止状态不广播、`finally`（WakeLock / 工作目录 / 摘除登记）不执行；
+> 静默终止让失败路径变成**不依赖 UI 交互**的纯状态机路径。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `core/workflow/model/ActionStepExecutionSettings.kt`（改） | 新增常量 `POLICY_STOP_SILENT = "STOP_SILENT"` + **纯函数** `shouldShowErrorDialog(policy, showErrorDialog)`（`= showErrorDialog && policy != POLICY_STOP_SILENT`）。抽纯函数是因为本仓库无 Robolectric、`WorkflowExecutor` 起不来，而这条判断两端都会「静默变差」（漏抑制 = 打扰用户；抑制过头 = 失败无提示） | **手动合并**（追加常量 + 1 个函数） |
+| `core/execution/WorkflowExecutor.kt`（改） | 失败分支的弹窗门禁由裸 `if (showErrorDialog)` 改为 `ActionStepExecutionSettings.shouldShowErrorDialog(executionSettings.policy, showErrorDialog)`（**只此一处**）+ 注释说明与 Agent 调试路径共享同一条正确性收益 | **手动合并**（1 行 + 注释） |
+| `ui/workflow_editor/ActionEditorSheet.kt`（改） | `buildErrorHandlingUi()` 新增第 4 个 radio + 恢复选中态的 `when` 分支；KDoc 加警告「**新增策略必须同时加 radio**，否则 `else -> rbStop` 兜底会把存量步骤里已存的值**静默改成 STOP**」 | **手动合并**（追加） |
+| `res/values{,-en,-ja}/strings.xml`（改） | 新增 `editor_error_policy_stop_silent` 三语 | **手动合并**（追加） |
+| `test/core/workflow/model/ActionStepExecutionSettingsTest.kt`（**新增**） | fork 独有：6 例纯函数测试（常量两两互异 / 抑制 / **反向**：其它策略与未知值都不抑制 / 总开关优先 / `fromParameters` 读回 / 缺键回落 `STOP` 且不抑制） | 我方 |
+| `test/ui/workflow_editor/StopSilentPolicyWiringTest.kt`（**新增**） | fork 独有：5 例源码扫描型接线测试（执行器调用点、编辑器 radio 与文案、三语资源、常量与函数位置）—— 防「纯函数测了但调用点没接」。其中一例是**面向未来**的自动枚举守卫：从源码里解析出**所有** `POLICY_` 常量，逐个断言编辑器里有对应选项（因为恢复选中态的 `when` 有 `else -> rbStop` 兜底，新增策略忘了加 radio 会**静默**把存量值改回 `STOP`） | 我方 |
+| `test/ui/chat/AgentErrorDialogWiringTest.kt`（改） | ⚠️ **既有守卫被本次改动触发**：它断言裸 `if (showErrorDialog)` ⇒ 当场变红。已升级为断言 `shouldShowErrorDialog(executionSettings.policy, showErrorDialog)`（比原来更强，顺带锁住策略那一半）。该测试是 fork 为「Agent 调试不弹窗」设的接线守卫，形态变更必须显式更新而非绕过 | **手动合并**（改 1 处断言 + 注释） |
+
+> 设置页的**全局默认策略**原为 3 选 1（想让「所有新步骤默认静默停止」设不出来），**已随 P0-3 同批补成 4 项**，见下一节。
+> 验证：`./gradlew test` 3061 例，仅剩 `AGENTS.md` 记录的既有失败（`VObjectPropertyTest`）；`./gradlew assembleRelease` 通过，签名 `CN=vFlow Fork, O=nightking8342` 已核对。**真机未验证**。
+
+### 异常处理策略扩展 · **P0-3 状态可见** + 设置页第 4 项（2026-10-15）—— **已实现**（单测 + release 打包通过 + **互传已送达**，真机未验证）
+
+> 目的：让 `IF {{任意步骤.success}} 为假` **全局可靠**（成功 `true` / 跳过 `false`），
+> 从而把 survey 里那 65 个「会报错但兜不住」的模块也纳入可分流范围。
+> 顺带补上设置页的全局默认策略第 4 项（原 P1，用户要求与 P0-3 同批做掉），并把策略名改为**「静默停止工作流」**。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `core/module/StepStatusSupport.kt`（**新增**） | fork 独有：**步骤状态输出供给层**（纯函数，可纯 JVM 单测）——`SUCCESS_OUTPUT_ID` / `successOutputDefinition()` / `withSuccessOutput(declared)`（**去重**：73 个模块自己声明了 `success`）/ `withSuccessFlag(outputs)`（补 `true` 且**不覆盖**模块自己给的 `false`，如 `ClickModule` 的落点结果） | 我方 |
+| `core/module/BaseModule.kt`（改） | `getDynamicOutputs` 默认实现 → `StepStatusSupport.withSuccessOutput(getOutputs(step))`（1 行 + 注释）。⚠️ 加在 `getDynamicOutputs` 而非 `getOutputs`：变量选择器 / 胶囊渲染（`VariableInfo`）/ 触发器 `outputSchema` 读前者 | **手动合并**（1 行） |
+| `core/execution/WorkflowExecutor.kt`（改） | 成功分支 → `StepStatusSupport.withSuccessFlag(result.outputs)`。⚠️ 空输出表也会被补成 `{success: true}` ⇒ **每个成功步骤都会写 `stepOutputs`**；已知连带：`vflow.data.log` 的「裸写步骤 id ⇒ 打印整表」特性现在对所有步骤生效（打印 `{success=true}`，比原来"什么都不打"更有信息量，故接受） | **手动合并**（1 行） |
+| `ui/chat/ChatAgentModuleExecutor.kt`（改） | ⚠️ 走查更正一处**设计稿里的事实错误**：AI 拼 `outputs:` 段读的是 **`getOutputs`**（`:2819`）而不是 `getDynamicOutputs` ⇒ 只改模块基类会造成「人工能选、AI 看不见」。该处也接同一供给层（1 行 + import） | **手动合并**（1 行） |
+| `ui/settings/SettingsScreen.kt`（改） | `DefaultErrorPolicyRow` 选项 3 → 4（+`stopSilentLabel` 参数 + 调用点）。顺带修掉一个静默陷阱：`checked = localPolicy == value` ⇒ 选项不全时该值显示为「三个都没选中」，用户随手一点就覆盖全局默认 | **手动合并**（~5 行） |
+| `res/values{,-en,-ja}/strings.xml`（改） | `output_common_step_success_name`（「是否成功」）+ `settings_error_policy_stop_silent`（「静默停止」）三语；`editor_error_policy_stop_silent` 文案改为**「执行失败时：静默停止工作流」** | **手动合并**（追加/改） |
+| `test/core/module/StepStatusSupportTest.kt`（**新增**） | fork 独有：8 例纯函数（id 与执行器注入键同字面量 / BOOLEAN / 补项 / **去重** / 空表 / **不覆盖** / 无输出模块也要写） | 我方 |
+| `test/core/module/StepStatusWiringTest.kt`（**新增**） | fork 独有：4 例源码扫描（三个调用点 + 三语文案）—— 三个调用点漏接的后果分别是「编辑器选不到」「分流永远走错」「AI 看不见」 | 我方 |
+| `test/ui/workflow_editor/StopSilentPolicyWiringTest.kt`（改） | 自动枚举守卫从「每种 `POLICY_` 常量都要有编辑器 radio」扩展为**两处 UI 都要有**（编辑器 + 设置页），各带失效后果注释 | **手动合并**（追加断言） |
+| `test/core/workflow/module/data/InspectTypeModuleTest.kt`（改） | ⚠️ **既有守卫被本次改动触发**：它断言 `getDynamicOutputs` 与 `getOutputs` **逐字相等**，加了 `success` 后当场变红。已按新语义升级为「静态输出全部在前 + 尾部恰好多一项 `success`」（比原来更强） | **手动合并**（改 1 处断言） |
+
+> 验证：`./gradlew test` **3074 例**，仅剩 `AGENTS.md` 记录的既有失败（`VObjectPropertyTest`）；`./gradlew assembleRelease` 通过，签名已核对；
+> 互传发送后**回读管家日志逐条验证**了本次任务（`OnTaskCreate → kWaitReceive → OnTaskConfirm → kFileSending → kDone → OnTaskSucceed`，`total_size` 与新 APK 逐字节一致）。
+> ⚠️ 教训：`midrop` 返回的 `confirmed: true` **可能匹配到历史同号任务**（前一次发送管家报 `can't find device info in local`、根本没建任务，CLI 却拿昨天的 `OnTaskSucceed task_id 3245` 判成成功）⇒ 必须回读日志确认本次链路。
+
+### AI 侧认识「步骤级执行设置」保留键（2026-10-15）—— **已实现**（单测 + release 打包通过，真机未验证）
+
+> 起因：用户要求「先做让 AI 可以自己配策略」。走查确认 `resolveModuleInputDefinitions`
+> （catalog 与执行校验的**共用口径**）此前只对 `vflow.trigger.*` 注入过 `__trigger_label`，
+> ⇒ `__error_policy` / `__retry_count` 被 `buildParameters` / `applyParameterPatch` 判成 unknown
+> 并**拒绝整个调用**（`update_workflow` 甚至整份补丁不落地）⇒ **AI 完全无法配置异常处理策略**。
+> 这是设计文档 §4.1 记的集成点，原计划随 P0-1 一起做，本次**提前做掉**。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `ui/chat/ChatAgentModuleExecutor.kt`（改） | 新增顶层私有函数 `stepExecutionSettingInputDefinitions()`，并在 `resolveModuleInputDefinitions` 里对**所有**模块注入 `__error_policy`（ENUM，`options` = 4 种策略）/ `__retry_count` / `__retry_interval`。**`isHidden = true`**：对「直接调用」这些键无意义（`call_module` 没有「步骤」这一层）⇒ 不进 per-tool JSON Schema；而 `query_module_schema` 的 `inputs:` 段**不按 isHidden 过滤** ⇒ 模型仍能发现。`name`/`hint` 用英文（该输出整体面向模型，与 `inputHints` 同惯例） | **手动合并**（新增 1 个顶层函数 + 注入 3 行） |
+| `ui/chat/ChatAgentToolRegistry.kt`（改） | `update_workflow` 的工具描述补一段：这些键是**步骤级设置**、取值与默认值、`STOP_SILENT` / `SKIP` 的语义、以及 `SKIP` 会写 `error` + `success=false` 供下游 `{{stepId.success}}` 分流 | **手动合并**（追加描述） |
+| `test/ui/chat/ReservedStepKeyInjectionTest.kt`（**新增**） | fork 独有：4 例纯 JVM（普通模块也接受保留键 / 策略键是 ENUM 且**自动枚举** `POLICY_*` 核对取值 / 保留键必须 `isHidden` / **自动枚举** `KEY_*` 核对注入表）。后两条是**面向未来**的守卫：P0-1 加 `__on_retry_exhausted`、P0-5 加 `__skip_jump_target` 时漏注入会当场变红 | 我方 |
+
+> 解锁的能力：模型现在能配 `STOP` / `STOP_SILENT` / `SKIP` / `RETRY`，**并且能给临时工作流的步骤设策略**
+> ⇒ 真机验证「静默停止」可由 Agent 自己做 A/B 对比（默认策略弹窗 vs `STOP_SILENT` 不弹窗），不必等人手动点。
+> 验证：`./gradlew test` **3078 例**，仅剩 `AGENTS.md` 记录的既有失败；`./gradlew assembleRelease` 通过。
+
+### 异常处理策略扩展 · **P0-1 策略链**（2026-10-15）—— **已实现**（单测 + release 打包通过，真机未验证）
+
+> `RETRY` 不再必然落「终止 + 弹窗」：新增步骤级设置 **`__on_retry_exhausted`**
+> （`STOP` / `STOP_SILENT` / `SKIP`，**缺省 `STOP` = 与改动前逐字相同**）⇒
+> 「重试 3 次，还不行就跳过继续」这类编排终于写得出来。
+> 成熟实现里「重试」与「兜底」本就是两件事（Step Functions 的 `Retry` + `Catch`、Airflow 的
+> `retries` + `on_failure_callback`），本项把这条链补上。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `core/workflow/model/ActionStepExecutionSettings.kt`（改） | 新增 `KEY_ON_RETRY_EXHAUSTED` + 字段 `onRetryExhausted` + `ON_RETRY_EXHAUSTED_CHOICES` + **两个纯函数** `normalizeOnRetryExhausted`（非法值收敛到 `STOP`，**不抛异常**）与 `effectivePolicy(policy, onRetryExhausted)`（只有 `RETRY` 会被展开）。抽纯函数是因为本仓库无 Robolectric、`WorkflowExecutor` 起不来，而缺省值写错 = **存量工作流行为漂移** | **手动合并**（追加常量/字段/函数） |
+| `core/execution/WorkflowExecutor.kt`（改） | 多一个 `val effectivePolicy`；**结果处理**（跳过分支判据 + 弹窗门禁）改用它，重试 `while` 仍看原始 `errorPolicy`（「要不要重试」与「重试完之后怎么办」是两件事） | **手动合并**（3 处 + 注释） |
+| `ui/workflow_editor/ActionEditorSheet.kt`（改） | retryContainer 内新增「重试次数用尽后」下拉（`ON_RETRY_EXHAUSTED_CHOICES` + `optionsStringRes` 按 index 取文案） | **手动合并**（追加） |
+| `ui/workflow_editor/ActionEditorExecutionSettings.kt`（改） | `setExecutionSettings` 在 `RETRY` 时写该键、其余策略下 `remove` | **手动合并**（追加） |
+| `res/values{,-en,-ja}/strings.xml`（改） | 新增 `editor_retry_exhausted_{label,stop,stop_silent,skip}` 四键三语 | **手动合并**（追加） |
+| `ui/chat/ChatAgentModuleExecutor.kt`（改） | `stepExecutionSettingInputDefinitions()` 补 `__on_retry_exhausted`（ENUM，取值 = `ON_RETRY_EXHAUSTED_CHOICES`，`isHidden = true`）—— 不补的话 AI 写它会被判 unknown 并**拒绝整个调用** | **手动合并**（追加 1 个 InputDefinition） |
+| `ui/chat/ChatAgentToolRegistry.kt`（改） | `update_workflow` 描述补「用尽后动作」的取值/默认值与组合示例 | **手动合并**（追加描述） |
+| `test/core/workflow/model/ActionStepExecutionSettingsTest.kt`（改） | +7 例纯函数（展开 / **反向**：非 RETRY 不受影响 / **缺省等于今天的行为** / 读回 / 非法值收敛 / 取值里没有 `RETRY` / 顺序即 UI 顺序） | **手动合并**（追加） |
+| `test/ui/workflow_editor/RetryExhaustedPolicyWiringTest.kt`（**新增**） | fork 独有：5 例源码扫描 —— 有效策略的两处接线、**反向**断言「重试循环没被有效策略污染」（否则 `RETRY + 用尽后=SKIP` 会**一次都不重试**，功能看着能用但重试静默失效）、编辑器写回与清理、**下拉文案顺序与常量表一一对应**（`bindDropdown` 按 index 取文案，错位会「显示跳过、实际存 STOP」）、三语文案 | 我方 |
+| `test/ui/workflow_editor/StopSilentPolicyWiringTest.kt`（改） | ⚠️ **既有守卫被触发**：它断言弹窗门禁实参是 `executionSettings.policy` ⇒ 改成 `effectivePolicy` 后当场变红，已按新语义升级 | **手动合并**（改 1 处断言） |
+| `test/ui/chat/AgentErrorDialogWiringTest.kt`（改） | ⚠️ 同上（第二次形态变更）：断言升级为 `shouldShowErrorDialog(effectivePolicy, showErrorDialog)` | **手动合并**（改 1 处断言） |
+| `test/ui/chat/ReservedStepKeyInjectionTest.kt`（改） | 新增 1 例：用尽后动作键是 ENUM 且取值与 `ON_RETRY_EXHAUSTED_CHOICES` 一致、且**不含 `RETRY`** | **手动合并**（追加） |
+
+> 验证：`./gradlew test` **3091 例**，仅剩 `AGENTS.md` 记录的既有失败（`VObjectPropertyTest`）；`./gradlew assembleRelease` 通过。
+
+### 异常处理策略扩展 · **P0-5 跳过跳转 + 错误上下文**（2026-10-15）—— **已实现**（单测 + release 打包通过，真机未验证）
+
+> 新增步骤级设置 **`__skip_jump_target`**：失败被跳过时**直接落到指定步骤**（而不是「继续下一步」），
+> 于是「失败 → 跳到收尾/补偿步骤」不再需要手拼 `IF` + `vflow.logic.jump`（少两个步骤、少一处序号漂移点）。
+> 同时**恒注入** `[[__error]]` 错误上下文字典（正常路径是空字典）—— 一个收尾步骤常被**多个**失败步骤指向，
+> 没有它就不知道「是谁跳过来的、错在哪」。
+>
+> 关键决策：**存 step id 不存序号**（序号是位置引用 ⇒ 插入/删除后**静默跳错步骤**，既有 `vflow.logic.jump` 就是这样）；
+> **允许向前跳**（回到开头重跑、状态机式编排都是真实需求），用**三层防护**替代方向限制：
+> 单步上限 10 次（超限降级为「继续下一步」+ `W` 日志）/ 执行级总预算 200 次（超限**终止**并报「疑似死循环」）/
+> 编辑器静态环检测（toast 警告，不阻止保存）。**只禁止「向内跳」**（跳进块体内部会让块配对失配：
+> `Loop` 的 End 会**静默 Success**、`ForEach` 的 End 直接 Failure）。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `core/workflow/JumpTargetSupport.kt`（**新增**） | fork 独有：跳转目标纯函数层 —— `targetIdOf` / `resolveTargetIndex`（按 id 反查下标）/ `isAllowedTarget`（角色 + 缩进双判据）/ `enclosingLoopCount` / `alignLoopStack` / `detectCycles` + 两个阈值常量。块结构走**可注入的 `ShapeResolver`**（生产读 `ModuleRegistry`，测试注入假表）—— 本仓库无 Robolectric，不注入就没法单测 | 我方 |
+| `core/workflow/ErrorContext.kt`（**新增**） | fork 独有：`[[__error]]`（`VDictionary`）的常量 + 构造器 + `EMPTY`。选字典载体是因为「为空 / 不为空」作用在**真 `VDictionary`** 上可靠（`ConditionEvaluator`），恰好**绕开** survey 记录的那整套 `VNull` 陷阱；P1 的工作流级错误处理器将来**共用**这个对象 | 我方 |
+| `core/workflow/model/ActionStepExecutionSettings.kt`（改） | 新增 `KEY_SKIP_JUMP_TARGET` + 字段 `skipJumpTarget`（空白一律当没设置 ⇒ `null`） | **手动合并**（追加） |
+| `core/execution/WorkflowExecutor.kt`（改） | ① `executeWorkflowInternal` 开头**恒注入** `[[__error]]` 空字典（放在这里而不是 `execute()`：子工作流也走这条路）；② SKIP 分支写错误上下文 + 解析/校验目标 + 单步上限 + 跳转（含 `alignLoopStack`），三条降级路径**都打可见日志**；③ 总预算用尽改走 STOP 分支终止（`stopReason` 把文案换成「疑似死循环」） | **手动合并**（上游热路径，~55 行 + 注释） |
+| `ui/workflow_editor/ActionEditorSheet.kt`（改） | 「失败时跳转到」下拉（`options` = step id，`displayOptions` = `#序号 模块名`）；候选用**与运行期同一把尺**过滤；**存量目标不在候选里时原样保留**（否则一保存就静默清掉）；可见性跟随**有效策略**；保存时 `detectCycles` ⇒ toast 警告 | **手动合并**（追加） |
+| `ui/workflow_editor/ActionEditorExecutionSettings.kt`（改） | 写/删 `__skip_jump_target`，判据用**有效策略**（否则「RETRY + 用尽后 = SKIP」配不出跳转目标） | **手动合并**（追加） |
+| `ui/workflow_editor/WorkflowEditorMagicVariableCatalogBuilder.kt`（改） | 新增「错误上下文」固定分组（一个 `[[__error]]` 条目 + `dictionaryKeys` 五个字段），**仅当工作流里真的存在失败跳转时**出现。⚠️ 键名必须用**机器可读**常量（`OutputKeyDefinition.name` 会被**原样拼进引用路径**，本地化文案会拼出解析不到的引用） | **手动合并**（追加） |
+| `res/values{,-en,-ja}/strings.xml`（改） | 新增 `editor_skip_jump_{label,none,option,missing,cycle_warning}` + `editor_group_error_context` + `error_context_variable_name` 三语 | **手动合并**（追加） |
+| `ui/chat/ChatAgentModuleExecutor.kt`（改） | `stepExecutionSettingInputDefinitions()` 补 `__skip_jump_target`（STRING，`isHidden = true`）；hint 里写明「是 step id 不是序号」「只 SKIP 用」「不能跳进块体」「目标步骤可用 `[[__error]]` 读错误」 | **手动合并**（追加 1 个 InputDefinition） |
+| `ui/chat/ChatAgentToolRegistry.kt`（改） | `update_workflow` 描述补 `__skip_jump_target` 与 `[[__error]]` 的用法 | **手动合并**（追加描述） |
+| `test/core/workflow/JumpTargetSupportTest.kt`（**新增**） | fork 独有：18 例纯函数（解析 / 四类合法性 / 嵌套深度 8 个位置 / `loopStack` 对齐 4 例含「跳回自己的循环开头要先弹旧状态」/ 环检测 5 例） | 我方 |
+| `test/core/workflow/ErrorContextTest.kt`（**新增**） | fork 独有：7 例（引用形式 / 字段名与顺序是契约 / 空字典 / 五字段取值 / **实跑 `ConditionEvaluator`** 验证「为空/不为空」真的可用 / `getProperty` 取键） | 我方 |
+| `test/ui/workflow_editor/SkipJumpWiringTest.kt`（**新增**） | fork 独有：7 例源码扫描 —— 三个纯函数的接线、阈值来自常量、**跨文件**断言「跳过日志行与 `ChatMessagePatch.SKIPPED_FAILURE_LINE_PREFIX` 逐字一致」（改文案不同步 ⇒ AI 卡片把失败**误报成 SUCCESS**）、编辑器写回/清理/可见性/环检测、变量选择器分组、三语文案 | 我方 |
+| `test/core/workflow/model/ActionStepExecutionSettingsTest.kt`（改） | +3 例（缺省不跳转 / 去空白 / 空白与非字符串一律当没设置） | **手动合并**（追加） |
+
+> 验证：`./gradlew test` **3126 例**，仅剩 `AGENTS.md` 记录的既有失败（`VObjectPropertyTest`）；
+> `./gradlew assembleRelease` 通过，`apksigner verify --print-certs` 显示 `CN=vFlow Fork, O=nightking8342`。
+> **真机未验证**。
+>
+> ⚠️ **未做项（已登记，见设计稿 §9.1 / §11）**：① 环警告只有 toast，没有「卡片标红」（要动上游编辑器列表绑定）；
+> ② `PickerType.STEP` 选择器类型（改用既有下拉，见决策 D10）；③ 目标步骤被删时的**引用重映射**
+> （现降级为「继续下一步」+ `W` 日志）—— 建议与设计稿 §9.2 的 `vflow.logic.jump` 缺陷 B1 一起做。
+
+### 执行终止语义现状梳理（2026-10-14）—— **仅文档，无代码改动**
+
+> 起因：用户连问「停止工作流是否只停当前」「覆盖会不会中断前一个」「超时会发生什么」
+> 「阻塞类操作是不是也不适合被 stop」「实现 `invokeOnCancellation` 的模块能被中断吗」。
+> 走查后确认**三种终止机制被混为一谈**，且超时口径四处不一致。**未改任何代码**。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `docs/fork/surveys/execution-termination-survey.md`（**新增**） | fork 独有：**工作流执行终止语义（停止 / 覆盖取消 / 超时）**。① **「停止工作流」是两种机制**：`当前` = `Signal(Stop)` → `pc = steps.size`（**步骤边界结束，不打断任何东西**，且它自己就是一个步骤 ⇒ 不能当看门狗）；`指定` = `stopExecution` → `job.cancel()`，而 **`覆盖` / 手动停止（通知栏「结束」）/ `指定` 三者同源**。② 状态口径：Stop → 通知「执行完毕」+ 总线 `Finished`；cancel → 「已停止」+ `Cancelled`（**这个区分有价值，不建议抹平**，但**名字在误导**）。③ **协作式取消打不断阻塞调用**（阻塞 HTTP `HttpRequestModule.kt:266`、shell·Core 的 `readLine`（`soTimeout=0`）、脚本路径的 `runBlocking`、纯计算匹配、等用户输入的 `CompletableDeferred`），且**外部叫停对它们完全无效**；`stopExecution` **不 join** ⇒ 新旧实例有重叠窗口。④ **超时**：`withTimeout` 只包住主体（**子工作流共享父的这一份预算、没有自己的超时**；`maxExecutionTime = 0` 与 `null` 等价），到点后 **通知 `Failed` 常驻 / 总线 `Cancelled` / 编辑器当"正常结束" / 无 `stepIndex`** ⇒ 四处口径不一致且**定位不到卡在哪一步**；**且不是硬超时**（卡在阻塞调用时到点不生效）。⑤ **覆盖的三处串扰**，同一根因：**执行是 per-instance，通知与日志是 per-workflow**（通知 ID 按 `workflowId` 派生 ⇒ 旧实例 `finally` 里 `delay(3000)` 后的 `cancelNotification` 会打掉新实例的通知；`executionLogs` 按 `workflowId` 共享 ⇒ 新执行的详细日志可能被摘掉）。⑥ **`invokeOnCancellation` 的两层语义**：第 1 层「工作流不会继续」= `suspendCancellableCoroutine` 的库保证（**即使回调什么都不做**）；第 2 层「底层是否真停」= 完全取决于回调内容。**三个失效前提**：**它不是 `finally`**（正常 resume 不触发，实测）、**`runBlocking` 切断取消**（`JsExecutor.kt:356` / `LuaExecutor.kt:159`；实测：回调不触发、等待跑满、**且 `runBlocking` 之后的同步语句仍执行** ⇒ **脚本里调用的任何模块都不可取消**）、同步准备段不在挂起点。⑦ 决策台账 6 条，含用户 2026-10-14 裁定「**子工作流不可被外部停止**」= **既定决策而非缺陷**（子工作流是调用方的一个步骤，允许外部单独停它会让调用方把"被中止"当"正常返回"，状态与实际执行不一致）；+ 开放问题 5 条（超时算失败还是取消、覆盖要不要 join、脚本要不要桥接取消、三处命名是否改文案…）+ 真机复现配方（§9.4）。**§5 为实跑结论（探针跑完即删，配方留在文档里）；§3.4 / §4.4 部分结论标注为【推断】，须真机复现后才落笔为结论**。上游无此文件 | 我方 |
+| `docs/fork/surveys/README.md`（改） | 索引追加 `execution-termination-survey.md` 一行 + 「候选梳理方向」补注（「执行终止 / 取消」部分已覆盖） | **手动合并**（追加） |
+
+### AI 能力统一设计稿（2026-10-15）—— **仅文档，无代码改动**
+
+> 起因：用户提出「AI 模块（Autoglm / AI 智能体 / AI 对话）底层请求大模型的逻辑各自重复了一遍、可复用 ChatAgent（最完整）」，且「希望 AI 模块能**引用**『模型配置』里的配置、而非把配置写死在工作流里，同时保留手动配置」。
+> 走查后确认这是一次牵动 **传输层 / 消息数据模型 / 三协议 / 多模态 / 配置与密钥 / 备份** 的系统性统一，**先落设计稿**。
+> ⚠️ 文中**决策点全部留空待议**（用户明确要求「这些决策点我都先不决策」）。**未改任何代码**。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `docs/fork/ai-capability-unification.md`（**新增**） | fork 独有：**AI 能力统一设计稿（多模态 · 多协议 · 配置引用）**。**现状走查**——两条 AI 链路 3 出网点、ChatAgent 传输能力清单、三个 AI 模块同源重复逐项对照、多模态「**只有 UI 一层**」的六层状态表、**ChatAgent 截图后模型只收到 `image artifact available` 占位串**（无法读图，只能「截图→OCR」两步）、AutoGLM 的**传输协议（OpenAI 兼容）vs 文本动作协议（`do(action=…)`，不走 function calling）**、工作流内 `api_key` 的密钥/备份现状。**设计空间**——共享边界（一次 LLM 往返）/ 多模态数据模型（3 选项）/ 通用工具 schema（3 选项）/ 共享层落点（甲就地改 · 乙抽 `core/ai/`）/ 配置引用（粒度·跟随·UI·删除行为）。**§4 十项待决策点（D1–D10；仅 D5 的「渲染图片」已定「支持」，其余未决）** + **§5 八个任务草案（T1–T8，含依赖图）** + **§6 八条风险**。上游无此文件 | 我方 |
 
 ---
 

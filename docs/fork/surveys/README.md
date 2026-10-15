@@ -32,7 +32,7 @@
 
 | 文档 | 覆盖范围 | 状态 |
 |---|---|---|
-| [`ai-system-overview.md`](ai-system-overview.md) | **AI 体系（本项目现状）**：三条独立 AI 链路（聊天 Agent / AI 生成工作流 / 工作流内 AI 模块）、链路 A 内部三套并行工具体系、提示词组装、技能路由（含各技能的工具/模块明细与兜底机制、**跨轮存续边界**）、工具清单、scope 判定、执行与审批流程、模块可发现性与 catalog 截断、**动态输入在 AI 链路的退化**、Prompt 缓存现状、能力与现状评估 | v1.7 · 已走查定稿 |
+| [`ai-system-overview.md`](ai-system-overview.md) | **AI 体系（本项目现状）**：两条独立 AI 链路（聊天 Agent / 工作流内 AI 模块；原第三条「AI 生成工作流」已于 2026-10-14 删除，§3 保留为历史分析）、链路 A 内部三套并行工具体系、提示词组装、技能路由（含各技能的工具/模块明细与兜底机制、**跨轮存续边界**）、工具清单、scope 判定、执行与审批流程、模块可发现性与 catalog 截断、**动态输入在 AI 链路的退化**、Prompt 缓存现状、能力与现状评估 | v1.7 · 已走查定稿（2026-10-14 局部修订） |
 | [`agent-design-comparison.md`](agent-design-comparison.md) | **外部调研**：头部 Agent 项目（Claude Code / Hermes Agent / Codex CLI）的工具暴露、渐进式披露、上下文压缩、缓存做法，及对 vFlow 的启示 | v1.0 · 外部调研 |
 | [`trigger-system-overview.md`](trigger-system-overview.md) | **触发器体系（本项目现状）**：三层架构（模块声明 / Handler 事件 / Service 分发）、**两处注册**（漏一处即静默失效）、两条链路（配置链路 + 事件链路）、数据模型、三种 Handler 范式（含定时调度 / 外部进程 / 独立 Service）、triggerData 两条数据路、**三套独立的触发器身份判定**、24 个触发器全量清单（事件源 / 权限矩阵）、能力评估与排障顺序 | v1.0 · 已走查定稿 |
 | [`logcat-readability-survey.md`](logcat-readability-survey.md) | **logcat 可读性调研（单点）**：无 root 纯 Shizuku 下能否读 logcat、是否需要 `READ_LOGS`、能读到谁（系统 TAG / 第三方应用）的**真机实测结论**；含三个判定陷阱（采样窗口过小、子串匹配假阴性、标签与实际身份不符）与相邻能力的可行性对照 | v1.0 · 真机实测 |
@@ -41,6 +41,8 @@
 | [`shortx-script-capability.md`](shortx-script-capability.md) | **ShortX 脚本机制深度调研**（外部对照，2026-09-27）：引擎 = **Rhino + MVEL**（**没有 QuickJS/V8**，语言层与 vFlow 等价）；脚本跑在 **system_server**，**无超时 / 无沙箱**（主动装 `NoSecurityController`）；**五类落点**；⭐ **关键位置发现**——`MethodHookExpressions` **只有 MVEL 字段、没有 JS**，且其求值在**被 hook 的进程内**（不在 system_server）⇒ 「能摸到宿主对象」是 **hook 能力而非脚本能力**；**⚠️ ShortX 的六条防御全属 hook 回调路径，脚本路径的防御为零**；能力差距分 **A 类（只有进 system_server 能解）/ B 类（App 侧可补）**，结论 **~大部分差距属 B 类**；§6 给出「**不建议为 system_server 内执行脚本开口子**」的五条依据与限定形态建议 | v1.0 · ShortX 反编译源码逐项直读 |
 | [`shortcut-system-overview.md`](shortcut-system-overview.md) | **快捷方式能力梳理**：「启动快捷方式」模块（`vflow.system.launch_shortcut`）的完整链路。**解析层实测可靠**（408/408 全中）；**两处信息损失**——① dat 打省略（AOSP `ShortcutInfo.java:2681` 漏传 `secure`，**数据完整、仅打印省略**）；② **extras 的「类型」在文本里彻底丢失**（§3.3.1，米家「无账号权限」的真因：String 被猜成 Long）；**问题场景五分类**（B 已可靠 64.5% / A 类型可能错 10.8% / D dat 被省略 18.1% / E 先天无解 5.6% / C 可用 1.0%）；**§4.1 dumpsys 的定位**——它是**调试接口非数据接口**，省略是设计意图（催改无意义），**适合做目录、不适合做可执行调用**；**数据源能力矩阵**（`dumpsys`/`CREATE_SHORTCUT`/`LauncherApps`/Xposed），**「全量+无损+免权限」三者不可兼得**；多 Intent **取末项语义**（已修）；**§5.4 更正**——ShortX 有**两个**入口走两条数据源（「应用快捷方式」=`ACTION_CREATE_SHORTCUT`，「固定的快捷方式」=**Xposed 采集 `requestPinItem`**，四环证据链完整；该列表纯内存无持久化）；`ACTION_CREATE_SHORTCUT` 已实测否决（净收益 ≈ 0）；**§5.5 完整 Intent 四条路径总表** | v1.2 · 真机实测 + AOSP/ShortX 源码直读 |
 | [`multi-display-survey.md`](multi-display-survey.md) | **折叠屏多显示器能力调研（单点）**：回答「能不能让 AI 在指定的那块屏上干活」。真机五轮探针 + AOSP 源码逐条对照：两块面板是两个 Display、同在 `displayGroupId 0`；**`displayId` 不绑面板**（0 永远是"当前活跃面板"，折叠/展开时物理背板对调）；非活跃面板 `state OFF` + `canHostTasks false` + 被 `Display-off` token 按住；`cmd display enable-display N` 能改**逻辑**状态但**点不亮物理背板**；`am start --display N` 被 `canHostTasks` **无条件拒绝（root 也不行）**；`screencap -d` 要**物理** id（顺带查出 vFlow 虚拟屏截图回退路径传错 id 的 bug）；**⚠️ §6 未解疑点**——系统相机「外屏预览」能同时点亮两块屏 ⇒ 硬件支持、通道未知，含下次复测清单 | v1.0 · 真机实测 + AOSP 源码直读 |
+| [`module-error-status-survey.md`](module-error-status-survey.md) | **异常处理策略 × 全模块状态判据（本项目现状）**：三种策略的实际语义（**只有 SKIP 能让流程继续；RETRY 耗尽落 STOP，无「重试失败再跳过」的降级**）；跳过时注入的 `error`/`success` **在大多数模块上都不是「声明输出」**（声明 `success` 的 73 个 / 声明 `error` 的 9 个）⇒ 对其余模块选择器 / 步骤 id（UUID）/ AI / 文档四处都读不到；**IF 运算符陷阱**（`存在/不存在` 在 IF 里恒常量、`VNull` 参与 `为空` 恒 false）；**206 个模块全量清单**（A 组 77 个「能兜 + 能判」/ B 组 65 个「会报错但兜不住」/ C 组 64 个「无显式失败出口」）；用法模板、`partialOutputs` 覆盖不完整、子工作流失败不冒泡、复算脚本与 4 条统计陷阱 | v1.1 · 源码直读 + 脚本全量扫描 |
+| [`execution-termination-survey.md`](execution-termination-survey.md) | **工作流执行终止语义（本项目现状）**：三种终止机制的**粒度 / 状态口径 / 残留**——`停止工作流(当前)` = 步骤边界结束（不打断任何东西）/ `停止工作流(指定)`·`覆盖`·`手动停止` = `job.cancel()` 协作式取消 / `超时` = `withTimeout`。① **协作式取消打不断阻塞调用**（阻塞 HTTP、shell·Core 命令、JS·Lua 的 `runBlocking` 桥、纯计算、等用户输入的悬浮窗），**外部叫停对它们完全无效**；② **超时口径四处不一致**（通知 `Failed` 常驻 / 总线 `Cancelled` / 编辑器当"正常结束" / 无 `stepIndex` ⇒ 定位不到卡在哪一步），且**不是硬超时**；③ **覆盖的三处串扰**（新旧实例重叠、通知 ID 按 `workflowId` 致旧实例打掉新实例通知、`executionLogs` 共享致新执行日志丢失）；④ **`invokeOnCancellation` 的两层语义**（"工作流不会继续"= 库保证；"底层是否真停"= 取决于回调内容）+ 三个失效前提，含本仓库特有的 **`runBlocking` 切断取消**；⑤ 决策台账 6 条（含「**子工作流不可被外部停止**」为**既定决策**）+ 开放问题 5 条 + 真机复现配方 | v1.0 · 源码直读 + 本机实跑 |
 
 ---
 
@@ -89,3 +91,8 @@
 > （真机已复现）。debug 构建不暴露此问题。
 
 > 新增梳理文档后，请回到本 README 的「现有文档」表补一行。
+
+> 异常处理策略与「跳过可分流」判据已由 `module-error-status-survey.md` 覆盖
+> （对应上面「工作流引擎」候选里的**「错误恢复」**部分）；
+> **执行终止语义（停止 / 覆盖取消 / 超时）已由 `execution-termination-survey.md` 覆盖**
+> （对应「子工作流」与「执行循环」的**终止/取消**部分）；执行循环本身、块结构、变量作用域仍未覆盖。
