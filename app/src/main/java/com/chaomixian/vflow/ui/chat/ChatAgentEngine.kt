@@ -368,7 +368,15 @@ internal open class ChatAgentEngine(
                     buildRejectedResults(host, round.toolCalls)
                 }
             }
-            history = history + toolResultMessages(results)
+            // ⚠️ **真实 OpenAI 协议要求 `role:"tool"` 之前必须有一条带 `tool_calls` 的
+            // assistant 消息**（否则下一次请求直接 400）。批 3 漏了这一条：只追加了
+            // TOOL 结果，历史里因此出现「凭空冒出来的 tool 消息」。
+            //
+            // ⚠️ 必须放在**执行分支内**、而不是 `maxRounds` 判断之前：到顶那一轮的
+            // tool_calls **不执行**（D17-② 只取文本收尾）⇒ 若在判断之前追加，
+            // 收尾轮的请求里会出现「有 tool_calls 却没有对应 tool 响应」的**悬挂调用**，
+            // 真实 API 同样 400。收尾路径的历史因此与批 3 **逐字节相同**。
+            history = history + assistantToolCallMessage(round) + toolResultMessages(results)
         }
     }
 
@@ -403,6 +411,21 @@ internal open class ChatAgentEngine(
             )
         }
     }
+
+    /**
+     * 一轮 assistant 回复 → 一条**带 `tool_calls`** 的 assistant 消息。
+     *
+     * `content` / `reasoningContent` 取 [AgentRoundResult.completion] 的**权威值**
+     * （不是流式过程值 `streamedContent`）。传输层在 `content` 为空时会写 `JsonNull`，
+     * 故「只调工具、不说话」的那一轮也能正确序列化。
+     */
+    private fun assistantToolCallMessage(round: AgentRoundResult): ChatMessage = ChatMessage(
+        role = ChatMessageRole.ASSISTANT,
+        content = round.completion.content,
+        reasoningContent = round.completion.reasoningContent,
+        toolCalls = round.toolCalls,
+        timestampMillis = System.currentTimeMillis(),
+    )
 
     private fun wrapUpInstructionMessage(): ChatMessage = ChatMessage(
         role = ChatMessageRole.USER,
