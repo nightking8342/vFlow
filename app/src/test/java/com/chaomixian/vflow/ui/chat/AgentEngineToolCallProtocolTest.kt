@@ -1,5 +1,9 @@
 package com.chaomixian.vflow.ui.chat
 
+import com.chaomixian.vflow.core.module.ExecutionResult
+import com.chaomixian.vflow.core.types.basic.VBoolean
+import com.chaomixian.vflow.core.types.basic.VString
+import com.chaomixian.vflow.core.workflow.module.interaction.agentModuleToolDefinitions
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
@@ -11,6 +15,7 @@ import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -81,11 +86,16 @@ class AgentEngineToolCallProtocolTest {
     private inner class EchoRunner : AgentToolRunner {
         private var preparedCalls: List<ChatToolCall> = emptyList()
 
+        /** 引擎是否把 `host.artifacts`（执行级 store）透传给了 prepare / execute。 */
+        var seenArtifacts: ChatAgentArtifactStore? = null
+        val executedNames = mutableListOf<String>()
+
         override fun prepare(
             toolCalls: List<ChatToolCall>,
             artifacts: ChatAgentArtifactStore,
         ): ChatPreparedToolBatch {
             preparedCalls = toolCalls
+            seenArtifacts = artifacts
             return ChatPreparedToolBatch(
                 items = emptyList(),
                 missingPermissions = emptyList(),
@@ -97,6 +107,7 @@ class AgentEngineToolCallProtocolTest {
             batch: ChatPreparedToolBatch,
             artifacts: ChatAgentArtifactStore,
         ): List<ChatToolResult> = preparedCalls.map { call ->
+            executedNames += call.name
             ChatToolResult(
                 callId = call.id,
                 name = call.name,
@@ -139,8 +150,8 @@ class AgentEngineToolCallProtocolTest {
         "data: [DONE]\n\n",
     )
 
-    private fun toolCallStream(id: String) = sse(
-        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"$id\",\"type\":\"function\",\"function\":{\"name\":\"$toolName\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n",
+    private fun toolCallStream(id: String, name: String = toolName) = sse(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"$id\",\"type\":\"function\",\"function\":{\"name\":\"$name\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n",
         "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
         "data: [DONE]\n\n",
     )
@@ -281,5 +292,109 @@ class AgentEngineToolCallProtocolTest {
                 calls == null || calls.length() == 0,
             )
         }
+    }
+
+    // ------------------------------------------------------------ 4. 真实传输 + AgentModule 的工具表
+    //
+    // 这是「`WorkflowAgentHost` 端到端第一次被验证」的另一半：用**真实**的
+    // `agentModuleToolDefinitions()`（11 个工具）+ 真实传输层 + 真实 `runLoop` 跑多轮工具循环。
+
+    private fun agentModuleTools() = agentModuleToolDefinitions()
+
+    private fun agentModuleHost(maxRounds: Int?) = WorkflowAgentHost(
+        allToolNames = agentModuleTools().map { it.name },
+        maxRounds = maxRounds,
+    )
+
+    private fun engineWith(tools: List<ChatAgentToolDefinition>, runner: AgentToolRunner) =
+        ChatAgentEngine(
+            chatClient = ChatCompletionClient(httpClient = httpClient),
+            allTools = tools,
+            toolRunner = runner,
+        )
+
+    @Test
+    fun realTransport_whitelistsTheWholeAgentModuleToolTableAndRunsAGestureTool() = runBlocking {
+        server.enqueue(toolCallStream("call_1", name = "swipe"))
+        server.enqueue(textStream("完成"))
+
+        val host = agentModuleHost(maxRounds = 3)
+        val runner = EchoRunner()
+        val engine = engineWith(agentModuleTools(), runner)
+
+        assertEquals(
+            "本模块的 11 个工具必须全部通过白名单（天然不含工作流读写类）",
+            11,
+            engine.availableTools(host).size,
+        )
+
+        val outcome = engine.runLoop(host, loopRequest())
+
+        assertEquals(StopReason.FINISHED, outcome.stoppedBy)
+        assertEquals("手势工具必须真的被执行", listOf("swipe"), runner.executedNames)
+        assertEquals("收尾正文必须被采纳", "完成", outcome.finalText)
+    }
+
+    @Test
+    fun realTransport_passesTheExecutionScopedArtifactStoreToTheRunner() = runBlocking {
+        server.enqueue(toolCallStream("call_1"))
+        server.enqueue(textStream("完成"))
+
+        val host = agentModuleHost(maxRounds = 3)
+        val runner = EchoRunner()
+        engineWith(agentModuleTools(), runner).runLoop(host, loopRequest())
+
+        assertSame(
+            "执行级 store 必须透传给 runner（工作流宿主也要句柄，D11）",
+            host.artifacts,
+            runner.seenArtifacts,
+        )
+    }
+
+    @Test
+    fun realTransport_mapsTheFinishedOutcomeToExecutionResult() = runBlocking {
+        server.enqueue(textStream("任务完成"))
+
+        val host = agentModuleHost(maxRounds = 3)
+        engineWith(agentModuleTools(), EchoRunner()).runLoop(host, loopRequest())
+
+        val result = host.toExecutionResult()
+        assertTrue("FINISHED ⇒ Success", result is ExecutionResult.Success)
+        val outputs = (result as ExecutionResult.Success).outputs
+        assertEquals("任务完成", (outputs["result"] as VString).raw)
+        assertEquals(true, (outputs["success"] as VBoolean).raw)
+    }
+
+    @Test
+    fun realTransport_runsExactlyOneWrapUpRoundAtTheHardLimit() = runBlocking {
+        server.enqueue(toolCallStream("call_1"))
+        server.enqueue(textStream("收尾总结"))
+
+        val host = agentModuleHost(maxRounds = 1)
+        engineWith(agentModuleTools(), EchoRunner()).runLoop(host, loopRequest())
+
+        assertEquals("1 轮 + 1 次收尾 = 2 次请求", 2, server.requestCount)
+        val wrapUp = bodyOfRequest(1)
+        assertTrue("到顶必须给一次收尾机会（D17-②）", wrapUp.contains(WRAP_UP_INSTRUCTION))
+
+        val outputs = (host.toExecutionResult() as ExecutionResult.Success).outputs
+        assertEquals("Task stopped: Max rounds (1) reached.", (outputs["result"] as VString).raw)
+        assertEquals(
+            "D18 未定案 ⇒ 形状照抄 AgentModule 现状（Success + success=false）",
+            false,
+            (outputs["success"] as VBoolean).raw,
+        )
+    }
+
+    @Test
+    fun realTransport_approvesWithoutAnyUserInteraction() = runBlocking {
+        server.enqueue(toolCallStream("call_1"))
+        server.enqueue(textStream("完成"))
+
+        val runner = EchoRunner()
+        val host = agentModuleHost(maxRounds = 3)
+        engineWith(agentModuleTools(), runner).runLoop(host, loopRequest())
+
+        assertEquals("真实工作流宿主不覆写 requestApproval ⇒ 工具必须真的执行（D12）", 1, runner.executedNames.size)
     }
 }

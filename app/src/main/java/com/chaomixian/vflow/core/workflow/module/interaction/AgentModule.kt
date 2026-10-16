@@ -1,50 +1,66 @@
 // 文件: main/java/com/chaomixian/vflow/core/workflow/module/interaction/AgentModule.kt
 package com.chaomixian.vflow.core.workflow.module.interaction
-import com.chaomixian.vflow.core.types.VTypeRegistry
-import com.chaomixian.vflow.core.types.VObjectFactory
-import com.chaomixian.vflow.core.types.basic.*
 
 import android.content.ContentValues.TAG
 import android.content.Context
 import android.util.DisplayMetrics
 import android.view.WindowManager
 import com.chaomixian.vflow.R
+import com.chaomixian.vflow.core.ai.AiModelConfigRef
+import com.chaomixian.vflow.core.ai.AiModelConfigResolution
+import com.chaomixian.vflow.core.ai.AiModelConfigResolver
+import com.chaomixian.vflow.core.ai.ManualAiConfig
+import com.chaomixian.vflow.core.ai.chatProviderForModuleProvider
 import com.chaomixian.vflow.core.execution.ExecutionContext
 import com.chaomixian.vflow.core.execution.VariableResolver
 import com.chaomixian.vflow.core.logging.DebugLogger
 import com.chaomixian.vflow.core.logging.LogManager
 import com.chaomixian.vflow.core.module.*
+import com.chaomixian.vflow.core.types.VObjectFactory
+import com.chaomixian.vflow.core.types.VTypeRegistry
+import com.chaomixian.vflow.core.types.basic.*
 import com.chaomixian.vflow.core.utils.VirtualDisplayManager
 import com.chaomixian.vflow.core.workflow.model.ActionStep
 import com.chaomixian.vflow.permissions.Permission
 import com.chaomixian.vflow.permissions.PermissionManager
 import com.chaomixian.vflow.services.ShellManager
-import com.chaomixian.vflow.ui.workflow_editor.PillUtil
+import com.chaomixian.vflow.ui.chat.AgentLoopRequest
+import com.chaomixian.vflow.ui.chat.AgentObservation
+import com.chaomixian.vflow.ui.chat.AgentObservationProvider
+import com.chaomixian.vflow.ui.chat.AgentTask
+import com.chaomixian.vflow.ui.chat.AgentToolRunner
+import com.chaomixian.vflow.ui.chat.ChatAgentArtifactStore
+import com.chaomixian.vflow.ui.chat.ChatAgentEngine
+import com.chaomixian.vflow.ui.chat.ChatAgentToolDefinition
+import com.chaomixian.vflow.ui.chat.ChatAgentToolRiskLevel
+import com.chaomixian.vflow.ui.chat.ChatAgentToolUsageScope
+import com.chaomixian.vflow.ui.chat.ChatCompletionClient
+import com.chaomixian.vflow.ui.chat.ChatImageAttachment
+import com.chaomixian.vflow.ui.chat.ChatImageSource
+import com.chaomixian.vflow.ui.chat.ChatPreparedToolBatch
+import com.chaomixian.vflow.ui.chat.ChatPreparedToolItem
+import com.chaomixian.vflow.ui.chat.ChatPresetConfig
+import com.chaomixian.vflow.ui.chat.ChatPresetRepository
+import com.chaomixian.vflow.ui.chat.ChatToolCall
+import com.chaomixian.vflow.ui.chat.ChatToolResult
+import com.chaomixian.vflow.ui.chat.ChatToolResultStatus
+import com.chaomixian.vflow.ui.chat.ObservationMode
+import com.chaomixian.vflow.ui.chat.WorkflowAgentHost
 import com.chaomixian.vflow.ui.overlay.AgentOverlayManager
+import com.chaomixian.vflow.ui.workflow_editor.PillUtil
 import com.google.gson.JsonElement
 import com.google.gson.JsonParser
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withContext
-import okhttp3.Call
-import okhttp3.Callback
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.Response
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.concurrent.TimeUnit
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 import java.util.concurrent.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 
 internal fun parseAgentToolArguments(argsStr: String): Map<String, Any?> {
     val root = runCatching { JsonParser.parseString(argsStr) }.getOrNull() ?: return emptyMap()
@@ -72,6 +88,420 @@ private fun normalizeAgentToolArgument(value: JsonElement): Any? {
         }
         else -> null
     }
+}
+
+/** `AgentModule` 手动档的采样温度：**现状不发送该字段**，1.0 是「不指定」的等价取值。 */
+internal const val AGENT_MODULE_TEMPERATURE: Double = 1.0
+
+/**
+ * **归一化坐标 → 真实像素**（现状 `norm / 1000.0 * extent`，逐字保留）。
+ *
+ * ⚠️ 坐标语义是「归一化 0-1000」（不是批 2 的 `ChatAgentCoordinates` 那套 0-999 口径）——
+ * 工作流宿主的 `AgentModule` 一直用 1000 分母，本批**不改**（改了会让既有步骤点偏）。
+ */
+internal fun agentNormalizedToPixel(norm: Int, extent: Int): Int = (norm / 1000.0 * extent).toInt()
+
+/**
+ * 思考段的**包裹标签**（与 `ChatReplyNormalizer` 认的标签、以及提示词里的契约一致）。
+ *
+ * ⚠️ 用字符串拼接构造（而不是直接写成一个字面量）：见交付说明的「工具链吞标签」记录。
+ */
+private const val THINK_OPEN_TAG: String = "<" + "think" + ">"
+private const val THINK_CLOSE_TAG: String = "<" + "/think" + ">"
+
+/**
+ * **本模块自己的工具表**（中性形态，供引擎下发；fork：AI 能力统一批 4 的 T6）。
+ *
+ * 8 个既有工具的**名字 / 描述 / 参数 schema 逐字保留**（线格式与改造前手写的
+ * `getNativeToolsSchema()` 逐字段相同）；**新增 3 个**（§1.8.5 的 D-a / D-b）：
+ * `long_press` / `double_tap` / `swipe`，坐标一律**归一化 0-1000**。
+ *
+ * ⚠️ 本表**天然不含**工作流读写类工具 ⇒ 工作流宿主白名单过滤对它是**恒等**的。
+ */
+internal fun agentModuleToolDefinitions(): List<ChatAgentToolDefinition> = listOf(
+    agentToolDefinition(
+        name = "click_point",
+        description = "Tap at specific NORMALIZED coordinates (0-1000). x=0 is left, x=1000 is right. y=0 is top, y=1000 is bottom.",
+        parametersJson = """{"type":"object","properties":{"x":{"type":"integer","description":"Normalized X coordinate (0-1000)"},"y":{"type":"integer","description":"Normalized Y coordinate (0-1000)"}},"required":["x","y"]}""",
+    ),
+    agentToolDefinition(
+        name = "click_element",
+        description = "Click an element by exact text. Only use this if visual coordinates are impossible to determine.",
+        parametersJson = """{"type":"object","properties":{"target":{"type":"string","description":"Exact text or ID."}},"required":["target"]}""",
+    ),
+    agentToolDefinition(
+        name = "input_text",
+        description = "Input text into focused field.",
+        parametersJson = """{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}""",
+    ),
+    agentToolDefinition(
+        name = "scroll",
+        description = "Scroll the view. 'down' means going further down (swiping up).",
+        parametersJson = """{"type":"object","properties":{"direction":{"type":"string","enum":["up","down","left","right"]}},"required":["direction"]}""",
+    ),
+    agentToolDefinition(
+        name = "press_key",
+        description = "System keys.",
+        parametersJson = """{"type":"object","properties":{"action":{"type":"string","enum":["back","home","recents"]}},"required":["action"]}""",
+    ),
+    agentToolDefinition(
+        name = "launch_app",
+        description = "Launch an app by name.",
+        parametersJson = """{"type":"object","properties":{"app_name":{"type":"string","description":"Exact app name (e.g. 'WeChat')"}},"required":["app_name"]}""",
+    ),
+    agentToolDefinition(
+        name = "wait",
+        description = "Wait for a specific amount of time (seconds).",
+        parametersJson = """{"type":"object","properties":{"seconds":{"type":"integer"}},"required":["seconds"]}""",
+    ),
+    agentToolDefinition(
+        name = "long_press",
+        description = "Long press at specific NORMALIZED coordinates (0-1000). Use it to open context menus, select text, or trigger long-press interactions. x=0 is left, x=1000 is right. y=0 is top, y=1000 is bottom.",
+        parametersJson = """{"type":"object","properties":{"x":{"type":"integer","description":"Normalized X coordinate (0-1000)"},"y":{"type":"integer","description":"Normalized Y coordinate (0-1000)"}},"required":["x","y"]}""",
+    ),
+    agentToolDefinition(
+        name = "double_tap",
+        description = "Double tap at specific NORMALIZED coordinates (0-1000). Use it to zoom, select text, or open an item. x=0 is left, x=1000 is right. y=0 is top, y=1000 is bottom.",
+        parametersJson = """{"type":"object","properties":{"x":{"type":"integer","description":"Normalized X coordinate (0-1000)"},"y":{"type":"integer","description":"Normalized Y coordinate (0-1000)"}},"required":["x","y"]}""",
+    ),
+    agentToolDefinition(
+        name = "swipe",
+        description = "Swipe from one point to another using NORMALIZED coordinates (0-1000). Use it to scroll content, switch pages, or pull down the notification shade. All four values are normalized 0-1000 (0,0 is top-left; 1000,1000 is bottom-right).",
+        parametersJson = """{"type":"object","properties":{"start_x":{"type":"integer","description":"Normalized start X (0-1000)"},"start_y":{"type":"integer","description":"Normalized start Y (0-1000)"},"end_x":{"type":"integer","description":"Normalized end X (0-1000)"},"end_y":{"type":"integer","description":"Normalized end Y (0-1000)"}},"required":["start_x","start_y","end_x","end_y"]}""",
+    ),
+    agentToolDefinition(
+        name = "finish_task",
+        description = "Call this when goal is achieved.",
+        parametersJson = """{"type":"object","properties":{"result":{"type":"string"},"success":{"type":"boolean"}},"required":["result","success"]}""",
+    ),
+)
+
+private fun agentToolDefinition(
+    name: String,
+    description: String,
+    parametersJson: String,
+): ChatAgentToolDefinition = ChatAgentToolDefinition(
+    name = name,
+    title = name,
+    description = description,
+    // ⚠️ 合成的 moduleId：本模块自己的 runner **不查注册表**，这两个字段只为满足类型。
+    moduleId = "vflow.ai.agent.$name",
+    moduleDisplayName = "AI 智能体 · $name",
+    inputSchema = Json.parseToJsonElement(parametersJson).jsonObject,
+    permissionNames = emptyList(),
+    // 工作流宿主的 requestApproval 恒 Approved（D12）⇒ 风险等级只用于批级表达。
+    riskLevel = ChatAgentToolRiskLevel.STANDARD,
+    usageScopes = setOf(ChatAgentToolUsageScope.DIRECT_TOOL),
+)
+
+/**
+ * 模块的传输配置（`temperature = 1.0` ≈「不指定」—— 现状**不发送** temperature 字段；
+ * `streamMaxRetries = 0` 同改造前「一次请求，无重试」）。
+ *
+ * ⚠️ 生产路径走 [AiModelConfigResolver.resolve]（manual 分支同形），本函数是那份形状的
+ * **具名规范**，由测试做等价比对。
+ */
+internal fun agentModulePreset(
+    provider: String,
+    model: String,
+    apiKey: String,
+    baseUrl: String,
+): ChatPresetConfig = ChatPresetConfig(
+    provider = chatProviderForModuleProvider(provider).storageValue,
+    model = model,
+    apiKey = apiKey,
+    baseUrl = baseUrl,
+    systemPrompt = "",
+    temperature = AGENT_MODULE_TEMPERATURE,
+    useResponsesApi = false,
+    streamMaxRetries = 0,
+)
+
+/**
+ * 提示词**协议段**（`AgentModule` 现有提示词里**去掉 19 条规则**的那部分）。
+ *
+ * ⚠️ 19 条规则**不在这里** —— 它们是 [WORKFLOW_RULES]（`ui/chat/AgentPrompts.kt`）的
+ * **唯一来源**，由 `WorkflowModulePromptPlan` 拼在协议段**之后**（后 = 优先级更高，D13）。
+ * `# User Goal` 同样由 plan 拼（引擎把 `instruction` 交过去）。
+ *
+ * 含**每次执行现算**的内容（日期 / 时间 / RECENT APPS）⇒ 必须由调用方传进来。
+ */
+internal fun agentModuleProtocolSection(
+    dateString: String,
+    timeString: String,
+    recentApps: String,
+): String = """
+            # SETUP
+            You are a professional Android operation agent assistant that can fulfill the user's high-level instructions. Given a screenshot of the Android interface at each step, you first analyze the situation, then plan the best course of action using Python-style pseudo-code.
+
+            Current Date: $dateString
+            Current Time: $timeString
+
+            Your response format must be structured as follows:
+
+            Think first: Use <think>...</think> to analyze the current screen, identify key elements, and determine the most efficient action.
+            
+            Your output should STRICTLY follow the format:
+            <think>
+            [Your thought]
+            </think>
+            
+            # RECENTLY USED APPS (Context):
+                The user has used the following apps in the last 30 days (Sorted by usage frequency). 
+                **PRIORITIZE these apps** when the user's request is vague (e.g., "play music" -> pick the music app **which is used most** from this list).
+                $recentApps
+                        
+            # CRITICAL INSTRUCTION: TOOL USAGE
+            **You MUST use the native Function Calling mechanism.**
+            - **DO NOT** output Markdown code blocks or XML tags for tools.
+            - **DO NOT** just describe actions.
+            - **First** `<think>...</think>`, **Then** `Tool Call`.
+            
+            # MANDATORY PROTOCOL:
+            1. **LAUNCH APP FIRST**: If task requires a specific app (e.g. "WeChat") and it's not open, CALL `launch_app`.
+            2. **ONE STEP AT A TIME**: ONE tool call per turn.
+            3. **VISUAL PRIORITY**: Use `click_point(x, y)` with normalized coordinates (0-1000) from the screenshot.
+            4. **VERIFY SUCCESS (CRITICAL)**: Before taking the next step, **CHECK the screen state** (Screenshot/XML) to confirm the previous action worked. 
+               - Did the screen change? 
+               - Did the text appear in the box?
+               - **If NOT, DO NOT proceed. RETRY with a different method.**
+            5. **GESTURES**: `long_press(x, y)` / `double_tap(x, y)` / `swipe(start_x, start_y, end_x, end_y)` — every coordinate is normalized (0-1000). When the target is off-screen, use `swipe` (rules 5 / 12 / 15) instead of repeating the same click.
+            
+            # MOBILE UI COMMON SENSE (CRITICAL):
+            1. **Search Hints are NOT Content**: Text inside search bars (e.g., "Search...", "请输入", "Type here") is usually a **placeholder**. You do **NOT** need to delete it. Just click the field and call `input_text`.
+            2. **Popups**: If a permission popup or ad appears, close or allow it first.
+            
+            # INPUT TEXT PROTOCOL (STRICT):
+            1. **CLICK FIRST**: You CANNOT input text into a field that is not focused. **Step 1: Click the input field.**
+            2. **WAIT & VERIFY**: Wait for the next turn. Look for visual signs of focus (cursor, caret, keyboard appearing) or check if `focused="true"` in XML.
+            3. **THEN INPUT**: Only call `input_text` AFTER you have confirmed the field is focused in the current turn.
+            
+            # HYBRID PERCEPTION STRATEGY (VISION + XML):
+            You have two inputs: **Screenshot (Vision)** and **UI Hierarchy (XML)**. You MUST combine them:
+            1. **Vision First**: Locate the target element visually on the Screenshot to get approximate coordinates.
+            2. **XML Verification (CRITICAL)**: **ALWAYS** look up the corresponding node in the XML using the visual coordinates.
+               - Match the visual location with the `bounds="[l,t][r,b]"` in XML.
+               - **CONFIRM** the element type: Is it an `EditText`? A `Button`? Or just `TextView` (label)?
+               - **READ** the exact `text` or `id` from XML. Visual OCR can be wrong; XML is the ground truth for text content.
+            3. **Action Selection**:
+               - If the element has a unique `text` or `id` in XML, prefer `click_element(target="...")`. It is more robust than coordinates.
+               - If it's an icon with no text/id, use `click_point(x,y)` with normalized coordinates.
+               
+            # REASONING GUIDE:
+            - **Bad Reasoning**: "I see the search bar. I will call `input_text('hello')` immediately." (Wrong! It might not be focused).
+            - **Good Reasoning (Turn 1)**: "I see the search bar. I must focus it first. I will call `click_point(500, 100)`."
+            - **Good Reasoning (Turn 2)**: "I see the keyboard is now visible / the field cursor is blinking. Now it is safe to call `input_text('hello')`."
+            - **Verification**: 
+              - "I tried clicking 'Submit', but the screen is the same. The click might have failed. I will try `click_element` or adjust coordinates."
+              
+            # THINKING PROTOCOL:
+                Your output format:
+                <think>
+                1. Observation: "I see a 'Search' bar at top."
+                2. Cross-Check: "In XML, I found a node <EditText text='Search...' bounds='[100,50][900,150]' editable='true' /> matching that location."
+                3. Reasoning: "The field is editable. I need to click it first to focus."
+                4. Plan: "Call click_element('Search')."
+                </think>
+""".trimIndent()
+
+/** 死循环检测的一条动作记录（名字 + 原始参数，与改造前 `LastAction` 逐字相同）。 */
+internal class LastAction(val name: String, val args: String)
+
+/**
+ * **模块自己的工具执行器**（引擎的 [AgentToolRunner] 接缝；fork：AI 能力统一批 4 的 T6）。
+ *
+ * 为什么**不**改用 chat 的 native helper（§3.1 的三条理由，可验证）：
+ * 1. chat helper 里**没有** `double_tap`（补它要改禁改文件 `ChatAgentNativeTooling.kt`）；
+ * 2. native helper 的 `display_id` 取自**工具参数**（默认 0），而本模块是把
+ *    `_target_display_id` 注入 `ExecutionContext` 交给 `AgentTools` ⇒ 改用它会让
+ *    虚拟屏模式下的点击落到**主屏**（静默错屏）；
+ * 3. `call_module` 的执行上下文不带 `_target_display_id` ⇒ 同样错屏，且修不了。
+ *
+ * 保留的行为：动作前 `awaitState()` 闸门、死循环检测（`repeatCount` / `threshold`）、
+ * 未知工具报错文案、悬浮窗动作状态文案、`finish_task` 拦截。
+ */
+internal class AgentModuleToolRunner(
+    private val tools: AgentTools,
+    private val overlay: AgentOverlayManager,
+    private val appContext: Context,
+    private val screenWidth: Int,
+    private val screenHeight: Int,
+    private val onProgress: suspend (ProgressUpdate) -> Unit,
+    private val requiredPermissions: List<Permission>,
+    private val onFinishTask: (text: String, success: Boolean) -> Unit,
+) : AgentToolRunner {
+
+    private var preparedCalls: List<ChatToolCall> = emptyList()
+    private var lastAction: LastAction? = null
+    private var repeatCount = 0
+
+    override fun prepare(
+        toolCalls: List<ChatToolCall>,
+        artifacts: ChatAgentArtifactStore,
+    ): ChatPreparedToolBatch {
+        preparedCalls = toolCalls
+        return ChatPreparedToolBatch(
+            // ⚠️ `ChatPreparedToolBatch` 没有独立的 calls 字段 ⇒ 借 `ImmediateResult` 承载 toolCall
+            //    （本模块的 runner **永不走** chat 的模块执行器，那个 result 只是**占位**）。
+            //    `prepare` 只被引擎与 `decideApproval` 调用，两条路径拿到的 calls 相同 ⇒ 语义安全。
+            items = toolCalls.map { call ->
+                ChatPreparedToolItem.ImmediateResult(
+                    toolCall = call,
+                    result = placeholderResult(call),
+                    riskLevel = ChatAgentToolRiskLevel.STANDARD,
+                )
+            },
+            missingPermissions = requiredPermissions.filterNot { PermissionManager.isGranted(appContext, it) },
+            riskLevel = ChatAgentToolRiskLevel.STANDARD,
+        )
+    }
+
+    override suspend fun execute(
+        batch: ChatPreparedToolBatch,
+        artifacts: ChatAgentArtifactStore,
+    ): List<ChatToolResult> = preparedCalls.map { call -> executeOne(call) }
+
+    override fun rejected(toolCalls: List<ChatToolCall>): List<ChatToolResult> = toolCalls.map { call ->
+        resultFor(call, ChatToolResultStatus.REJECTED, "REJECTED_BY_THE_HOST")
+    }
+
+    override fun permissionRequired(batch: ChatPreparedToolBatch): List<ChatToolResult> =
+        preparedCalls.map { call ->
+            resultFor(call, ChatToolResultStatus.PERMISSION_REQUIRED, "PERMISSION_REQUIRED")
+        }
+
+    private fun placeholderResult(call: ChatToolCall): ChatToolResult = ChatToolResult(
+        callId = call.id,
+        name = call.name,
+        status = ChatToolResultStatus.SUCCESS,
+        summary = "",
+        outputText = "",
+    )
+
+    private fun resultFor(
+        call: ChatToolCall,
+        status: ChatToolResultStatus,
+        text: String,
+    ): ChatToolResult = ChatToolResult(
+        callId = call.id,
+        name = call.name,
+        status = status,
+        summary = text.take(80),
+        outputText = text,
+    )
+
+    private suspend fun executeOne(call: ChatToolCall): ChatToolResult {
+        val name = call.name
+        val argsStr = call.argumentsJson
+
+        // 动作前闸门：用户点「结束」时 awaitState 抛 CancellationException
+        // （由模块侧按「协程是否仍 active」分流）；暂停则在这里等。
+        overlay.awaitState()
+
+        val args = runCatching { parseAgentToolArguments(argsStr) }.getOrElse { e ->
+            return resultFor(call, ChatToolResultStatus.ERROR, invalidToolCallText(e))
+        }
+
+        val actionDisplay = when (name) {
+            "click_point" -> "点击坐标"
+            "click_element" -> "点击元素"
+            "input_text" -> "输入文本"
+            "scroll" -> "滚动屏幕"
+            "launch_app" -> "启动应用"
+            "wait" -> "等待中..."
+            "finish_task" -> "任务完成"
+            "long_press" -> "长按坐标"
+            "double_tap" -> "双击坐标"
+            "swipe" -> "滑动手势"
+            else -> "执行: $name"
+        }
+        overlay.updateStatus(null, actionDisplay)
+
+        // 死循环检测（与改造前逐字相同）
+        val currentAction = LastAction(name, argsStr)
+        if (lastAction == currentAction) repeatCount++ else repeatCount = 0
+        lastAction = currentAction
+        val threshold = if (name == "scroll" || name == "wait") 5 else 2
+        if (repeatCount >= threshold) {
+            DebugLogger.w("AgentModule", "检测到死循环: $name")
+            onProgress(ProgressUpdate("检测到操作卡死，强制AI换策略"))
+            return resultFor(
+                call,
+                ChatToolResultStatus.SUCCESS,
+                "SYSTEM_INTERVENTION: Repeated action detected. STOP. Try 'scroll', 'press_key(back)', or 'finish_task(success=false)'.",
+            )
+        }
+
+        onProgress(ProgressUpdate("执行: $name"))
+        DebugLogger.d("AgentModule", "Calling tool: $name args: $args")
+
+        val output = try {
+            when (name) {
+                "click_point" -> {
+                    val normX = (args["x"] as? Number)?.toInt() ?: 0
+                    val normY = (args["y"] as? Number)?.toInt() ?: 0
+                    val realX = agentNormalizedToPixel(normX, screenWidth)
+                    val realY = agentNormalizedToPixel(normY, screenHeight)
+                    DebugLogger.d("AgentModule", "坐标映射: Norm($normX, $normY) -> Pixel($realX, $realY)")
+                    tools.clickPoint(realX, realY)
+                }
+
+                "long_press" -> {
+                    val normX = (args["x"] as? Number)?.toInt() ?: 0
+                    val normY = (args["y"] as? Number)?.toInt() ?: 0
+                    val realX = agentNormalizedToPixel(normX, screenWidth)
+                    val realY = agentNormalizedToPixel(normY, screenHeight)
+                    DebugLogger.d("AgentModule", "坐标映射: Norm($normX, $normY) -> Pixel($realX, $realY)")
+                    tools.longPress(realX, realY)
+                }
+
+                "double_tap" -> {
+                    val normX = (args["x"] as? Number)?.toInt() ?: 0
+                    val normY = (args["y"] as? Number)?.toInt() ?: 0
+                    val realX = agentNormalizedToPixel(normX, screenWidth)
+                    val realY = agentNormalizedToPixel(normY, screenHeight)
+                    DebugLogger.d("AgentModule", "坐标映射: Norm($normX, $normY) -> Pixel($realX, $realY)")
+                    tools.doubleTap(realX, realY)
+                }
+
+                "swipe" -> {
+                    val startX = agentNormalizedToPixel((args["start_x"] as? Number)?.toInt() ?: 0, screenWidth)
+                    val startY = agentNormalizedToPixel((args["start_y"] as? Number)?.toInt() ?: 0, screenHeight)
+                    val endX = agentNormalizedToPixel((args["end_x"] as? Number)?.toInt() ?: 0, screenWidth)
+                    val endY = agentNormalizedToPixel((args["end_y"] as? Number)?.toInt() ?: 0, screenHeight)
+                    DebugLogger.d("AgentModule", "滑动映射: Pixel($startX, $startY) -> ($endX, $endY)")
+                    tools.swipe(startX, startY, endX, endY)
+                }
+
+                "click_element" -> tools.clickElement(args["target"]?.toString() ?: "")
+                "input_text" -> tools.inputText(args["text"]?.toString() ?: "")
+                "scroll" -> tools.scroll(args["direction"]?.toString() ?: "up")
+                "press_key" -> tools.pressKey(args["action"]?.toString() ?: "")
+                "launch_app" -> tools.launchApp(args["app_name"]?.toString() ?: "")
+                "wait" -> tools.wait((args["seconds"] as? Number)?.toInt() ?: 5)
+
+                "finish_task" -> {
+                    val result = args["result"]?.toString() ?: "Done"
+                    val success = args["success"] as? Boolean ?: true
+                    // 拦截记录：循环结束后**优先**返回它（现状是当场 break 并返回）。
+                    onFinishTask(result, success)
+                    "Task finished (success=$success). Do not call any more tools."
+                }
+
+                else -> "Error: Unknown tool name '$name'"
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            DebugLogger.e("AgentModule", "Error executing tool call", e)
+            return resultFor(call, ChatToolResultStatus.ERROR, invalidToolCallText(e))
+        }
+        return resultFor(call, ChatToolResultStatus.SUCCESS, output)
+    }
+
+    private fun invalidToolCallText(e: Throwable): String =
+        "SYSTEM ERROR: Invalid tool call format or parameters. Error: ${e.message}. " +
+            "Please generate a valid JSON tool call."
 }
 
 class AgentModule : BaseModule() {
@@ -185,6 +615,20 @@ class AgentModule : BaseModule() {
             ),
             isHidden = false
         ),
+        // fork：配置引用 + 可配前段（追加，不重排既有参数）。
+        AiModelConfigRef.SOURCE_INPUT,
+        AiModelConfigRef.CONFIG_ID_INPUT,
+        InputDefinition(
+            "system_prompt",
+            "系统提示词前段",
+            ParameterType.STRING,
+            "",
+            // ⚠️ plain：不接受变量、不走富文本胶囊（避开 supportsRichText 那个坑）。
+            acceptsMagicVariable = false,
+            supportsRichText = false,
+            hintStringRes = R.string.hint_ai_agent_system_prompt_prefix,
+            nameStringRes = R.string.hint_ai_agent_system_prompt_prefix
+        ),
         InputDefinition("tools", "工具配置", ParameterType.ANY, isHidden = true, nameStringRes = R.string.param_vflow_ai_agent_tools_name)
     )
 
@@ -212,20 +656,6 @@ class AgentModule : BaseModule() {
     }
 
     // 定义工具 Schema
-    private fun getNativeToolsSchema(): JSONArray {
-        val schema = JSONArray()
-        schema.put(JSONObject("""{ "type": "function", "function": { "name": "click_point", "description": "Tap at specific NORMALIZED coordinates (0-1000). x=0 is left, x=1000 is right. y=0 is top, y=1000 is bottom.", "parameters": { "type": "object", "properties": { "x": { "type": "integer", "description": "Normalized X coordinate (0-1000)" }, "y": { "type": "integer", "description": "Normalized Y coordinate (0-1000)" } }, "required": ["x", "y"] } } }"""))
-        schema.put(JSONObject("""{ "type": "function", "function": { "name": "click_element", "description": "Click an element by exact text. Only use this if visual coordinates are impossible to determine.", "parameters": { "type": "object", "properties": { "target": { "type": "string", "description": "Exact text or ID." } }, "required": ["target"] } } }"""))
-        schema.put(JSONObject("""{ "type": "function", "function": { "name": "input_text", "description": "Input text into focused field.", "parameters": { "type": "object", "properties": { "text": { "type": "string" } }, "required": ["text"] } } }"""))
-        schema.put(JSONObject("""{ "type": "function", "function": { "name": "scroll", "description": "Scroll the view. 'down' means going further down (swiping up).", "parameters": { "type": "object", "properties": { "direction": { "type": "string", "enum": ["up", "down", "left", "right"] } }, "required": ["direction"] } } }"""))
-        schema.put(JSONObject("""{ "type": "function", "function": { "name": "press_key", "description": "System keys.", "parameters": { "type": "object", "properties": { "action": { "type": "string", "enum": ["back", "home", "recents"] } }, "required": ["action"] } } }"""))
-        schema.put(JSONObject("""{ "type": "function", "function": { "name": "launch_app", "description": "Launch an app by name.", "parameters": { "type": "object", "properties": { "app_name": { "type": "string", "description": "Exact app name (e.g. 'WeChat')" } }, "required": ["app_name"] } } }"""))
-        schema.put(JSONObject("""{ "type": "function", "function": { "name": "wait", "description": "Wait for a specific amount of time (seconds).", "parameters": { "type": "object", "properties": { "seconds": { "type": "integer" } }, "required": ["seconds"] } } }"""))
-        schema.put(JSONObject("""{ "type": "function", "function": { "name": "finish_task", "description": "Call this when goal is achieved.", "parameters": { "type": "object", "properties": { "result": { "type": "string" }, "success": { "type": "boolean" } }, "required": ["result", "success"] } } }"""))
-        return schema
-    }
-
-    data class LastAction(val name: String, val args: String)
 
     override suspend fun execute(
         context: ExecutionContext,
@@ -245,8 +675,45 @@ class AgentModule : BaseModule() {
         val monitorMode = inputsById["monitor_mode"]?.normalizeEnumValue(
             context.getVariableAsString("monitor_mode", AgentOverlayManager.MONITOR_MODE_OVERLAY)
         ) ?: AgentOverlayManager.MONITOR_MODE_OVERLAY
+        val provider = inputsById["provider"]?.normalizeEnumValue(
+            context.getVariableAsString("provider", PROVIDER_BIGMODEL)
+        ) ?: PROVIDER_BIGMODEL
+        // fork：可配前段（引用模型配置时**值拷贝**，也可手填；D7 / D13）。
+        val systemPromptPrefix = context.getVariableAsString("system_prompt", "")
 
-        if (apiKey.isBlank()) return ExecutionResult.Failure("配置错误", "API Key 不能为空")
+        // 配置引用（fork：AI 能力统一批 4 的 T6）：默认 manual ⇒ 老步骤行为与改造前等价。
+        val resolvedPreset = when (
+            val resolution = AiModelConfigResolver.resolve(
+                parameters = mapOf(
+                    AiModelConfigRef.PARAM_SOURCE to context.getVariableAsString(
+                        AiModelConfigRef.PARAM_SOURCE,
+                        AiModelConfigRef.SOURCE_MANUAL,
+                    ),
+                    AiModelConfigRef.PARAM_CONFIG_ID to
+                        context.getVariableAsString(AiModelConfigRef.PARAM_CONFIG_ID, ""),
+                ),
+                presets = ChatPresetRepository(context.applicationContext).getPresets(),
+                manual = ManualAiConfig(
+                    provider = provider,
+                    model = model,
+                    apiKey = apiKey,
+                    baseUrl = baseUrl,
+                    systemPrompt = systemPromptPrefix,
+                    // 本模块**没有** temperature 参数（现状不发送该字段）⇒ 取「不指定」的等价值。
+                    temperature = AGENT_MODULE_TEMPERATURE,
+                ),
+            )
+        ) {
+            is AiModelConfigResolution.Resolved -> resolution.preset
+            // 引用解析失败 ⇒ **明确报错，不静默**（D8 的兜底分支）。
+            is AiModelConfigResolution.Missing ->
+                return ExecutionResult.Failure(resolution.title, resolution.message)
+        }
+
+        // ⚠️ 校验的是**解析后**的 key：引用模式下步骤里的 `api_key` 恒为空串。
+        if (resolvedPreset.apiKey.isBlank()) {
+            return ExecutionResult.Failure("配置错误", "API Key 不能为空")
+        }
 
         // 虚拟屏幕逻辑
         var targetDisplayId = 0
@@ -286,18 +753,12 @@ class AgentModule : BaseModule() {
             // ⚠️ 必须放在 try 内：放在 show() 与 try 之间的话，那段窗口里被取消就没人收尾了。
             // fork：`activity` 模式下画面交给监视器页面，这里**不再注册**预览监听者（省每帧 ≈10MB 拷贝）
             if (targetDisplayId > 0 && overlayManager.usesOverlayPreview) {
-                // fork：预览帧流是**多消费者**的（监视 Activity 可能同时在看），所以这里是
-                // 「注册监听者」而不是「启动唯一预览」。注销由 finally 里的 release() 统一做。
                 VirtualDisplayManager.addPreviewListener { frame ->
                     overlayManager.updatePreview(frame)
                 }
             }
 
             val agentTools = AgentTools(context)
-            val client = OkHttpClient.Builder()
-                .connectTimeout(60, TimeUnit.SECONDS)
-                .readTimeout(120, TimeUnit.SECONDS)
-                .build()
 
             val date = Date()
             val dateFormat = SimpleDateFormat("yyyy年MM月dd日 EEEE", Locale.getDefault())
@@ -307,116 +768,8 @@ class AgentModule : BaseModule() {
 
             val recentApps = AgentUtils.getRecentApps(context.applicationContext)
 
-            val messages = JSONArray()
-
-            // System Prompt
-            val systemPrompt = """
-            # SETUP
-            You are a professional Android operation agent assistant that can fulfill the user's high-level instructions. Given a screenshot of the Android interface at each step, you first analyze the situation, then plan the best course of action using Python-style pseudo-code.
-
-            Current Date: $dateString
-            Current Time: $timeString
-
-            Your response format must be structured as follows:
-
-            Think first: Use <think>...</think> to analyze the current screen, identify key elements, and determine the most efficient action.
-            
-            Your output should STRICTLY follow the format:
-            <think>
-            [Your thought]
-            </think>
-            
-            # RECENTLY USED APPS (Context):
-                The user has used the following apps in the last 30 days (Sorted by usage frequency). 
-                **PRIORITIZE these apps** when the user's request is vague (e.g., "play music" -> pick the music app **which is used most** from this list).
-                $recentApps
-                        
-            # CRITICAL INSTRUCTION: TOOL USAGE
-            **You MUST use the native Function Calling mechanism.**
-            - **DO NOT** output Markdown code blocks or XML tags for tools.
-            - **DO NOT** just describe actions.
-            - **First** `<think>...</think>`, **Then** `Tool Call`.
-            
-            # MANDATORY PROTOCOL:
-            1. **LAUNCH APP FIRST**: If task requires a specific app (e.g. "WeChat") and it's not open, CALL `launch_app`.
-            2. **ONE STEP AT A TIME**: ONE tool call per turn.
-            3. **VISUAL PRIORITY**: Use `click_point(x, y)` with normalized coordinates (0-1000) from the screenshot.
-            4. **VERIFY SUCCESS (CRITICAL)**: Before taking the next step, **CHECK the screen state** (Screenshot/XML) to confirm the previous action worked. 
-               - Did the screen change? 
-               - Did the text appear in the box?
-               - **If NOT, DO NOT proceed. RETRY with a different method.**
-            
-            # MOBILE UI COMMON SENSE (CRITICAL):
-            1. **Search Hints are NOT Content**: Text inside search bars (e.g., "Search...", "请输入", "Type here") is usually a **placeholder**. You do **NOT** need to delete it. Just click the field and call `input_text`.
-            2. **Popups**: If a permission popup or ad appears, close or allow it first.
-            
-            # INPUT TEXT PROTOCOL (STRICT):
-            1. **CLICK FIRST**: You CANNOT input text into a field that is not focused. **Step 1: Click the input field.**
-            2. **WAIT & VERIFY**: Wait for the next turn. Look for visual signs of focus (cursor, caret, keyboard appearing) or check if `focused="true"` in XML.
-            3. **THEN INPUT**: Only call `input_text` AFTER you have confirmed the field is focused in the current turn.
-            
-            # HYBRID PERCEPTION STRATEGY (VISION + XML):
-            You have two inputs: **Screenshot (Vision)** and **UI Hierarchy (XML)**. You MUST combine them:
-            1. **Vision First**: Locate the target element visually on the Screenshot to get approximate coordinates.
-            2. **XML Verification (CRITICAL)**: **ALWAYS** look up the corresponding node in the XML using the visual coordinates.
-               - Match the visual location with the `bounds="[l,t][r,b]"` in XML.
-               - **CONFIRM** the element type: Is it an `EditText`? A `Button`? Or just `TextView` (label)?
-               - **READ** the exact `text` or `id` from XML. Visual OCR can be wrong; XML is the ground truth for text content.
-            3. **Action Selection**:
-               - If the element has a unique `text` or `id` in XML, prefer `click_element(target="...")`. It is more robust than coordinates.
-               - If it's an icon with no text/id, use `click_point(x,y)` with normalized coordinates.
-               
-            # REASONING GUIDE:
-            - **Bad Reasoning**: "I see the search bar. I will call `input_text('hello')` immediately." (Wrong! It might not be focused).
-            - **Good Reasoning (Turn 1)**: "I see the search bar. I must focus it first. I will call `click_point(500, 100)`."
-            - **Good Reasoning (Turn 2)**: "I see the keyboard is now visible / the field cursor is blinking. Now it is safe to call `input_text('hello')`."
-            - **Verification**: 
-              - "I tried clicking 'Submit', but the screen is the same. The click might have failed. I will try `click_element` or adjust coordinates."
-              
-            # THINKING PROTOCOL:
-                Your output format:
-                <think>
-                1. Observation: "I see a 'Search' bar at top."
-                2. Cross-Check: "In XML, I found a node <EditText text='Search...' bounds='[100,50][900,150]' editable='true' /> matching that location."
-                3. Reasoning: "The field is editable. I need to click it first to focus."
-                4. Plan: "Call click_element('Search')."
-                </think>
-            
-            # 必须遵循的规则：
-                1. 在执行任何操作前，先检查当前app是否是目标app，如果不是，先执行 Launch。
-                2. 如果进入到了无关页面，先执行 Back。如果执行Back后页面没有变化，请点击页面左上角的返回键进行返回，或者右上角的X号关闭。
-                3. 如果页面未加载出内容，最多连续 Wait 三次，否则执行 Back 重新进入。
-                4. 如果页面显示网络问题，需要重新加载，请点击重新加载。
-                5. 如果当前页面找不到目标联系人、商品、店铺等信息，可以尝试 Swipe 滑动查找。
-                6. 遇到价格区间、时间区间等筛选条件，如果没有完全符合的，可以放宽要求。
-                7. 在做小红书总结类任务时一定要筛选图文笔记。
-                8. 购物车全选后再点击全选可以把状态设为全不选，在做购物车任务时，如果购物车里已经有商品被选中时，你需要点击全选后再点击取消全选，再去找需要购买或者删除的商品。
-                9. 在做外卖任务时，如果相应店铺购物车里已经有其他商品你需要先把购物车清空再去购买用户指定的外卖。
-                10. 在做点外卖任务时，如果用户需要点多个外卖，请尽量在同一店铺进行购买，如果无法找到可以下单，并说明某个商品未找到。
-                11. 请严格遵循用户意图执行任务，用户的特殊要求可以执行多次搜索，滑动查找。比如（i）用户要求点一杯咖啡，要咸的，你可以直接搜索咸咖啡，或者搜索咖啡后滑动查找咸的咖啡，比如海盐咖啡。（ii）用户要找到XX群，发一条消息，你可以先搜索XX群，找不到结果后，将"群"字去掉，搜索XX重试。（iii）用户要找到宠物友好的餐厅，你可以搜索餐厅，找到筛选，找到设施，选择可带宠物，或者直接搜索可带宠物，必要时可以使用AI搜索。
-                12. 在选择日期时，如果原滑动方向与预期日期越来越远，请向反方向滑动查找。
-                13. 执行任务过程中如果有多个可选择的项目栏，请逐个查找每个项目栏，直到完成任务，一定不要在同一项目栏多次查找，从而陷入死循环。
-                14. 在执行下一步操作前请一定要检查上一步的操作是否生效，如果点击没生效，可能因为app反应较慢，请先稍微等待一下，如果还是不生效请调整一下点击位置重试，如果仍然不生效请跳过这一步继续任务，并在finish_task result说明点击不生效。
-                15. 在执行任务中如果遇到滑动不生效的情况，请调整一下起始点位置，增大滑动距离重试，如果还是不生效，有可能是已经滑到底了，请继续向反方向滑动，直到顶部或底部，如果仍然没有符合要求的结果，请跳过这一步继续任务，并在finish_task result说明但没找到要求的项目。
-                16. 在做游戏任务时如果在战斗页面如果有自动战斗一定要开启自动战斗，如果多轮历史状态相似要检查自动战斗是否开启。
-                17. 如果没有合适的搜索结果，可能是因为搜索页面不对，请返回到搜索页面的上一级尝试重新搜索，如果尝试三次返回上一级搜索后仍然没有符合要求的结果，执行 finish_task(result="原因")。
-                18. 在结束任务前请一定要仔细检查任务是否完整准确的完成，如果出现错选、漏选、多选的情况，请返回之前的步骤进行纠正。
-                19. 播放视频、音乐时，三角形播放按钮出现意味着当前处于暂停状态，请点击以播放。
-                
-            # User Goal
-            "$instruction"
-            """.trimIndent()
-
-            messages.put(JSONObject().apply {
-                put("role", "system")
-                put("content", systemPrompt)
-            })
-
-            var currentStep = 0
-            var taskResult: ExecutionResult? = null
-            var lastAction: LastAction? = null
-            var repeatCount = 0
-            var noToolCallCount = 0
+            // fork：本模块**自己的** 11 个工具（8 个既有 + long_press / double_tap / swipe）。
+            val toolDefinitions = agentModuleToolDefinitions()
 
             val windowManager = context.applicationContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
             val displayMetrics = DisplayMetrics()
@@ -436,246 +789,109 @@ class AgentModule : BaseModule() {
                 // （彩虹边框 + 控制卡片 + 暂停/结束按钮 + 虚拟屏预览）全程不可见。
             }
 
-            // --- 主循环 ---
-            while (currentStep < maxSteps) {
-                // 在每一步开始前，检查是否暂停或被取消
-                try {
-                    overlayManager.awaitState()
-                } catch (e: CancellationException) {
-                    // 如果是用户点击悬浮窗的“结束”，会抛出异常
-                    return ExecutionResult.Failure("任务取消", "用户手动停止了任务。")
-                }
+            // finish_task 的拦截记录（循环结束后**优先**返回它）
+            var recordedFinishTask: Pair<String, Boolean>? = null
 
+            val runner = AgentModuleToolRunner(
+                tools = agentTools,
+                overlay = overlayManager,
+                appContext = context.applicationContext,
+                screenWidth = screenWidth,
+                screenHeight = screenHeight,
+                onProgress = onProgress,
+                requiredPermissions = getRequiredPermissions(null),
+                onFinishTask = { text, success -> recordedFinishTask = text to success },
+            )
+
+            // 提示词：前段（可配）+ 协议段（本模块的）+ 公共段 + 19 条规则（WORKFLOW_RULES）+ User Goal
+            val host = WorkflowAgentHost(
+                allToolNames = toolDefinitions.map { it.name },
+                // D17-④：工作流侧保留硬上限，由模块的 `max_steps` 注入。
+                maxRounds = maxSteps,
+                // D14：观察输入保持 BOTH（= 现状），本批不参数化。
+                observationMode = ObservationMode.BOTH,
+                prefix = systemPromptPrefix,
+                protocolSection = agentModuleProtocolSection(dateString, timeString, recentApps),
+                progressSink = { update -> onProgress(update) },
+                streamingSink = { content, _ -> overlayManager.publishModelOutput(content, "决策中...") },
+            )
+
+            val engine = ChatAgentEngine(
+                chatClient = ChatCompletionClient(),
+                allTools = toolDefinitions,
+                toolRunner = runner,
+            )
+
+            // 观察装配（引擎不做任何截屏 / IO ⇒ 机制在这里注入）
+            val observationProvider = AgentObservationProvider { mode, round, _ ->
+                // 每轮开头检查暂停 / 结束（现状每步开头也有）
+                overlayManager.awaitState()
                 overlayManager.updateStatus("分析屏幕...", "准备截屏")
-                onProgress(ProgressUpdate("正在观察屏幕 (步骤 ${currentStep + 1}/$maxSteps)..."))
-
-                // --- 感知 ---
-
-                // 隐藏悬浮窗 (如果是主屏幕操作才需要)
+                // 主屏幕才需要隐藏悬浮窗
                 if (targetDisplayId == 0) {
                     overlayManager.hideForScreenshot()
                 }
-
-                // 传入 targetDisplayId，captureScreen 会自动处理虚拟屏幕截取
                 val screenshotResult = AgentUtils.captureScreen(context.applicationContext, context)
-
-                // 传入 targetDisplayId 获取 UI 结构
-                val uiHierarchy = AgentUtils.dumpHierarchy(context.applicationContext, targetDisplayId)
-
+                val uiHierarchy = if (mode == ObservationMode.SCREENSHOT) {
+                    null
+                } else {
+                    AgentUtils.dumpHierarchy(context.applicationContext, targetDisplayId)
+                }
                 if (targetDisplayId == 0) {
                     overlayManager.restoreAfterScreenshot()
                 }
-
-                val contentParts = JSONArray()
-                val stepsLeft = maxSteps - currentStep
-                val urgencyWarning = if (stepsLeft <= 2) "\n[WARNING] Only $stepsLeft steps left! Wrap up." else ""
-
-                val textContext = """
-                    Step: ${currentStep + 1} / $maxSteps $urgencyWarning
-                    Screen Size: ${screenWidth}x${screenHeight} (Coordinates must be normalized 0-1000)
-                    
-                    UI Hierarchy (Reference Only):
-                    ${uiHierarchy.take(16000)} ${if(uiHierarchy.length > 16000) "...(truncated)" else ""}
-                """.trimIndent()
-
-                contentParts.put(JSONObject().apply {
-                    put("type", "text")
-                    put("text", textContext)
-                })
-
-                if (screenshotResult.base64 != null) {
-                    contentParts.put(JSONObject().apply {
-                        put("type", "image_url")
-                        put("image_url", JSONObject().apply {
-                            put("url", "data:image/jpeg;base64,${screenshotResult.base64}")
-                        })
-                    })
-                } else {
-                    contentParts.put(JSONObject().apply {
-                        put("type", "text")
-                        put("text", "[System: Screenshot failed. Rely on XML.]")
-                    })
-                }
-
-                messages.put(JSONObject().apply {
-                    put("role", "user")
-                    put("content", contentParts)
-                })
-
-                // --- 思考 ---
+                uiHierarchy?.let { DebugLogger.d("AgentModule", "Step $round Context: $it") }
                 overlayManager.updateStatus("AI 思考中...", "生成计划")
                 onProgress(ProgressUpdate("思考中..."))
 
-                val requestBody = JSONObject().apply {
-                    put("model", model)
-                    put("messages", messages)
-                    put("tools", getNativeToolsSchema())
-                    // fork：`required` → `auto`。
-                    //
-                    // ⚠️ 真机日志证据（2026-10-14）：`required` 下 glm-4.6v-flash **不输出任何文字** ——
-                    //    日志里 `AI Output:  ` 是**空白**（多数步骤连这一行都没有），所以监视器与日志里
-                    //    都看不到模型说了什么；而同一个工作流里的 **AutoGLM（没有 tool_choice）却有完整的中文推理**。
-                    //    强制工具调用约束的只是"必须产出 tool_calls"，**并不禁止 content** ——
-                    //    但这个模型把 `required` 理解成了"你的输出就是那个调用"。
-                    //
-                    // 改成 `auto` 后模型可以"先写观察与推理、再调工具"。万一它变成只说不做，
-                    // 下面已有的 `noToolCallCount` 兜底会接手（容忍 3 次，中间发一条
-                    // "SYSTEM ERROR: You MUST call a tool."，第 3 次仍未调工具才判失败）。
-                    put("tool_choice", "auto")
-                }
-
-                // 再次检查暂停状态（因为截图和思考可能耗时）
-                try { overlayManager.awaitState() } catch (e: CancellationException) { return ExecutionResult.Failure("任务取消", "用户手动停止了任务。") }
-
-                val responseJson = callLLM(client, baseUrl, apiKey, requestBody)
-
-                if (responseJson == null) {
-                    return ExecutionResult.Failure("API Error", "请求大模型失败，请检查网络或配置。")
-                }
-
-                val choice = responseJson.getJSONArray("choices").getJSONObject(0)
-                val message = choice.getJSONObject("message")
-                if (!message.has("content") || message.isNull("content")) message.put("content", "")
-                messages.put(message)
-
-                val content = message.optString("content", "")
-                if (content.isNotEmpty()) {
-                    DebugLogger.d("AgentModule", "AI Output: $content")
-                    // fork：**整段原文**进思考流。原先只取 think 标签**内部**
-                    // （闭合标签之后的文字被直接丢掉），且"没标签就整段当思考"两套行为不一致。
-                    // 现在统一：原文全留，去标签由 publishModelOutput 做；悬浮窗那行仍截断 30 字。
-                    overlayManager.publishModelOutput(content, "决策中...")
-                    onProgress(ProgressUpdate("AI: ${content.take(50)}..."))
-                }
-
-                // --- 行动 ---
-                if (message.has("tool_calls")) {
-                    noToolCallCount = 0
-                    val toolCalls = message.getJSONArray("tool_calls")
-
-                    if (toolCalls.length() > 0) {
-                        try {
-                            // 使用 optJSONObject 和 optString 安全解析，防止崩溃
-                            val toolCall = toolCalls.getJSONObject(0)
-                            val function = toolCall.optJSONObject("function")
-
-                            if (function == null) {
-                                throw Exception("Missing 'function' object in tool call")
-                            }
-
-                            val name = function.optString("name", "")
-                            val argsStr = function.optString("arguments", "{}")
-                            val callId = toolCall.optString("id", "call_${System.currentTimeMillis()}")
-
-                            if (name.isEmpty()) {
-                                throw Exception("Tool name is missing or empty")
-                            }
-
-                            val args = parseAgentToolArguments(argsStr)
-
-                            // 更新悬浮窗显示即将执行的操作
-                            val actionDisplay = when(name) {
-                                "click_point" -> "点击坐标"
-                                "click_element" -> "点击元素"
-                                "input_text" -> "输入文本"
-                                "scroll" -> "滚动屏幕"
-                                "launch_app" -> "启动应用"
-                                "wait" -> "等待中..."
-                                "finish_task" -> "任务完成"
-                                else -> "执行: $name"
-                            }
-                            overlayManager.updateStatus(null, actionDisplay)
-
-                            try { overlayManager.awaitState() } catch (e: CancellationException) { return ExecutionResult.Failure("任务取消", "用户手动停止了任务。") }
-
-                            // 死循环检测
-                            val currentAction = LastAction(name, argsStr)
-                            var toolResult = ""
-
-                            if (lastAction == currentAction) repeatCount++ else repeatCount = 0
-                            lastAction = currentAction
-
-                            val threshold = if (name == "scroll" || name == "wait") 5 else 2
-
-                            if (repeatCount >= threshold) {
-                                DebugLogger.w("AgentModule", "检测到死循环: $name")
-                                toolResult = "SYSTEM_INTERVENTION: Repeated action detected. STOP. Try 'scroll', 'press_key(back)', or 'finish_task(success=false)'."
-                                onProgress(ProgressUpdate("检测到操作卡死，强制AI换策略"))
-                            } else {
-                                onProgress(ProgressUpdate("执行: $name"))
-                                DebugLogger.d("AgentModule", "Calling tool: $name args: $args")
-
-                                if (name == "finish_task") {
-                                    val res = args["result"]?.toString() ?: "Done"
-                                    val suc = args["success"] as? Boolean ?: true
-                                    taskResult = ExecutionResult.Success(mapOf("result" to VString(res), "success" to VBoolean(suc)))
-                                } else {
-                                    toolResult = when(name) {
-                                        "click_point" -> {
-                                            val normX = (args["x"] as? Number)?.toInt() ?: 0
-                                            val normY = (args["y"] as? Number)?.toInt() ?: 0
-                                            val realX = (normX / 1000.0 * screenWidth).toInt()
-                                            val realY = (normY / 1000.0 * screenHeight).toInt()
-                                            DebugLogger.d("AgentModule", "坐标映射: Norm($normX, $normY) -> Pixel($realX, $realY)")
-                                            agentTools.clickPoint(realX, realY)
-                                        }
-                                        "click_element" -> agentTools.clickElement(args["target"]?.toString() ?: "")
-                                        "input_text" -> agentTools.inputText(args["text"]?.toString() ?: "")
-                                        "scroll" -> agentTools.scroll(args["direction"]?.toString() ?: "up")
-                                        "press_key" -> agentTools.pressKey(args["action"]?.toString() ?: "")
-                                        "launch_app" -> agentTools.launchApp(args["app_name"]?.toString() ?: "")
-                                        "wait" -> agentTools.wait((args["seconds"] as? Number)?.toInt() ?: 5)
-                                        else -> "Error: Unknown tool name '$name'"
-                                    }
-                                }
-                            }
-
-                            messages.put(JSONObject().apply {
-                                put("role", "tool")
-                                put("tool_call_id", callId)
-                                put("content", toolResult)
-                            })
-
-                            if (taskResult != null) break
-
-                        } catch (e: Exception) {
-                            DebugLogger.e("AgentModule", "Error parsing/executing tool call", e)
-                            // 反馈错误给 AI，不崩溃
-                            messages.put(JSONObject().apply {
-                                put("role", "tool")
-                                put("tool_call_id", "error")
-                                put("content", "SYSTEM ERROR: Invalid tool call format or parameters. Error: ${e.message}. Please generate a valid JSON tool call.")
-                            })
+                AgentObservation(
+                    // 截图失败时把现状那条提示补进文本（引擎的文本段没有独立 part 机制）
+                    text = uiHierarchy?.let {
+                        if (screenshotResult.path == null) {
+                            "$it\n[System: Screenshot failed. Rely on XML.]"
+                        } else {
+                            it
                         }
-                    }
-                } else {
-                    noToolCallCount++
-                    val thoughtSnippet = if (content.length > 20) content.take(20) + "..." else content
-                    onProgress(ProgressUpdate("AI 未执行操作 ($noToolCallCount/3): $thoughtSnippet"))
+                    },
+                    image = screenshotResult.path?.let { path ->
+                        ChatImageAttachment(
+                            uri = path,
+                            source = ChatImageSource.AGENT,
+                            mimeType = "image/jpeg",
+                        )
+                    },
+                    screenWidth = screenWidth,
+                    screenHeight = screenHeight,
+                )
+            }
 
-                    if (noToolCallCount >= 3) {
-                        return ExecutionResult.Failure("AI 响应异常", "连续多次未操作。AI 回复: $content")
-                    }
-
-                    messages.put(JSONObject().apply {
-                        put("role", "user")
-                        put("content", "SYSTEM ERROR: You MUST call a tool.")
-                    })
-                    continue
+            try {
+                engine.runLoop(
+                    host,
+                    AgentLoopRequest(
+                        preset = resolvedPreset,
+                        task = AgentTask(instruction = instruction),
+                        observation = observationProvider,
+                    ),
+                )
+            } catch (e: CancellationException) {
+                // ⚠️ 分流：悬浮窗「结束」抛的 CancellationException 时协程**仍 active**
+                //    ⇒ 与改造前逐字相同的失败文案；协程已被取消（工作流/执行器取消）时原样上抛。
+                if (currentCoroutineContext().isActive) {
+                    return ExecutionResult.Failure("任务取消", "用户手动停止了任务。")
                 }
+                throw e
+            }
 
-                currentStep++
-
-                // 我觉得没必要了
-                // delay(1000)
-
-            } // 主循环结束
-
-            return taskResult ?: ExecutionResult.Success(mapOf(
-                "result" to VString("Task stopped: Max steps ($maxSteps) reached."),
-                "success" to VBoolean(false)
-            ))
-
+            val finished = recordedFinishTask
+            return if (finished != null) {
+                ExecutionResult.Success(mapOf(
+                    "result" to VString(finished.first),
+                    "success" to VBoolean(finished.second),
+                ))
+            } else {
+                host.toExecutionResult()
+            }
         } finally {
             // 销毁前清理虚拟屏幕上的应用
             // 现在 variables 是 Map<String, VObject>，使用 getVariableAsInt 获取
@@ -693,65 +909,6 @@ class AgentModule : BaseModule() {
                     overlayManager.dismiss()
                 }
             }
-        }
-    }
-
-    private suspend fun callLLM(client: OkHttpClient, url: String, key: String, body: JSONObject): JSONObject? {
-        val endpoint = if (url.endsWith("/")) "${url}chat/completions" else "$url/chat/completions"
-        val request = Request.Builder()
-            .url(endpoint)
-            .addHeader("Authorization", "Bearer $key")
-            .addHeader("Content-Type", "application/json")
-            .post(body.toString().toRequestBody("application/json".toMediaType()))
-            .build()
-
-        return try {
-            suspendCancellableCoroutine { continuation ->
-                val call = client.newCall(request)
-
-                // 注册取消回调：一旦协程被取消，立即终止网络请求
-                continuation.invokeOnCancellation {
-                    try {
-                        call.cancel()
-                    } catch (e: Exception) {
-                        DebugLogger.e("AgentModule", "Cancel request failed", e)
-                    }
-                }
-
-                // 异步执行
-                call.enqueue(object : Callback {
-                    override fun onFailure(call: Call, e: IOException) {
-                        if (continuation.isActive) {
-                            continuation.resumeWithException(e)
-                        }
-                    }
-
-                    override fun onResponse(call: Call, response: Response) {
-                        // 在回调中读取数据，注意异常处理
-                        try {
-                            val str = response.body?.string()
-                            if (continuation.isActive) {
-                                if (response.isSuccessful && str != null) {
-                                    continuation.resume(JSONObject(str))
-                                } else {
-                                    DebugLogger.e("AgentModule", "LLM Error: ${response.code} $str")
-                                    continuation.resume(null)
-                                }
-                            }
-                        } catch (e: Exception) {
-                            if (continuation.isActive) {
-                                continuation.resumeWithException(e)
-                            }
-                        }
-                    }
-                })
-            }
-        } catch (e: Exception) {
-            // 如果是取消异常，直接抛出，让外层 finally 块处理
-            if (e is kotlinx.coroutines.CancellationException) throw e
-
-            DebugLogger.e("AgentModule", "LLM Exception", e)
-            null
         }
     }
 }
