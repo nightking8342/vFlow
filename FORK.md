@@ -2146,6 +2146,32 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 > ⚠️ **真机未验证**：① 监视器不再出现三角形、且跨轮不互相顶掉；② 手动模式下只有「配置来源」Chip、引用模式下有「选择」按钮 + 状态行 + 提示行。
 > ⚠️ 环境注记：本机内存偏紧（13.9GB），`assembleRelease`（含 externalNativeBuild）曾把 Gradle daemon 打到 OOM/原生崩溃 ⇒ 构建失败时先怀疑内存。
 
+### Chat 待发附件预览条 + 对话图片点击放大（2026-10-17）—— **已实现**（单测通过；**真机未验证**）
+
+> 真机反馈的第 3 条（聊天页图片）：(a) 在「+」面板选图后、面板收起时**输入框那里看不到已引用的图**；(b) **对话里的图片点击不能放大**。
+> 本批两条都修，**全部走「新增文件 + 追加带默认值的参数」**，不改上游核心逻辑。
+>
+> **(a)** 新增输入框区域的**待发附件预览条**（缩略图 + 右上角「×」移除），画在 **composer 卡片内部**（**不在** `ModalBottomSheet` 的 content 里）
+> ⇒ 与「+」面板开/关无关、两种状态都可见；数据源与面板共用同一份 `selectedPhotoUris` / `capturedPreview`（勾选与移除互相同步）。
+> 顺带核查「面板重开时选中态是否保留」= **保留**（状态在 `ChatScreen` 作用域，只有「新建会话」才清空 —— 既有语义、非缺陷）。
+> **(b)** 新增**全屏图片查看器**（`Dialog` + `usePlatformDefaultWidth = false`；1x–6x 双指缩放 + 拖动 + 右上角关闭 + 点空白关闭；`model == null` 时显示「图片不可用」占位）；
+> **三类路径全部接上**：用户所发的图 / Agent 截图卡片 / assistant **正文内联引用**（句柄解析后的真实路径）。
+> ⚠️ 可点性只在**传了** `onImageClick` 时生效（`null` ⇒ **完全不挂** `clickable`）⇒ 未传该参数的调用点行为与改动前**逐位一致**。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `ui/chat/ChatPendingAttachments.kt`、`ui/chat/ChatPendingAttachmentBar.kt`、`ui/chat/ChatImageViewer.kt`（**新增**） | fork 独有：待发附件的**数据模型 + 组装/可见性纯函数** / 预览条 UI（缩略图 + 「×」移除）/ 全屏查看器 | 我方 |
+| `ui/chat/ChatScreen.kt`（改，5 处，均为**追加**） | ① composer 卡片内**新增**预览条调用；② `hasPendingAttachments` 的**判据来源变更**（原来两处各写一份 ⇒ 收敛为与预览条**同源**的纯函数；**行为等价**、但语义变了）；③ 列表 `contentPadding.bottom` 与「滚到底」按钮各加 `pendingAttachmentBarAllowance`；④ 新增 `enlargedImage` 状态 + 查看器挂载点；⑤ `ChatMessageBubble` / `UserMessageBubble` / `AssistantMessageCard` 各**追加一个带默认值**的参数 `onImageClick` | **手动合并**（上游热文件） |
+| `ui/chat/ChatInlineImages.kt`（改，3 处签名追加） | `ChatMarkdownWithImages` / `ChatAttachmentThumbnails` / `ChatAgentScreenshotCard` 各**追加可选** `onImageClick: ((String?) -> Unit)? = null`（内部透传）；新增私有 `Modifier.imageClickModifier` | **手动合并**（追加） |
+| `res/values{,-en,-ja}/strings.xml`（改） | 各在**末尾追加 4 个键**（`chat_pending_attachment_remove` / `_photo_label` / `_camera_label` / `chat_image_viewer_close`；三语键集一致、无重复，各 1684 键） | **手动合并**（追加） |
+| 测试（**新增 2 个文件，15 例**） | `ChatPendingAttachmentsTest`（纯函数 7 例）· `ChatPendingAttachmentWiringTest`（源码扫描型接线 8 例，走 `SourceScan.stripped` 防 KDoc 假绿） | 我方 |
+
+> **门禁**：`./gradlew test` → **3415 例 / 1 既有失败 / 1 skipped**（基线 3400 + 15 全绿）；⚠️ `assembleRelease` **未跑**（本机可用内存仅 ~950MB，为规避 daemon 再次原生崩溃而跳过）⇒ **由父会话统一跑**。
+> **反证 4 条全部实做**（删预览条调用 / 判据改回旧写法 / 删 `.transformable` / 删两处 `imageClickModifier`）⇒ 对应用例变红，改回复绿。
+> ⚠️ **真机未验证**：预览条的位置与视觉、26dp「×」的可点性、列表底部留白（`64+14dp` 是**估算值**）、全屏查看器是否真铺满与状态栏遮挡、
+> 「点空白关闭」与「双指缩放」的**手势冲突**、正文内联图句柄解析后的真实路径加载（含备份恢复后文件缺失的降级）。
+> ⚠️ 未做（任务书未要求）：预览条项的长按/点击查看大图（当前只有「×」移除）。
+
 ---
 
 ## 暂未分歧、但日后改动时须登记的敏感点
