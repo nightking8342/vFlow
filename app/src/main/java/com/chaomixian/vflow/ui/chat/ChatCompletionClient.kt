@@ -284,22 +284,27 @@ internal class ChatCompletionClient(
             DebugLogger.d(LOG_TAG, "Request tools count=${resolvedTools.size} names=${resolvedTools.joinToString { it.name }}")
         }
 
-        // 只有 USER 角色会被装配成图片 part（三协议共同约束），其余角色带附件**不静默**。
-        filteredHistory.forEach { message ->
-            if (message.attachments.isNotEmpty() && message.role != ChatMessageRole.USER) {
-                DebugLogger.w(
-                    LOG_TAG,
-                    "Ignoring ${message.attachments.size} attachment(s) on role=${message.role} message=${message.id}",
-                )
-            }
+        // fork: AI 能力统一 §3.1 末段 —— **预算规划与装配必须看同一份历史**。
+        // 只有 USER 角色会被装配成图片 part（三协议共同约束；`role:"tool"` 的 content
+        // 只能是字符串）。若某条非 USER 消息挂着附件，它会**静默吃掉预算却不被发送** ——
+        // 故在进规划器**之前**就剥掉，并把条数记进 W 日志（不静默）。
+        val normalizedHistory = ChatImageCarriers.normalizeForRequest(filteredHistory)
+        val droppedAttachments = ChatImageCarriers.droppedAttachmentCount(filteredHistory)
+        if (droppedAttachments > 0) {
+            DebugLogger.w(
+                LOG_TAG,
+                "Ignoring $droppedAttachments attachment(s) on roles that cannot carry images " +
+                    "(carriers=${ChatImageCarriers.CARRIER_ROLES.joinToString { it.name }}); " +
+                    "the image plan is computed from the normalized history so no budget is consumed by them.",
+            )
         }
 
         ChatProviderRequest(
             preset = preset,
-            history = filteredHistory,
+            history = normalizedHistory,
             skillSelection = skillSelection,
             tools = resolvedTools,
-            imagePlan = imageResolver.plan(filteredHistory, imageBudget),
+            imagePlan = imageResolver.plan(normalizedHistory, imageBudget),
         )
     }
 

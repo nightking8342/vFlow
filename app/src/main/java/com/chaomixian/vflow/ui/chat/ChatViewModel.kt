@@ -7,10 +7,12 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.chaomixian.vflow.R
 import com.chaomixian.vflow.core.logging.DebugLogger
+import com.chaomixian.vflow.core.types.complex.VImage
 import com.chaomixian.vflow.core.workflow.WorkflowManager
 import com.chaomixian.vflow.permissions.Permission
 import java.util.Locale
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -20,6 +22,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class ChatPermissionRequest(
     val requestId: String,
@@ -54,6 +57,8 @@ private data class QueuedUserPrompt(
     val conversationId: String,
     val content: String,
     val timestampMillis: Long,
+    /** 入队时随消息一起排队的图片（fork：AI 能力统一 §3.2 / 批 2 的 ③）。 */
+    val attachments: List<ChatImageAttachment> = emptyList(),
 )
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
@@ -63,6 +68,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val chatClient = ChatCompletionClient()
     private val benchmarkRunner = ChatBenchmarkRunner(application, chatClient, toolRegistry, toolExecutor)
     private val artifactStores = mutableMapOf<String, ChatAgentArtifactStore>()
+    /**
+     * 附件落盘 + 句柄索引（fork：AI 能力统一 §3.9「引用即保存」）。
+     *
+     * `init` 时读一次 `filesDir/chat/attachments/index.json`（与 `ChatConversationStore`
+     * 一样是个小文件、在主线程读）。之后写路径都在 IO 线程。
+     */
+    private val chatAttachmentStore = ChatAttachmentStore.open(application.filesDir)
 
     private val _uiState = MutableStateFlow(
         ChatUiState(
@@ -376,9 +388,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _events.tryEmit("已停止。")
     }
 
-    fun sendMessage(prompt: String): Boolean {
+    /**
+     * 发一条用户消息（fork：AI 能力统一 §3.2 / 批 2 的 ③）。
+     *
+     * @param attachments 输入框里选的图 / 拍的照。**正文与附件都空才算空**——
+     *   「只发一张图」是合法输入（现状只判 `content.isBlank()` 会把它丢掉）。
+     */
+    fun sendMessage(
+        prompt: String,
+        attachments: List<ChatImageAttachment> = emptyList(),
+    ): Boolean {
         val content = prompt.trim()
-        if (content.isBlank()) return false
+        if (content.isBlank() && attachments.isEmpty()) return false
         val state = _uiState.value
         if (state.isBenchmarkRunning) {
             _events.tryEmit("Benchmark 正在运行，暂时无法发送新的对话消息。")
@@ -398,34 +419,37 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 conversation = conversation,
                 pendingToolMessage = pendingApproval,
                 content = content,
+                attachments = attachments,
                 preset = preset,
             )
             return true
         }
 
         if (state.isAgentRunning || state.isSending || pendingToolExecution != null) {
-            enqueueUserPrompt(conversation.id, content)
+            enqueueUserPrompt(conversation.id, content, attachments)
             return true
         }
 
-        startUserMessage(conversation, content, preset)
+        startUserMessage(conversation, content, attachments, preset)
         return true
     }
 
     private fun startUserMessage(
         conversation: ChatConversation,
         content: String,
+        attachments: List<ChatImageAttachment>,
         preset: ChatPresetConfig,
     ) {
         DebugLogger.i(
             LOG_TAG,
-            "User message received conversation=${conversation.id} preset=${preset.name.ifBlank { preset.model }} text=${content.compactForLog()}"
+            "User message received conversation=${conversation.id} preset=${preset.name.ifBlank { preset.model }} attachments=${attachments.size} text=${content.compactForLog()}"
         )
         val now = System.currentTimeMillis()
         val userMessage = ChatMessage(
             role = ChatMessageRole.USER,
             content = content,
             timestampMillis = now,
+            attachments = attachments,
         )
         val historyForRequest = conversation.messages + userMessage
         val updatedConversation = conversation.copy(
@@ -445,6 +469,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         conversation: ChatConversation,
         pendingToolMessage: ChatMessage,
         content: String,
+        attachments: List<ChatImageAttachment>,
         preset: ChatPresetConfig,
     ) {
         val now = System.currentTimeMillis()
@@ -471,6 +496,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             role = ChatMessageRole.USER,
             content = content,
             timestampMillis = now + rejectedResultMessages.size + 1,
+            attachments = attachments,
         )
         val historyForRequest = messagesWithRejectedTool + userMessage
         val updatedConversation = conversation.copy(
@@ -486,15 +512,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    private fun enqueueUserPrompt(conversationId: String, content: String) {
+    private fun enqueueUserPrompt(
+        conversationId: String,
+        content: String,
+        attachments: List<ChatImageAttachment> = emptyList(),
+    ) {
         queuedUserPrompts += QueuedUserPrompt(
             conversationId = conversationId,
             content = content,
             timestampMillis = System.currentTimeMillis(),
+            attachments = attachments,
         )
         DebugLogger.i(
             LOG_TAG,
-            "Queued user message conversation=$conversationId queued=${queuedUserPrompts.size} text=${content.compactForLog()}"
+            "Queued user message conversation=$conversationId queued=${queuedUserPrompts.size} attachments=${attachments.size} text=${content.compactForLog()}"
         )
         _uiState.update { state ->
             state.copy(queuedPromptCount = queuedUserPrompts.size)
@@ -533,12 +564,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 conversation = conversation,
                 pendingToolMessage = pendingApproval,
                 content = queued.content,
+                attachments = queued.attachments,
                 preset = preset,
             )
         } else {
             startUserMessage(
                 conversation = conversation,
                 content = queued.content,
+                attachments = queued.attachments,
                 preset = preset,
             )
         }
@@ -825,15 +858,41 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 message
             }
         }
+        val now = System.currentTimeMillis()
         val resultMessages = toolResults.mapIndexed { index, result ->
             ChatMessage(
                 role = ChatMessageRole.TOOL,
                 content = result.outputText,
-                timestampMillis = System.currentTimeMillis() + index,
+                timestampMillis = now + index,
                 toolResult = result,
             )
         }
-        val historyForRequest = updatedAssistantMessages + resultMessages
+        // fork: AI 能力统一 §3.1 —— Agent 截图的承载方式是**紧随其后的 user 轮**：
+        // OpenAI 的 `role:"tool"` content 只能是字符串、Responses 的
+        // `function_call_output.output` 同理，而 assistant 的 content 也不支持图片 part
+        // ⇒ 只有 user 角色在三协议里都成立（Anthropic 侧连续 user 轮会被服务端合并）。
+        // 一批工具调用产出多张图 ⇒ **只追加一条**消息，附件按工具结果顺序排列；
+        // `source = AGENT` ⇒ 吃 `maxAgentImages` 那档预算（更早的截图换占位文本）。
+        val artifactStore = artifactStores.getOrPut(conversationId, ::ChatAgentArtifactStore)
+        val screenshotAttachments = chatAgentToolImageAttachments(
+            toolResults = toolResults,
+            imageUriForHandle = { handle -> (artifactStore.resolve(handle) as? VImage)?.uriString },
+        )
+        val screenshotMessage = screenshotAttachments
+            .takeIf { it.isNotEmpty() }
+            ?.let { attachments ->
+                ChatMessage(
+                    role = ChatMessageRole.USER,
+                    content = "",
+                    timestampMillis = now + resultMessages.size + 1,
+                    attachments = attachments,
+                )
+            }
+        val historyForRequest = buildList {
+            addAll(updatedAssistantMessages)
+            addAll(resultMessages)
+            screenshotMessage?.let(::add)
+        }
         val updatedConversation = conversation.copy(
             messages = historyForRequest,
             updatedAtMillis = historyForRequest.lastOrNull()?.timestampMillis ?: System.currentTimeMillis(),
@@ -892,6 +951,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     LOG_TAG,
                     "Tools conversation=${updatedConversation.id} tools=${skillSelection.availableTools.joinToString { it.name }}"
                 )
+                // fork: AI 能力统一 §3.9 —— 用户发的图**发送前落盘**。
+                // 相册选择器给的 `content://` 读权限是**临时**的（进程结束即失效）⇒
+                // 不落盘则重启后那条消息既渲染不出来、也发不出去。
+                // 落盘是文件 IO ⇒ 走 `Dispatchers.IO`；结果同时用于本轮请求与会话状态。
+                val historyWithPersistedAttachments = persistUserAttachments(
+                    conversationId = updatedConversation.id,
+                    history = historyForRequest,
+                )
                 // ⚠️ 流式接线（`chat-streaming-design.md` §4.4）。改动前是一次性
                 // `generateReply(...)`，拿到结果后**整条替换**占位消息（换 id）。
                 // 现在改为：占位消息的 id **活到成品**，正文**原位增长**。
@@ -920,7 +987,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 ) {
                     chatClient.streamReply(
                         preset = preset,
-                        history = historyForRequest,
+                        history = historyWithPersistedAttachments,
                         skillSelection = skillSelection,
                     )
                 }.collect { event ->
@@ -1013,6 +1080,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
                 persistSessionState()
+                // fork: AI 能力统一 §3.9 —— 「引用即保存」：正文里引用过的图落盘 + 登记句柄，
+                // 否则重启后正文里的 `artifact://…` 引用会永久破图。
+                persistReferencedArtifacts(updatedConversation.id, pendingMessage.id)
 
                 val autoApproveMessageId = if (shouldAutoApprove) pendingMessage.id else null
                 if (autoApproveMessageId != null) {
@@ -1316,6 +1386,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         )
         _uiState.update { it.copy(conversations = outcome.conversations) }
         persistSessionState()
+        // best-effort：用户中途停止后，正文里已写下的引用不该永久破图。
+        persistReferencedArtifacts(conversationId, messageId)
     }
 
     /**
@@ -1369,6 +1441,132 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         persistSessionState()
+        // best-effort：失败时已写下的引用同样要保住（用户可能已经把那条回复复制走了）。
+        persistReferencedArtifacts(conversationId, messageId)
+    }
+
+    /**
+     * 用户发的图**发送前落盘**（fork：AI 能力统一 §3.9.2 / 批 2 的 ③）。
+     *
+     * 判据 = `role == USER` **且** `attachment.source == ChatImageSource.USER`
+     * **且** 还不在附件目录里（幂等）。
+     *
+     * ⚠️ **必须带 `source == USER`**：Agent 截图同样挂在 `role = USER` 的消息上
+     * （见 [appendToolResultsAndContinue]），若只按角色判，每条
+     * `observe_ui(include_screenshot=true)` 的截图都会被复制进附件目录并回写 uri ——
+     * 与设计稿 §3.9.2（**未被引用的工具产出图只在 cache**）冲突。
+     * AGENT 图只走 [persistReferencedArtifacts] 的「引用即保存」。
+     *
+     * 单个附件落盘失败 ⇒ **保留原 uri** 并记 W（模型侧退化为 `UNREADABLE` 占位），
+     * **不阻断发送**。
+     *
+     * @return 改写后的历史（新 uri 一律是 `file://` + 绝对路径；无变化时返回原列表实例）。
+     */
+    private suspend fun persistUserAttachments(
+        conversationId: String,
+        history: List<ChatMessage>,
+    ): List<ChatMessage> {
+        // 文件 IO ⇒ 必须在 IO 线程（本函数由 Main 上的 `viewModelScope.launch` 调用）。
+        val persisted = withContext(Dispatchers.IO) {
+            history.map { message ->
+                if (message.role != ChatMessageRole.USER || message.attachments.isEmpty()) {
+                    return@map message
+                }
+                var changed = false
+                val rewritten = message.attachments.map { attachment ->
+                    if (attachment.source != ChatImageSource.USER ||
+                        chatAttachmentStore.isInside(attachment.uri)
+                    ) {
+                        return@map attachment
+                    }
+                    val path = chatAttachmentStore.persistFromUri(attachment.uri, attachment.mimeType)
+                    if (path == null) {
+                        DebugLogger.w(
+                            LOG_TAG,
+                            "Could not persist a user attachment (uri=${attachment.uri}); " +
+                                "sending it with the original uri.",
+                        )
+                        attachment
+                    } else {
+                        changed = true
+                        attachment.copy(uri = "file://$path")
+                    }
+                }
+                if (changed) message.copy(attachments = rewritten) else message
+            }
+        }
+        if (persisted == history) return history
+
+        // 有变化才写回会话状态（UI + 磁盘各一次）——否则流式期间用户看到的仍是
+        // `content://`，而那个读权限在进程结束后就没了。
+        _uiState.update { state ->
+            state.copy(
+                conversations = state.conversations.map { conversation ->
+                    if (conversation.id != conversationId) return@map conversation
+                    val byId = persisted.associateBy { it.id }
+                    conversation.copy(
+                        messages = conversation.messages.map { existing -> byId[existing.id] ?: existing },
+                    )
+                },
+            )
+        }
+        persistSessionState()
+        return persisted
+    }
+
+    /**
+     * **引用即保存**（fork：AI 能力统一 §3.9）。
+     *
+     * 判据是**客观**的：正文里有没有 `![图注](artifact://…)` 引用 —— 不是「AI 觉得哪张重要」。
+     * pin 方案正因判据主观而被否决（它必然出现「零 pin / 全 pin」两种失败形态）。
+     *
+     * 落盘后「句柄 -> 文件」的映射进 `attachments/index.json` ⇒ **重启后正文里的引用仍能解析**。
+     * **未被引用的工具产出图不落盘**（只在会话内存里）。
+     *
+     * ⚠️ **fire-and-forget**（`viewModelScope.launch(Dispatchers.IO)`）而不是 suspend：
+     * 三个调用点里有两个在**取消 / 失败**路径上（`finalizeOnInterruption` /
+     * `finishWithError`），在那里 suspend 会被立刻取消；而落盘失败只影响
+     * 「重启后能否显示」，不该阻断收尾。`viewModelScope` 是 `currentAgentJob` 的**父**
+     * 作用域，故从被取消的协程里启动仍然有效。
+     */
+    private fun persistReferencedArtifacts(conversationId: String, messageId: String) {
+        val conversation = _uiState.value.conversations.firstOrNull { it.id == conversationId } ?: return
+        val body = conversation.messages.firstOrNull { it.id == messageId }?.content ?: return
+        val handles = ChatArtifactReferences.referencedHandles(body)
+        if (handles.isEmpty()) return
+        val artifactStore = artifactStores[conversationId] ?: return
+        val pending = handles.mapNotNull { handle ->
+            val uri = (artifactStore.resolve(handle) as? VImage)?.uriString?.takeIf { it.isNotBlank() }
+                ?: return@mapNotNull null
+            handle to uri
+        }
+        if (pending.isEmpty()) return
+        DebugLogger.i(
+            LOG_TAG,
+            "Persisting ${pending.size} referenced artifact(s) conversation=$conversationId message=$messageId",
+        )
+        viewModelScope.launch(Dispatchers.IO) {
+            pending.forEach { (handle, uri) ->
+                chatAttachmentStore.persistFromUri(
+                    uri = uri,
+                    mimeType = chatImageMimeTypeForUri(uri),
+                    handle = handle,
+                )
+            }
+        }
+    }
+
+    /**
+     * 渲染侧解析：`artifact://…` 句柄 → 可直接喂给图片加载器的路径。
+     *
+     * 先查**磁盘索引**（重启后唯一的来源），再退回**会话内存**的 artifact store
+     * （覆盖「流式期间刚引用、落盘还没跑完」的窗口）。都查不到 ⇒ `null`（渲染占位文案）。
+     */
+    internal fun resolveChatAttachment(conversationId: String, handle: String): String? {
+        chatAttachmentStore.resolveHandle(handle)?.let { return it }
+        return (artifactStores[conversationId]?.resolve(handle) as? VImage)
+            ?.uriString
+            ?.takeIf { it.isNotBlank() }
     }
 
     private fun persistSessionState() {

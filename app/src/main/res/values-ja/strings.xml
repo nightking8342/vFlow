@@ -1715,4 +1715,6 @@
     <string name="agent_monitor_confirm">もう一度タップで確定</string>
     <string name="agent_monitor_no_preview">メイン画面モード（プレビューなし）</string>
     <string name="agent_monitor_stopping">停止中…</string>
+    <string name="chat_agent_screenshot_label">エージェントのスクリーンショット</string>
+    <string name="chat_image_unavailable">画像を表示できません</string>
 </resources>

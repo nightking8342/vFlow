@@ -2954,6 +2954,22 @@ internal class ChatAgentModuleExecutor(
                 }
             }
 
+            // fork: AI 能力统一 §3.9 —— 工具产出的图走**正文内联引用**（不是 pin）。
+            // 这里把「可照抄的完整示例」直接印在结果里：模型写歪长句柄的概率远高于
+            // 照抄一行现成文本（句柄形态本任务保持 `artifact://<callId>/<key>`，不引编号别名）。
+            val imageHandles = artifacts
+                .filter { it.typeLabel == CHAT_IMAGE_ARTIFACT_TYPE_LABEL }
+                .map { it.handle }
+            if (imageHandles.isNotEmpty()) {
+                append("\nThis result produced image artifact(s). They are attached to this request, so you can see them.")
+                append(" To show one to the user, write an inline image reference in your reply body:")
+                append(" ![short caption](<handle>)")
+                append(" — the app renders it as an image.")
+                append(" Example: ![screenshot](")
+                append(imageHandles.first())
+                append(")")
+            }
+
             if (progressMessages.isNotEmpty()) {
                 append("\nProgress:\n")
                 progressMessages.takeLast(8).forEach { message ->
