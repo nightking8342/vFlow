@@ -15,7 +15,7 @@ import java.io.File
  * filesDir/chat/legacy/legacy_chat_session_state.json   迁移成功后旧 blob 的**原始文本**副本
  * filesDir/chat/quarantine/<原名>.<时间戳>.bad.json      解析失败的坏数据留存（原文，不改写）
  * filesDir/chat/conversations/<id>.json.tmp             仅原子写期间存在（加载时忽略）
- * filesDir/chat/attachments/                            留给任务 ⑤（本任务**不创建**，布局上与之平级）
+ * filesDir/chat/attachments/                            由「批 2 的 ③（ChatAgent 多模态闭环）」落地；本文件只留布局位（与之平级）
  * ```
  *
  * ## 为什么本文件与 `ChatScope` 共用这批字面量
