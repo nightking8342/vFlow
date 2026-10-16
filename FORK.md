@@ -2114,6 +2114,38 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 
 > **待收敛项（父会话登记）**：D8（被引用配置被删的行为 —— 本批实现为「明确 `Missing` 报错」，D8 本身仍待议）· D10（`AIModule` 默认模型 `gpt-3.5-turbo` 未对齐，另立任务）· D15（已按**甲**「原地换实现 + 参数全带默认值」实施）· D18（到顶后结果语义：本批 `Success(success=false)` + 正文 = 收尾总结，D18 仍待议）· D22（存储档位，本批不涉及）· `AgentPrompts.SHARED_RULES` 与上游 `ChatAgentSkillRouter` 的 8 条重复。
 
+### AI 能力统一 · **真机修复 1**（运行监视器流式展示 + 模型配置选择器可见性，2026-10-17）—— **已实现**（单测通过；**真机未验证**）
+
+> 四批落地后用户装上真机试用，反馈 5 条问题；本批修其中 2 条（另 3 条见「真机修复 2」）。
+>
+> **① 运行监视器「思考流」把流式正文逐条追加成三角形**（第一行 1 字、第二行 2 字、第三行 3 字…）：
+> 根因 = 引擎发的是**累积正文**（`AgentProgressUpdate.Streaming` 的 KDoc 明写「content 非增量」）⇒
+> `AgentModule` **每个 delta** 调一次 `publishModelOutput` ⇒ `AgentRunMonitor.publishThought` 用 `appendEntry` **追加** ⇒ 累积文本变成一行行。
+> 修法（**修在监视器侧，不动引擎契约**）：新增 `publishStreamingThought()`（**同轮就地替换**、跨轮追加）+
+> `beginThoughtRound()`（轮次边界，只推进计数、不产生条目）；`AgentModule` / `AutoGLMModule` 每轮开头发一次轮次信号。
+> ⚠️ **实现期订正**：AutoGLM 走的是**非流式** `generateReply`（每步只调一次 `publishModelOutput`）⇒ 它**本来不会**产生三角形；
+> 但两者共用同一出口，改成替换语义后**必须**同步发轮次信号（否则第 2 步会顶掉第 1 步）⇒ 已加，**行为不变**。
+> ⚠️ 轮次边界选「宿主显式发信号」而非「给 `AgentProgressUpdate.Streaming` 加 `round` 字段」—— 后者的字段声明在
+> `ui/chat/AgentHost.kt`，**不在该任务的允许改动清单内**，动它即越界。
+>
+> **② 模型配置选择器（三个 AI 模块共用）的按钮可见性**：
+> 原 `AiModelConfigSelectorView.kt` 里 `manualButton.isVisible = isReference`（引用模式下**反而**显示它），而 `selectButton` **根本没有 `isVisible`** ⇒ 两种模式都显示。
+> 修法：`selectButton.isVisible = isReference` + **删掉 `manualButton`**（切回手动只有「配置来源」Chip 一条路）。
+> **行为变更（用户可见）**：手动模式下不再显示「选择」按钮；引用模式下不再显示多余的「手动配置」按钮。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `ui/overlay/AgentRunMonitor.kt`（改） | `Entry` 增 `streamingRound: Int?`（非流式条目恒 `null` ⇒ **永不**被替换）；`Snapshot` 增 `thoughtRound`；**新增** `publishStreamingThought()` / `beginThoughtRound()`；抽 `boundedByMaxEntries()` 让「追加 / 替换」两条路径都过 200 条裁剪；`publishThought` / `publishError` / `publishStatus` / `publishAction` / 步数 / 取消 / 暂停语义**一字未改** | 我方 |
+| `ui/overlay/AgentOverlayManager.kt`（改） | `publishModelOutput` 的思考流出口改走 `publishStreamingThought`；**新增** `beginThoughtRound()` 转发到总线 | 我方 |
+| `core/workflow/module/interaction/AgentModule.kt`、`AutoGLMModule.kt`（改，各 +3 行） | 每轮 / 每步开头调 `overlayManager.beginThoughtRound()` | **手动合并**（追加） |
+| `ui/workflow_editor/AiModelConfigSelectorView.kt`（改） | 确立**可见性契约**：选择按钮 / 状态行 / 提示行**只在引用模式显示**；**删除 `manualButton`**（类 KDoc 已写明本文件不应再出现该标识符） | 我方（fork 新增文件） |
+| 测试（新增 2 + 改 2） | `AgentRunMonitorTest` **+5 例**（同轮替换 / 跨轮追加 / 非流式条目不被替换 / 流式路径有界 / 空白忽略）· `AgentMonitorAndImeWiringTest` **+1 例**并改 2 处旧锚点 · `AiModelConfigSelectorVisibilityTest` **3 例**（源码扫描型，走 `SourceScan.stripped` 防 KDoc 假绿） | 我方 |
+
+> **门禁**：#43 = `./gradlew test` **3406 例 / 1 既有失败 / 1 skipped**（基线 3400 + 6）· `assembleRelease` 成功 · `apksigner` 签名未降级；
+> #44 = **3403 例**（+3）· `assembleRelease` 成功 · 签名未降级。两者都做了**实测反证**（改红 → 记录失败用例 → 改回 → 复绿）。
+> ⚠️ **真机未验证**：① 监视器不再出现三角形、且跨轮不互相顶掉；② 手动模式下只有「配置来源」Chip、引用模式下有「选择」按钮 + 状态行 + 提示行。
+> ⚠️ 环境注记：本机内存偏紧（13.9GB），`assembleRelease`（含 externalNativeBuild）曾把 Gradle daemon 打到 OOM/原生崩溃 ⇒ 构建失败时先怀疑内存。
+
 ---
 
 ## 暂未分歧、但日后改动时须登记的敏感点
