@@ -1717,4 +1717,16 @@
     <string name="agent_monitor_stopping">停止中…</string>
     <string name="chat_agent_screenshot_label">エージェントのスクリーンショット</string>
     <string name="chat_image_unavailable">画像を表示できません</string>
+    <!-- fork: AI 能力統一 バッチ 4 —— 3 モジュール共通の「設定参照」文言 -->
+    <string name="param_ai_config_source_name">設定ソース</string>
+    <string name="option_ai_config_source_manual">手動</string>
+    <string name="option_ai_config_source_reference">モデル設定を参照</string>
+    <string name="param_ai_model_config_id_name">モデル設定</string>
+    <string name="dialog_ai_select_model_config_title">モデル設定を選択</string>
+    <string name="button_ai_select_model_config">選択…</string>
+    <string name="text_ai_config_selected_none">未選択</string>
+    <string name="text_ai_config_missing">設定が見つかりません</string>
+    <string name="text_ai_config_no_configs">設定がありません</string>
+    <string name="hint_ai_config_reference_overrides_manual">参照設定が優先されます</string>
+    <string name="hint_ai_agent_system_prompt_prefix">任意：システムプロンプト前段（参照時に自動入力、編集可）</string>
 </resources>
