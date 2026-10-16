@@ -33,6 +33,7 @@ import com.chaomixian.vflow.ui.chat.ChatMessageRole
 import com.chaomixian.vflow.ui.chat.ChatPresetConfig
 import com.chaomixian.vflow.ui.chat.ChatPresetRepository
 import com.chaomixian.vflow.ui.chat.ChatStreamTimeouts
+import com.chaomixian.vflow.ui.chat.chatImageMimeTypeForUri
 import com.chaomixian.vflow.ui.workflow_editor.PillUtil
 import com.chaomixian.vflow.ui.overlay.AgentOverlayManager
 import kotlinx.coroutines.Dispatchers
@@ -480,7 +481,11 @@ class AutoGLMModule : BaseModule() {
                             ChatImageAttachment(
                                 uri = path,
                                 source = ChatImageSource.AGENT,
-                                mimeType = "image/jpeg",
+                                // ⚠️ **不得硬编码 image/jpeg**：主屏截图是 **PNG**
+                                // （`CaptureScreenModule` 写 `screenshot_<ts>.png`）⇒ 把 PNG 字节
+                                // 标成 JPEG 是**静默的 media_type 不符**（Anthropic 按 media_type
+                                // 解码 ⇒ 硬失败）。仓库既有教训见 `ChatAgentToolImages.kt` 的 KDoc。
+                                mimeType = chatImageMimeTypeForUri(path),
                             ),
                         )
                     }

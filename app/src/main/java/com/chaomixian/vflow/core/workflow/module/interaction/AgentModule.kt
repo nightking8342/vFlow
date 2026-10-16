@@ -45,6 +45,7 @@ import com.chaomixian.vflow.ui.chat.ChatToolResult
 import com.chaomixian.vflow.ui.chat.ChatToolResultStatus
 import com.chaomixian.vflow.ui.chat.ObservationMode
 import com.chaomixian.vflow.ui.chat.WorkflowAgentHost
+import com.chaomixian.vflow.ui.chat.chatImageMimeTypeForUri
 import com.chaomixian.vflow.ui.overlay.AgentOverlayManager
 import com.chaomixian.vflow.ui.workflow_editor.PillUtil
 import com.google.gson.JsonElement
@@ -833,7 +834,13 @@ class AgentModule : BaseModule() {
                         ChatImageAttachment(
                             uri = path,
                             source = ChatImageSource.AGENT,
-                            mimeType = "image/jpeg",
+                            // ⚠️ **不得硬编码 image/jpeg**：主屏截图是 **PNG**
+                            // （`CaptureScreenModule` 写 `screenshot_<ts>.png`，MediaProjection
+                            // 回落同样 PNG）⇒ 把 PNG 字节标成 JPEG 是**静默的 media_type 不符**
+                            // （Anthropic 按 media_type 解码 ⇒ 硬失败；OpenAI 塞进 `data:` URL）。
+                            // 仓库既有教训见 `ChatAgentToolImages.kt` 的 KDoc，chat 侧所有调用点
+                            // 都走这个函数 —— 本处曾是唯一绕过它的新调用点。
+                            mimeType = chatImageMimeTypeForUri(path),
                         )
                     },
                     screenWidth = screenWidth,

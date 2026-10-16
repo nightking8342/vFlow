@@ -15,6 +15,7 @@ import com.chaomixian.vflow.ui.chat.ChatImageSource
 import com.chaomixian.vflow.ui.chat.ChatMessage
 import com.chaomixian.vflow.ui.chat.ChatMessageRole
 import com.chaomixian.vflow.ui.chat.ChatPresetConfig
+import com.chaomixian.vflow.ui.chat.chatImageMimeTypeForUri
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
@@ -122,7 +123,8 @@ class AutoGLMTransportTest {
                     ChatImageAttachment(
                         uri = it,
                         source = ChatImageSource.AGENT,
-                        mimeType = "image/jpeg",
+                        // 与生产一致：由路径推断（主屏 .png ⇒ image/png，虚拟屏 .jpg ⇒ image/jpeg）
+                        mimeType = chatImageMimeTypeForUri(it),
                     ),
                 )
             }
@@ -369,6 +371,50 @@ class AutoGLMTransportTest {
             "`autoGlmPreset` 曾是只有测试引用的 helper（返工第 4 条）⇒ 已删除，不得回潮；" +
                 "测试改走生产路径 AiModelConfigResolver.resolve 的 manual 分支",
             moduleSource.contains("autoGlmPreset"),
+        )
+    }
+
+    // ------------------------------------------------------------ 5. 截图 mime（返工第 ① 条）
+
+    @Test
+    fun screenshotAttachmentDerivesItsMimeTypeInsteadOfHardcodingJpeg() {
+        val moduleSource = SourceScan.stripped(
+            "src/main/java/com/chaomixian/vflow/core/workflow/module/interaction/AutoGLMModule.kt",
+        )
+        assertTrue(
+            "必须用 `chatImageMimeTypeForUri` 推断 mime —— 主屏截图是 **PNG**，标成 JPEG 是静默的 media_type 不符",
+            moduleSource.contains("chatImageMimeTypeForUri("),
+        )
+        assertFalse(
+            "不得再硬编码 image/jpeg（引用 Anthropic 配置时那条路径按 media_type 解码 ⇒ 硬失败）",
+            moduleSource.contains("mimeType = \"image/jpeg\""),
+        )
+    }
+
+    @Test
+    fun pngScreenshotMimeTypeReachesTheWire() = runBlocking {
+        // 主屏截图是 PNG（`CaptureScreenModule` 写 `screenshot_<ts>.png`）⇒ 附件必须带
+        // `image/png`，否则 `data:` URL（以及 Anthropic 的 `media_type`）与实际字节不符。
+        val pngPath = "file:///tmp/screenshot_20261016_120000.png"
+        assertEquals("前提：由路径推断 mime", "image/png", chatImageMimeTypeForUri(pngPath))
+
+        server.enqueue(completionResponse("ok"))
+        runAutoGlmTurn(preset(), listOf(userMessage("Current Step: 1", imagePath = pngPath)), client())
+
+        val parts = bodyOfFirstRequest()
+            .getJSONArray("messages")
+            .getJSONObject(1)
+            .get("content") as JSONArray
+        var url: String? = null
+        for (i in 0 until parts.length()) {
+            val part = parts.getJSONObject(i)
+            if (part.optString("type") == "image_url") {
+                url = part.getJSONObject("image_url").getString("url")
+            }
+        }
+        assertTrue(
+            "PNG 截图的 data URL 必须是 image/png（不得被标成 jpeg）",
+            url?.startsWith("data:image/png;base64,") == true,
         )
     }
 

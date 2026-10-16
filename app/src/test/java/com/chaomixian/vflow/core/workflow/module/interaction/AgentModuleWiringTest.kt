@@ -221,4 +221,19 @@ class AgentModuleWiringTest {
             moduleSource.contains("agentModulePreset"),
         )
     }
+
+    // ------------------------------------------------------------ 7. 截图 mime（返工第 ① 条）
+
+    @Test
+    fun screenshotAttachmentDerivesItsMimeTypeInsteadOfHardcodingJpeg() {
+        assertTrue(
+            "必须用 `chatImageMimeTypeForUri` 推断 mime —— 主屏截图是 **PNG**" +
+                "（`CaptureScreenModule` 写 .png），标成 JPEG 是静默的 media_type 不符",
+            moduleSource.contains("chatImageMimeTypeForUri("),
+        )
+        assertFalse(
+            "不得再硬编码 image/jpeg（引用 Anthropic 配置时那条路径按 media_type 解码 ⇒ 硬失败）",
+            moduleSource.contains("mimeType = \"image/jpeg\""),
+        )
+    }
 }
