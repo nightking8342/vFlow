@@ -8,13 +8,16 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.ImageButton
+import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.view.isVisible
 import androidx.core.widget.doAfterTextChanged
 import com.chaomixian.vflow.R
+import com.chaomixian.vflow.core.ai.AiModelConfigRef
 import com.chaomixian.vflow.core.module.CustomEditorViewHolder
 import com.chaomixian.vflow.core.module.ModuleUIProvider
 import com.chaomixian.vflow.core.workflow.model.ActionStep
+import com.chaomixian.vflow.ui.workflow_editor.AiModelConfigSelectorView
 import com.chaomixian.vflow.ui.workflow_editor.RichTextView
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
@@ -23,6 +26,10 @@ import com.google.android.material.textfield.TextInputEditText
 
 /**
  * AutoGLM 专用 UI 提供者
+ *
+ * fork（AI 能力统一批 4 的 T5）：新增「配置来源（手动 / 引用模型配置）」选择器。
+ * ⚠️ **`ownedValueCopyKeys` 传空集** —— AutoGLM 的提示词是上游模型契约、temperature 固定 0.1
+ * ⇒ 值拷贝不适用（§3.6.3 C）：引用只做活引用 4 项。
  */
 class AutoGLMModuleUIProvider : ModuleUIProvider {
     companion object {
@@ -47,10 +54,17 @@ class AutoGLMModuleUIProvider : ModuleUIProvider {
 
         var instructionRichText: RichTextView? = null
         var allSteps: List<ActionStep>? = null
+
+        // fork：配置引用 —— 选择器实例 + 需要在引用模式下置灰的控件。
+        // ⚠️ `internal`：`AiModelConfigSelectorView` 是 internal 类型，而本类是 public。
+        internal var configSelector: AiModelConfigSelectorView? = null
+        val manualOnlyViews: MutableList<View> = mutableListOf()
     }
 
     override fun getHandledInputIds(): Set<String> = setOf(
-        "provider", "base_url", "model", "api_key", "instruction", "max_steps"
+        "provider", "base_url", "model", "api_key", "instruction", "max_steps",
+        // fork：配置引用由自绘选择器接管（见 AiModelConfigSelectorView）。
+        AiModelConfigRef.PARAM_SOURCE, AiModelConfigRef.PARAM_CONFIG_ID,
     )
 
     override fun createEditor(
@@ -94,6 +108,25 @@ class AutoGLMModuleUIProvider : ModuleUIProvider {
         holder.stepsSlider.value = maxSteps
         holder.stepsText.text = "${maxSteps.toInt()}"
 
+        // fork：配置引用选择器（插到编辑器顶部）。
+        holder.manualOnlyViews += listOf(
+            holder.providerGroup,
+            holder.baseUrlEdit,
+            holder.modelEdit,
+            holder.apiKeyEdit,
+        )
+        val selector = AiModelConfigSelectorView(
+            context = context,
+            // AutoGLM 的提示词是模型契约、temperature 固定 0.1 ⇒ 无值拷贝参数。
+            ownedValueCopyKeys = emptySet(),
+            onApply = { writes -> applyConfigWrites(holder, writes, onParametersChanged) },
+            onParametersChanged = onParametersChanged,
+        )
+        holder.configSelector = selector
+        (view as? LinearLayout)?.addView(selector.view, 0)
+        selector.render(currentParameters)
+        applyReferenceLock(holder, currentParameters)
+
         // 监听器
         holder.providerGroup.setOnCheckedStateChangeListener { _, checkedIds ->
             if (checkedIds.isEmpty()) return@setOnCheckedStateChangeListener
@@ -118,6 +151,23 @@ class AutoGLMModuleUIProvider : ModuleUIProvider {
         }
 
         return holder
+    }
+
+    private fun applyConfigWrites(
+        holder: ViewHolder,
+        writes: Map<String, Any?>,
+        onParametersChanged: () -> Unit,
+    ) {
+        // 无值拷贝参数（ownedValueCopyKeys 为空）⇒ 这里只有来源切换要做的事。
+        applyReferenceLock(holder, writes)
+        onParametersChanged()
+    }
+
+    /** 引用模式 ⇒ 置灰手动字段（provider / base_url / model / api_key）。 */
+    private fun applyReferenceLock(holder: ViewHolder, parameters: Map<String, Any?>) {
+        // `sourceOf` 自带 legacyValueMap 容错（「引用」/`Reference` 都认）。
+        val isReference = AiModelConfigRef.sourceOf(parameters) == AiModelConfigRef.SOURCE_REFERENCE
+        holder.manualOnlyViews.forEach { it.isEnabled = !isReference }
     }
 
     private fun setupInstructionEditor(
@@ -153,13 +203,18 @@ class AutoGLMModuleUIProvider : ModuleUIProvider {
             else -> PROVIDER_BIGMODEL
         }
 
+        val configReadBack = h.configSelector?.readBack().orEmpty()
+        val isReference =
+            configReadBack[AiModelConfigRef.PARAM_SOURCE] == AiModelConfigRef.SOURCE_REFERENCE
+
         return mapOf(
             "provider" to provider,
             "base_url" to h.baseUrlEdit.text.toString(),
             "model" to h.modelEdit.text.toString(),
-            "api_key" to h.apiKeyEdit.text.toString(),
+            // ⚠️ 引用模式下 `api_key` **必须写空串**：密钥由被引用的配置提供（§1.7）。
+            "api_key" to if (isReference) "" else h.apiKeyEdit.text.toString(),
             "instruction" to (h.instructionRichText?.getRawText() ?: ""),
             "max_steps" to h.stepsSlider.value.toDouble()
-        )
+        ) + configReadBack
     }
 }

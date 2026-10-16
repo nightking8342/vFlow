@@ -18,30 +18,100 @@ import com.chaomixian.vflow.core.workflow.model.ActionStep
 import com.chaomixian.vflow.permissions.Permission
 import com.chaomixian.vflow.permissions.PermissionManager
 import com.chaomixian.vflow.services.ShellManager
+import com.chaomixian.vflow.core.ai.AiModelConfigRef
+import com.chaomixian.vflow.core.ai.AiModelConfigResolution
+import com.chaomixian.vflow.core.ai.AiModelConfigResolver
+import com.chaomixian.vflow.core.ai.ManualAiConfig
+import com.chaomixian.vflow.ui.chat.ChatAgentSkillSelection
+import com.chaomixian.vflow.ui.chat.ChatCompletionClient
+import com.chaomixian.vflow.ui.chat.ChatCompletionResult
+import com.chaomixian.vflow.ui.chat.ChatImageAttachment
+import com.chaomixian.vflow.ui.chat.ChatImageBudget
+import com.chaomixian.vflow.ui.chat.ChatImageSource
+import com.chaomixian.vflow.ui.chat.ChatMessage
+import com.chaomixian.vflow.ui.chat.ChatMessageRole
+import com.chaomixian.vflow.ui.chat.ChatPresetConfig
+import com.chaomixian.vflow.ui.chat.ChatPresetRepository
+import com.chaomixian.vflow.ui.chat.ChatStreamTimeouts
+import com.chaomixian.vflow.ui.chat.chatImageMimeTypeForUri
 import com.chaomixian.vflow.ui.workflow_editor.PillUtil
 import com.chaomixian.vflow.ui.overlay.AgentOverlayManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
-import okhttp3.Call
-import okhttp3.Callback
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.Response
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.CancellationException
-import java.util.concurrent.TimeUnit
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 import kotlin.math.abs
+
+/** AutoGLM 的采样温度（**上游模型契约的一部分**，不要改）。 */
+internal const val AUTO_GLM_TEMPERATURE: Double = 0.1
+
+/**
+ * AutoGLM 思考段的**包裹标签**（与提示词里的 `{think}` 契约一致）。
+ *
+ * 单独成常量：`autoGlmAssistantHistoryContent` 要用它**重建** assistant 轮的历史正文
+ * （传输层已把内联 think 段搬进 `reasoningContent`）。
+ */
+internal const val AUTO_GLM_THINK_OPEN: String = "<" + "think" + ">"
+internal const val AUTO_GLM_THINK_CLOSE: String = "<" + "/think" + ">"
+
+
+/**
+ * **清掉上一条 user 消息里的图 + 追加 `[Image removed]`**（现状的图片清理意图，搬到
+ * [ChatMessage] 模型上）。
+ *
+ * ⚠️ 与改造前**逐字等价**：原实现无条件把最后一条 user 消息 `content` 数组里的
+ * `image_url` 项删掉、再 push 一个 `{"type":"text","text":"[Image removed]"}`。
+ * 这里同样**无条件**追加（只要最后一条是 user 消息）。
+ */
+internal fun stripImagesFromLastUserMessage(messages: List<ChatMessage>): List<ChatMessage> {
+    if (messages.isEmpty()) return messages
+    val lastIndex = messages.lastIndex
+    val last = messages[lastIndex]
+    if (last.role != ChatMessageRole.USER) return messages
+    return messages.toMutableList().apply {
+        this[lastIndex] = last.copy(
+            attachments = emptyList(),
+            content = listOf(last.content, "[Image removed]").joinToString("\n"),
+        )
+    }
+}
+
+/**
+ * assistant 轮进历史的正文。
+ *
+ * 现状把**原始** assistant 消息原样入历史（含内联 ` thinking` 段）；而传输层会把内联
+ * ` thinking` 搬进 [ChatCompletionResult.reasoningContent]（`normalizeAssistantReply`）。
+ * ⇒ 这里按 ` thinking… response` 前缀**重建**，让模型下一轮仍能看到自己的上一轮思考。
+ */
+internal fun autoGlmAssistantHistoryContent(result: ChatCompletionResult): String {
+    val reasoning = result.reasoningContent
+    return if (reasoning.isNullOrBlank()) {
+        result.content
+    } else {
+        AUTO_GLM_THINK_OPEN + reasoning + AUTO_GLM_THINK_CLOSE + "\n" + result.content
+    }
+}
+
+/**
+ * **一轮 AutoGLM 往返**（共享传输层）。
+ *
+ * ⚠️ **不发送 tools** —— AutoGLM 的动作走 `do(action=…)` **文本协议**，不走 function calling
+ * （上游模型契约，本批零改动）。
+ */
+internal suspend fun runAutoGlmTurn(
+    preset: ChatPresetConfig,
+    history: List<ChatMessage>,
+    client: ChatCompletionClient,
+): ChatCompletionResult = client.generateReply(
+    preset = preset,
+    history = history,
+    skillSelection = ChatAgentSkillSelection.EMPTY,
+    tools = null,
+    imageBudget = ChatImageBudget.DEFAULT,
+)
 
 class AutoGLMModule : BaseModule() {
     companion object {
@@ -143,7 +213,10 @@ class AutoGLMModule : BaseModule() {
                 "Monitor screen" to AgentOverlayManager.MONITOR_MODE_ACTIVITY
             ),
             isHidden = false
-        )
+        ),
+        // fork：配置引用（追加，不重排既有参数）。
+        AiModelConfigRef.SOURCE_INPUT,
+        AiModelConfigRef.CONFIG_ID_INPUT
     )
 
     override fun getOutputs(step: ActionStep?): List<OutputDefinition> = listOf(
@@ -187,7 +260,47 @@ class AutoGLMModule : BaseModule() {
             context.getVariableAsString("monitor_mode", AgentOverlayManager.MONITOR_MODE_OVERLAY)
         ) ?: AgentOverlayManager.MONITOR_MODE_OVERLAY
 
-        if (apiKey.isBlank()) return ExecutionResult.Failure("配置错误", "API Key 不能为空")
+        val provider = inputsById["provider"]?.normalizeEnumValue(
+            context.getVariableAsString("provider", PROVIDER_BIGMODEL)
+        ) ?: PROVIDER_BIGMODEL
+
+        // 配置引用（fork：AI 能力统一批 4 的 T5）。AutoGLM **只做活引用 4 项**
+        // （provider / model / api_key / base_url）：提示词是模型契约、temperature 固定 0.1
+        // ⇒ 值拷贝不适用（§3.6.3 C）。
+        // ⚠️ 放在这里（原 apiKey 校验的位置）⇒ 出错时机与改造前一致（虚拟屏/悬浮窗之前）。
+        val resolvedPreset = when (
+            val resolution = AiModelConfigResolver.resolve(
+                parameters = mapOf(
+                    AiModelConfigRef.PARAM_SOURCE to context.getVariableAsString(
+                        AiModelConfigRef.PARAM_SOURCE,
+                        AiModelConfigRef.SOURCE_MANUAL,
+                    ),
+                    AiModelConfigRef.PARAM_CONFIG_ID to
+                        context.getVariableAsString(AiModelConfigRef.PARAM_CONFIG_ID, ""),
+                ),
+                presets = ChatPresetRepository(context.applicationContext).getPresets(),
+                manual = ManualAiConfig(
+                    provider = provider,
+                    model = model,
+                    apiKey = apiKey,
+                    baseUrl = baseUrl,
+                    // 值拷贝不适用：systemPrompt 稍后由整块 AutoGLM 提示词覆盖。
+                    systemPrompt = "",
+                    temperature = AUTO_GLM_TEMPERATURE,
+                ),
+            )
+        ) {
+            is AiModelConfigResolution.Resolved -> resolution.preset
+            // 引用解析失败 ⇒ **明确报错，不静默**（D8 的兜底分支）。
+            is AiModelConfigResolution.Missing ->
+                return ExecutionResult.Failure(resolution.title, resolution.message)
+        }
+
+        // ⚠️ 校验的是**解析后**的 key：引用模式下步骤里的 `api_key` 恒为空串，
+        //    真正的 key 来自被引用的那份配置。
+        if (resolvedPreset.apiKey.isBlank()) {
+            return ExecutionResult.Failure("配置错误", "API Key 不能为空")
+        }
 
         // 虚拟屏幕逻辑
         var targetDisplayId = 0
@@ -231,10 +344,9 @@ class AutoGLMModule : BaseModule() {
             }
 
             val agentTools = AgentTools(context)
-            val client = OkHttpClient.Builder()
-                .connectTimeout(60, TimeUnit.SECONDS)
-                .readTimeout(120, TimeUnit.SECONDS)
-                .build()
+            // 共享传输层：超时口径取 ChatStreamTimeouts.DEFAULT
+            // （connect 30s / read 300s；改造前是 60/120 —— **有意变更**，见交付说明）。
+            val client = ChatCompletionClient(httpClient = ChatStreamTimeouts.DEFAULT.toClient())
 
             val date = Date()
             val dateFormat = SimpleDateFormat("yyyy年MM月dd日 EEEE", Locale.getDefault())
@@ -309,11 +421,12 @@ class AutoGLMModule : BaseModule() {
                 $instruction
             """.trimIndent()
 
-            val messages = JSONArray()
-            messages.put(JSONObject().apply {
-                put("role", "system")
-                put("content", systemPromptContent)
-            })
+            // ⚠️ system 消息走 `preset.systemPrompt`（传输层把它作为第一条 role:system 消息发出），
+            //    history 里**不含** system 消息 —— 与改造前的线格式逐字等价。
+            val preset = resolvedPreset.copy(systemPrompt = systemPromptContent)
+
+            // AutoGLM 自己的历史（不含 system 消息）。
+            var messages: List<ChatMessage> = emptyList()
 
             var currentStep = 0
             var taskResult: ExecutionResult? = null
@@ -358,62 +471,55 @@ class AutoGLMModule : BaseModule() {
                     overlayManager.restoreAfterScreenshot()
                 }
 
-                val contentParts = JSONArray()
-                contentParts.put(JSONObject().apply {
-                    put("type", "text")
-                    put("text", "Current Step: ${currentStep + 1}\nCurrent Interface: $currentUI")
-                })
-
-                if (screenshotResult.base64 != null) {
-                    contentParts.put(JSONObject().apply {
-                        put("type", "image_url")
-                        put("image_url", JSONObject().apply {
-                            put("url", "data:image/jpeg;base64,${screenshotResult.base64}")
-                        })
-                    })
-                }
-
-                messages.put(JSONObject().apply {
-                    put("role", "user")
-                    put("content", contentParts)
-                })
+                // 本轮观察：文本 + 可选截图（截图只挂在本条 USER 消息上）。
+                // ⚠️ 判据从 `base64 != null` 改成 `path != null`：`ChatImageAttachment` 只存
+                //    路径（D9），而 `AgentUtils.ScreenshotResult` 的这两个字段**同生同灭**
+                //    （成功 ⇒ 都非 null；失败 ⇒ 都是 null）⇒ 语义等价。
+                val attachments = screenshotResult.path
+                    ?.let { path ->
+                        listOf(
+                            ChatImageAttachment(
+                                uri = path,
+                                source = ChatImageSource.AGENT,
+                                // ⚠️ **不得硬编码 image/jpeg**：主屏截图是 **PNG**
+                                // （`CaptureScreenModule` 写 `screenshot_<ts>.png`）⇒ 把 PNG 字节
+                                // 标成 JPEG 是**静默的 media_type 不符**（Anthropic 按 media_type
+                                // 解码 ⇒ 硬失败）。仓库既有教训见 `ChatAgentToolImages.kt` 的 KDoc。
+                                mimeType = chatImageMimeTypeForUri(path),
+                            ),
+                        )
+                    }
+                    .orEmpty()
+                messages = messages + ChatMessage(
+                    role = ChatMessageRole.USER,
+                    content = "Current Step: ${currentStep + 1}\nCurrent Interface: $currentUI",
+                    timestampMillis = System.currentTimeMillis(),
+                    attachments = attachments,
+                )
 
                 overlayManager.updateStatus("AutoGLM 思考中...", "生成计划")
 
-                val requestBody = JSONObject().apply {
-                    put("model", model)
-                    put("messages", messages)
-                    put("temperature", 0.1)
+                val result = try {
+                    runAutoGlmTurn(preset, messages, client)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // **有意变更**：错误正文从固定「网络请求失败」变成传输层的异常信息
+                    // （HTTP 非 2xx ⇒ "Status code: …\nError body:\n…"）——**响亮**，不静默。
+                    return ExecutionResult.Failure("API Error", e.message ?: "网络请求失败")
                 }
-
-                val responseJson = callLLM(client, baseUrl, apiKey, requestBody)
-                    ?: return ExecutionResult.Failure("API Error", "网络请求失败")
-
-                val choice = responseJson.getJSONArray("choices").getJSONObject(0)
-                val message = choice.getJSONObject("message")
-                val content = message.optString("content", "")
+                val content = result.content
                 DebugLogger.d("AutoGLM: ", content)
 
-                // 清理历史图片消息
-                if (messages.length() > 0) {
-                    val lastUserMsg = messages.getJSONObject(messages.length() - 1)
-                    if (lastUserMsg.optString("role") == "user") {
-                        val contents = lastUserMsg.optJSONArray("content")
-                        if (contents != null) {
-                            // 遍历 content 数组，移除 image_url 类型的内容
-                            for (i in contents.length() - 1 downTo 0) {
-                                val item = contents.getJSONObject(i)
-                                if (item.optString("type") == "image_url") contents.remove(i)
-                            }
-                            contents.put(JSONObject().apply {
-                                put("type", "text")
-                                put("text", "[Image removed]")
-                            })
-                        }
-                    }
-                }
+                // 清理历史图片消息（等价搬迁：清掉上一条 user 消息的图 + 追加 [Image removed]）
+                messages = stripImagesFromLastUserMessage(messages)
 
-                messages.put(message)
+                messages = messages + ChatMessage(
+                    role = ChatMessageRole.ASSISTANT,
+                    content = autoGlmAssistantHistoryContent(result),
+                    reasoningContent = result.reasoningContent,
+                    timestampMillis = System.currentTimeMillis(),
+                )
 
                 // --- 解析 AutoGLM 格式 ---
                 var answer = extractTag(content, "answer")
@@ -566,19 +672,21 @@ class AutoGLMModule : BaseModule() {
                         }
                     }
 
-                    messages.put(JSONObject().apply {
-                        put("role", "user")
-                        put("content", "Action '$actionName' executed.")
-                    })
+                    messages = messages + ChatMessage(
+                        role = ChatMessageRole.USER,
+                        content = "Action '$actionName' executed.",
+                        timestampMillis = System.currentTimeMillis(),
+                    )
 
                 } else {
                     errorCount++
                     DebugLogger.w("AutoGLM", "未找到指令，AI 回复: $content")
                     if (errorCount >= 3) return ExecutionResult.Failure("AI 响应异常", "连续 3 次未输出有效指令。AI 最后回复: $content")
-                    messages.put(JSONObject().apply {
-                        put("role", "user")
-                        put("content", "SYSTEM ERROR: No valid action found. Output <answer>do(...)</answer>.")
-                    })
+                    messages = messages + ChatMessage(
+                        role = ChatMessageRole.USER,
+                        content = "SYSTEM ERROR: No valid action found. Output <answer>do(...)</answer>.",
+                        timestampMillis = System.currentTimeMillis(),
+                    )
                     onProgress(ProgressUpdate("格式错误，重试 ($errorCount/3)..."))
                     continue
                 }
@@ -692,42 +800,4 @@ class AutoGLMModule : BaseModule() {
         return str.replace("\\\"", "\"").replace("\\\\", "\\")
     }
 
-    private suspend fun callLLM(client: OkHttpClient, url: String, key: String, body: JSONObject): JSONObject? {
-        val endpoint = if (url.endsWith("/")) "${url}chat/completions" else "$url/chat/completions"
-        val request = Request.Builder()
-            .url(endpoint)
-            .addHeader("Authorization", "Bearer $key")
-            .addHeader("Content-Type", "application/json")
-            .post(body.toString().toRequestBody("application/json".toMediaType()))
-            .build()
-
-        return try {
-            suspendCancellableCoroutine { continuation ->
-                val call = client.newCall(request)
-                continuation.invokeOnCancellation { try { call.cancel() } catch (e: Exception) {} }
-                call.enqueue(object : Callback {
-                    override fun onFailure(call: Call, e: IOException) {
-                        if (continuation.isActive) continuation.resumeWithException(e)
-                    }
-                    override fun onResponse(call: Call, response: Response) {
-                        try {
-                            val str = response.body?.string()
-                            if (response.isSuccessful && str != null) {
-                                continuation.resume(JSONObject(str))
-                            } else {
-                                DebugLogger.e("AutoGLM", "LLM API Error: Code=${response.code}, Msg=${response.message}, Body=$str")
-                                continuation.resume(null)
-                            }
-                        } catch (e: Exception) {
-                            if (continuation.isActive) continuation.resumeWithException(e)
-                        }
-                    }
-                })
-            }
-        } catch (e: Exception) {
-            if (e is kotlinx.coroutines.CancellationException) throw e
-            DebugLogger.e("AutoGLM", "LLM Network Exception", e)
-            null
-        }
-    }
 }

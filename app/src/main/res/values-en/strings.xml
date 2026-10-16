@@ -1797,4 +1797,16 @@ Then come back; the current state will be shown above.</string>
     <string name="agent_monitor_stopping">Stopping…</string>
     <string name="chat_agent_screenshot_label">Agent screenshot</string>
     <string name="chat_image_unavailable">Image unavailable</string>
+    <!-- fork: AI 能力统一批 4 —— 三模块共用的「配置引用」文案 -->
+    <string name="param_ai_config_source_name">Config source</string>
+    <string name="option_ai_config_source_manual">Manual</string>
+    <string name="option_ai_config_source_reference">Reference model config</string>
+    <string name="param_ai_model_config_id_name">Model config</string>
+    <string name="dialog_ai_select_model_config_title">Select model config</string>
+    <string name="button_ai_select_model_config">Select…</string>
+    <string name="text_ai_config_selected_none">No config selected</string>
+    <string name="text_ai_config_missing">Config not found (maybe deleted)</string>
+    <string name="text_ai_config_no_configs">No model configs yet</string>
+    <string name="hint_ai_config_reference_overrides_manual">Provided by the referenced config; manual fields are ignored</string>
+    <string name="hint_ai_agent_system_prompt_prefix">Optional system-prompt prefix (filled from the referenced config, editable)</string>
 </resources>

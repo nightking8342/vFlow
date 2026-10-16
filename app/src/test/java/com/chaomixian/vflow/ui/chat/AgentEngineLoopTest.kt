@@ -560,8 +560,12 @@ class AgentEngineLoopTest {
             .runLoop(limitedHost, loopRequest(quietObserver()))
 
         val limited = (limitedHost.toExecutionResult() as? ExecutionResult.Success)?.outputs
-        assertNotNull("MAX_ROUNDS ⇒ 照抄 AgentModule 现状（Success + success=false）", limited)
-        assertEquals("Task stopped: Max rounds (1) reached.", (limited!!["result"] as VString).raw)
+        assertNotNull("MAX_ROUNDS ⇒ Success + success=false（形状不变，D18 未动）", limited)
+        assertEquals(
+            "⚠️ 批 4 返工（父会话 Q4 裁决）：到顶的正文用**模型的收尾总结**，不再是固定文案",
+            "收尾",
+            (limited!!["result"] as VString).raw,
+        )
         assertEquals(false, (limited["success"] as VBoolean).raw)
     }
 }

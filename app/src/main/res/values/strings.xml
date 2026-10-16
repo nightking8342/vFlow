@@ -1802,4 +1802,16 @@
     <string name="agent_monitor_stopping">正在停止…</string>
     <string name="chat_agent_screenshot_label">Agent 截图</string>
     <string name="chat_image_unavailable">图片不可用</string>
+    <!-- fork: AI 能力统一批 4 —— 三模块共用的「配置引用」文案 -->
+    <string name="param_ai_config_source_name">配置来源</string>
+    <string name="option_ai_config_source_manual">手动配置</string>
+    <string name="option_ai_config_source_reference">引用模型配置</string>
+    <string name="param_ai_model_config_id_name">模型配置</string>
+    <string name="dialog_ai_select_model_config_title">选择模型配置</string>
+    <string name="button_ai_select_model_config">选择…</string>
+    <string name="text_ai_config_selected_none">未选择配置</string>
+    <string name="text_ai_config_missing">配置不存在（可能已被删除）</string>
+    <string name="text_ai_config_no_configs">尚未创建模型配置</string>
+    <string name="hint_ai_config_reference_overrides_manual">引用模式下由所选配置提供，手动字段不生效</string>
+    <string name="hint_ai_agent_system_prompt_prefix">可选：系统提示词前段（引用模型配置时自动填入，可编辑）</string>
 </resources>
