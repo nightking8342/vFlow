@@ -309,6 +309,52 @@ class AgentMonitorAndImeWiringTest {
     }
 
     /**
+     * ⚠️ 这条锁的是一个**真机日志实证**（2026-10-14）：`tool_choice: "required"` 下
+     * glm-4.6v-flash **不输出任何文字**（日志里 `AI Output:` 是空白，多数步骤连这一行都没有），
+     * 于是监视器与日志里都看不到模型说了什么；而同一个工作流里的 **AutoGLM（没有 tool_choice）
+     * 却有完整的中文推理** —— 用户原话「GLM 反而有、AI Agent 反而没有」。
+     *
+     * 强制工具调用约束的只是"必须产出 tool_calls"，**并不禁止 content**；但这个模型把它理解成了
+     * "你的输出就是那个调用"。
+     *
+     * ## fork 批 4 起：断言**跟着实现搬家**
+     *
+     * `AgentModule` 不再自己拼请求体（改走共享传输层）⇒ 原来那两条「模块源码里必须写
+     * `tool_choice: auto` / 必须有 `noToolCallCount` 兜底」的锚点已随实现搬走。不变量本身
+     * **仍在**，只是换了锚点：
+     * 1. **任何一方都不得强制 `required`** —— 模块与传输层都不许出现它；
+     * 2. 共享传输层**根本不发** `tool_choice` ⇒ 服务端默认就是 `auto`（与 fork 的修复同效，
+     *    而且比「显式写 auto」更少一层可漂移的字段）；
+     * 3. 「只说不做」不再是失败路径：模型不调工具 ⇒ 由共享引擎按 **D17-②** 正常收尾
+     *    （`Success(finalText, success=true)`），故 `noToolCallCount` 兜底**已按设计删除**。
+     */
+    @Test
+    fun `agent module must not force tool choice`() {
+        val moduleSrc = codeOnly("core/workflow/module/interaction/AgentModule.kt")
+        val transportSrc = codeOnly("ui/chat/ChatCompletionClient.kt")
+
+        assertTrue(
+            "⚠️ 模块不得再用 tool_choice=required —— 那个模型会因此完全不写文字（真机日志实证）",
+            !moduleSrc.contains("\"tool_choice\", \"required\"")
+        )
+        assertTrue(
+            "⚠️ 传输层同样不得强制 required（它现在是唯一的请求装配点）",
+            !transportSrc.contains("\"tool_choice\", \"required\"")
+        )
+        assertTrue(
+            "共享传输层**根本不发** tool_choice ⇒ 服务端默认 auto（fork 的修复意图仍成立）",
+            !transportSrc.contains("tool_choice")
+        )
+        assertTrue(
+            "「只说不做」的兜底已按 D17-② 删除（模型不调工具 = 正常收尾，不再是 3 次后失败）",
+            !moduleSrc.contains("noToolCallCount")
+        )
+        assertTrue(
+            "收尾语义现在由共享引擎负责 ⇒ 模块必须真的走引擎",
+            moduleSrc.contains("engine.runLoop(")
+        )
+    }
+    /**
      * ⚠️ 这两条锁的是「监视器里只有状态文案、看不到模型说了什么」这个真机反馈：
      *  - 硬编码的阶段文案**不得**进思考流（走 `publishStatus`）；
      *  - 模型原文**整段**进思考流（不再只抽 think 标签内部 —— `AgentModule` 会丢掉闭合标签之后的
@@ -317,29 +363,6 @@ class AgentMonitorAndImeWiringTest {
      * ⚠️ 标签字面量用**拼装**构造，不直接写 —— `<...>` 形态的标签在工具输出/输入里会被渲染层吞掉，
      *    直接写会得到假文本（写这条测试时实测踩过一次）。
      */
-    /**
-     * ⚠️ 这条锁的是一个**真机日志实证**（2026-10-14）：`tool_choice: "required"` 下
-     * glm-4.6v-flash **不输出任何文字**（日志里 `AI Output:` 是空白，多数步骤连这一行都没有），
-     * 于是监视器与日志里都看不到模型说了什么；而同一个工作流里的 **AutoGLM（没有 tool_choice）
-     * 却有完整的中文推理** —— 用户原话「GLM 反而有、AI Agent 反而没有」。
-     *
-     * 强制工具调用约束的只是"必须产出 tool_calls"，**并不禁止 content**；但这个模型把它理解成了
-     * "你的输出就是那个调用"。改成 `auto` 后模型可以"先写推理再调工具"，
-     * 只说不做时由既有的 `noToolCallCount` 兜底接手。
-     */
-    @Test
-    fun `agent module must not force tool choice`() {
-        val src = codeOnly("core/workflow/module/interaction/AgentModule.kt")
-        assertTrue(
-            "⚠️ 不得再用 tool_choice=required —— 那个模型会因此完全不写文字（真机日志实证）",
-            !src.contains("\"tool_choice\", \"required\"")
-        )
-        assertTrue("必须是 auto", src.contains("\"tool_choice\", \"auto\""))
-        assertTrue(
-            "只说不做时必须有兜底（第 3 次仍未调工具才判失败）",
-            src.contains("noToolCallCount >= 3")
-        )
-    }
 
     @Test
     fun `only model output goes into the thought stream`() {
