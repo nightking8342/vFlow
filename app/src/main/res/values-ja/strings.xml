@@ -1729,4 +1729,8 @@
     <string name="text_ai_config_no_configs">設定がありません</string>
     <string name="hint_ai_config_reference_overrides_manual">参照設定が優先されます</string>
     <string name="hint_ai_agent_system_prompt_prefix">任意：システムプロンプト前段（参照時に自動入力、編集可）</string>
+    <string name="chat_pending_attachment_remove">添付を削除</string>
+    <string name="chat_pending_attachment_photo_label">送信する画像</string>
+    <string name="chat_pending_attachment_camera_label">送信するカメラ写真</string>
+    <string name="chat_image_viewer_close">画像ビューアを閉じる</string>
 </resources>

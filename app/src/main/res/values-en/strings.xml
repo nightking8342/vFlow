@@ -1809,4 +1809,8 @@ Then come back; the current state will be shown above.</string>
     <string name="text_ai_config_no_configs">No model configs yet</string>
     <string name="hint_ai_config_reference_overrides_manual">Provided by the referenced config; manual fields are ignored</string>
     <string name="hint_ai_agent_system_prompt_prefix">Optional system-prompt prefix (filled from the referenced config, editable)</string>
+    <string name="chat_pending_attachment_remove">Remove attachment</string>
+    <string name="chat_pending_attachment_photo_label">Image to send</string>
+    <string name="chat_pending_attachment_camera_label">Camera photo to send</string>
+    <string name="chat_image_viewer_close">Close image viewer</string>
 </resources>

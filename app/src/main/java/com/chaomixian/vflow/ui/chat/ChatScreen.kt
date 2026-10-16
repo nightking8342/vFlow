@@ -329,6 +329,8 @@ fun ChatScreen(
     var capturedPreview by remember { mutableStateOf<Bitmap?>(null) }
     var webSearchSelected by rememberSaveable { mutableStateOf(false) }
     var benchmarkDeleteTarget by remember { mutableStateOf<ChatBenchmarkRun?>(null) }
+    // fork: 任务 45 —— 非 null 时弹出全屏图片查看器（症状 (b)：对话里的图点不开）。
+    var enlargedImage by remember { mutableStateOf<ChatImagePreviewRequest?>(null) }
     val hasPendingToolApproval = remember(activeConversation?.messages) {
         activeConversation?.messages?.any { message ->
             message.role == ChatMessageRole.ASSISTANT &&
@@ -340,8 +342,20 @@ fun ChatScreen(
         hasPendingToolApproval ||
         chatUiState.pendingPermissionRequest != null
     val shouldShowStopButton = isAgentActive && prompt.isBlank()
+    // fork: 任务 45 —— 待发附件的**唯一一份**派生状态（预览条与发送按钮共用）。
+    //
+    // 症状 (a)：原先只在「+」面板**内部**画选中态，面板一收起输入框那里就看不到已引用的图。
+    // 现在把「当前带了哪些图」抽成纯函数（`ChatPendingAttachments.kt`，可单测）：
+    // 组装 = `chatPendingAttachmentPreviews`，可见性判据 = `chatShouldShowPendingAttachmentBar`。
+    val pendingAttachmentPreviews = chatPendingAttachmentPreviews(
+        photoUris = selectedPhotoUris.map { it.toString() },
+        hasCapturedPreview = capturedPreview != null,
+    )
     // fork: AI 能力统一 §3.2 —— **有图无字也能发**（只发一张图是合法输入）。
-    val hasPendingAttachments = selectedPhotoUris.isNotEmpty() || capturedPreview != null
+    // ⚠️ 与预览条**同源**：判据只此一处，不要在别处另写 `isNotEmpty() || != null`。
+    val hasPendingAttachments = chatShouldShowPendingAttachmentBar(pendingAttachmentPreviews)
+    /** 预览条一出现，composer 就高出这一截 ⇒ 列表留白与「滚到底」按钮都要跟着让出。 */
+    val pendingAttachmentBarAllowance = if (hasPendingAttachments) CHAT_PENDING_ATTACHMENT_BAR_HEIGHT else 0.dp
     val canUseComposerAction = shouldShowStopButton || prompt.isNotBlank() || hasPendingAttachments
     val welcomeSuggestions = remember {
         listOf(
@@ -649,7 +663,10 @@ fun ChatScreen(
                 .padding(horizontal = 16.dp),
             contentPadding = PaddingValues(
                 top = 10.dp,
-                bottom = messageListBottomPadding,
+                // fork: 任务 45 —— 有待发附件时 composer 会高出一条预览条（见
+                // `CHAT_PENDING_ATTACHMENT_BAR_HEIGHT`），列表底部留白跟着让出同样的量，
+                // 否则滚到底时最后一条消息会被预览条盖住。
+                bottom = messageListBottomPadding + pendingAttachmentBarAllowance,
             ),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -685,6 +702,9 @@ fun ChatScreen(
                         },
                         canSaveWorkflow = chatViewModel.canSaveTemporaryWorkflow(message.id),
                         onSaveWorkflow = { chatViewModel.saveTemporaryWorkflow(message.id) },
+                        // fork: 任务 45 —— 点图放大（用户所发的图 / Agent 截图 / 正文内联引用
+                        // 三条路径共用这一个回调）。
+                        onImageClick = { model -> enlargedImage = ChatImagePreviewRequest(model) },
                     )
                 }
             }
@@ -724,6 +744,25 @@ fun ChatScreen(
             ),
             elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         ) {
+            // fork: 任务 45 —— 症状 (a)：待发附件预览条**画在输入框上方、卡片内部**。
+            // ⚠️ 放在这里（而不是塞进「+」面板）正是为了「面板开着或收起时都能看到」；
+            // 数据源与面板同一份状态，故面板里勾选、这里移除互相同步。
+            ChatPendingAttachmentBar(
+                previews = pendingAttachmentPreviews,
+                cameraPreview = capturedPreview,
+                onRemove = { preview ->
+                    when (preview.kind) {
+                        // 按字符串比对而不是 `Uri` 相等：选择器给的 uri 与这里的字符串形态
+                        // 可能来自不同的 `Uri` 实现，比字符串没有歧义。
+                        ChatPendingAttachmentKind.PHOTO -> {
+                            val index = selectedPhotoUris.indexOfFirst { it.toString() == preview.uri }
+                            if (index >= 0) selectedPhotoUris.removeAt(index)
+                        }
+
+                        ChatPendingAttachmentKind.CAMERA -> capturedPreview = null
+                    }
+                },
+            )
             TextField(
                 value = prompt,
                 onValueChange = { prompt = it },
@@ -834,7 +873,7 @@ fun ChatScreen(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .imePadding()
-                .padding(bottom = composerBottomPadding + 86.dp),
+                .padding(bottom = composerBottomPadding + 86.dp + pendingAttachmentBarAllowance),
             enter = fadeIn(),
             exit = fadeOut(),
         ) {
@@ -938,6 +977,15 @@ fun ChatScreen(
                     Text(stringResource(R.string.common_cancel))
                 }
             }
+        )
+    }
+
+    // fork: 任务 45 —— 症状 (b)：对话里的图点开看大图。三条路径（用户所发的图 /
+    // Agent 截图卡片 / assistant 正文内联引用）共用这一个回调。
+    enlargedImage?.let { request ->
+        ChatImageViewer(
+            request = request,
+            onDismiss = { enlargedImage = null },
         )
     }
 }
@@ -1264,6 +1312,8 @@ private fun ChatMessageBubble(
     modifier: Modifier = Modifier,
     /** `artifact://…` 句柄 → 可直接加载的路径；解析不到返回 null（渲染占位）。 */
     resolveImageHandle: (String) -> String? = { null },
+    /** 点图放大（fork: 任务 45）。 */
+    onImageClick: (String?) -> Unit = {},
     onApproveToolCalls: (String) -> Unit,
     onRejectToolCalls: (String) -> Unit,
     onRerunToolCalls: (String) -> Unit,
@@ -1278,6 +1328,7 @@ private fun ChatMessageBubble(
             maxWidth = maxWidths.user,
             modifier = modifier,
             onCopyMessage = onCopyMessage,
+            onImageClick = onImageClick,
         )
 
         ChatMessageRole.ASSISTANT -> AssistantMessageCard(
@@ -1286,6 +1337,7 @@ private fun ChatMessageBubble(
             maxWidth = maxWidths.assistant,
             modifier = modifier,
             resolveImageHandle = resolveImageHandle,
+            onImageClick = onImageClick,
             onApproveToolCalls = onApproveToolCalls,
             onRejectToolCalls = onRejectToolCalls,
             onRerunToolCalls = onRerunToolCalls,
@@ -1318,6 +1370,7 @@ private fun UserMessageBubble(
     maxWidth: Dp,
     modifier: Modifier = Modifier,
     onCopyMessage: () -> Unit,
+    onImageClick: (String?) -> Unit = {},
 ) {
     // fork: AI 能力统一 §3.1 —— Agent 截图同样挂在 `role = USER` 的消息上（这是三协议
     // 都成立的承载方式），但它**不是用户发的**：全部附件都是 AGENT 档时改画左对齐的
@@ -1330,6 +1383,7 @@ private fun UserMessageBubble(
             ChatAgentScreenshotCard(
                 attachments = message.attachments,
                 modifier = Modifier.widthIn(max = maxWidth),
+                onImageClick = onImageClick,
             )
         }
         return
@@ -1367,7 +1421,10 @@ private fun UserMessageBubble(
                     // 所以这里的 SelectionContainer 要单独包一层 ——
                     // `ChatMarkdownContent` 那层覆盖不到它。
                     if (message.attachments.isNotEmpty()) {
-                        ChatAttachmentThumbnails(attachments = message.attachments)
+                        ChatAttachmentThumbnails(
+                            attachments = message.attachments,
+                            onImageClick = onImageClick,
+                        )
                     }
                     // ⚠️ 有图无字时 `content` 是空串 ⇒ 必须跳过 Text，否则会多出一行空白。
                     if (message.content.isNotBlank()) {
@@ -1400,6 +1457,7 @@ private fun AssistantMessageCard(
     maxWidth: Dp,
     modifier: Modifier = Modifier,
     resolveImageHandle: (String) -> String? = { null },
+    onImageClick: (String?) -> Unit = {},
     onApproveToolCalls: (String) -> Unit,
     onRejectToolCalls: (String) -> Unit,
     onRerunToolCalls: (String) -> Unit,
@@ -1547,6 +1605,7 @@ private fun AssistantMessageCard(
                             markdown = message.content,
                             resolveHandle = resolveImageHandle,
                             contentColor = MaterialTheme.colorScheme.onSurface,
+                            onImageClick = onImageClick,
                         )
                     }
 
