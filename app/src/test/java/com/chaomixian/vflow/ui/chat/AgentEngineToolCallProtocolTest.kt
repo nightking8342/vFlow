@@ -378,7 +378,11 @@ class AgentEngineToolCallProtocolTest {
         assertTrue("到顶必须给一次收尾机会（D17-②）", wrapUp.contains(WRAP_UP_INSTRUCTION))
 
         val outputs = (host.toExecutionResult() as ExecutionResult.Success).outputs
-        assertEquals("Task stopped: Max rounds (1) reached.", (outputs["result"] as VString).raw)
+        assertEquals(
+            "⚠️ 返工（Q4 裁决）：到顶的正文必须是**模型的收尾总结**，不得退回固定文案",
+            "收尾总结",
+            (outputs["result"] as VString).raw,
+        )
         assertEquals(
             "D18 未定案 ⇒ 形状照抄 AgentModule 现状（Success + success=false）",
             false,
@@ -386,6 +390,37 @@ class AgentEngineToolCallProtocolTest {
         )
     }
 
+    @Test
+    fun realTransport_fallsBackToTheFixedTextOnlyWhenTheWrapUpSummaryIsBlank() = runBlocking {
+        // ① 收尾轮空白 ⇒ 回退固定文案（固定文案是**兜底**，不是默认）
+        server.enqueue(toolCallStream("call_1"))
+        server.enqueue(textStream(""))
+
+        val blankHost = agentModuleHost(maxRounds = 1)
+        engineWith(agentModuleTools(), EchoRunner()).runLoop(blankHost, loopRequest())
+
+        val blankOutputs = (blankHost.toExecutionResult() as ExecutionResult.Success).outputs
+        assertEquals(
+            "收尾轮没产出文本时才用固定文案",
+            "Task stopped: Max rounds (1) reached.",
+            (blankOutputs["result"] as VString).raw,
+        )
+        assertEquals(false, (blankOutputs["success"] as VBoolean).raw)
+    }
+
+    @Test
+    fun realTransport_alwaysSendsATemperatureField() = runBlocking {
+        server.enqueue(textStream("done"))
+
+        engineWith(agentModuleTools(), EchoRunner())
+            .runLoop(agentModuleHost(maxRounds = 3), loopRequest())
+
+        val body = JSONObject(bodyOfRequest(0))
+        assertTrue(
+            "共享传输层**无条件**下发 temperature ⇒ 对 AgentModule 是真实线格式变更（返工登记 #2）",
+            body.has("temperature"),
+        )
+    }
     @Test
     fun realTransport_approvesWithoutAnyUserInteraction() = runBlocking {
         server.enqueue(toolCallStream("call_1"))

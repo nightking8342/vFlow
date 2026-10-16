@@ -193,4 +193,32 @@ class AgentModuleWiringTest {
         assertEquals(1080, agentNormalizedToPixel(1000, 1080))
         assertEquals(1200, agentNormalizedToPixel(500, 2400))
     }
+
+    // ------------------------------------------------------------ 5. 温度（返工登记 #2）
+
+    @Test
+    fun moduleTemperatureIsTheUnspecifiedEquivalentAndIsActuallyUsed() {
+        assertEquals(
+            "改造前本模块的请求体**没有** temperature 字段（靠 API 默认）；共享传输层" +
+                "**无条件**下发它 ⇒ 1.0 是「不指定」在 OpenAI 系语义下的等价值" +
+                "（⚠️ 非 OpenAI 系网关的默认值不保证是 1.0）—— 已登记为有意变更",
+            1.0,
+            AGENT_MODULE_TEMPERATURE,
+            1e-9,
+        )
+        assertTrue(
+            "模块必须真的把它交给解析器（否则这个常量只是摆设）",
+            moduleSource.contains("temperature = AGENT_MODULE_TEMPERATURE"),
+        )
+    }
+
+    // ------------------------------------------------------------ 6. 反死代码
+
+    @Test
+    fun zeroCallSiteHelpersStayDeleted() {
+        assertFalse(
+            "`agentModulePreset` 曾是无生产调用点、也无测试引用的死代码（返工第 4 条）⇒ 已删除，不得回潮",
+            moduleSource.contains("agentModulePreset"),
+        )
+    }
 }

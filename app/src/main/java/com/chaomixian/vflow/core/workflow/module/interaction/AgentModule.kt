@@ -10,7 +10,6 @@ import com.chaomixian.vflow.core.ai.AiModelConfigRef
 import com.chaomixian.vflow.core.ai.AiModelConfigResolution
 import com.chaomixian.vflow.core.ai.AiModelConfigResolver
 import com.chaomixian.vflow.core.ai.ManualAiConfig
-import com.chaomixian.vflow.core.ai.chatProviderForModuleProvider
 import com.chaomixian.vflow.core.execution.ExecutionContext
 import com.chaomixian.vflow.core.execution.VariableResolver
 import com.chaomixian.vflow.core.logging.DebugLogger
@@ -192,29 +191,6 @@ private fun agentToolDefinition(
     // 工作流宿主的 requestApproval 恒 Approved（D12）⇒ 风险等级只用于批级表达。
     riskLevel = ChatAgentToolRiskLevel.STANDARD,
     usageScopes = setOf(ChatAgentToolUsageScope.DIRECT_TOOL),
-)
-
-/**
- * 模块的传输配置（`temperature = 1.0` ≈「不指定」—— 现状**不发送** temperature 字段；
- * `streamMaxRetries = 0` 同改造前「一次请求，无重试」）。
- *
- * ⚠️ 生产路径走 [AiModelConfigResolver.resolve]（manual 分支同形），本函数是那份形状的
- * **具名规范**，由测试做等价比对。
- */
-internal fun agentModulePreset(
-    provider: String,
-    model: String,
-    apiKey: String,
-    baseUrl: String,
-): ChatPresetConfig = ChatPresetConfig(
-    provider = chatProviderForModuleProvider(provider).storageValue,
-    model = model,
-    apiKey = apiKey,
-    baseUrl = baseUrl,
-    systemPrompt = "",
-    temperature = AGENT_MODULE_TEMPERATURE,
-    useResponsesApi = false,
-    streamMaxRetries = 0,
 )
 
 /**
@@ -883,6 +859,11 @@ class AgentModule : BaseModule() {
                 throw e
             }
 
+            // 两条出口，都不丢弃模型产出的文本：
+            // ① `finish_task` 被调用过 ⇒ 返回**模型自己给出的**显式收尾（`result` + `success`）——
+            //    那是模型明确声明的完成态，比收尾总结更权威，故优先；
+            // ② 否则走宿主映射 ⇒ 到顶时正文 = **模型的收尾总结**（Q4 裁决），
+            //    只有收尾轮没产出文本（空白）时才回退固定文案。
             val finished = recordedFinishTask
             return if (finished != null) {
                 ExecutionResult.Success(mapOf(

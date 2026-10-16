@@ -109,8 +109,18 @@ internal class WorkflowAgentHost(
 
             StopReason.MAX_ROUNDS -> ExecutionResult.Success(
                 mapOf(
+                    // fork 批 4 返工（父会话 Q4 裁决）：**到顶的正文用模型的收尾总结**
+                    // （`finalText` = 收尾轮 `runRound` 产出的正文）。
+                    //
+                    // D17-② 明确要求「到顶给一次收尾总结机会」—— 若这里仍返回固定文案，
+                    // 那次机会就白费了（模型总结了却没人看）。固定文案**降级为兜底**：
+                    // 只有收尾轮**没产出任何文本**（空白）时才用它。
+                    //
+                    // ⚠️ `success = false` 不变、D18 不动（本项只改正文来源）。
                     "result" to VString(
-                        "Task stopped: Max rounds (${maxRounds ?: outcome.roundsUsed}) reached.",
+                        outcome.finalText.ifBlank {
+                            "Task stopped: Max rounds (${maxRounds ?: outcome.roundsUsed}) reached."
+                        },
                     ),
                     "success" to VBoolean(false),
                 ),

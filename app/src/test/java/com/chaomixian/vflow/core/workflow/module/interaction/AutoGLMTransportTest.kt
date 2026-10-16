@@ -4,6 +4,7 @@ import com.chaomixian.vflow.core.ai.AiModelConfigRef
 import com.chaomixian.vflow.core.ai.AiModelConfigResolution
 import com.chaomixian.vflow.core.ai.AiModelConfigResolver
 import com.chaomixian.vflow.core.ai.ManualAiConfig
+import com.chaomixian.vflow.core.backup.SourceScan
 import com.chaomixian.vflow.ui.chat.ChatCompletionClient
 import com.chaomixian.vflow.ui.chat.ChatCompletionResult
 import com.chaomixian.vflow.ui.chat.ChatImageAttachment
@@ -80,12 +81,33 @@ class AutoGLMTransportTest {
         ),
     )
 
+    /**
+     * 预设走**生产路径**（`AiModelConfigResolver.resolve` 的 manual 分支）。
+     *
+     * ⚠️ 模块侧那个**零调用点**的 `autoGlmPreset` 已按返工要求（父会话第 4 条）删除 ——
+     * 测试不再依赖任何模块侧 helper，而是真的走模块执行时会走的那条解析路径。
+     */
     private fun preset(
         model: String = "autoglm-phone",
         apiKey: String = "sk-glm",
         baseUrl: String = server.url("/api/paas/v4").toString(),
         systemPrompt: String = AUTO_GLM_PROMPT,
-    ) = autoGlmPreset(model = model, apiKey = apiKey, baseUrl = baseUrl, systemPrompt = systemPrompt)
+    ): ChatPresetConfig {
+        val resolved = AiModelConfigResolver.resolve(
+            parameters = emptyMap(),
+            presets = emptyList(),
+            manual = ManualAiConfig(
+                provider = "bigmodel",
+                model = model,
+                apiKey = apiKey,
+                baseUrl = baseUrl,
+                systemPrompt = systemPrompt,
+                temperature = AUTO_GLM_TEMPERATURE,
+            ),
+        )
+        assertTrue("manual 档必须解析成功（生产路径）", resolved is AiModelConfigResolution.Resolved)
+        return (resolved as AiModelConfigResolution.Resolved).preset
+    }
 
     private fun userMessage(
         content: String,
@@ -258,7 +280,12 @@ class AutoGLMTransportTest {
     fun preset_pinsTemperatureAtZeroPointOne() {
         val preset = preset()
         assertEquals(AUTO_GLM_TEMPERATURE, preset.temperature, 1e-9)
-        assertEquals(0.1, preset.temperature, 1e-9)
+        assertEquals(
+            "生产路径（resolve 的 manual 分支）也必须把 temperature 钉在 0.1 —— 模型契约",
+            0.1,
+            preset.temperature,
+            1e-9,
+        )
         assertEquals(false, preset.useResponsesApi)
         assertEquals(0, preset.streamMaxRetries)
     }
@@ -331,6 +358,18 @@ class AutoGLMTransportTest {
             .forEach { id ->
                 assertTrue("既有参数一个都不能少（只追加、不替换）：$id", inputs.containsKey(id))
             }
+    }
+
+    @Test
+    fun zeroCallSitePresetHelperStaysDeleted() {
+        val moduleSource = SourceScan.stripped(
+            "src/main/java/com/chaomixian/vflow/core/workflow/module/interaction/AutoGLMModule.kt",
+        )
+        assertFalse(
+            "`autoGlmPreset` 曾是只有测试引用的 helper（返工第 4 条）⇒ 已删除，不得回潮；" +
+                "测试改走生产路径 AiModelConfigResolver.resolve 的 manual 分支",
+            moduleSource.contains("autoGlmPreset"),
+        )
     }
 
     private companion object {

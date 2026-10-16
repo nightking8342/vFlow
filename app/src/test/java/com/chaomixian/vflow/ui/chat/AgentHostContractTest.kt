@@ -378,6 +378,21 @@ class AgentHostContractTest {
         )
         val outputs = (result as ExecutionResult.Success).outputs
         assertEquals(
+            "⚠️ 返工（父会话 Q4 裁决）：到顶的正文用**模型的收尾总结**（finalText），不再是固定文案",
+            "半途收尾",
+            (outputs["result"] as VString).raw,
+        )
+        assertEquals(false, (outputs["success"] as VBoolean).raw)
+    }
+
+    @Test
+    fun workflowHost_fallsBackToTheFixedTextWhenTheWrapUpSummaryIsBlank() {
+        val host = WorkflowAgentHost(allToolNames = allToolNames, maxRounds = 15)
+        runBlocking { host.onFinish(outcome("   ", StopReason.MAX_ROUNDS, rounds = 15)) }
+
+        val outputs = (host.toExecutionResult() as ExecutionResult.Success).outputs
+        assertEquals(
+            "收尾轮没产出文本（空白）时才回退固定文案 —— 固定文案是**兜底**，不是默认",
             "Task stopped: Max rounds (15) reached.",
             (outputs["result"] as VString).raw,
         )

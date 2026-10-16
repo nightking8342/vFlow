@@ -56,41 +56,6 @@ internal const val AUTO_GLM_TEMPERATURE: Double = 0.1
 internal const val AUTO_GLM_THINK_OPEN: String = "<" + "think" + ">"
 internal const val AUTO_GLM_THINK_CLOSE: String = "<" + "/think" + ">"
 
-/**
- * **AutoGLM 的传输层配置**（fork：AI 能力统一批 4 的 T5）。
- *
- * ⚠️ `temperature` **固定 [AUTO_GLM_TEMPERATURE]** —— 与改造前**逐字相同**，且**不参与**
- * 配置引用的值拷贝（§3.6.3 C：AutoGLM 不适用值拷贝；提示词与动作协议是**上游模型契约**，
- * 本批绝不碰）。`useResponsesApi = false` / `streamMaxRetries = 0` 同改造前
- * （一次非流式 POST，无重试）。
- *
- * `systemPrompt` 就是整块 AutoGLM 提示词（含 `do(action=…)` 协议与 18 条规则）——
- * 由传输层作为**第一条 `role:system` 消息**发出。
- */
-internal fun autoGlmPreset(
-    model: String,
-    apiKey: String,
-    baseUrl: String,
-    systemPrompt: String,
-): ChatPresetConfig = ChatPresetConfig(
-    provider = ChatProviderFromModuleBigmodel,
-    model = model,
-    apiKey = apiKey,
-    baseUrl = baseUrl,
-    systemPrompt = systemPrompt,
-    temperature = AUTO_GLM_TEMPERATURE,
-    useResponsesApi = false,
-    streamMaxRetries = 0,
-)
-
-/**
- * AutoGLM 的服务商词表 → 传输层 provider。
- *
- * 现状只有 `bigmodel` / `custom` 两个值，两者都不是传输层词表里的值 ⇒ 都落到 OpenAI 兼容档
- * （端点规整与认证头风格）。**与改造前逐字等价**：改造前的 base_url 是完整的
- * `https://open.bigmodel.cn/api/paas/v4`，直接拼 `/chat/completions`。
- */
-private const val ChatProviderFromModuleBigmodel = "openai"
 
 /**
  * **清掉上一条 user 消息里的图 + 追加 `[Image removed]`**（现状的图片清理意图，搬到
