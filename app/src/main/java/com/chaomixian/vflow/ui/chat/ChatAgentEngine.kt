@@ -124,7 +124,13 @@ internal fun interface AgentObservationProvider {
     suspend fun observe(mode: ObservationMode, round: Int, maxRounds: Int?): AgentObservation
 }
 
-internal class ChatAgentEngine(
+/**
+ * ⚠️ `open` + [runRound] 可覆写**只为一处测试缝**：`runLoop` 的单测需要
+ * 「真实宿主 + **假的一轮往返**」来驱动循环（`ChatCompletionClient` 是 final class
+ * 且在禁改清单里 ⇒ 无法从传输层注入假响应）。
+ * 生产代码**不继承**本类（无任何子类）。
+ */
+internal open class ChatAgentEngine(
     private val chatClient: ChatCompletionClient = ChatCompletionClient(),
     /** **全量**工具表（生产：`toolRegistry.getTools()`）。白名单过滤在下发侧做。 */
     private val allTools: List<ChatAgentToolDefinition>,
@@ -162,7 +168,7 @@ internal class ChatAgentEngine(
      * 5. 缺 `Completed` ⇒ `error("流已结束但没有收到 Completed 事件。")`（**逐字不变**）
      * 6. id 兜底 `"${prefix}$index"`
      */
-    suspend fun runRound(host: AgentHost, request: AgentRoundRequest): AgentRoundResult {
+    open suspend fun runRound(host: AgentHost, request: AgentRoundRequest): AgentRoundResult {
         val tools = availableTools(host)
         val systemPrompt = buildSystemPrompt(host, tools, request.instruction)
 

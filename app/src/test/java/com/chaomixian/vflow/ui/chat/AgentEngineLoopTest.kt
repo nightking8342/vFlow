@@ -1,6 +1,9 @@
 package com.chaomixian.vflow.ui.chat
 
 import java.util.concurrent.TimeUnit
+import com.chaomixian.vflow.core.module.ExecutionResult
+import com.chaomixian.vflow.core.types.basic.VBoolean
+import com.chaomixian.vflow.core.types.basic.VString
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import okhttp3.OkHttpClient
@@ -9,6 +12,9 @@ import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNotSame
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -74,20 +80,26 @@ class AgentEngineLoopTest {
     private inner class FakeRunner : AgentToolRunner {
         var executeCount = 0
         var rejectedCount = 0
+        var prepareArtifacts: ChatAgentArtifactStore? = null
+        var executeArtifacts: ChatAgentArtifactStore? = null
 
         override fun prepare(
             toolCalls: List<ChatToolCall>,
             artifacts: ChatAgentArtifactStore,
-        ) = ChatPreparedToolBatch(
-            items = emptyList(),
-            missingPermissions = emptyList(),
-            riskLevel = ChatAgentToolRiskLevel.LOW,
-        )
+        ): ChatPreparedToolBatch {
+            prepareArtifacts = artifacts
+            return ChatPreparedToolBatch(
+                items = emptyList(),
+                missingPermissions = emptyList(),
+                riskLevel = ChatAgentToolRiskLevel.LOW,
+            )
+        }
 
         override suspend fun execute(
             batch: ChatPreparedToolBatch,
             artifacts: ChatAgentArtifactStore,
         ): List<ChatToolResult> {
+            executeArtifacts = artifacts
             executeCount++
             return emptyList()
         }
@@ -387,5 +399,169 @@ class AgentEngineLoopTest {
         val body = bodyOfRequest(0)
         assertTrue("SCREENSHOT ⇒ 必须有图片 part", body.contains("image_url"))
         assertFalse("SCREENSHOT ⇒ 不得塞节点树文本", body.contains("UI-NODE-TREE-TEXT"))
+    }
+
+    // ------------------------------------------------------------ 5. Q5 硬化：**真实 WorkflowAgentHost** + 假 round runner
+    //
+    // ⚠️ 为什么不能只用假宿主：本仓库的教训是「纯函数测试全绿 ≠ 集成点接上了」（§3.7.8）。
+    // 这一组用**真实的 `WorkflowAgentHost`**（白名单 / 审批 / 执行级 store / `toExecutionResult`
+    // 全部是生产实现）驱动 `runLoop`，只把「一次 LLM 往返」换成脚本化的假实现
+    // （`ChatCompletionClient` 是 final class 且在禁改清单里 ⇒ 只能从引擎侧注入）。
+
+    /** 模拟 `toolRegistry.getTools().map { it.name }`：**含** 6 个黑名单工具的全量表。 */
+    private val registryLikeToolNames = setOf(
+        CHAT_TEMPORARY_WORKFLOW_TOOL_NAME,
+        CHAT_SAVE_WORKFLOW_TOOL_NAME,
+        CHAT_GET_WORKFLOW_TOOL_NAME,
+        CHAT_UPDATE_WORKFLOW_TOOL_NAME,
+        CHAT_LIST_WORKFLOWS_TOOL_NAME,
+        CHAT_LOAD_SKILL_TOOL_NAME,
+        "vflow_agent_observe_ui",
+        "vflow_agent_tap",
+    )
+
+    private val registryLikeTools = registryLikeToolNames.map { tool(it) }
+
+    /** 脚本化的一轮往返：按顺序回放 [rounds]，并记录引擎实际下发的请求。 */
+    private inner class ScriptedEngine(
+        allTools: List<ChatAgentToolDefinition>,
+        toolRunner: AgentToolRunner,
+        private val rounds: List<AgentRoundResult>,
+    ) : ChatAgentEngine(ChatCompletionClient(), allTools, toolRunner) {
+        val seenRequests = mutableListOf<AgentRoundRequest>()
+        private var index = 0
+
+        override suspend fun runRound(host: AgentHost, request: AgentRoundRequest): AgentRoundResult {
+            seenRequests += request
+            val next = rounds[minOf(index, rounds.size - 1)]
+            index++
+            return next
+        }
+    }
+
+    private fun textRound(text: String) = AgentRoundResult(
+        completion = ChatCompletionResult(content = text, reasoningContent = null, totalTokens = null),
+        toolCalls = emptyList(),
+        streamedContent = text,
+        streamedReasoning = null,
+        retriesUsed = 0,
+    )
+
+    private fun toolRound(id: String, name: String = "vflow_agent_tap") = AgentRoundResult(
+        completion = ChatCompletionResult(content = "", reasoningContent = null, totalTokens = null),
+        toolCalls = listOf(ChatToolCall(id = id, name = name, argumentsJson = "{}")),
+        streamedContent = "",
+        streamedReasoning = null,
+        retriesUsed = 0,
+    )
+
+    private fun realHost(maxRounds: Int? = null) = WorkflowAgentHost(
+        allToolNames = registryLikeToolNames,
+        maxRounds = maxRounds,
+    )
+
+    private fun quietObserver() = RecordingObserver(modeForImage = false, imageUri = null)
+
+    /** ① 白名单过滤真的生效（黑名单工具一个都进不了引擎的下发列表）。 */
+    @Test
+    fun realWorkflowHost_keepsTheBlacklistedToolsOutOfTheEngineWhitelist() {
+        val host = realHost()
+        val engine = ScriptedEngine(registryLikeTools, FakeRunner(), listOf(textRound("done")))
+
+        val sent = engine.availableTools(host).map { it.name }
+        assertEquals(
+            "真实工作流宿主的白名单必须把 6 个工作流读写类工具挡在引擎之外",
+            listOf("vflow_agent_observe_ui", "vflow_agent_tap"),
+            sent,
+        )
+        assertTrue("黑名单工具一个都不许进下发列表", sent.none { it in WORKFLOW_EXCLUDED_TOOL_NAMES })
+    }
+
+    /** ② 到 `maxRounds` 时**恰好多跑一轮收尾**（不是硬中断）。 */
+    @Test
+    fun realWorkflowHost_runsExactlyOneWrapUpRoundAtTheLimit() = runBlocking {
+        val host = realHost(maxRounds = 2)
+        val engine = ScriptedEngine(
+            registryLikeTools,
+            FakeRunner(),
+            listOf(toolRound("call_1"), toolRound("call_2"), textRound("收尾总结")),
+        )
+
+        val outcome = engine.runLoop(host, loopRequest(quietObserver()))
+
+        assertEquals(StopReason.MAX_ROUNDS, outcome.stoppedBy)
+        assertEquals("到顶后必须恰好多跑一轮收尾（不是硬中断）", 3, engine.seenRequests.size)
+        assertEquals(3, outcome.roundsUsed)
+        assertEquals("收尾轮的正文必须被采纳", "收尾总结", outcome.finalText)
+        assertTrue(
+            "最后一次请求的 history 必须含收尾指令",
+            engine.seenRequests.last().history.any { it.content == WRAP_UP_INSTRUCTION },
+        )
+        assertFalse(
+            "前两轮不得含收尾指令",
+            engine.seenRequests.take(2).any { request ->
+                request.history.any { it.content == WRAP_UP_INSTRUCTION }
+            },
+        )
+        assertEquals("onFinish 必须收到同一个结论", outcome, host.lastOutcome)
+    }
+
+    /** ③ `requestApproval` 恒 `Approved`（D12：工作流宿主无 UI 可交互）。 */
+    @Test
+    fun realWorkflowHost_approvesWithoutUserInteraction() = runBlocking {
+        val host = realHost()
+        val runner = FakeRunner()
+        val engine = ScriptedEngine(
+            registryLikeTools,
+            runner,
+            listOf(toolRound("call_1"), textRound("完成")),
+        )
+
+        val outcome = engine.runLoop(host, loopRequest(quietObserver()))
+
+        assertEquals("真实工作流宿主不覆写 requestApproval ⇒ 工具必须真的执行", 1, runner.executeCount)
+        assertEquals(0, runner.rejectedCount)
+        assertEquals(StopReason.FINISHED, outcome.stoppedBy)
+    }
+
+    /** ④ `artifacts` 是**执行级**实例（不是会话级 / 不是跨执行共享）。 */
+    @Test
+    fun realWorkflowHost_usesAnExecutionScopedArtifactStore() = runBlocking {
+        val first = realHost()
+        val second = realHost()
+        assertNotSame(
+            "执行级 store：两次执行（两个宿主实例）不得共享同一个 store",
+            first.artifacts,
+            second.artifacts,
+        )
+
+        val runner = FakeRunner()
+        ScriptedEngine(registryLikeTools, runner, listOf(toolRound("call_1"), textRound("完成")))
+            .runLoop(first, loopRequest(quietObserver()))
+
+        assertSame("引擎必须把 host.artifacts 透传给 prepare", first.artifacts, runner.prepareArtifacts)
+        assertSame("引擎必须把 host.artifacts 透传给 execute", first.artifacts, runner.executeArtifacts)
+    }
+
+    /** ⑤ `onFinish` → `toExecutionResult` 的映射正确（含到顶的形状）。 */
+    @Test
+    fun realWorkflowHost_mapsTheOutcomeToExecutionResult() = runBlocking {
+        val finishedHost = realHost()
+        ScriptedEngine(registryLikeTools, FakeRunner(), listOf(textRound("任务完成")))
+            .runLoop(finishedHost, loopRequest(quietObserver()))
+
+        val finished = (finishedHost.toExecutionResult() as? ExecutionResult.Success)?.outputs
+        assertNotNull("FINISHED ⇒ Success", finished)
+        assertEquals("任务完成", (finished!!["result"] as VString).raw)
+        assertEquals(true, (finished["success"] as VBoolean).raw)
+
+        val limitedHost = realHost(maxRounds = 1)
+        ScriptedEngine(registryLikeTools, FakeRunner(), listOf(toolRound("call_1"), textRound("收尾")))
+            .runLoop(limitedHost, loopRequest(quietObserver()))
+
+        val limited = (limitedHost.toExecutionResult() as? ExecutionResult.Success)?.outputs
+        assertNotNull("MAX_ROUNDS ⇒ 照抄 AgentModule 现状（Success + success=false）", limited)
+        assertEquals("Task stopped: Max rounds (1) reached.", (limited!!["result"] as VString).raw)
+        assertEquals(false, (limited["success"] as VBoolean).raw)
     }
 }
