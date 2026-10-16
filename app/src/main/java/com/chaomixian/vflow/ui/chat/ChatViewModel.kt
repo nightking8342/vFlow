@@ -76,6 +76,28 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      */
     private val chatAttachmentStore = ChatAttachmentStore.open(application.filesDir)
 
+    /**
+     * **共享 agent 引擎**（fork：AI 能力统一 §5.1 的 T4 + T9 / 批 3 的 ④）。
+     *
+     * 循环（一次 LLM 往返）、工具调度、提示词组装全在引擎里；本 VM 收敛成「chat 宿主」：
+     * 推 UI 状态 / 弹审批卡 / 收尾落 assistant 消息 / 持有会话级 artifact store。
+     *
+     * ⚠️ 引擎**不依赖 `Context`**（工具执行器经 `AgentToolRunner` 注入）⇒ 它可纯 JVM 单测。
+     */
+    private val engine = ChatAgentEngine(
+        chatClient = chatClient,
+        allTools = toolRegistry.getTools(),
+        toolRunner = ChatAgentModuleToolRunner(toolExecutor),
+    )
+
+    /**
+     * chat 的工具白名单 = 注册表**全量**。
+     *
+     * ⚠️ 由注册表派生（不是手抄的清单）⇒ 引擎侧的 `availableTools(host)` 过滤**恒等**，
+     * 不可能因为漏抄一个工具名而静默少下发（`AgentEngineToolSchedulingTest` 锁这条不变量）。
+     */
+    private val chatToolNames: Set<String> = toolRegistry.getTools().map { it.name }.toSet()
+
     private val _uiState = MutableStateFlow(
         ChatUiState(
             availableTools = toolRegistry.getTools(),
@@ -473,7 +495,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         preset: ChatPresetConfig,
     ) {
         val now = System.currentTimeMillis()
-        val rejectedResults = toolExecutor.buildRejectedResults(pendingToolMessage.toolCalls)
+        val rejectedResults = engine.buildRejectedResults(
+            chatHost(conversation.id, preset),
+            pendingToolMessage.toolCalls,
+        )
         val rejectedResultMessages = rejectedResults.mapIndexed { index, result ->
             ChatMessage(
                 role = ChatMessageRole.TOOL,
@@ -593,8 +618,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        val artifactStore = artifactStores.getOrPut(conversation.id, ::ChatAgentArtifactStore)
-        val batch = toolExecutor.prepareBatch(message.toolCalls, artifactStore)
+        // fork: 批 3 的 ④ —— 工具准备改走引擎接缝（artifact store 由 `host.artifacts` 提供）。
+        val batch = engine.prepareToolBatch(chatHost(conversation.id, preset), message.toolCalls)
         DebugLogger.i(
             LOG_TAG,
             "Approving tool batch conversation=${conversation.id} message=${message.id} risk=${batch.riskLevel} tools=${message.toolCalls.summarizeToolCalls()} missingPermissions=${batch.missingPermissions.joinToString { it.id }}"
@@ -643,7 +668,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             _events.tryEmit("当前会话没有可用的模型预设。")
             return
         }
-        val toolResults = toolExecutor.buildRejectedResults(message.toolCalls)
+        val toolResults = engine.buildRejectedResults(chatHost(conversation.id, preset), message.toolCalls)
         pendingToolExecution = null
         appendToolResultsAndContinue(
             conversationId = conversation.id,
@@ -668,11 +693,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             _events.tryEmit("Agent 正在执行中。")
             return
         }
-        val artifactStore = artifactStores.getOrPut(conversation.id, ::ChatAgentArtifactStore)
+        // ⚠️ 本路径只**重跑工具**、不发起 LLM 往返 ⇒ 不需要模型配置；宿主要持有一个
+        // 只为「提示词前段」而存在，而 `promptPlan` 在本路径上从不被调用
+        // （只有 `engine.runRound` 会调它）⇒ 解析不到配置时传 null 是安全的。
+        val host = chatHost(conversation.id, resolvePreset(conversation, state))
         val rerunToolCalls = sourceMessage.toolCalls.mapIndexed { index, toolCall ->
             toolCall.copy(id = "rerun_${System.currentTimeMillis()}_$index")
         }
-        val batch = toolExecutor.prepareBatch(rerunToolCalls, artifactStore)
+        val batch = engine.prepareToolBatch(host, rerunToolCalls)
         if (batch.missingPermissions.isNotEmpty()) {
             _events.tryEmit("缺少必要权限，无法再次执行。")
             return
@@ -698,7 +726,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         currentAgentConversationId = conversation.id
         currentAgentJob = viewModelScope.launch {
             try {
-                val toolResults = toolExecutor.executeBatch(batch, artifactStore)
+                val toolResults = engine.executeToolBatch(host, batch)
                 val resultMessages = toolResults.mapIndexed { index, result ->
                     ChatMessage(
                         role = ChatMessageRole.TOOL,
@@ -775,7 +803,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             launchPendingToolBatch()
         } else {
             pendingToolExecution = null
-            val toolResults = toolExecutor.buildPermissionRequiredResults(pending.batch)
+            val toolResults = engine.buildPermissionRequiredResults(
+                chatHost(pending.conversationId, pending.preset),
+                pending.batch,
+            )
             appendToolResultsAndContinue(
                 conversationId = pending.conversationId,
                 messageId = pending.messageId,
@@ -792,8 +823,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             LOG_TAG,
             "Executing tool batch conversation=${pending.conversationId} tools=${pending.batch.items.size} risk=${pending.batch.riskLevel}"
         )
-        val artifactStore = artifactStores.getOrPut(pending.conversationId, ::ChatAgentArtifactStore)
-        val toolResults = toolExecutor.executeBatch(pending.batch, artifactStore)
+        val toolResults = engine.executeToolBatch(
+            chatHost(pending.conversationId, pending.preset),
+            pending.batch,
+        )
         pendingToolExecution = null
         appendToolResultsAndContinue(
             conversationId = pending.conversationId,
@@ -934,22 +967,57 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         currentAgentConversationId = updatedConversation.id
         currentAgentJob = viewModelScope.launch {
-            // ⚠️ 这三个变量必须在 `try` **之外**声明：`catch` 块也要用它们
+            // ⚠️ 这两个变量必须在 `try` **之外**声明：`catch` 块也要用它们
             // （中断/失败时要保留已收到的内容，见 §4.7 与 C4）。
             // 若声明在 try 内，catch 访问不到 ⇒ 已生成的文本拿不回来。
-            var streamedContent = StringBuilder()
-            var streamedReasoning = StringBuilder()
-            var result: ChatCompletionResult? = null
+            //
+            // ⚠️ 取值口径与改造前一致：引擎的 `AgentProgressUpdate.Streaming` 携带的是
+            // **累积正文**（不是增量），故这里直接赋值 —— 等于原来 `collect` 里
+            // `StringBuilder.append` 之后的 `toString()`。
+            var streamedContent = ""
+            var streamedReasoning: String? = null
             // fork: Chat 流超时与恢复 —— 本轮用掉的重试次数（失败文案要带上它）。
-            // 与上面三个变量同理，必须在 `try` 之外声明（catch 要用）。
+            // 与上面两个变量同理，必须在 `try` 之外声明（catch 要用）。
             var retriesUsed = 0
             try {
-                val skillSelection = ChatAgentSkillRouter.availableTools(
-                    _uiState.value.availableTools,
+                // ⚠️ chat 宿主的**唯一**构造点（fork：AI 能力统一 §4.4 / 批 3 的 ④）。
+                // 审批判据、artifact store、提示词前段全部经它注入引擎。
+                val host = chatHost(
+                    conversationId = updatedConversation.id,
+                    preset = preset,
+                    onProgress = { update ->
+                        when (update) {
+                            // 流式打点：**只写 `_uiState`，不落盘**（与改造前同一套调用）。
+                            is AgentProgressUpdate.Streaming -> {
+                                streamedContent = update.content
+                                streamedReasoning = update.reasoning
+                                patchStreamingMessage(
+                                    conversationId = updatedConversation.id,
+                                    messageId = pendingMessage.id,
+                                    content = update.content,
+                                    reasoning = update.reasoning,
+                                )
+                            }
+
+                            is AgentProgressUpdate.Retry -> {
+                                retriesUsed = update.notice.attempt
+                                DebugLogger.w(
+                                    LOG_TAG,
+                                    "Stream idle timeout retry attempt=${update.notice.attempt}/${update.notice.maxAttempts - 1} kind=${update.notice.kind} delayMs=${update.notice.delayMs} conversation=${updatedConversation.id}",
+                                )
+                                _events.tryEmit("网络空闲超时，正在重试（${update.notice.attempt}/${update.notice.maxAttempts - 1}）…")
+                            }
+
+                            // chat 的驱动路径不产生 Notice（那是工作流宿主的一行文案）。
+                            is AgentProgressUpdate.Notice -> Unit
+                        }
+                    },
                 )
+                // 工具集 = 引擎按宿主白名单过滤后的结果（chat 的白名单 = 全量 ⇒ 同一份）。
+                val tools = engine.availableTools(host)
                 DebugLogger.i(
                     LOG_TAG,
-                    "Tools conversation=${updatedConversation.id} tools=${skillSelection.availableTools.joinToString { it.name }}"
+                    "Tools conversation=${updatedConversation.id} tools=${tools.joinToString { it.name }}"
                 )
                 // fork: AI 能力统一 §3.9 —— 用户发的图**发送前落盘**。
                 // 相册选择器给的 `content://` 读权限是**临时**的（进程结束即失效）⇒
@@ -969,76 +1037,33 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 // 2. `Completed` 携带的是**权威值**（§4.4 的 B4），累积 delta 只用于过程显示；
                 // 3. 收尾必须走 `finalizeStreamingMessage`，它负责 §4.4 那 11 项里的 7 项。
                 //
-                // ⚠️ fork: Chat 流超时与恢复 —— 外面包一层 `streamWithRecovery`。
-                // `openStream` 必须是**工厂**（每次重试都重新调 `streamReply` ⇒ 新的 adapter /
+                // ⚠️ fork: AI 能力统一 §5.1 的 T4（批 3 的 ④）—— 这一段
+                // （`streamWithRecovery` + `chatClient.streamReply` + `collect` + 累积 +
+                // 「流已结束但没有收到 Completed 事件。」+ 工具 id 兜底）**整体搬进了
+                // `ChatAgentEngine.runRound`**，本处只剩「调引擎 → 取结果」。
+                // 流式打点与重试提示经 `host.onProgress`（见上方的 `chatHost(...)`）。
+                //
+                // ⚠️ `runRound` 内部仍用 `streamWithRecovery` 包 `streamReply`，
+                // `openStream` 仍是**工厂**（每次重试都重新调 `streamReply` ⇒ 新的 adapter /
                 // 新的 assembler / 新的 HTTP 请求），复用同一个 Flow 实例会拿到跑脏的归约器。
-                streamWithRecovery(
-                    policy = ChatStreamRecoveryPolicy(
-                        maxRetries = ChatStreamTimeouts.clampStreamMaxRetries(preset.streamMaxRetries),
-                    ),
-                    onRetry = { notice ->
-                        retriesUsed = notice.attempt
-                        DebugLogger.w(
-                            LOG_TAG,
-                            "Stream idle timeout retry attempt=${notice.attempt}/${notice.maxAttempts - 1} kind=${notice.kind} delayMs=${notice.delayMs} conversation=${updatedConversation.id}",
-                        )
-                        _events.tryEmit("网络空闲超时，正在重试（${notice.attempt}/${notice.maxAttempts - 1}）…")
-                    },
-                ) {
-                    chatClient.streamReply(
+                val round = engine.runRound(
+                    host = host,
+                    request = AgentRoundRequest(
                         preset = preset,
                         history = historyWithPersistedAttachments,
-                        skillSelection = skillSelection,
-                    )
-                }.collect { event ->
-                    when (event) {
-                        is ChatStreamEvent.TextDelta -> {
-                            streamedContent.append(event.text)
-                            patchStreamingMessage(
-                                conversationId = updatedConversation.id,
-                                messageId = pendingMessage.id,
-                                content = streamedContent.toString(),
-                                reasoning = streamedReasoning.toString().ifBlank { null },
-                            )
-                        }
-
-                        is ChatStreamEvent.ReasoningDelta -> {
-                            streamedReasoning.append(event.text)
-                            patchStreamingMessage(
-                                conversationId = updatedConversation.id,
-                                messageId = pendingMessage.id,
-                                content = streamedContent.toString(),
-                                reasoning = streamedReasoning.toString().ifBlank { null },
-                            )
-                        }
-
-                        is ChatStreamEvent.Completed -> result = event.result
-
-                        // 工具调用的中间态**不进 UI**：三家头部 Agent 一致反对逐 token
-                        // 渲染工具参数（共识 C1），且 ApprovalCard 只认收尾后的完整调用。
-                        is ChatStreamEvent.ToolCallDelta,
-                        is ChatStreamEvent.ToolCallCompleted,
-                        is ChatStreamEvent.Usage,
-                        -> Unit
-                    }
-                }
-                val streamedResult = result
-                    ?: error("流已结束但没有收到 Completed 事件。")
+                        // 与改造前逐字一致的 id 兜底前缀（拼接后 = `call_<会话>_<消息>_<序号>`）。
+                        toolCallIdPrefix = "call_${updatedConversation.id}_${pendingMessage.id}_",
+                    ),
+                )
+                val result = round.completion
                 DebugLogger.i(
                     LOG_TAG,
                     "Model reply conversation=${updatedConversation.id} tokens=${result.totalTokens ?: -1} reasoningChars=${result.reasoningContent?.length ?: 0} cacheCreate=${result.cacheCreationTokens ?: "-"} cacheRead=${result.cacheReadTokens ?: "-"} cacheDeleted=${result.cacheDeletedTokens ?: "-"} toolCalls=${result.toolCalls.summarizeToolCalls()} content=${result.content.compactForLog()}"
                 )
-                // ⚠️ 工具调用的 id 兜底：与原实现同一规则（缺 id 时按 `call_<会话>_<消息>_<序号>` 生成），
-                // 但**消息 id 沿用占位消息的 id**（不再新建）——下沉到纯函数层之外的唯一原因
-                // 是它依赖 `updatedConversation.id` / `pendingMessage.id` 两个局部变量。
-                val normalizedToolCalls = result.toolCalls.mapIndexed { index, toolCall ->
-                    toolCall.copy(
-                        id = toolCall.id ?: "call_${updatedConversation.id}_${pendingMessage.id}_$index"
-                    )
-                }
+                val normalizedToolCalls = round.toolCalls
                 val hasToolCalls = normalizedToolCalls.isNotEmpty()
                 val shouldAutoApprove = hasToolCalls &&
-                    shouldAutoApproveToolCalls(updatedConversation.id, normalizedToolCalls)
+                    shouldAutoApproveToolCalls(updatedConversation.id, preset, normalizedToolCalls)
 
                 // ⚠️ 收尾走**纯函数**（`ChatMessagePatch.kt`）：VM 内的逻辑无法单测
                 // （无 Robolectric/mockk，`repository` 无注入缝），而 §4.4 的清单漏一项就是静默错误。
@@ -1108,8 +1133,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 finalizeOnInterruption(
                     conversationId = updatedConversation.id,
                     messageId = pendingMessage.id,
-                    content = streamedContent.toString(),
-                    reasoning = streamedReasoning.toString().ifBlank { null },
+                    // 由宿主回调就地更新的累积值（口径与改造前 `StringBuilder.toString()` 一致）。
+                    content = streamedContent,
+                    reasoning = streamedReasoning,
                 )
                 throw cancellation
             } catch (throwable: Throwable) {
@@ -1125,8 +1151,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 finishWithError(
                     conversationId = updatedConversation.id,
                     messageId = pendingMessage.id,
-                    partialContent = streamedContent.toString(),
-                    partialReasoning = streamedReasoning.toString().ifBlank { null },
+                    partialContent = streamedContent,
+                    partialReasoning = streamedReasoning,
                     // fork: 带重试次数（finishWithError 签名不动）
                     errorText = if (retriesUsed > 0) "$baseError（已重试 $retriesUsed 次）" else baseError,
                 )
@@ -1140,15 +1166,42 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun shouldAutoApproveToolCalls(
+    /**
+     * chat 宿主的**唯一**构造点（fork：AI 能力统一 §4.4 / 批 3 的 ④）。
+     *
+     * @param conversationId 会话 id —— 同时决定**会话级** artifact store
+     *   （`artifactStores.getOrPut(...)`，与改造前**同一个实例**；语义不变）。
+     * @param onProgress 引擎进度回调（流式打点 / 重试提示）；不传则丢弃。
+     */
+    private fun chatHost(
         conversationId: String,
+        preset: ChatPresetConfig?,
+        onProgress: suspend (AgentProgressUpdate) -> Unit = {},
+    ): ChatHost = ChatHost(
+        debugLabel = conversationId,
+        preset = preset,
+        artifacts = artifactStores.getOrPut(conversationId, ::ChatAgentArtifactStore),
+        toolNames = chatToolNames,
+        // 活引用：用户在界面上切自动审批档位后立刻生效（与改造前读 `_uiState` 等价）。
+        autoApprovalScope = { _uiState.value.autoApprovalScope },
+        onProgressSink = onProgress,
+    )
+
+    /**
+     * 是否自动放行这批工具调用。
+     *
+     * ⚠️ 判据已搬进引擎（`ChatAgentEngine.decideApproval` → `ChatHost.requestApproval`），
+     * 本方法只剩「取状态 → 问宿主」。`ChatToolAutoApprovalScope.OFF` 由
+     * `allows()` 天然为 false（`maxRiskLevel == null`），故不再单独短路。
+     */
+    private suspend fun shouldAutoApproveToolCalls(
+        conversationId: String,
+        preset: ChatPresetConfig,
         toolCalls: List<ChatToolCall>,
     ): Boolean {
-        val scope = _uiState.value.autoApprovalScope
-        if (scope == ChatToolAutoApprovalScope.OFF || toolCalls.isEmpty()) return false
-        val artifactStore = artifactStores.getOrPut(conversationId, ::ChatAgentArtifactStore)
-        val batch = toolExecutor.prepareBatch(toolCalls, artifactStore)
-        return scope.allows(batch.riskLevel)
+        if (toolCalls.isEmpty()) return false
+        return engine.decideApproval(chatHost(conversationId, preset), toolCalls) ==
+            ApprovalDecision.Approved
     }
 
     fun canSaveTemporaryWorkflow(messageId: String): Boolean {
