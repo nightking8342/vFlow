@@ -2021,6 +2021,45 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 > 6. **真机未验证**（本批最大的残余不确定性）：图片是否真被模型看到（含 Anthropic 真接口对「tool 结果 + 紧随 user 轮」的接受度）、
 >    正文内联图渲染与重启后显示（coil2 吃 `file://` 绝对路径）、归一化点按落点（含虚拟屏 `display_id > 0`；`getRealMetrics` 与 `AgentUtils` 的虚拟屏会话尺寸是否一致未验证）。
 
+### AI 能力统一 · **批 3**（共享引擎 + `AgentHost` 双宿主 = 设计稿 T4 + T9，2026-10-16）—— **已实现**（单测 3327 例 / release 打包通过；**工作流宿主端到端未验证**）
+
+> 前两批把**传输层**与**多模态闭环**打通，但 agent 循环仍长在 `ChatViewModel`（1667 行）里。本批把它抽成**宿主参数化的共享引擎** —— 这是「一次改动处处生效」的枢纽：
+> 之后三个 AI 模块接入引擎时只写宿主，不再各写一套循环。
+>
+> **交付形态**：新增 5 个文件（`AgentHost.kt` / `AgentPrompts.kt` / `ChatAgentEngine.kt` / `ChatHost.kt` / `WorkflowAgentHost.kt`）+ **只改 1 个上游文件 `ChatViewModel.kt`** + 6 个测试类；
+> `ChatAgentModuleExecutor.kt` / `ChatAgentToolRegistry.kt` / `ChatScreen.kt` **零 diff**（预期如此，实测如此）。
+>
+> **关键设计**：**chat 宿主按「一轮一步」可重入驱动**（引擎把 `runRound` 暴露给 chat 反复驱动，`runLoop` 整循环留给工作流宿主）—— **刻意不把审批变成引擎内的挂起点**，
+> 否则会改变 `Job` 生命周期与 `stopAgent()` 的取消语义。
+>
+> **「行为不变」的三层举证**：① **请求字节级不变**（引擎自己组装 system prompt ⇒ `preset.copy(systemPrompt = S)` + `skillSelection = EMPTY` + 显式 `tools`；
+> `EngineRequestParityTest` 抓 MockWebServer 的 body 做**逐字节** `assertEquals`）；② `ChatEngineWiringTest` 源码扫描**锚在本次新增的表达式**上，并断言 `ChatViewModel`
+> **不再含** `chatClient.streamReply(` / `streamWithRecovery(`（非恒真断言）；③ **反证逐条真做**。**独立验收者自己注入了 5 处缺陷**（去掉白名单过滤 / 删 wrap-up 轮 /
+> 给流收集包 `withContext(IO)` / 删一处落盘 / 让 `stopAgent` 改走引擎），全部命中预期用例并精确到条数，改回后复绿 ⇒ 接线测试**不是空转**。
+>
+> **与设计稿 §3.11 的一处偏离（父会话已裁决认可）**：`requestApproval` 由「单 call」改为「**批** calls + 批 `riskLevel`」—— 现状审批本就是**批级判据**，单 call 会改变语义。
+> 设计稿 §3.11 已同步。
+>
+> ⚠️⚠️ **本批新增代码里有一个已知功能性缺口（批 4 必须先修）**：**`runLoop` 不追加 assistant 的 `tool_calls` 轮** —— 它直接把 `role:TOOL` 结果追加进 history，
+> 而真实 OpenAI 协议要求 `role:"tool"` 之前必须有带 `tool_calls` 的 assistant 消息 ⇒ **接 T6 时会 400**。本批 `runLoop` 无生产调用方故不算回归，
+> 但**批 4 接 `AgentModule` 的第一件事就是补它**。
+>
+> ⚠️ **`runLoop` 与 `WorkflowAgentHost` 本批无生产调用方**（只有测试驱动）⇒ **端到端未验证**，由批 4 的 T6 验证；`AgentObservationProvider` 亦无真实实现，
+> 工作流宿主的观察装配（截屏 / 节点树 / 落盘）全部未接。
+>
+> **待收敛项（父会话登记，不在本批）**：① `AgentPrompts.SHARED_RULES` 的 8 条与上游 `ChatAgentSkillRouter` 的 33 条有重复（Q2 = 本批**不改上游**，
+> 因为纯重构要求字节级不变）；② `WORKFLOW_RULES` 是 `AgentModule` 提示词的副本，批 4 收敛；③ D18（到顶后的结果语义）仍未定 —— 本批 `AgentOutcome.success`
+> 在 `MAX_ROUNDS` 时为 `true`，而 `toExecutionResult()` 照抄 `AgentModule` 现状映射为 `Success(success=false)`。
+>
+> **门禁**：`./gradlew test` → **3327 tests / 1 failed（既有 `VObjectPropertyTest`）/ 1 skipped**（新增 6 类 57 例全绿）；`assembleRelease` BUILD SUCCESSFUL；
+> `apksigner` → `CN=vFlow Fork, OU=Fork, O=nightking8342`。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `ui/chat/ChatViewModel.kt`（改） | 收敛为「chat 宿主」：新增 `engine` / `chatToolNames` / `chatHost()`；循环与工具调度改走 `engine.runRound(`；`persistReferencedArtifacts(` 保持 4 处（1 定义 + 3 收尾出口）；`stopAgent()` **保持直连执行器**（不绕引擎） | **手动合并**（本批唯一上游改动） |
+| `ui/chat/AgentHost.kt`、`ui/chat/AgentPrompts.kt`、`ui/chat/ChatAgentEngine.kt`、`ui/chat/ChatHost.kt`、`ui/chat/WorkflowAgentHost.kt`（**新增**） | fork 独有：`AgentHost` 接口（8 成员 + 不适用成员的默认实现，不拆 ISP）/ 提示词分段（`SHARED_RULES` + 宿主专属段，chat 侧逐字委托上游 router）/ 宿主参数化引擎（`availableTools` / `buildSystemPrompt` / `runRound` / `runLoop` / `decideApproval` + 4 个调度接缝）/ chat 宿主 / 工作流宿主（白名单 = 全部 −6 个工作流工具、硬上限 15、`BOTH`、恒 `Approved`、**执行级** artifact store、`toExecutionResult`） | 我方 |
+| `app/src/test/java/.../ui/chat/`（**新增 6 个文件，57 例**） | 接口契约（反射精确集断言）/ 一轮往返 / 工具调度 / 整循环（**真实 `WorkflowAgentHost` + 假 round runner**）/ 接线源码扫描 / **请求字节级对等** | 我方 |
+
 ---
 
 ## 暂未分歧、但日后改动时须登记的敏感点
