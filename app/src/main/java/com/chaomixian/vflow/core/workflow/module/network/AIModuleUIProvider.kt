@@ -15,9 +15,11 @@ import android.widget.TextView
 import androidx.core.view.isVisible
 import androidx.core.widget.doAfterTextChanged
 import com.chaomixian.vflow.R
+import com.chaomixian.vflow.core.ai.AiModelConfigRef
 import com.chaomixian.vflow.core.module.CustomEditorViewHolder
 import com.chaomixian.vflow.core.module.ModuleUIProvider
 import com.chaomixian.vflow.core.workflow.model.ActionStep
+import com.chaomixian.vflow.ui.workflow_editor.AiModelConfigSelectorView
 import com.chaomixian.vflow.ui.workflow_editor.RichTextView
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
@@ -48,10 +50,18 @@ class AIModuleUIProvider : ModuleUIProvider {
         // 引用动态创建的 RichTextView
         var promptRichText: RichTextView? = null
         var allSteps: List<ActionStep>? = null
+
+        // fork：配置引用（AiModelConfigRef）—— 选择器实例 + 需要在引用模式下置灰的控件。
+        // ⚠️ 声明为 `internal`：`AiModelConfigSelectorView` 是 internal 类型，
+        //    而本 ViewHolder 类是 public（`internal` 成员在 public 类里合法）。
+        internal var configSelector: AiModelConfigSelectorView? = null
+        val manualOnlyViews: MutableList<View> = mutableListOf()
     }
 
     override fun getHandledInputIds(): Set<String> = setOf(
-        "provider", "api_key", "base_url", "model", "prompt", "system_prompt", "temperature", "show_advanced"
+        "provider", "api_key", "base_url", "model", "prompt", "system_prompt", "temperature", "show_advanced",
+        // fork：配置引用由自绘选择器接管（见 AiModelConfigSelectorView）。
+        AiModelConfigRef.PARAM_SOURCE, AiModelConfigRef.PARAM_CONFIG_ID,
     )
 
     override fun createEditor(
@@ -92,6 +102,28 @@ class AIModuleUIProvider : ModuleUIProvider {
         // 创建 Prompt 富文本编辑器
         val promptValue = currentParameters["prompt"] as? String ?: ""
         setupPromptEditor(context, holder, promptValue, onMagicVariableRequested)
+
+        // fork：配置引用选择器（插到编辑器顶部；视图全部代码构建，不新增 layout 资源）。
+        holder.manualOnlyViews += listOf(
+            holder.providerGroup,
+            holder.baseUrlEdit,
+            holder.modelEdit,
+            holder.apiKeyEdit,
+        )
+        val selector = AiModelConfigSelectorView(
+            context = context,
+            // AIModule **拥有** system_prompt 与 temperature ⇒ 两项都做值拷贝（D7）。
+            ownedValueCopyKeys = setOf(
+                AiModelConfigRef.PARAM_SYSTEM_PROMPT,
+                AiModelConfigRef.PARAM_TEMPERATURE,
+            ),
+            onApply = { writes -> applyConfigWrites(holder, writes, onParametersChanged) },
+            onParametersChanged = onParametersChanged,
+        )
+        holder.configSelector = selector
+        (view as? LinearLayout)?.addView(selector.view, 0)
+        selector.render(currentParameters)
+        applyReferenceLock(holder, currentParameters)
 
         // 监听器逻辑
         holder.providerGroup.setOnCheckedStateChangeListener { _, checkedIds ->
@@ -135,6 +167,37 @@ class AIModuleUIProvider : ModuleUIProvider {
         return holder
     }
 
+    /**
+     * 选择器回调 → 写进本模块的控件。
+     *
+     * ⚠️ **值拷贝**（`system_prompt` / `temperature`）要真的落到控件上，否则用户看到的是
+     * 旧值而参数里是新值 —— 那种不一致只有真机能发现。
+     */
+    private fun applyConfigWrites(
+        holder: ViewHolder,
+        writes: Map<String, Any?>,
+        onParametersChanged: () -> Unit,
+    ) {
+        (writes[AiModelConfigRef.PARAM_SYSTEM_PROMPT] as? String)?.let { holder.systemPromptEdit.setText(it) }
+        (writes[AiModelConfigRef.PARAM_TEMPERATURE] as? Number)?.let { value ->
+            holder.tempSlider.value = value.toFloat()
+            holder.tempText.text = String.format(Locale.US, "%.1f", value.toFloat())
+        }
+        applyReferenceLock(holder, writes)
+        onParametersChanged()
+    }
+
+    /**
+     * 引用模式 ⇒ 置灰**手动字段**（provider / base_url / model / api_key）。
+     *
+     * ⚠️ `system_prompt` / `temperature` **不置灰** —— 它们是值拷贝快照，选中后仍可编辑（D7）。
+     */
+    private fun applyReferenceLock(holder: ViewHolder, parameters: Map<String, Any?>) {
+        // `sourceOf` 自带 legacyValueMap 容错（「引用」/`Reference` 都认）。
+        val isReference = AiModelConfigRef.sourceOf(parameters) == AiModelConfigRef.SOURCE_REFERENCE
+        holder.manualOnlyViews.forEach { it.isEnabled = !isReference }
+    }
+
     private fun setupPromptEditor(
         context: Context,
         holder: ViewHolder,
@@ -172,15 +235,21 @@ class AIModuleUIProvider : ModuleUIProvider {
             else -> AIModule.PROVIDER_OPENAI
         }
 
+        val configReadBack = h.configSelector?.readBack().orEmpty()
+        val isReference =
+            configReadBack[AiModelConfigRef.PARAM_SOURCE] == AiModelConfigRef.SOURCE_REFERENCE
+
         return mapOf(
             "provider" to provider,
-            "api_key" to h.apiKeyEdit.text.toString(),
+            // ⚠️ 引用模式下 `api_key` **必须写空串**：密钥由被引用的配置提供，
+            //    否则工作流 JSON 里仍会留下明文密钥（§1.7 的收益就没了）。
+            "api_key" to if (isReference) "" else h.apiKeyEdit.text.toString(),
             "base_url" to h.baseUrlEdit.text.toString(),
             "model" to h.modelEdit.text.toString(),
             "prompt" to (h.promptRichText?.getRawText() ?: ""),
             "system_prompt" to h.systemPromptEdit.text.toString(),
             "temperature" to h.tempSlider.value.toDouble(),
             "show_advanced" to h.advancedContainer.isVisible
-        )
+        ) + configReadBack
     }
 }
