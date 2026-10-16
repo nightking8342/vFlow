@@ -2060,6 +2060,60 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 | `ui/chat/AgentHost.kt`、`ui/chat/AgentPrompts.kt`、`ui/chat/ChatAgentEngine.kt`、`ui/chat/ChatHost.kt`、`ui/chat/WorkflowAgentHost.kt`（**新增**） | fork 独有：`AgentHost` 接口（8 成员 + 不适用成员的默认实现，不拆 ISP）/ 提示词分段（`SHARED_RULES` + 宿主专属段，chat 侧逐字委托上游 router）/ 宿主参数化引擎（`availableTools` / `buildSystemPrompt` / `runRound` / `runLoop` / `decideApproval` + 4 个调度接缝）/ chat 宿主 / 工作流宿主（白名单 = 全部 −6 个工作流工具、硬上限 15、`BOTH`、恒 `Approved`、**执行级** artifact store、`toExecutionResult`） | 我方 |
 | `app/src/test/java/.../ui/chat/`（**新增 6 个文件，57 例**） | 接口契约（反射精确集断言）/ 一轮往返 / 工具调度 / 整循环（**真实 `WorkflowAgentHost` + 假 round runner**）/ 接线源码扫描 / **请求字节级对等** | 我方 |
 
+### AI 能力统一 · **批 4**（三模块接入共享引擎 + 配置引用 = 设计稿 T5+T6+T7+T8，2026-10-16）—— **已实现**（单测 3400 例 / release 打包通过；**真机未验证**）
+
+> **本方向的收口批**：让三个 AI 模块复用批 3 的共享引擎，并让它们能**引用「模型配置」**（同时保留手动配置）。做完之后
+> 「一次改动处处生效」才真正成立 —— 三个模块不再各写一套请求/循环。
+>
+> **交付形态**：8 个 `fork:` 提交（`d4dce7ae`…`6845666c`），22 文件 / **+3817 −679**；新增 2 个文件
+> （`core/ai/AiModelConfigReference.kt` 解析器 + `ui/workflow_editor/AiModelConfigSelectorView.kt` 可复用选择器）+ 9 个测试类。
+>
+> **逐模块采纳清单（与 §3.6 表一致）**：
+> - `AIModule` = **只复用传输层**（纯文本一次问答，`tools=null` + `skillSelection=EMPTY` ⇒ 请求体无 tools 段，**不进引擎**）；
+> - `AgentModule` = **传输层 + 引擎**（`ChatAgentEngine.runLoop` + `WorkflowAgentHost`，保留自己的 11 工具 / `AgentTools` / 观察语义 / `AgentModuleToolRunner`）；
+> - `AutoGLMModule` = **只复用传输层 + 配置**（`tools=null`，**协议与提示词逐字未改**，`parseCommand` / `when(actionName)` / 图片清理全保留）。
+>
+> **配置引用**：`config_source` ENUM `{manual, reference}`（**默认 manual ⇒ 老步骤零迁移**）+ `model_config_id`；
+> reference 时 **活引用** provider / model / api_key / base_url（现读 `ChatPresetRepository.getPresets()`），**值拷贝快照**
+> `system_prompt` / `temperature`（按模块 `ownedValueCopyKeys`：AIModule 两项、AgentModule 仅 system_prompt、**AutoGLM 空集**）；
+> **三个 UIProvider 在引用模式下都写 `api_key=""`** ⇒ **引用后 api_key 不再进工作流**；引用不到配置 ⇒ 明确 `Missing` 报错，**不静默回落**。
+>
+> **⓪ 前置修复**：批 3 的 `runLoop` 不追加 assistant 的 `tool_calls` 轮（真实 OpenAI 协议要求 `role:"tool"` 之前有带 `tool_calls` 的 assistant 消息，否则 400）⇒ 已补，并由 `AgentEngineToolCallProtocolTest`（真实传输 + MockWebServer + 真实 `runLoop`）锁住。
+>
+> **两轮验收返工（都值得记）**：
+> 1. **文档与代码不一致**（4 处可证伪的交付说明 + 死代码）：Q4 声称「到顶改用模型收尾总结」但实现仍返回固定文案；`AgentModule` 交付说明称「不发 temperature」但实际恒发 1.0；
+>    `agentModulePreset` 是零调用点死代码。⇒ 均已修/已订正。
+> 2. **跨模块契约细节**：主屏截图是 **PNG**，两处新代码却硬编码 `mimeType = "image/jpeg"`，**绕过了仓库自己的 `chatImageMimeTypeForUri()`**
+>    （该 helper 的 KDoc 原文就写着「照默认构造会把 PNG 字节标成 JPEG —— 那是静默的 `media_type` 不符」）。**3397 例全绿也抓不到** ——
+>    因为没有任何测试在检查「mime 与实际字节是否匹配」。本批新增的**配置引用**让这两个模块可引用 Anthropic / OpenRouter ⇒ 那些路径按 `media_type` 解码 ⇒ 硬失败。⇒ 已改用按路径推断。
+>
+> ⚠️ **本批的有意行为变更（逐条登记，不是「等价搬迁」）**：
+> 1. **`AgentModule` 恒发 `temperature: 1.0`**（改造前**不发该字段**、靠 API 默认）—— 共享传输层无条件 `put`；语义上 1.0 是 OpenAI 系默认值，**非 OpenAI 系网关的默认值不保证是 1.0** ⇒ 真实线格式变更。
+> 2. **观察输入截图：旧 = 解码后 `bitmap.compress(JPEG, 90)` 的真 JPEG 字节；新 = 原文件字节（PNG）+ 正确 mime**（PNG 无损、对文字密集的屏幕更好；载荷更大由 5MB 兜底处理）。
+> 3. **`AgentModule` 非流式 → 流式**。
+> 4. **`AgentModule` 的 `noToolCallCount` 兜底被删**（旧：3 次只说不做 ⇒ `Failure("AI 响应异常")`；新：一次文本回复即 `FINISHED` ⇒ `Success(success=true)`）—— 收敛到共享引擎的必然结果。
+> 5. **三模块超时口径改为 30 / 300**。
+> 6. **`AgentModuleUIProvider` 初始 model 文案 `glm-4.6` → `glm-4.6v-flash`**（与 `InputDefinition` 默认值对齐）。
+> 7. **AutoGLM 的 `content` 现在经过 `normalizeAssistantReply`**：内联 ` thinking` 被搬走、**`<tool_call>…</tool_call>` 配对块会被整块删除**、空行折叠 ⇒ 若模型把 `do(action=…)` 包进 `<tool_call>`，旧代码能捞回来、**新代码捞不回**（非标准输出容错度下降，主解析路径不受影响）。⚠️ 属**已接受的登记项**，修复留待真机按需（AutoGLM 协议是上游契约，改动谨慎）。
+> 8. `ui/overlay/AgentMonitorAndImeWiringTest.kt`（既有 fork 守卫测试）锚点随实现搬家并改断言。
+>
+> ⚠️ **未验证（真机 / 真接口）**：三模块接真模型的多模态与 tools 行为 · `AgentModule` 恒发 temperature 在非 OpenAI 系网关的实际影响 · AutoGLM 真实动作协议 · **PNG `image/png` 在真实网关的接受度** · 虚拟屏 `_target_display_id` 落点 · 选择器真机交互与置灰 · 引用 Anthropic / OpenRouter / Ollama 配置后的模块行为 · `stream_options.include_usage` 兼容性 · `AgentModuleToolRunner` 的执行级覆盖（现有端到端用的是**假 runner**）。
+>
+> **门禁**：`./gradlew test` → **3400 tests / 1 failed（既有 `VObjectPropertyTest`）/ 1 skipped**（独立复算：基线 3327 + 73 新增）；`assembleRelease` BUILD SUCCESSFUL；`apksigner` → `CN=vFlow Fork, OU=Fork, O=nightking8342`。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `core/workflow/module/network/AIModule.kt` + `AIModuleUIProvider.kt`（改） | 请求改走共享传输层（`runAiCompletionTurn`，无 tools / 无引擎）；`getInputs()` **末尾追加** `config_source` / `model_config_id`；引用模式下 `readFromEditor` 写 `api_key=""` | **手动合并**（上游文件） |
+| `core/workflow/module/interaction/AgentModule.kt` + `AgentModuleUIProvider.kt`（改） | 改走 `ChatAgentEngine.runLoop` + `WorkflowAgentHost`；**补 `long_press` / `double_tap` / `swipe` 三工具**（坐标归一化 0–1000）+ 协议段第 5 条对齐（D-a / D-b）；提示词 19 条收敛为单一来源 `AgentPrompts.WORKFLOW_RULES`；配置引用同 AIModule | **手动合并**（本批改动面最大） |
+| `core/workflow/module/interaction/AutoGLMModule.kt` + `AutoGLMModuleUIProvider.kt`（改） | **只换传输层 + 加配置引用**；⚠️ **动作协议与提示词逐字未改**（`do(action=…)` / `parseCommand` / `extractTag` / 图片清理全保留）；`ownedValueCopyKeys = emptySet()`（**不做值拷贝** —— 提示词每次现算，拷进去是死参数） | **手动合并** |
+| `ui/chat/WorkflowAgentHost.kt`（改） | 接上真实行为：白名单（11 工具）/ `maxRounds = maxSteps` / `BOTH` / 提示词分段（`protocolSection` + `WorkflowModulePromptPlan`）/ 恒 `Approved` / 执行级 artifact store / `toExecutionResult`（**`MAX_ROUNDS` 正文 = 模型收尾总结，空白才回退固定文案**） | 我方 |
+| `ui/chat/ChatAgentEngine.kt`（改） | **仅为修 ⓪ 的 `tool_calls` 缺口**：执行分支内补 `assistantToolCallMessage(round)`（放在 `maxRounds` 判断**之后** ⇒ 收尾轮无悬挂调用） | 我方 |
+| `core/ai/AiModelConfigReference.kt`、`ui/workflow_editor/AiModelConfigSelectorView.kt`（**新增**） | fork 独有：配置引用的**纯函数解析器**（`resolve` / `sourceOf` / `Missing` 三态）+ **可复用选择器视图**（照 `CallWorkflowModuleUIProvider` 先例） | 我方 |
+| `res/values{,-en,-ja}/strings.xml`（改） | 各在**文件末尾**追加 **11 个键**（三语键集一致、无重复，各 1680 键） | **手动合并**（追加） |
+| `app/src/test/java/...`（**新增 9 个测试类**） | 解析器 / 三模块传输层与接线 / `AgentEngineToolCallProtocolTest`（**端到端首次验证**：真实传输 + MockWebServer + 真实 `runLoop` + 真实 `WorkflowAgentHost`）/ `WorkflowAgentHostPromptTest` / 既有守卫测试锚点搬家 | 我方 |
+
+> **待收敛项（父会话登记）**：D8（被引用配置被删的行为 —— 本批实现为「明确 `Missing` 报错」，D8 本身仍待议）· D10（`AIModule` 默认模型 `gpt-3.5-turbo` 未对齐，另立任务）· D15（已按**甲**「原地换实现 + 参数全带默认值」实施）· D18（到顶后结果语义：本批 `Success(success=false)` + 正文 = 收尾总结，D18 仍待议）· D22（存储档位，本批不涉及）· `AgentPrompts.SHARED_RULES` 与上游 `ChatAgentSkillRouter` 的 8 条重复。
+
 ---
 
 ## 暂未分歧、但日后改动时须登记的敏感点
