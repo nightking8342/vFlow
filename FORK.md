@@ -1936,6 +1936,47 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 
 ---
 
+### AI 能力统一 · **批 1**（多模态传输层升级 ∥ 会话持久化改造，2026-10-16）—— **已实现**（单测 3219 例 / release 打包通过；**真机未验证**）
+
+> 承接上一节的设计稿。该目标被拆成 6 个任务、分批执行（同批并行、批间串行、集成由父会话做）；**本批为第 1 批**：
+> - **① 传输层升级**（= 设计稿 **T1 + T3 + T11**）：让 ChatAgent 传输层支持**图片输入**（三条协议 content parts）、
+>   把工具定义泛化成**中性 `ChatToolSchema`**（任意 JSON Schema 原样透传），并加**每请求图片张数预算 + 单图 base64 ≤5MB 兜底**
+>   （超预算一律换**文本占位**，不静默丢弃；默认不缩，仅超限或 mime 不在白名单时才重编码）。
+> - **② 会话持久化改造**（= 设计稿 **T10**）：把「全部会话挤在 `chat_session_prefs` 单 key 的一个 JSON」换成
+>   「`filesDir/chat/conversations/<id>.json` 每会话一文件 + `chat/index.json` 轻量索引」，写时**按会话 diff** + **原子写**，
+>   旧 blob 一次性迁移（**成功才清空**、先落 `legacy/` 原文备份），并**修掉「解析失败静默清空全部会话」这个既有缺陷**。
+>
+> **集成方式**：两条分支各自提交（`f19ec7ae` / `c49a7381`）→ 集成分支 `feature/ai-unification`（两次 `--no-ff` 合并，**0 冲突**）→ 合入 `dev`。
+> 集成分支上重跑门禁：**3219 tests / 1 failed / 1 skipped**（唯一失败 = 既有 `VObjectPropertyTest > test VFile properties from absolute path`）
+> —— 3219 = 3191（①）+ 28（②），**无新增失败、无用例丢失**；`assembleRelease` BUILD SUCCESSFUL，
+> `apksigner` 显示 `CN=vFlow Fork, OU=Fork, O=nightking8342`（**未降级为 debug 签名**）。
+>
+> ⚠️ **本批只到「编译 + 单测」这一层，真机未验证**。真机验证清单：① 图片三协议真机收发（含 HEIC→JPEG 的**有损**重编码，
+> `AndroidChatImageShrinker` 的 `BitmapFactory` / `Bitmap.compress` 路径**单测覆盖不到**，`android.graphics` 是 not-mocked 桩）；
+> ② **大历史首次启动耗时** —— 迁移跑在 `ChatViewModel.init` 的**主线程**（同步），历史很大时有 **ANR 风险**；
+> ③ `Files.move(ATOMIC_MOVE)` 在真机 f2fs/ext4 上的行为（单测跑在 Windows NTFS）；④ 坏 blob 时的 Toast 可见性。
+>
+> ⚠️ **已知限制（用户已确认接受）**：① `ChatMessage.attachments` 是独立字段，**表达不了「文字与图的交错顺序」**
+> （「文字+图+文字」退化为「文字文字+图」）；② 5MB 兜底与 mime 白名单外的**重编码是有损的**（丢画质 / alpha / HDR），
+> 只在超限或 mime 不受支持时触发，只改**本次请求载荷**，磁盘原图不改写。
+> ⚠️ **图片预算目前还没有生产调用点**（只有单测构造 `attachments`）⇒ 图片真正进会话要等批 2 的「ChatAgent 多模态闭环」接线，
+> 两者**必须同期或紧邻合入**，否则图片一进历史就会让每轮请求**平方级膨胀**。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `ui/chat/ChatCompletionClient.kt`（改） | ① 三条协议（chat/completions · OpenAI Responses · Anthropic messages）的 USER 分支新增**图片 content parts**；② `generateReply` / `streamReply` 各新增 `tools` / `imageBudget` 形参（**都带默认值**）；③ 构造新增 `imageResolver`（带默认值 ⇒ `ChatViewModel` 的无参构造点无需改）；④ `streamReply` 改 `flow{}` **懒装配**（图片解析含文件 IO，不能被 Main 线程同步触发）；⑤ **`generateReply` 的 adapter 调用保留 `withContext(Dispatchers.IO)`** —— 实现期曾误删，导致非流式路径的阻塞 HTTP 回到**调用方（Main）线程**（生产可达路径 `ChatScreen:855 → ChatViewModel:218 viewModelScope.launch → ChatBenchmarkRunner:352`），被独立验收抓到、已修复并由 `ChatCompletionThreadAffinityTest` 锁死（该回归**不在设计稿里**，是本次实现引入的）；⑥ 新增 `buildRequest` / `adapterFor` / `buildMessageInputParts` 与三个「计划项 → part」私有映射；⑦ `ChatToolResultInputFormatter.format(...)` **追加**形参 `tools`（既有形参 `toolDefinitions` **一字不动** ⇒ 既有 `ChatAgentToolingTest` 不受影响）；⑧ 三个 private tool builder 形参 `List<ChatAgentToolDefinition>` → `List<ChatToolSchema>` | **手动合并**（上游热路径，本批改动面最大） |
+| `ui/chat/ChatModels.kt`（改） | `ChatMessage` 末尾追加 `attachments`（带默认值、只存**路径**、只装配 USER 角色）；新增 `ChatImageSource` / `ChatImageAttachment`。⚠️ **副作用**：会话 JSON 用 `encodeDefaults = true` ⇒ 每条消息多写 `"attachments":[]`（约 20 字节） | **手动合并**（末尾追加） |
+| `ui/chat/ChatPresetRepository.kt`（改） | ② 会话持久化由「prefs 单 key 全量 JSON、解析失败静默清空」改为「每会话一文件 + 轻量索引」：**只有 `getSessionState()` / `saveSessionState()` 两个方法的方法体变化，签名不变**；`getSessionState()` 不再 `runCatching{}.getOrDefault(ChatSessionState())`，改为**隔离留存坏数据 + 进程内一次可见提示**（复用既有三语 `toast_load_failed`，不改 `res/**`）；`saveSessionState()` 改为按会话 diff + 原子写。另加 2 个私有字段 / 1 个私有方法 `notifySessionLoadIssueOnce()` / 2 个 companion 私有常量 | **手动合并**（改动集中在 2 个方法 + 一段新私有成员） |
+| `core/backup/scopes/ChatScope.kt`（改） | 由 `AbstractPrefsScope` 子类改为**混合 scope**（组合私有 `ChatPrefsScope` 实例复用原 prefs 逻辑 + 自己读写 `filesRoot` 下的会话文件），payload 追加 `conversations` 元素（items + benchmarkRuns + version）；`id` / `group` / `sensitive` / `defaultIncluded` / `importOrder` / `dependsOn` / `specs` **全部不变**；REPLACE 只在备份**确实带** `conversations` 元素时才删本地独有会话（否则「导入一份改造前的旧备份」会静默清空全部会话 —— 已单测锁定）。⚠️ 换类层次的原因是备份基类的 `export` / `import` 是 `final`（`core/backup/BackupPrefs.kt:118` / `:149`），要带 `filesDir` 文件就必须换 | 我方（该文件已是 fork 独有） |
+| `ui/chat/ChatToolSchema.kt`、`ui/chat/ChatImagePlan.kt`、`ui/chat/ChatImageResolver.kt`、`ui/chat/ChatImageParts.kt`（**新增**） | fork 独有：中性工具定义 `ChatToolSchema` + 唯一适配器 `toChatToolSchema()`；`CHAT_MAX_IMAGE_BASE64_CHARS` / `ChatImageBudget` / `ChatImageBudgetPlanner`（纯逻辑、无 IO）；图片字节来源与缩压两个接口 + 默认实现 + `ChatImageResolver`（**全链路唯一做文件 IO 的地方**）+ mime 白名单；三协议 6 个 part 纯函数 | 我方 |
+| `ui/chat/ChatConversationStore.kt`、`ui/chat/ChatSessionLoadIssue.kt`、`core/chat/store/ChatConversationLayout.kt`、`core/chat/store/ChatConversationFiles.kt`（**新增**） | fork 独有：会话文件存储层（读 / 按会话 diff 写 / 一次性迁移 / 坏数据隔离 / 索引重建；纯 JVM、无 `android.*`、可单测）+ 磁盘布局常量与路径安全闸（`isSafeConversationId` 拒空 / `/` / `\` / `..` / `.tmp` 结尾 / 控制字符 / Windows 非法字符） | 我方 |
+| `app/src/test/java/.../ui/chat/`（**新增 7 个文件**） | ① 5 个：`ChatCompletionThreadAffinityTest`（线程归属回归；含**前提校验**防假绿）/ `ChatImageBudgetTest` / `ChatImageProtocolAssemblyTest`（断言 **MockWebServer 收到的真实请求体**）/ `ChatImageResolverTest` / `ChatToolSchemaChannelTest`；② 2 个：`ChatConversationStoreTest` / `ChatSessionPersistenceWiringTest`（**源码扫描型接线锚定**）。共 61 例 | 我方 |
+| `app/src/test/java/.../core/backup/`（**改 4 个**） | ② 的配套：`FakeBackupEnvironment`（加**可选** `filesRoot`，默认仍 null）、`scopes/ChatScopeTest`（+8 例）、`PrefsScopeContractTest` + `BackupPrefsLeakTest` —— **遍历判据由 `AbstractPrefsScope` 换成 `PrefsBackedScope`**（`AbstractPrefsScope` 实现该接口 ⇒ 集合是**超集**，覆盖面不减，`chat` 仍被契约与泄漏扫描覆盖） | 我方 |
+
+> **本批未做（属后续批次）**：多模态 UI 接线与**渲染**（批 2）· **D20 坐标归一化**（批 2）· 共享入口抽取 + 引擎/宿主收敛（批 3）·
+> 配置引用（批 3）· 三个 AI 模块改走共享入口（批 4）· 「引用即保存」的附件目录与存储档位（**D22 待议**）。
+> 本批的两个任务**均已通过独立验收**（验收者自己重取基线、自己注入缺陷做反证、还原后哈希逐字节一致）。
+
 ---
 
 ## 暂未分歧、但日后改动时须登记的敏感点
