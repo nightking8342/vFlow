@@ -1977,6 +1977,50 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 > 配置引用（批 3）· 三个 AI 模块改走共享入口（批 4）· 「引用即保存」的附件目录与存储档位（**D22 待议**）。
 > 本批的两个任务**均已通过独立验收**（验收者自己重取基线、自己注入缺陷做反证、还原后哈希逐字节一致）。
 
+### AI 能力统一 · **批 2**（ChatAgent 多模态闭环 = 设计稿 T2，2026-10-16）—— **已实现**（单测 3270 例 / release 打包通过；**真机未验证**）
+
+> 批 1 让**传输层**能发图，但**生产代码里没有任何调用方构造 `attachments`**（图片还进不了会话）。本批把这条闭环打通：
+> **用户附图真的发出去 · Agent 截图真的被模型看到 · 工具产出的图能在对话里渲染 · 被正文引用过的图落盘保存 · 坐标语义改归一化**。
+>
+> **三个必答问题（方案阶段定，父会话已裁决）**：
+> 1. **截图怎么进请求** = 挂在**紧随工具结果之后的一条 `role=USER` 的合成消息**上（`source=AGENT`、`content` 为空）。
+>    理由：三协议都只在 **user 轮**放图 ⇒ 不可能落进「按协议会报错」的位置（OpenAI 的 `role:"tool"` 消息 content **只能是字符串**；
+>    Anthropic 的 `tool_result` 图有「超限被**拒绝**而非缩放」的真实风险；chat/completions 的 assistant content 不支持图片 part）；
+>    且 Anthropic 会把连续 user 轮合并 ⇒ 不触发角色交替校验；**完全复用批 1 已测的 USER 装配分支 ⇒ 零装配扩展**。
+> 2. **渲染不新增依赖** —— `app/build.gradle.kts:223/228` **已有** coil 2.7.0 + coil-compose 2.7.0（fork 既有）。
+>    **未改 `ChatMarkdown.kt`**（父会话裁决不授权）⇒ 正文引用图是**块级**而非严格行内（已知限制）。
+> 3. **附件落盘** = `filesDir/chat/attachments/`（与 `conversations/` 平级）：**内容寻址**（`sha256` 前 32 hex + mime 扩展名 ⇒ 天然去重）
+>    + 句柄索引 `attachments/index.json`（原子写；解析失败只记 W、**绝不清空**）。落盘对象 = 用户发的图（发送前）+
+>    **正文引用过的** AGENT 图（收尾时）。**清理不做**（D22 未落地）。
+>
+> **父会话另两条裁决**：① 允许 `ChatCompletionClient` 增加 `ChatImageCarriers` 口径统一（兑现「预算计数 = 装配渲染」；既有行为不变）；
+> ② **附件目录不纳入备份 `ChatScope`**（附件体积/档位属 **D22** 未定案）⇒ **从备份恢复后附件缺失**，渲染与模型两侧都有降级。
+>
+> **验证**：`./gradlew test` → **3270 tests / 1 failed（既有 `VObjectPropertyTest`）/ 1 skipped**（新增 7 类 51 例全绿）；
+> `assembleRelease` BUILD SUCCESSFUL；`apksigner` → `CN=vFlow Fork, OU=Fork, O=nightking8342`（SHA-256 `28d55086…`）。
+> **独立验收者自己注入了 6 处缺陷** ⇒ 13 例按预期变红（覆盖归一化换算 / 承载角色归一 / 截图进 user 轮 / prepare 绕过归一化 /
+> 三处收尾落盘调用 / 索引写），改回后工作区干净、复绿 ⇒ 证明源码扫描型接线测试**不是空转**。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `ui/chat/ChatViewModel.kt`（改） | 发送路径带**附件**（`sendMessage(prompt, attachments)`）；新增「紧随工具结果的 USER 合成消息」（`source=AGENT`）；三处收尾（流式主路径 / 中断 / 错误）调用落盘 | **手动合并**（本批改动面最大） |
+| `ui/chat/ChatScreen.kt`（改） | 两个发送点改为带附件发送；删掉「附件暂不支持」丢弃分支（Kotlin 侧零引用，三语**旧键保留未删**）；正文渲染换成 `ChatMarkdownWithImages`；USER 气泡按 `source` 分流；`canUseComposerAction` 允许「有图无字」 | **手动合并** |
+| `ui/chat/ChatAgentNativeTooling.kt`（改） | **D20：4 个 agent-native 工具的 8 个坐标参数改归一化 0–1000**（`(raw/1000.0*extent).toInt().coerceIn(0, extent-1)`；**越界抛异常 → ERROR 工具结果 + recovery hint，不静默钳制**）；`screenExtent` 取 `getRealMetrics`（与 `AgentModule.kt:423` 既有约定一致）；4 个工具描述 + schema 属性描述 + 3 条 hint 同步改写 | **手动合并**；⚠️ **已发布工具 schema 的行为变更**（旧调用失效，靠描述与 hint 引导） |
+| `ui/chat/ChatAgentModuleExecutor.kt`（改） | 工具结果文本加「图片可正文引用」引导（只改必要处，16 行） | **手动合并**（追加） |
+| `ui/chat/ChatCompletionClient.kt`（改） | `buildRequest` 先按 `ChatImageCarriers` **剥掉非承载角色的附件**，再把同一份 `normalizedHistory` 交给 `imageResolver.plan(...)` 与三条历史装配 ⇒ 消掉「预算按所有角色计数、装配只渲染 USER」的不一致（25 行） | **手动合并**（上游热路径） |
+| `ui/chat/ChatInlineImages.kt`、`ChatAttachmentStore.kt`、`ChatAgentToolImages.kt`、`ChatAgentCoordinates.kt`、`ChatImageCarriers.kt`、`ChatArtifactReferences.kt`（**新增**） | fork 独有：正文 `![图注](artifact://…)` 切段渲染 + USER 缩略图 + AGENT 截图卡片 + 不可用兜底；内容寻址落盘 + 句柄索引；工具产出图 → 附件；归一化坐标换算（纯函数）；可承载角色常量；正文引用解析 | 我方 |
+| `app/src/test/java/.../ui/chat/`（**新增 7 个文件，51 例**） | 归一化换算 / 截图进 user 轮（三协议，断言 **MockWebServer 收到的真实请求体**）/ 附件存储与索引 / 承载角色归一 / 正文引用解析 / 源码扫描型接线（含三处收尾落盘调用点） | 我方 |
+| `res/values{,-en,-ja}/strings.xml`（改） | 各在**文件末尾**追加 `chat_agent_screenshot_label` / `chat_image_unavailable`（键集一致） | **手动合并**（追加） |
+
+> ⚠️ **本批遗留的已知缺口（父会话登记，后续批次处理）**：
+> 1. **附件目录不在备份范围**（`ChatScope` 未含 `attachments/`）⇒ 备份恢复后图不可见。等 **D22（存储档位）** 定案一起处理。
+> 2. **附件无清理策略** ⇒ 磁盘只增不减（D22 未落地）。
+> 3. **正文引用图是块级渲染**（未改 `ChatMarkdown.kt`）⇒ 图若写在句子中间会被切到独立块。
+> 4. **D20 拦不住「语义错」**：模型若把像素值当归一化值提交（如 `x=540`），校验只拦越界 ⇒ 点偏从 1080 世界缩到约 1/1000（靠描述 + hint 引导）。
+> 5. **未引用的 AGENT 截图只活在 artifact store（cache 语义）** ⇒ 重启后那条截图消息显示「图片不可用」，且仍计一次预算（占位文案对 AGENT 档不贴切）。
+> 6. **真机未验证**（本批最大的残余不确定性）：图片是否真被模型看到（含 Anthropic 真接口对「tool 结果 + 紧随 user 轮」的接受度）、
+>    正文内联图渲染与重启后显示（coil2 吃 `file://` 绝对路径）、归一化点按落点（含虚拟屏 `display_id > 0`；`getRealMetrics` 与 `AgentUtils` 的虚拟屏会话尺寸是否一致未验证）。
+
 ---
 
 ## 暂未分歧、但日后改动时须登记的敏感点
