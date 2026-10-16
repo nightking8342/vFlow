@@ -1814,4 +1814,8 @@
     <string name="text_ai_config_no_configs">尚未创建模型配置</string>
     <string name="hint_ai_config_reference_overrides_manual">引用模式下由所选配置提供，手动字段不生效</string>
     <string name="hint_ai_agent_system_prompt_prefix">可选：系统提示词前段（引用模型配置时自动填入，可编辑）</string>
+    <string name="chat_pending_attachment_remove">移除附件</string>
+    <string name="chat_pending_attachment_photo_label">待发送的图片</string>
+    <string name="chat_pending_attachment_camera_label">待发送的相机照片</string>
+    <string name="chat_image_viewer_close">关闭图片查看</string>
 </resources>

@@ -1,6 +1,7 @@
 package com.chaomixian.vflow.ui.chat
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -49,6 +50,10 @@ private val CHAT_INLINE_IMAGE_MAX_HEIGHT = 360.dp
  *
  * ⚠️ 图片加载用项目**已有**的 coil2（`coil-compose` 的 `AsyncImage`，与
  * `ui/workflow_list/WorkflowCardIcon.kt` 同款）⇒ **不新增依赖**。
+ *
+ * ⚠️ **点图放大**（fork：任务 45 —— 症状 (b)）：`onImageClick` 为 null 时图片不可点，
+ * 保持「纯展示」；调用点（`ChatScreen`）传进来的模型可能是 null（句柄解析不到），
+ * 那种情况由查看器显示占位，故这里**照样把点击传出去**。
  */
 @Composable
 internal fun ChatMarkdownWithImages(
@@ -56,6 +61,7 @@ internal fun ChatMarkdownWithImages(
     resolveHandle: (String) -> String?,
     modifier: Modifier = Modifier,
     contentColor: Color = MaterialTheme.colorScheme.onSurface,
+    onImageClick: ((String?) -> Unit)? = null,
 ) {
     val segments = remember(markdown) { ChatArtifactReferences.parse(markdown) }
     if (segments.none { it is ChatBodySegment.Image }) {
@@ -79,6 +85,7 @@ internal fun ChatMarkdownWithImages(
                 is ChatBodySegment.Image -> ChatInlineImage(
                     reference = segment.reference,
                     resolveHandle = resolveHandle,
+                    onImageClick = onImageClick,
                 )
             }
         }
@@ -95,6 +102,7 @@ internal fun ChatMarkdownWithImages(
 internal fun ChatAttachmentThumbnails(
     attachments: List<ChatImageAttachment>,
     modifier: Modifier = Modifier,
+    onImageClick: ((String?) -> Unit)? = null,
 ) {
     if (attachments.isEmpty()) return
     Row(
@@ -102,7 +110,11 @@ internal fun ChatAttachmentThumbnails(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         attachments.forEach { attachment ->
-            ChatImageThumbnail(model = attachment.uri, contentDescription = attachment.label)
+            ChatImageThumbnail(
+                model = attachment.uri,
+                contentDescription = attachment.label,
+                onClick = onImageClick,
+            )
         }
     }
 }
@@ -117,6 +129,7 @@ internal fun ChatAttachmentThumbnails(
 internal fun ChatAgentScreenshotCard(
     attachments: List<ChatImageAttachment>,
     modifier: Modifier = Modifier,
+    onImageClick: ((String?) -> Unit)? = null,
 ) {
     if (attachments.isEmpty()) return
     Column(
@@ -141,7 +154,11 @@ internal fun ChatAgentScreenshotCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 attachments.forEach { attachment ->
-                    ChatImageThumbnail(model = attachment.uri, contentDescription = attachment.label)
+                    ChatImageThumbnail(
+                        model = attachment.uri,
+                        contentDescription = attachment.label,
+                        onClick = onImageClick,
+                    )
                 }
             }
         }
@@ -154,11 +171,15 @@ internal fun ChatAgentScreenshotCard(
 private fun ChatInlineImage(
     reference: ChatInlineImageReference,
     resolveHandle: (String) -> String?,
+    onImageClick: ((String?) -> Unit)? = null,
 ) {
     // 句柄不会变，故按句柄缓存解析结果（解析 = 内存映射查表 + 一次 File.exists）。
     val resolved = remember(reference.handle) { resolveHandle(reference.handle) }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        ChatImageBlock(model = resolved)
+        ChatImageBlock(
+            model = resolved,
+            onClick = onImageClick?.let { click -> { click(resolved) } },
+        )
         if (reference.caption.isNotBlank()) {
             Text(
                 text = reference.caption,
@@ -174,6 +195,7 @@ private fun ChatImageThumbnail(
     model: String?,
     contentDescription: String?,
     size: Dp = CHAT_IMAGE_THUMBNAIL_SIZE,
+    onClick: ((String?) -> Unit)? = null,
 ) {
     var failed by remember(model) { mutableStateOf(false) }
     if (model.isNullOrBlank() || failed) {
@@ -186,13 +208,17 @@ private fun ChatImageThumbnail(
         contentScale = ContentScale.Crop,
         modifier = Modifier
             .size(size)
-            .clip(RoundedCornerShape(12.dp)),
+            .clip(RoundedCornerShape(12.dp))
+            .imageClickModifier(onClick = onClick?.let { click -> { click(model) } }),
         onError = { failed = true },
     )
 }
 
 @Composable
-private fun ChatImageBlock(model: String?) {
+private fun ChatImageBlock(
+    model: String?,
+    onClick: (() -> Unit)? = null,
+) {
     var failed by remember(model) { mutableStateOf(false) }
     if (model.isNullOrBlank() || failed) {
         UnavailableImageBox(
@@ -209,10 +235,20 @@ private fun ChatImageBlock(model: String?) {
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(max = CHAT_INLINE_IMAGE_MAX_HEIGHT)
-            .clip(RoundedCornerShape(16.dp)),
+            .clip(RoundedCornerShape(16.dp))
+            .imageClickModifier(onClick = onClick),
         onError = { failed = true },
     )
 }
+
+/**
+ * 「点图放大」的公共修饰：**只有调用点要了点击时**才挂 `clickable`。
+ *
+ * ⚠️ 两个调用点都在「图确实存在」的分支里（model 为空时提前 return 走占位），
+ * 故这里不必再判空 —— 「图片不可用」的占位**不可点**，符合直觉。
+ */
+private fun Modifier.imageClickModifier(onClick: (() -> Unit)?): Modifier =
+    if (onClick == null) this else clickable(onClick = onClick)
 
 /**
  * 读不到图时的占位。
