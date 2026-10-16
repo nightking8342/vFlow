@@ -201,6 +201,51 @@ data class ChatMessage(
     val toolCalls: List<ChatToolCall> = emptyList(),
     val toolApprovalState: ChatToolApprovalState? = null,
     val toolResult: ChatToolResult? = null,
+    /**
+     * 随本条消息一起发给模型的图片（fork：AI 能力统一 §3.2 / D2-B）。
+     *
+     * ⚠️ **只有 `role == USER` 的消息会被装配成图片 part**——OpenAI 的 `tool` 消息
+     * content 官方只接受文本，**只有 user 角色在三协议里都支持图片**。
+     * 其它角色带附件一律**忽略并打一条 W 日志**（不静默）。
+     * Agent 截图也走 **USER 角色消息**承载（与 `AgentModule` 现有做法一致）。
+     *
+     * ⚠️ **已知限制**：`attachments` 是独立字段，**表达不了「文本与图的交错顺序」**
+     * ——用户发「文字 + 图 + 文字」会被装配成「文字文字 + 图」。
+     * 该限制经父会话 2026-10-16 确认接受。
+     * 另注：**工具产出的图「给人看」**走的是正文内联引用（`![图注](artifact://…)`
+     * 写在 [content] 文本里），**不经**本字段——两条路径分工不同，不要混用。
+     *
+     * ⚠️ **只存路径，不存 base64**（D9）：base64 会随会话持久化而膨胀，
+     * 且会让备份体积失控。载荷在**每次请求装配时**从 [ChatImageAttachment.uri] 现读。
+     */
+    val attachments: List<ChatImageAttachment> = emptyList(),
+)
+
+/** 图片的**来源**——每请求图片预算按它分档（用户图 / Agent 截图，D19）。 */
+@Serializable
+enum class ChatImageSource {
+    USER,
+    AGENT,
+}
+
+/**
+ * 一条消息里的图片**引用**（fork：AI 能力统一 §3.2 / D2-B）。
+ *
+ * 只描述「图在哪、是什么、给谁看」，**不含字节**——字节由 `ChatImageResolver`
+ * 在装配请求时按需读取（见 [uri] 的说明）。
+ */
+@Serializable
+data class ChatImageAttachment(
+    val id: String = UUID.randomUUID().toString(),
+    /** `file://` | `content://` | 绝对路径。**只存路径，不存 base64**（D9 约束）。 */
+    val uri: String,
+    /** 预算按类分档的判据。默认按用户图处理（更保守的一档）。 */
+    val source: ChatImageSource = ChatImageSource.USER,
+    val mimeType: String = "image/jpeg",
+    val width: Int? = null,
+    val height: Int? = null,
+    /** 可读名（文件名 / artifact 句柄），**仅用于占位文案与日志**。 */
+    val label: String = "",
 )
 
 @Serializable
