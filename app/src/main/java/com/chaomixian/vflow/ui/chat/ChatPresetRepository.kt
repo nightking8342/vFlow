@@ -2,8 +2,14 @@ package com.chaomixian.vflow.ui.chat
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.Handler
+import android.os.Looper
+import android.widget.Toast
 import androidx.core.content.edit
+import com.chaomixian.vflow.R
+import com.chaomixian.vflow.core.logging.DebugLogger
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
@@ -18,12 +24,25 @@ class ChatPresetRepository(context: Context) {
         private const val KEY_CHAT_AUTO_APPROVE_TOOLS = "chat_auto_approve_tools"
         private const val KEY_CHAT_AUTO_APPROVAL_SCOPE = "chat_auto_approval_scope"
 
+        /** 日志 TAG（fork 新增，仅用于会话持久化路径的 DebugLogger 调用）。 */
+        private const val TAG = "ChatPresetRepository"
+
         const val BUILTIN_OPENAI_ID = "builtin-openai"
         const val BUILTIN_DEEPSEEK_ID = "builtin-deepseek"
         const val BUILTIN_ANTHROPIC_ID = "builtin-anthropic"
         const val BUILTIN_OPENROUTER_ID = "builtin-openrouter"
         const val BUILTIN_OLLAMA_ID = "builtin-ollama"
+
+        /**
+         * 「会话数据解析失败」的可见提示**同一进程内只弹一次**。
+         *
+         * 放在 companion（而非实例字段）：`ModelConfigActivity` 与 `ChatViewModelHolder`
+         * 会各建一个 repository，用实例字段会在两处各弹一次。
+         */
+        private val sessionLoadIssueNotified = AtomicBoolean(false)
     }
+
+    private val appContext: Context = context.applicationContext
 
     private val prefs =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -33,6 +52,34 @@ class ChatPresetRepository(context: Context) {
         ignoreUnknownKeys = true
         encodeDefaults = true
     }
+
+    /**
+     * 会话持久化层（fork 新增）—— 每会话一文件 + 轻量索引，见 [ChatConversationStore]。
+     *
+     * 旧 blob 的读写通过 lambda 注入：store 因此是**纯 JVM**（可在临时目录里单测），
+     * 不必知道 `SharedPreferences` 的存在。
+     */
+    private val store = ChatConversationStore(
+        filesRoot = appContext.filesDir,
+        readLegacyBlob = {
+            sessionPrefs.getString(KEY_CHAT_SESSION_STATE_JSON, null)
+                ?: prefs.getString(KEY_CHAT_SESSION_STATE_JSON, null)
+        },
+        clearLegacyBlob = {
+            // ⚠️ 用 `commit()` 的返回值判成败（`androidx.core.content.edit` 返回 Unit）。
+            //    清不掉时**宁可把旧数据留在 prefs 里**，也不假装清干净了。
+            //    两个键**都要尝试**清理（不用 `&&` 短路，否则第一个失败就不动第二个）。
+            val sessionCleared = sessionPrefs.edit().remove(KEY_CHAT_SESSION_STATE_JSON).commit()
+            val moduleCleared = prefs.edit().remove(KEY_CHAT_SESSION_STATE_JSON).commit()
+            sessionCleared && moduleCleared
+        },
+        log = { level, message, error ->
+            when (level) {
+                ChatStoreLogLevel.WARN -> DebugLogger.w("ChatPresetRepository", message, error)
+                ChatStoreLogLevel.ERROR -> DebugLogger.e("ChatPresetRepository", message, error)
+            }
+        },
+    )
 
     fun getProviderConfig(providerConfigId: String): ChatProviderConfig? {
         return loadState().providers.firstOrNull { it.id == providerConfigId }
@@ -46,14 +93,56 @@ class ChatPresetRepository(context: Context) {
         return prefs.getString(KEY_CHAT_DEFAULT_PRESET_ID, null)
     }
 
+    /**
+     * 读回会话状态。
+     *
+     * ## ⚠️⚠️ 为什么**不能**再用 `runCatching { … }.getOrDefault(ChatSessionState())`
+     *
+     * 那是本仓库的一处既有缺陷（本例修掉的就是它）：一处 JSON 坏掉 ⇒ 这里返回**空状态**
+     * ⇒ `ChatViewModel.init → persistSessionState()` 紧接着把空状态**写回**
+     * ⇒ **全部会话被抹掉**，而用户**看不到任何提示**（本项目没有版本历史、不可恢复）。
+     *
+     * 现在：坏数据由 [ChatConversationStore] **原样留存**（复制一份进
+     * `filesDir/chat/quarantine/`）并产出 [ChatSessionLoadIssue]，这里
+     * ① 记日志（W/E）② 弹**一次**用户可见提示（复用既有三语字符串），
+     * 然后**尽力返回能读出来的那些会话**。
+     */
     fun getSessionState(): ChatSessionState {
-        val raw = sessionPrefs.getString(KEY_CHAT_SESSION_STATE_JSON, null)
-            ?: prefs.getString(KEY_CHAT_SESSION_STATE_JSON, null)
-            ?: ""
-        if (raw.isBlank()) return ChatSessionState()
-        return runCatching {
-            json.decodeFromString<ChatSessionState>(raw)
-        }.getOrDefault(ChatSessionState())
+        val state = store.load()
+        val issues = store.loadIssues
+        if (issues.isNotEmpty()) {
+            issues.forEach { issue ->
+                val message = "${issue.kind}: ${issue.detail}"
+                if (issue.kind == ChatSessionLoadIssueKind.LEGACY_BLOB_UNPARSEABLE) {
+                    DebugLogger.e(TAG, message)
+                } else {
+                    DebugLogger.w(TAG, message)
+                }
+            }
+            notifySessionLoadIssueOnce()
+        }
+        return state
+    }
+
+    /**
+     * 弹一次「会话数据解析失败、原文已保留」的提示。
+     *
+     * 约束（父会话裁决）：**只在确实发生解析失败时**弹（调用点已判 `loadIssues` 非空）；
+     * **同一进程内最多一次**（[sessionLoadIssueNotified]，与 repository 实例个数无关）。
+     * `DebugLogger` 与 `store.loadIssues` 都保留 ⇒ 将来 UI 层要接管展示时不必再改这里。
+     */
+    private fun notifySessionLoadIssueOnce() {
+        if (!sessionLoadIssueNotified.compareAndSet(false, true)) return
+        Handler(Looper.getMainLooper()).post {
+            Toast.makeText(
+                appContext,
+                appContext.getString(
+                    R.string.toast_load_failed,
+                    "chat 会话数据解析失败，原始数据已保留（chat/quarantine）"
+                ),
+                Toast.LENGTH_LONG
+            ).show()
+        }
     }
 
     fun getAutoApprovalScope(): ChatToolAutoApprovalScope {
@@ -74,13 +163,22 @@ class ChatPresetRepository(context: Context) {
         }
     }
 
+    /**
+     * 落盘（每会话一文件 + 轻量索引 + 原子写 + 按会话 diff）。
+     *
+     * 旧 blob 的清空**改由 [ChatConversationStore] 决定**（只有迁移成功提交后才清），
+     * 不再像改造前那样无条件 `remove` —— 无条件 remove 会把「解析失败但还没救回来」的
+     * 数据直接删掉。
+     */
     fun saveSessionState(state: ChatSessionState) {
-        sessionPrefs.edit {
-            putString(KEY_CHAT_SESSION_STATE_JSON, json.encodeToString(state))
-        }
-        prefs.edit {
-            remove(KEY_CHAT_SESSION_STATE_JSON)
-        }
+        val report = store.save(state)
+        DebugLogger.d(
+            TAG,
+            "会话落盘：写入 ${report.writtenConversations} 条、删除 ${report.deletedConversations} 条、" +
+                "索引 ${if (report.indexWritten) "已写" else "未变"}、" +
+                "benchmark ${if (report.benchmarkRunsWritten) "已写" else "未变"}、" +
+                "旧 blob 清空 ${report.legacyBlobCleared}"
+        )
     }
 
     fun saveProviderConfig(config: ChatProviderConfig): ChatProviderConfig {

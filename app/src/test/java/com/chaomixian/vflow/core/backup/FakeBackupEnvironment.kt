@@ -7,6 +7,7 @@ import com.chaomixian.vflow.core.workflow.model.Workflow
 import com.chaomixian.vflow.core.workflow.model.WorkflowFolder
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
+import java.io.File
 
 /**
  * 纯 JVM 的内存实现 —— 本任务全部 scope 语义测试的基础设施。
@@ -17,7 +18,14 @@ import com.google.gson.GsonBuilder
 class FakeBackupEnvironment(
     workflows: List<Workflow> = emptyList(),
     folders: List<WorkflowFolder> = emptyList(),
-    variables: Map<String, VObject> = emptyMap()
+    variables: Map<String, VObject> = emptyMap(),
+    /**
+     * 附件根目录（生产 = `filesDir`）。**默认 null** ⇒ 既有用例一个都不受影响
+     * （与 `BackupEnvironment` 的默认实现一致：纯 JVM 测试环境不带文件）。
+     *
+     * 会话文件（`chat/conversations/<id>.json`）走它 —— 需要它的用例传一个临时目录。
+     */
+    override val filesRoot: File? = null,
 ) : BackupEnvironment {
 
     override val appVersionName: String = "1.5.4-test"

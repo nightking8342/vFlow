@@ -55,8 +55,18 @@ class BackupPrefsLeakTest {
      */
     private val allowedByDesign: Set<String> = emptySet()
 
-    private fun prefsScopes(): List<AbstractPrefsScope> =
-        BackupScopeRegistry.all().filterIsInstance<AbstractPrefsScope>()
+    /**
+     * prefs 类 scope（判据 = 实现 [PrefsBackedScope]，**不是**继承 `AbstractPrefsScope`）。
+     *
+     * ⚠️ `ChatScope` 现在是混合 scope（prefs + 会话文件）⇒ 不再继承 `AbstractPrefsScope`。
+     * 判据若不改，chat 会**静默退出泄漏扫描** —— 那正是本文件要防的形态
+     * （「以为扫过了，其实没扫」）。
+     */
+    private fun prefsScopes(): List<BackupScope> =
+        BackupScopeRegistry.all().filter { it is PrefsBackedScope }
+
+    private val BackupScope.prefsSpecs: List<BackupPrefsSpec>
+        get() = (this as PrefsBackedScope).specs
 
     // ── 主断言 ──────────────────────────────────────────────
 
@@ -64,7 +74,7 @@ class BackupPrefsLeakTest {
     fun `no non sensitive scope whitelists the api tokens prefs`() {
         val offenders = prefsScopes()
             .filter { !it.sensitive }
-            .flatMap { scope -> scope.specs.map { scope.id to it } }
+            .flatMap { scope -> scope.prefsSpecs.map { scope.id to it } }
             .filter { (_, spec) -> spec.prefsName == SecretsScope.EXCLUDED_PREFS }
             .map { (id, spec) -> "$id → ${spec.prefsName}" }
 
@@ -82,7 +92,7 @@ class BackupPrefsLeakTest {
         val offenders = mutableListOf<String>()
 
         for (scope in prefsScopes().filter { !it.sensitive }) {
-            for (spec in scope.specs) {
+                for (spec in scope.prefsSpecs) {
                 for (key in spec.exactKeys) {
                     if ((spec.prefsName to key) in secretPairs) {
                         offenders += "${scope.id} → ${spec.prefsName}/$key"
@@ -114,7 +124,7 @@ class BackupPrefsLeakTest {
         //     换机解不开），绝不走普通 prefs 通道。
         val offenders = prefsScopes()
             .filter { !it.sensitive }
-            .flatMap { scope -> scope.specs.map { scope.id to it } }
+            .flatMap { scope -> scope.prefsSpecs.map { scope.id to it } }
             .filter { (_, spec) -> spec.prefsName == "webdav_config_prefs" }
             .map { (id, spec) -> "$id → ${spec.prefsName}" }
 
@@ -131,7 +141,7 @@ class BackupPrefsLeakTest {
         val offenders = mutableListOf<String>()
 
         for (scope in prefsScopes().filter { !it.sensitive }) {
-            for (spec in scope.specs) {
+            for (spec in scope.prefsSpecs) {
                 for (key in spec.exactKeys) {
                     if (key in allowedByDesign) continue
                     val hit = credentialShape.firstOrNull { key.lowercase().contains(it) }
@@ -163,7 +173,7 @@ class BackupPrefsLeakTest {
         val offenders = mutableListOf<String>()
 
         for (scope in prefsScopes().filter { !it.sensitive }) {
-            for (spec in scope.specs) {
+            for (spec in scope.prefsSpecs) {
                 for (key in spec.exactKeys) {
                     val hit = identityShape.firstOrNull { key.lowercase().contains(it) }
                     if (hit != null) offenders += "${scope.id} → ${spec.prefsName}/$key（命中 '$hit'）"
@@ -195,7 +205,7 @@ class BackupPrefsLeakTest {
         )
         assertTrue(
             "被检查的键总数太少 ⇒ 检查形同虚设",
-            scopes.flatMap { it.specs }.sumOf { it.exactKeys.size } >= 30,
+            scopes.flatMap { it.prefsSpecs }.sumOf { it.exactKeys.size } >= 30,
         )
     }
 

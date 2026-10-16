@@ -3,6 +3,7 @@ package com.chaomixian.vflow.ui.chat
 import com.chaomixian.vflow.core.logging.DebugLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -34,17 +35,32 @@ internal object ChatToolResultInputFormatter {
     fun format(
         message: ChatMessage,
         toolResult: ChatToolResult,
+        /**
+         * ⚠️ **既有形参，一字不动**：`ChatAgentToolingTest` 显式传入
+         * `List<ChatAgentToolDefinition>`，改型会让它编译失败，而那份测试不在本任务的
+         * 改动范围内（见方案 §4.6 的 P1 评审意见）。
+         */
         toolDefinitions: List<ChatAgentToolDefinition> = emptyList(),
+        /**
+         * 新增：**中性**工具集（`ChatToolSchema`），**非空时优先于** [toolDefinitions]。
+         *
+         * 为什么不是「同名重载」：① 会产生两条入口；② 两个同名同元数、只差泛型实参的
+         * 函数在 JVM 擦除后签名相同（`format(ChatMessage, ChatToolResult, List)`）。
+         *
+         * 本文件三处调用点传的是 `tools = request.tools`（`toolDefinitions` 保持默认空值），
+         * 故既有测试的调用语义**完全不变**。
+         */
+        tools: List<ChatToolSchema> = emptyList(),
     ): String {
         val raw = message.content.ifBlank { toolResult.outputText }.trim()
 
         // 声明为不可截断的工具（技能正文、模块 schema）原样返回：
         // 加载它们就是为了拿到全部内容，截断等于让这次调用白做。
         // 工具定义查不到时按可截断处理——与改造前的行为保持一致。
-        val truncatable = toolDefinitions
-            .firstOrNull { it.name == toolResult.name }
-            ?.truncatable
-            ?: true
+        val truncatable = when {
+            tools.isNotEmpty() -> tools.firstOrNull { it.name == toolResult.name }?.truncatable ?: true
+            else -> toolDefinitions.firstOrNull { it.name == toolResult.name }?.truncatable ?: true
+        }
         if (!truncatable) return raw
 
         if (raw.length <= CHAT_MAX_TOOL_RESULT_INPUT_CHARS) return raw
@@ -130,33 +146,43 @@ internal object ChatToolResultInputFormatter {
 
 internal class ChatCompletionClient(
     private val httpClient: OkHttpClient = sharedHttpClient,
+    /**
+     * 新增（带默认值 ⇒ `ChatViewModel` 的无参构造点**无需改动**）。
+     *
+     * 注入点是「图片字节从哪来 + 超限怎么缩」，故单测可以塞入 fake 而不碰 Android。
+     */
+    private val imageResolver: ChatImageResolver = ChatImageResolver(),
 ) {
     suspend fun generateReply(
         preset: ChatPresetConfig,
         history: List<ChatMessage>,
         skillSelection: ChatAgentSkillSelection = ChatAgentSkillSelection.EMPTY,
-    ): ChatCompletionResult = withContext(Dispatchers.IO) {
+        /** `null` ⇒ 由 [skillSelection] 适配（**既有行为**）；非 null ⇒ **取代**之。 */
+        tools: List<ChatToolSchema>? = null,
+        imageBudget: ChatImageBudget = ChatImageBudget.DEFAULT,
+    ): ChatCompletionResult {
         DebugLogger.i(
             LOG_TAG,
             "Generating reply provider=${preset.providerEnum.storageValue} model=${preset.model} history=${history.size} tools=${skillSelection.availableTools.joinToString { it.name }} lastUser=${history.lastOrNull { it.role == ChatMessageRole.USER }?.content.orEmpty().compactForLog()}"
         )
-        val request = ChatProviderRequest(
-            preset = preset,
-            history = history.filter { it.role != ChatMessageRole.ERROR },
-            skillSelection = skillSelection,
-        )
-        val adapter = when (preset.providerEnum) {
-            ChatProvider.OPENAI -> OpenAICompatibleChatAdapter(httpClient, preset.providerEnum)
-            ChatProvider.DEEPSEEK -> OpenAICompatibleChatAdapter(httpClient, preset.providerEnum)
-            ChatProvider.OPENROUTER -> OpenAICompatibleChatAdapter(httpClient, preset.providerEnum)
-            ChatProvider.OLLAMA -> OpenAICompatibleChatAdapter(httpClient, preset.providerEnum)
-            ChatProvider.ANTHROPIC -> AnthropicChatAdapter(httpClient)
-        }
-        adapter.complete(request).also { result ->
-            DebugLogger.i(
-                LOG_TAG,
-                "Reply ready provider=${preset.providerEnum.storageValue} model=${preset.model} tokens=${result.totalTokens ?: -1} reasoningChars=${result.reasoningContent?.length ?: 0} toolCalls=${result.toolCalls.joinToString { it.name }} content=${result.content.compactForLog()}"
-            )
+        val request = buildRequest(preset, history, skillSelection, tools, imageBudget)
+        // ⚠️ **必须包在 `withContext(Dispatchers.IO)` 里**（回归修复，验收退回点）：
+        // `complete()` → `executeJsonRequest()` → `httpClient.newCall(...).execute()` 是
+        // **同步阻塞**调用，而本函数的调用方在 **Main** 上 ——
+        // `ChatScreen.onStartBenchmark` → `ChatViewModel.startBenchmarkRun` 的
+        // `viewModelScope.launch {` → `ChatBenchmarkRunner.generateReply`（该文件全篇
+        // 没有任何 `withContext` / `Dispatchers` 切换）。不包 ⇒ 阻塞 HTTP 落在主线程。
+        //
+        // ⚠️ 与 `buildRequest` 内部那个 `withContext(IO)` **不是**同一件事：那个只覆盖
+        // **装配**（图片解析的文件 IO），不覆盖 adapter 调用。两者缺一不可。
+        // 由 `ChatCompletionThreadAffinityTest` 锁住（去掉本 `withContext` ⇒ 该用例变红）。
+        return withContext(Dispatchers.IO) {
+            adapterFor(preset).complete(request).also { result ->
+                DebugLogger.i(
+                    LOG_TAG,
+                    "Reply ready provider=${preset.providerEnum.storageValue} model=${preset.model} tokens=${result.totalTokens ?: -1} reasoningChars=${result.reasoningContent?.length ?: 0} toolCalls=${result.toolCalls.joinToString { it.name }} content=${result.content.compactForLog()}"
+                )
+            }
         }
     }
 
@@ -174,29 +200,40 @@ internal class ChatCompletionClient(
      *    看起来「切了线程」其实没切。
      * 3. **HTTP 非 2xx 时抛异常**（不是发个事件就算了）——上层需要「这轮失败」的信号，
      *    否则会走正常收尾、把半截内容当完整回复落盘。
+     *
+     * ⚠️ **fork 补充（AI 能力统一 §3.2 / D2-B）：请求体改为「收集时才装配」**。
+     * 图片解析含**文件 IO**，而 `ChatViewModel.kt:877` 在 `viewModelScope.launch`（Main）
+     * 里调用本方法 ⇒ 装配必须放进 `flow {}` 的 block（只在收集时执行），
+     * 并由 `buildRequest` 内部的 `withContext(Dispatchers.IO)` 兜住线程。
+     * HTTP 本来就在收集时才发，故 Flow 语义**不变**。
      */
     fun streamReply(
         preset: ChatPresetConfig,
         history: List<ChatMessage>,
         skillSelection: ChatAgentSkillSelection = ChatAgentSkillSelection.EMPTY,
+        /** `null` ⇒ 由 [skillSelection] 适配（**既有行为**）；非 null ⇒ **取代**之。 */
+        tools: List<ChatToolSchema>? = null,
+        imageBudget: ChatImageBudget = ChatImageBudget.DEFAULT,
     ): Flow<ChatStreamEvent> {
         DebugLogger.i(
             LOG_TAG,
             "Streaming reply provider=${preset.providerEnum.storageValue} model=${preset.model} history=${history.size}"
         )
-        val request = ChatProviderRequest(
-            preset = preset,
-            history = history.filter { it.role != ChatMessageRole.ERROR },
-            skillSelection = skillSelection,
-        )
-        val adapter = when (preset.providerEnum) {
+        val adapter = adapterFor(preset)
+        return flow {
+            emitAll(adapter.stream(buildRequest(preset, history, skillSelection, tools, imageBudget)))
+        }
+    }
+
+    /** 两个入口共用的适配器选择（Responses 路径由 adapter 内部按 `useResponsesApi` 分流）。 */
+    private fun adapterFor(preset: ChatPresetConfig): ChatProviderAdapter {
+        return when (preset.providerEnum) {
             ChatProvider.OPENAI -> OpenAICompatibleChatAdapter(httpClient, preset.providerEnum)
             ChatProvider.DEEPSEEK -> OpenAICompatibleChatAdapter(httpClient, preset.providerEnum)
             ChatProvider.OPENROUTER -> OpenAICompatibleChatAdapter(httpClient, preset.providerEnum)
             ChatProvider.OLLAMA -> OpenAICompatibleChatAdapter(httpClient, preset.providerEnum)
             ChatProvider.ANTHROPIC -> AnthropicChatAdapter(httpClient)
         }
-        return adapter.stream(request)
     }
 
     private companion object {
@@ -216,7 +253,55 @@ internal class ChatCompletionClient(
         val preset: ChatPresetConfig,
         val history: List<ChatMessage>,
         val skillSelection: ChatAgentSkillSelection,
+        /**
+         * 本轮下发的工具集。⚠️ **装配期就已定型**：`tools` 参数非 null 时**取代**
+         * `skillSelection.availableTools`，否则由后者适配而来。故三个 tool builder
+         * 与 tools 段的开关判据统一看这里，**不再**各自去看 `skillSelection`。
+         */
+        val tools: List<ChatToolSchema>,
+        /** 本轮的图片计划（预算裁剪 + 载荷）。没有附件的消息查不到条目。 */
+        val imagePlan: ChatImagePlan,
     )
+
+    /**
+     * 请求装配（**两个入口共用**）。
+     *
+     * ⚠️ **`withContext(Dispatchers.IO)` 在这里而不是在 `streamReply`**：
+     * `streamReply` 由 Main 线程调用，而图片解析含文件 IO（见 [ChatImageResolver.plan]）。
+     * `streamReply` 用 `flow {}` 把本函数推到「收集时」执行，本函数再切到 IO。
+     */
+    private suspend fun buildRequest(
+        preset: ChatPresetConfig,
+        history: List<ChatMessage>,
+        skillSelection: ChatAgentSkillSelection,
+        tools: List<ChatToolSchema>?,
+        imageBudget: ChatImageBudget,
+    ): ChatProviderRequest = withContext(Dispatchers.IO) {
+        val filteredHistory = history.filter { it.role != ChatMessageRole.ERROR }
+        // tools == null ⇒ 完全等价于改造前（工具集 = skillSelection 的适配，顺序与 schema 原样保留）
+        val resolvedTools = tools ?: skillSelection.availableTools.map { it.toChatToolSchema() }
+        if (resolvedTools.isNotEmpty()) {
+            DebugLogger.d(LOG_TAG, "Request tools count=${resolvedTools.size} names=${resolvedTools.joinToString { it.name }}")
+        }
+
+        // 只有 USER 角色会被装配成图片 part（三协议共同约束），其余角色带附件**不静默**。
+        filteredHistory.forEach { message ->
+            if (message.attachments.isNotEmpty() && message.role != ChatMessageRole.USER) {
+                DebugLogger.w(
+                    LOG_TAG,
+                    "Ignoring ${message.attachments.size} attachment(s) on role=${message.role} message=${message.id}",
+                )
+            }
+        }
+
+        ChatProviderRequest(
+            preset = preset,
+            history = filteredHistory,
+            skillSelection = skillSelection,
+            tools = resolvedTools,
+            imagePlan = imageResolver.plan(filteredHistory, imageBudget),
+        )
+    }
 
     private interface ChatProviderAdapter {
         suspend fun complete(request: ChatProviderRequest): ChatCompletionResult
@@ -373,12 +458,13 @@ internal class ChatCompletionClient(
                         buildJsonObject { put("include_usage", true) },
                     )
                 }
-                if (request.skillSelection.availableTools.isNotEmpty()) {
+                // 开关判据 = 装配期定型的 request.tools（见 ChatProviderRequest.tools 的说明）
+                if (request.tools.isNotEmpty()) {
                     put("parallel_tool_calls", false)
                     put(
                         "tools",
                         buildJsonArray {
-                            buildOpenAiChatToolDefinitions(request.skillSelection.availableTools).forEach(::add)
+                            buildOpenAiChatToolDefinitions(request.tools).forEach(::add)
                         }
                     )
                 }
@@ -404,12 +490,12 @@ internal class ChatCompletionClient(
                 // （官方类型定义 `response_completed_event.py` 明确如此），
                 // 故不存在 chat/completions 那个「必须显式请求才给 usage」的问题（§3.3-6 只适用于后者）。
                 if (streaming) put("stream", true)
-                if (request.skillSelection.availableTools.isNotEmpty()) {
+                if (request.tools.isNotEmpty()) {
                     put("parallel_tool_calls", false)
                     put(
                         "tools",
                         buildJsonArray {
-                            buildOpenAiResponsesToolDefinitions(request.skillSelection.availableTools).forEach(::add)
+                            buildOpenAiResponsesToolDefinitions(request.tools).forEach(::add)
                         }
                     )
                 }
@@ -435,10 +521,28 @@ internal class ChatCompletionClient(
                 when (message.role) {
                     ChatMessageRole.USER -> {
                         val content = message.content.trim()
-                        if (content.isBlank()) return@forEach
-                        items += buildJsonObject {
-                            put("role", "user")
-                            put("content", content)
+                        val images = request.imagePlan.forMessage(message.id)
+                        if (images.isEmpty()) {
+                            // 无图 ⇒ **保持现状**（content 仍是字符串）——「既有行为不回退」的硬约束
+                            if (content.isBlank()) return@forEach
+                            items += buildJsonObject {
+                                put("role", "user")
+                                put("content", content)
+                            }
+                        } else {
+                            // 有图 ⇒ content 变数组：[文本 part（content 非空才加）] + 每张图
+                            // （Kept ⇒ 图片 part；Omitted ⇒ 占位文本 part）。
+                            // ⚠️ 判据是「文本为空**且**无图才跳过」⇒ 「空文本 + 有图」不再被丢掉。
+                            items += buildJsonObject {
+                                put("role", "user")
+                                put(
+                                    "content",
+                                    buildJsonArray {
+                                        if (content.isNotBlank()) add(ChatImageParts.openAiChatTextPart(content))
+                                        images.forEach { image -> add(chatCompletionImagePart(image)) }
+                                    }
+                                )
+                            }
                         }
                     }
 
@@ -487,9 +591,9 @@ internal class ChatCompletionClient(
                             put(
                                 "content",
                                 ChatToolResultInputFormatter.format(
-                                    message,
-                                    toolResult,
-                                    request.skillSelection.availableTools,
+                                    message = message,
+                                    toolResult = toolResult,
+                                    tools = request.tools,
                                 )
                             )
                         }
@@ -511,8 +615,21 @@ internal class ChatCompletionClient(
                 when (message.role) {
                     ChatMessageRole.USER -> {
                         val content = message.content.trim()
-                        if (content.isBlank()) return@forEach
-                        items += buildMessageInput(role = "user", text = content)
+                        val images = request.imagePlan.forMessage(message.id)
+                        if (images.isEmpty()) {
+                            // 无图 ⇒ 保持现状（content 仍是 input_text 数组，形状与改造前逐字段一致）
+                            if (content.isBlank()) return@forEach
+                            items += buildMessageInput(role = "user", text = content)
+                        } else {
+                            // 有图 ⇒ content 变数组：[文本 part] + 每张图（Kept ⇒ 图片；Omitted ⇒ 占位文本）
+                            items += buildMessageInputParts(
+                                role = "user",
+                                parts = buildJsonArray {
+                                    if (content.isNotBlank()) add(ChatImageParts.responsesTextPart(content))
+                                    images.forEach { image -> add(responsesImagePart(image)) }
+                                },
+                            )
+                        }
                     }
 
                     ChatMessageRole.ASSISTANT -> {
@@ -539,9 +656,9 @@ internal class ChatCompletionClient(
                             put(
                                 "output",
                                 ChatToolResultInputFormatter.format(
-                                    message,
-                                    toolResult,
-                                    request.skillSelection.availableTools,
+                                    message = message,
+                                    toolResult = toolResult,
+                                    tools = request.tools,
                                 )
                             )
                         }
@@ -742,11 +859,11 @@ internal class ChatCompletionClient(
                     )
                 }
             )
-            if (request.skillSelection.availableTools.isNotEmpty()) {
+            if (request.tools.isNotEmpty()) {
                 put(
                     "tools",
                     buildJsonArray {
-                        buildAnthropicToolDefinitions(request.skillSelection.availableTools).forEach(::add)
+                        buildAnthropicToolDefinitions(request.tools).forEach(::add)
                     }
                 )
             }
@@ -1037,8 +1154,36 @@ internal class ChatCompletionClient(
         }
     }
 
+    /** [buildMessageInput] 的多 part 版本（图片路径用）。形状完全一致，只是 content 数组由调用方给。 */
+    private fun buildMessageInputParts(role: String, parts: JsonArray): JsonObject {
+        return buildJsonObject {
+            put("type", "message")
+            put("role", role)
+            put("content", parts)
+        }
+    }
+
+    // ── 计划项 → 各协议的 content part ────────────────────────────────
+    // Kept ⇒ 图片 part；Omitted ⇒ **占位文本 part**（D19：超预算的图换占位，绝不静默丢弃）。
+    // 三个协议各一份：文本 part 与图片 part 的**字段名都不同**，不能互串（见 ChatImageParts）。
+
+    private fun chatCompletionImagePart(image: ChatPlannedImage): JsonObject = when (image) {
+        is ChatPlannedImage.Kept -> ChatImageParts.openAiChatImagePart(image.payload)
+        is ChatPlannedImage.Omitted -> ChatImageParts.openAiChatTextPart(image.placeholderText)
+    }
+
+    private fun responsesImagePart(image: ChatPlannedImage): JsonObject = when (image) {
+        is ChatPlannedImage.Kept -> ChatImageParts.responsesImagePart(image.payload)
+        is ChatPlannedImage.Omitted -> ChatImageParts.responsesTextPart(image.placeholderText)
+    }
+
+    private fun anthropicImagePart(image: ChatPlannedImage): JsonObject = when (image) {
+        is ChatPlannedImage.Kept -> ChatImageParts.anthropicImagePart(image.payload)
+        is ChatPlannedImage.Omitted -> ChatImageParts.anthropicTextPart(image.placeholderText)
+    }
+
     private fun buildOpenAiChatToolDefinitions(
-        tools: List<ChatAgentToolDefinition>,
+        tools: List<ChatToolSchema>,
     ): List<JsonObject> {
         return tools.map { tool ->
             buildJsonObject {
@@ -1056,7 +1201,7 @@ internal class ChatCompletionClient(
     }
 
     private fun buildOpenAiResponsesToolDefinitions(
-        tools: List<ChatAgentToolDefinition>,
+        tools: List<ChatToolSchema>,
     ): List<JsonObject> {
         return tools.map { tool ->
             buildJsonObject {
@@ -1077,7 +1222,7 @@ internal class ChatCompletionClient(
     }
 
     private fun buildAnthropicToolDefinitions(
-        tools: List<ChatAgentToolDefinition>,
+        tools: List<ChatToolSchema>,
     ): List<JsonObject> {
         return tools.mapIndexed { index, tool ->
             buildJsonObject {
@@ -1100,10 +1245,26 @@ internal class ChatCompletionClient(
             when (message.role) {
                 ChatMessageRole.USER -> {
                     val content = message.content.trim()
-                    if (content.isBlank()) return@forEach
-                    items += buildJsonObject {
-                        put("role", "user")
-                        put("content", content)
+                    val images = request.imagePlan.forMessage(message.id)
+                    if (images.isEmpty()) {
+                        // 无图 ⇒ 保持现状（content 仍是字符串）
+                        if (content.isBlank()) return@forEach
+                        items += buildJsonObject {
+                            put("role", "user")
+                            put("content", content)
+                        }
+                    } else {
+                        // 有图 ⇒ content 变块数组：[text 块] + 每张图（Kept ⇒ image；Omitted ⇒ text 占位）
+                        items += buildJsonObject {
+                            put("role", "user")
+                            put(
+                                "content",
+                                buildJsonArray {
+                                    if (content.isNotBlank()) add(ChatImageParts.anthropicTextPart(content))
+                                    images.forEach { image -> add(anthropicImagePart(image)) }
+                                }
+                            )
+                        }
                     }
                 }
 
@@ -1155,9 +1316,9 @@ internal class ChatCompletionClient(
                                         put(
                                             "content",
                                             ChatToolResultInputFormatter.format(
-                                                message,
-                                                toolResult,
-                                                request.skillSelection.availableTools,
+                                                message = message,
+                                                toolResult = toolResult,
+                                                tools = request.tools,
                                             )
                                         )
                                         put("is_error", toolResult.status != ChatToolResultStatus.SUCCESS)

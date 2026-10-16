@@ -23,8 +23,21 @@ import org.junit.Test
  */
 class PrefsScopeContractTest {
 
-    private fun prefsScopes(): List<AbstractPrefsScope> =
-        BackupScopeRegistry.all().filterIsInstance<AbstractPrefsScope>()
+    /**
+     * prefs 类 scope（判据 = 实现 [PrefsBackedScope]）。
+     *
+     * ⚠️ 改造前判据是 `filterIsInstance<AbstractPrefsScope>()`。`ChatScope` 现在是
+     * **混合 scope**（prefs + `filesRoot` 下的会话文件），它**不再**继承
+     * `AbstractPrefsScope`（基类的 `export`/`import` 是 `final`，继承就带不了文件）。
+     * 判据若继续按基类走，chat 会**静默退出覆盖范围** —— 覆盖面直接少一块，
+     * 而「chat 白名单里混进凭证键」正是本文件首要防的事。
+     */
+    private fun prefsScopes(): List<BackupScope> =
+        BackupScopeRegistry.all().filter { it is PrefsBackedScope }
+
+    /** 取 prefs 白名单（只有 [PrefsBackedScope] 有 `specs`）。 */
+    private val BackupScope.prefsSpecs: List<BackupPrefsSpec>
+        get() = (this as PrefsBackedScope).specs
 
     private fun envWith(prefs: Map<String, Map<String, Any?>>): FakeBackupEnvironment {
         val env = FakeBackupEnvironment()
@@ -34,9 +47,9 @@ class PrefsScopeContractTest {
     }
 
     /** 播种：给每个 spec 的白名单键各写一个值。 */
-    private fun seed(env: FakeBackupEnvironment, scope: AbstractPrefsScope) {
+    private fun seed(env: FakeBackupEnvironment, scope: BackupScope) {
         val store = env.prefs as FakeBackupEnvironment.InMemoryPrefs
-        for (spec in scope.specs) {
+        for (spec in scope.prefsSpecs) {
             val target = store.data.getOrPut(spec.prefsName) { LinkedHashMap() }
             spec.exactKeys.forEach { key -> target[key] = "seed-$key" }
             spec.keyPrefixes.forEach { prefix -> target["${prefix}example.pkg"] = true }
@@ -60,8 +73,8 @@ class PrefsScopeContractTest {
         )
         // 每个都必须声明至少一个 spec，否则它其实什么都没备。
         scopes.forEach { scope ->
-            assertTrue("scope '${scope.id}' 没有任何 spec", scope.specs.isNotEmpty())
-            scope.specs.forEach { spec ->
+            assertTrue("scope '${scope.id}' 没有任何 spec", scope.prefsSpecs.isNotEmpty())
+            scope.prefsSpecs.forEach { spec ->
                 assertTrue(
                     "scope '${scope.id}' 的 spec '${spec.prefsName}' 既无精确键也无前缀",
                     spec.exactKeys.isNotEmpty() || spec.keyPrefixes.isNotEmpty(),
@@ -204,7 +217,7 @@ class PrefsScopeContractTest {
     @Test
     fun `REPLACE only removes keys inside this scope whitelist`() {
         prefsScopes().forEach { scope ->
-            val spec = scope.specs.first()
+            val spec = scope.prefsSpecs.first()
             // 本机：一个白名单内的键（备份里有）、一个白名单内的键（备份里没有）、
             //       一个白名单**外**的键、一个**别的 scope 管的**键。
             val (foreignPrefs, foreignKey) = foreignKeyFor(spec)
@@ -282,7 +295,7 @@ class PrefsScopeContractTest {
     @Test
     fun `MERGE keeps local keys that the backup does not contain`() {
         prefsScopes().forEach { scope ->
-            val spec = scope.specs.first()
+            val spec = scope.prefsSpecs.first()
             val env = envWith(
                 mapOf(
                     spec.prefsName to mapOf(
@@ -316,7 +329,7 @@ class PrefsScopeContractTest {
         // 不过滤的话，它能往任意 prefs 的任意键里写值 —— 一条从
         // 「恢复备份」到「任意配置覆盖」的提权路径。
         prefsScopes().forEach { scope ->
-            val spec = scope.specs.first()
+            val spec = scope.prefsSpecs.first()
             val env = FakeBackupEnvironment()
             val items = com.google.gson.JsonObject().apply {
                 add("evil-key-not-in-whitelist", PrefsValueCodec.encode("evil")!!)
