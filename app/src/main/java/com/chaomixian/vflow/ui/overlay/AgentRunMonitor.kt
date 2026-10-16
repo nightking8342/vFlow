@@ -36,6 +36,16 @@ object AgentRunMonitor {
         val kind: EntryKind,
         val text: String,
         val timestampMs: Long,
+        /**
+         * fork：**流式条目**（同轮内可被就地替换）所属的轮次号；非流式条目恒为 `null`。
+         *
+         * 存在的理由：引擎发来的 `AgentProgressUpdate.Streaming.content` 是**累积正文**
+         * （见该数据类的 KDoc），而宿主过去每个 delta 都调一次 `publishModelOutput`
+         * ⇒ 累积文本被当成**新条目**逐条追加，真机上表现为「第 1 行 1 个字、第 2 行 2 个字…」
+         * 的三角形。现在同轮的连续流式发布**就地替换**本条目（见 [publishStreamingThought]），
+         * 轮次边界由 [beginThoughtRound] 显式推进。
+         */
+        val streamingRound: Int? = null,
     )
 
     data class Snapshot(
@@ -58,6 +68,14 @@ object AgentRunMonitor {
          */
         val statusText: String? = null,
         val entries: List<Entry> = emptyList(),
+        /**
+         * fork：**流式轮次计数**（只服务「同轮替换 / 跨轮追加」这一条语义）。
+         *
+         * ⚠️ 它与 [step] **不是**一回事：`step` 是模块自己报的进度，本字段是**监视器侧**的
+         * 流式分段边界，由宿主在每轮开头调 [beginThoughtRound] 推进一次
+         * （漏调 ⇒ 后一轮的流式正文会把前一轮那条**顶掉**）。
+         */
+        val thoughtRound: Int = 0,
         /**
          * 用户已请求结束、但主循环还没走到取消检查点。
          *
@@ -128,11 +146,61 @@ object AgentRunMonitor {
         paused = false
     }
 
-    /** 发布一条**完整**思考文本（不截断）。截断只发生在 UI 侧。 */
+    /**
+     * 发布一条**完整**思考文本（不截断）。截断只发生在 UI 侧。
+     *
+     * ⚠️ 语义 = **一次性文本**：永远追加、**永不**被替换。**累积的流式正文不要走这里**
+     * （那正是「三角形」的成因），走 [publishStreamingThought]。
+     */
     fun publishThought(text: String?) {
         val trimmed = text?.trim().orEmpty()
         if (trimmed.isEmpty()) return
         appendEntry(EntryKind.THOUGHT, trimmed)
+    }
+
+    /**
+     * fork：**新一轮开始** —— 宿主在每轮开头调一次（流式条目的轮次边界）。
+     *
+     * 语义：推进 [Snapshot.thoughtRound] ⇒ **下一次** [publishStreamingThought] 会**追加**新条目，
+     * 而不是替换上一轮那条。本方法自身**不产生任何条目**（因此重复调用是无害的空转）。
+     *
+     * ⚠️ 漏调的后果：第 2 轮的流式正文会把第 1 轮那条**顶掉**（旧条目凭空消失）。
+     * 生产调用点：`AgentModule` 的观察装配（每轮开头）、`AutoGLMModule` 的每步开头。
+     */
+    fun beginThoughtRound() {
+        _state.update { it.copy(thoughtRound = it.thoughtRound + 1) }
+    }
+
+    /**
+     * fork：发布**流式正文**（`text` 是**累积值**，不是增量 —— 引擎侧契约不变）。
+     *
+     * 语义：**同一轮内**连续调用**就地替换**同一条目（只留一条、文本取最新）；**跨轮**
+     * （中间调过 [beginThoughtRound]）则**追加**新条目。非流式条目
+     * （[publishThought] / [publishError]）永远不会被替换。
+     *
+     * ⚠️ 这正是「三角形」的修法：引擎的 `Streaming.content` 是累积正文，**不能**像
+     * [publishThought] 那样逐条追加（老实现每个 delta 追加一条 ⇒ 第 1 行 1 个字、第 2 行 2 个字…）。
+     */
+    fun publishStreamingThought(text: String?) {
+        val trimmed = text?.trim().orEmpty()
+        if (trimmed.isEmpty()) return
+        _state.update { snapshot ->
+            val last = snapshot.entries.lastOrNull()
+            val now = System.currentTimeMillis()
+            val updated = if (last != null && last.streamingRound == snapshot.thoughtRound) {
+                // 同一轮：就地把那一条的文本换成最新累积值
+                snapshot.entries.dropLast(1) + last.copy(text = trimmed, timestampMs = now)
+            } else {
+                // 跨轮（或本条是本轮的第一条）：追加
+                snapshot.entries + Entry(
+                    kind = EntryKind.THOUGHT,
+                    text = trimmed,
+                    timestampMs = now,
+                    streamingRound = snapshot.thoughtRound,
+                )
+            }
+            snapshot.copy(entries = updated.boundedByMaxEntries())
+        }
     }
 
     /**
@@ -167,12 +235,21 @@ object AgentRunMonitor {
 
     private fun appendEntry(kind: EntryKind, text: String) {
         _state.update { snapshot ->
-            val appended = snapshot.entries + Entry(kind, text, System.currentTimeMillis())
             snapshot.copy(
-                entries = if (appended.size > MAX_ENTRIES) appended.takeLast(MAX_ENTRIES) else appended,
+                entries = (snapshot.entries + Entry(kind, text, System.currentTimeMillis()))
+                    .boundedByMaxEntries(),
             )
         }
     }
+
+    /**
+     * 思考流必须有界（见 [MAX_ENTRIES]）。
+     *
+     * ⚠️ 「追加」与「替换」两条路径**都要**过这里：只给追加那条加裁剪的话，
+     * 长任务下流式条目会把列表撑破（流式路径每轮只加一条，但它同样会累积）。
+     */
+    private fun List<Entry>.boundedByMaxEntries(): List<Entry> =
+        if (size > MAX_ENTRIES) takeLast(MAX_ENTRIES) else this
 
     /**
      * agent 主循环每轮调用的闸门：暂停时挂起，被取消时抛 [CancellationException]。

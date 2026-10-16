@@ -164,10 +164,50 @@ class AgentMonitorAndImeWiringTest {
             "show/dismiss 必须登记/结束本轮（监视器靠它判断有没有在跑）",
             overlay.contains("AgentRunMonitor.begin(") && overlay.contains("AgentRunMonitor.finish()")
         )
-        assertTrue("模型原文必须进总线（去标签后）", overlay.contains("AgentRunMonitor.publishThought(stripped)"))
+        assertTrue(
+            "模型原文必须进总线（去标签后）—— 且走**流式替换**那条路",
+            overlay.contains("AgentRunMonitor.publishStreamingThought(stripped)")
+        )
         assertTrue(
             "模块名与步数上限必须由模块传进来",
             overlay.contains("private val moduleLabel: String") && overlay.contains("private val maxSteps: Int")
+        )
+    }
+
+    /**
+     * ⚠️ 这条锁的是**集成点**（纯函数测试全绿也拦不住的那一类）：
+     *
+     * 流式正文的「同轮就地替换」语义只在 `AgentRunMonitor` 里成立 —— 宿主**没在每轮开头调**
+     * `beginThoughtRound()` 的话，第 2 轮的流式正文会把第 1 轮那条**顶掉**（旧条目凭空消失）。
+     * 反过来，`AgentRunMonitor` 的替换语义写得再对，只要宿主忘了调，真机上就是另一副样子。
+     *
+     * 两个宿主的轮次边界位置：
+     *  - `AgentModule`：观察装配（`AgentObservationProvider`）**每轮开头**（引擎每轮先观察再往返）；
+     *  - `AutoGLMModule`：`while (currentStep < maxSteps)` 的**每步开头**（它不走共享引擎）。
+     */
+    @Test
+    fun `both agent modules open a thought round every round`() {
+        val agent = codeOnly("core/workflow/module/interaction/AgentModule.kt")
+        val observationIdx = agent.indexOf("AgentObservationProvider {")
+        val agentRoundIdx = agent.indexOf("overlayManager.beginThoughtRound()")
+        assertTrue(
+            "AgentModule 的观察装配（每轮开头）必须调 beginThoughtRound()",
+            observationIdx > 0 && agentRoundIdx > observationIdx
+        )
+
+        val autoglm = codeOnly("core/workflow/module/interaction/AutoGLMModule.kt")
+        val loopIdx = autoglm.indexOf("while (currentStep < maxSteps)")
+        val glmRoundIdx = autoglm.indexOf("overlayManager.beginThoughtRound()")
+        assertTrue(
+            "AutoGLM 的每步开头必须调 beginThoughtRound()",
+            loopIdx > 0 && glmRoundIdx > loopIdx
+        )
+
+        val overlay = codeOnly("ui/overlay/AgentOverlayManager.kt")
+        assertTrue(
+            "悬浮窗必须把 beginThoughtRound 转发到总线",
+            overlay.contains("fun beginThoughtRound()") &&
+                overlay.contains("AgentRunMonitor.beginThoughtRound()")
         )
     }
 
@@ -375,8 +415,9 @@ class AgentMonitorAndImeWiringTest {
             overlay.contains("AgentRunMonitor.publishStatus(status)")
         )
         assertTrue(
-            "模型原文才走 publishThought",
-            overlay.contains("AgentRunMonitor.publishThought(stripped)")
+            "模型原文必须走**流式替换**那条（`publishStreamingThought`）—— " +
+                "引擎发来的是**累积正文**，走 `publishThought`（逐条追加）会渲染成三角形（真机症状）",
+            overlay.contains("AgentRunMonitor.publishStreamingThought(stripped)")
         )
         assertTrue(
             "去标签必须覆盖 XML 形态的 think 标签（不是 ` think`）",

@@ -323,6 +323,16 @@ class AgentOverlayManager(
     }
 
     /**
+     * fork：**新一轮开始**（转发到 [AgentRunMonitor.beginThoughtRound]）。
+     *
+     * ⚠️ 宿主必须**在每轮开头调一次**：调过它之后，下一次 [publishModelOutput] 会**追加**一条
+     * 新条目，而不是把上一轮那条流式正文**顶掉**（漏调 ⇒ 旧条目凭空消失）。
+     */
+    fun beginThoughtRound() {
+        AgentRunMonitor.beginThoughtRound()
+    }
+
+    /**
      * fork：**模型的原始文字输出**（新增）—— 它会进思考流。
      *
      * ⚠️ 与 [updateStatus] 的**唯一区别**就是这一条：**只有拿到模型输出时才用本方法**。
@@ -333,7 +343,9 @@ class AgentOverlayManager(
      */
     fun publishModelOutput(text: String?, action: String?) {
         val stripped = stripThinkingTags(text)
-        AgentRunMonitor.publishThought(stripped)
+        // ⚠️ fork（真机修复）：走**同轮就地替换**，不走 `publishThought`（逐条追加）——
+        //    引擎发来的正文是**累积值**，逐条追加会渲染成三角形（真机症状）。
+        AgentRunMonitor.publishStreamingThought(stripped)
         AgentRunMonitor.publishAction(action)
         renderStatusLine(stripped, action)
     }

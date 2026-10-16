@@ -803,6 +803,9 @@ class AgentModule : BaseModule() {
             val observationProvider = AgentObservationProvider { mode, round, _ ->
                 // 每轮开头检查暂停 / 结束（现状每步开头也有）
                 overlayManager.awaitState()
+                // fork：**本轮开始** —— 监视器的流式条目在此换行（同轮内替换、跨轮追加）。
+                // ⚠️ 必须在**本轮第一条流式正文之前**调用，否则本轮正文会把上一轮那条顶掉。
+                overlayManager.beginThoughtRound()
                 overlayManager.updateStatus("分析屏幕...", "准备截屏")
                 // 主屏幕才需要隐藏悬浮窗
                 if (targetDisplayId == 0) {

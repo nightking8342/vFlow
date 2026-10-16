@@ -453,6 +453,9 @@ class AutoGLMModule : BaseModule() {
             while (currentStep < maxSteps) {
                 try { overlayManager.awaitState() } catch (e: CancellationException) { return ExecutionResult.Failure("任务取消", "用户手动停止了任务。") }
 
+                // fork：**本步（轮）开始** —— 监视器的流式条目在此换行（同轮内替换、跨轮追加）。
+                // ⚠️ 必须在**本轮第一条流式正文之前**调用，否则本轮正文会把上一轮那条顶掉。
+                overlayManager.beginThoughtRound()
                 overlayManager.updateStatus("分析屏幕...", "准备截屏")
                 onProgress(ProgressUpdate("步骤 ${currentStep + 1}/$maxSteps: 观察中..."))
 
