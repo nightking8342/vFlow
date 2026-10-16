@@ -31,6 +31,16 @@ import com.google.android.material.chip.ChipGroup
  *    `StandardControlFactory.kt`），而这三个文件**不在本任务的允许改动范围内**；
  * 3. 选择器需要「当前选中项 + 已删提示 + 值拷贝回写」，通用 picker 通道只回写一个字符串。
  *
+ * ## 可见性契约（`refresh()`，真机反馈修正）
+ *
+ * 「选择」（`selectButton`）/ 状态行 / 提示行**只在引用模式显示** ——
+ * 手动模式下这三者与「配置来源」无关，露出来只会让人误以为还有别的入口。
+ * ⚠️ **切回手动只有一条路：点「配置来源」里的「手动配置」Chip**。
+ * 原先另有一颗 `manualButton`（borderless，文案与 Chip 相同）在引用模式下显示，
+ * 与 Chip 功能重复、且让手动模式看起来「没生效」（真机反馈 (a)(b)），已删除。
+ * 因此本文件里**不应再出现 `manualButton`**，由
+ * `AiModelConfigSelectorVisibilityTest` 的源码扫描断言守住。
+ *
  * ⚠️ **真机交互未验证**（无设备）；逻辑部分（值拷贝写入 / 缺配置 / 配置已删）由
  * `AiModelConfigResolverTest` 的纯函数用例覆盖。
  *
@@ -83,14 +93,6 @@ internal class AiModelConfigSelectorView(
         text = context.getString(R.string.button_ai_select_model_config)
     }
 
-    private val manualButton = MaterialButton(
-        context,
-        null,
-        android.R.attr.borderlessButtonStyle,
-    ).apply {
-        text = context.getString(R.string.option_ai_config_source_manual)
-    }
-
     private val hintText = TextView(context).apply {
         text = context.getString(R.string.hint_ai_config_reference_overrides_manual)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
@@ -108,7 +110,6 @@ internal class AiModelConfigSelectorView(
             LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
                 addView(selectButton)
-                addView(manualButton)
             },
         )
         addView(hintText)
@@ -132,12 +133,6 @@ internal class AiModelConfigSelectorView(
                 else AiModelConfigRef.SOURCE_MANUAL
             if (newSource == source) return@setOnCheckedStateChangeListener
             source = newSource
-            applySourceChange()
-        }
-
-        manualButton.setOnClickListener {
-            if (source == AiModelConfigRef.SOURCE_MANUAL) return@setOnClickListener
-            source = AiModelConfigRef.SOURCE_MANUAL
             applySourceChange()
         }
 
@@ -203,7 +198,7 @@ internal class AiModelConfigSelectorView(
         chipReference.isChecked = isReference
         rendering = false
 
-        manualButton.isVisible = isReference
+        selectButton.isVisible = isReference
         hintText.isVisible = isReference
         selectButton.isEnabled = presets.isNotEmpty()
         statusText.isVisible = isReference
