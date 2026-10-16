@@ -25,6 +25,8 @@ import org.junit.Test
  * 3. 把 `Missing` 改成回落到 manual
  *    ⇒ [reference_mode_withAnUnknownConfigIdReportsMissing] 变红；
  * 4. 去掉 `selectionWrites` 的 `api_key to ""`
+ * 5. 把 reference 分支的 `streamMaxRetries = 0` 加回去（或 override `streamIdleTimeoutSeconds`）
+ *    ⇒ [reference_mode_followsTheReferencedTimeoutAndRetry_whileManualKeepsTheModuleDefaults] 变红。
  *    ⇒ [selectionWrites_clearsTheApiKey] 变红。
  */
 class AiModelConfigResolverTest {
@@ -41,6 +43,7 @@ class AiModelConfigResolverTest {
         systemPrompt: String = "CONFIG-CURRENT-PROMPT",
         temperature: Double = 0.2,
         useResponsesApi: Boolean = false,
+        streamIdleTimeoutSeconds: Int = 600,
         streamMaxRetries: Int = 2,
     ) = ChatPresetConfig(
         id = id,
@@ -52,6 +55,7 @@ class AiModelConfigResolverTest {
         systemPrompt = systemPrompt,
         temperature = temperature,
         useResponsesApi = useResponsesApi,
+        streamIdleTimeoutSeconds = streamIdleTimeoutSeconds,
         streamMaxRetries = streamMaxRetries,
     )
 
@@ -157,7 +161,8 @@ class AiModelConfigResolverTest {
         )
         assertEquals("配置名要带出来（供进度文案 / 日志）", "我的 Claude", (result as AiModelConfigResolution.Resolved).configName)
         assertEquals("useResponsesApi 不参与引用，恒 false", false, preset.useResponsesApi)
-        assertEquals("streamMaxRetries 与模块现状一致（不重试）", 0, preset.streamMaxRetries)
+        assertEquals("streamMaxRetries 必须是活引用（配置里设的 2 要跟过来）", 2, preset.streamMaxRetries)
+        assertEquals("streamIdleTimeoutSeconds 必须是活引用（配置里设的 600 要跟过来）", 600, preset.streamIdleTimeoutSeconds)
     }
 
     @Test
@@ -172,6 +177,35 @@ class AiModelConfigResolverTest {
             false,
             resolved(result).useResponsesApi,
         )
+    }
+
+    @Test
+    fun reference_mode_followsTheReferencedTimeoutAndRetry_whileManualKeepsTheModuleDefaults() {
+        // 引用：两项都跟随被引用配置（2026-10-17 订正 —— 原先 streamMaxRetries 被钉成 0）
+        val referenced = resolved(
+            AiModelConfigResolver.resolve(
+                parameters = referenceParams("cfg-1"),
+                presets = listOf(preset("cfg-1", streamIdleTimeoutSeconds = 600, streamMaxRetries = 2)),
+                manual = manual(),
+            ),
+        )
+        assertEquals("引用模式下超时跟随被引用配置", 600, referenced.streamIdleTimeoutSeconds)
+        assertEquals("引用模式下重试次数跟随被引用配置", 2, referenced.streamMaxRetries)
+
+        // 手动：模块不暴露这两项 ⇒ 超时走默认 300、重试恒 0（与改造前等价）
+        val manualMode = resolved(
+            AiModelConfigResolver.resolve(
+                parameters = emptyMap(),
+                presets = emptyList(),
+                manual = manual(),
+            ),
+        )
+        assertEquals(
+            "手动模式下超时是默认值",
+            ChatPresetConfig.DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS,
+            manualMode.streamIdleTimeoutSeconds,
+        )
+        assertEquals("手动模式下重试恒 0（与改造前等价）", 0, manualMode.streamMaxRetries)
     }
 
     // ------------------------------------------------------------ 3. reference：值拷贝

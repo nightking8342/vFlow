@@ -381,7 +381,7 @@ flowchart TB
 
 ### 3.5 配置引用（选项）
 
-> ✅ **已实现（批 4 / 2026-10-16）**：`config_source` ENUM `{manual, reference}`（**默认 manual ⇒ 老步骤零迁移**）+ `model_config_id`；reference 时**活引用** provider / model / api_key / base_url（现读 `ChatPresetRepository.getPresets()`）+ **值拷贝快照** `systemPrompt` / `temperature`（按模块 `ownedValueCopyKeys`）；**三个 UIProvider 在引用模式下都写 `api_key=""`** ⇒ 引用后 `api_key` 不进工作流；引用不到 ⇒ 明确 `Missing` 报错。新增 `core/ai/AiModelConfigReference.kt` + `ui/workflow_editor/AiModelConfigSelectorView.kt`。
+> ✅ **已实现（批 4 / 2026-10-16）**：`config_source` ENUM `{manual, reference}`（**默认 manual ⇒ 老步骤零迁移**）+ `model_config_id`；reference 时**活引用** provider / model / api_key / base_url（现读 `ChatPresetRepository.getPresets()`）+ **值拷贝快照** `systemPrompt` / `temperature`（按模块 `ownedValueCopyKeys`）；**三个 UIProvider 在引用模式下都写 `api_key=""`** ⇒ 引用后 `api_key` 不进工作流；引用不到 ⇒ 明确 `Missing` 报错。新增 `core/ai/AiModelConfigReference.kt` + `ui/workflow_editor/AiModelConfigSelectorView.kt`。 ⚠️ **2026-10-17 补**：`stream_idle_timeout_seconds` 与 `stream_max_retries` **也按活引用跟随**（引用模式）—— 手动模式恒默认 300 / 0；⚠️ 其中**超时只对「流式」路径生效**（非流式的 `AIModule` / `AutoGLM` 用写死的 `ChatStreamTimeouts.DEFAULT` = connect 30s / read 300s）。详见 `FORK.md`「配置引用语义补全：超时与重试次数」。
 
 | 维度 | 选项 |
 |---|---|

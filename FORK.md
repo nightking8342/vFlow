@@ -2172,6 +2172,33 @@ hook 侧日志出现脚本里的 `console.log` 输出（`[XposedJs] VFLOW_JS_MAR
 > 「点空白关闭」与「双指缩放」的**手势冲突**、正文内联图句柄解析后的真实路径加载（含备份恢复后文件缺失的降级）。
 > ⚠️ 未做（任务书未要求）：预览条项的长按/点击查看大图（当前只有「×」移除）。
 
+### 配置引用语义补全：**超时**与**重试次数**（2026-10-17）—— **已实现**（单测通过；**真机未验证**）
+
+> 起因是用户问「Agent 模块引用模型配置时，有没有引用**超时**和**重试次数**这两个配置项？」——
+> 核查发现**两处静默落差**：重试被显式钉死、超时是「意外跟随」且**两处都没登记**。
+>
+> **① `stream_max_retries`（流式最大重试次数）—— 已修成「跟随」**
+> 原 `core/ai/AiModelConfigReference.kt` 的 reference 分支写的是 `referenced.copy(…, streamMaxRetries = 0)`，把它**显式钉成 0**
+> ⇒ 用户在模型配置里设的「重试 2 次」在三个 AI 模块里**静默失效**（当时的理由写的是「与改造前等价 —— 模块现状本就不重试」）。
+> 现改为**不 override** ⇒ **引用模式跟随被引用配置**；**手动模式仍恒 0**（模块不暴露该参数，与改造前等价）。
+> ⚠️ 这是**有意行为变更**：引用配置的模块从「从不重试」变成「按配置重试」（默认 2 次）⇒ **会增加耗时与请求量**，需真机确认长任务/弱网表现。
+>
+> **② `stream_idle_timeout_seconds`（流式空闲超时）—— 行为不变，但补登记**
+> 它本来就**跟随**（`referenced.copy` 没有 override 它），但**既没列进「活引用 4 项」、也没被钉死** ⇒ 文档里查不到它的形态。
+> ⚠️ 且它**只对「流式」路径生效**（`ChatCompletionClient` 的流式分支 `ChatSse.frames(httpRequest, ChatStreamTimeouts.fromPreset(request.preset))`）；
+> **非流式的 `AIModule` / `AutoGLM`** 用的是**写死的** `ChatStreamTimeouts.DEFAULT`（connect 30s / read 300s）⇒ 这两个模块**读不到**该字段。
+>
+> **③ 手动模式**：超时 = 默认 300、重试 = 0（模块不暴露这两项参数；与改造前等价）。
+
+| 文件 / 范围 | 分歧内容 | 冲突归属 |
+|---|---|---|
+| `core/ai/AiModelConfigReference.kt`（改） | reference 分支**去掉** `streamMaxRetries = 0` ⇒ 跟随被引用配置；KDoc 语义表**补两行**（`stream_idle_timeout_seconds` / `stream_max_retries` 的形态与生效范围）；manual 分支补注释说明为何恒 0 | 我方 |
+| `app/src/test/java/.../core/ai/AiModelConfigResolverTest.kt`（改） | fixture 增 `streamIdleTimeoutSeconds = 600`；**改**原先把「重试恒 0」钉住的断言（现断言：重试跟随 = 2、超时跟随 = 600）；**新增** `reference_mode_followsTheReferencedTimeoutAndRetry_whileManualKeepsTheModuleDefaults`（引用跟随 vs 手动走默认 300 / 0）；KDoc 反证清单 +1 条 | 我方 |
+
+> **门禁**：`./gradlew test` → **3425 例 / 1 既有失败（`VObjectPropertyTest`）/ 1 skipped**
+> （3400 基线 + #43 的 6 + #44 的 3 + #45 的 15 + 本次 1 = 3425 ✓）；定向 `AiModelConfigResolverTest` **21 例全绿**。
+> **反证**：把 `streamMaxRetries = 0` 加回 reference 分支 ⇒ **2 例变红**（新用例 + 改过的那条），改回复绿 ✓。
+
 ---
 
 ## 暂未分歧、但日后改动时须登记的敏感点

@@ -139,6 +139,8 @@ internal sealed interface AiModelConfigResolution {
  * | `provider` / `model` / `api_key` / `base_url` | **活引用** | 执行时现读 ⇒ 改配置**全仓生效** |
  * | `system_prompt` / `temperature` | **值拷贝（快照）** | 选中那一刻拷进步骤、可在编辑器改；之后改配置**不影响**本步骤 |
  * | `useResponsesApi` | **不参与引用**（恒 `false`） | §3.5 的活引用清单只有 4 项；避免未验证的 Responses 协议切换 |
+ * | `stream_idle_timeout_seconds` | **活引用**（引用模式跟随；手动模式恒默认 300） | ⚠️ **只对「流式」路径生效**（`ChatSse` 读 preset）；非流式的 `AIModule` / `AutoGLM` 用的是写死的 `ChatStreamTimeouts.DEFAULT`（connect 30s / read 300s） |
+ * | `stream_max_retries` | **活引用**（引用模式跟随；手动模式恒 0） | 2026-10-17 订正：原先两模式都钉 0 ⇒ 「配置里设的重试次数在 AI 模块里静默失效」；手动模式仍 0（模块不暴露该参数，与改造前等价） |
  *
  * 引用粒度 = **「模型配置」（`ChatPresetConfig`，即设置页的「模型预设」）**，不是 provider 级配置：
  * 活引用清单含 `model`，而 provider 级配置不含 model；且 `getPresets()` 返回的已是
@@ -175,6 +177,7 @@ internal object AiModelConfigResolver {
                     systemPrompt = manual.systemPrompt,
                     temperature = manual.temperature,
                     useResponsesApi = false,
+                    // 手动模式没有「重试」参数 ⇒ 恒 0（与改造前等价；**引用模式才跟随配置**）。
                     streamMaxRetries = 0,
                 ),
                 configName = null,
@@ -197,9 +200,10 @@ internal object AiModelConfigResolver {
                 // 之后用户改配置**不**应影响本步骤（D7）。
                 systemPrompt = manual.systemPrompt,
                 temperature = manual.temperature,
-                // 活引用清单只有 4 项 ⇒ 这两项不参与引用。
+                // 活引用：`streamIdleTimeoutSeconds` / `streamMaxRetries` 都**不 override** ⇒ 跟随被引用配置。
+                // 2026-10-17 订正：原先把 `streamMaxRetries` 钉成 0，会让「配置里设的重试次数」在模块里静默失效。
+                // `useResponsesApi` 仍恒 false —— 避免未验证的 Responses 协议切换。
                 useResponsesApi = false,
-                streamMaxRetries = 0,
             ),
             configName = referenced.name.ifBlank { null },
         )
