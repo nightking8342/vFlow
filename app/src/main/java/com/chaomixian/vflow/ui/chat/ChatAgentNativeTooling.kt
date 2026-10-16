@@ -2,7 +2,10 @@ package com.chaomixian.vflow.ui.chat
 
 import android.content.Context
 import android.graphics.Rect
+import android.hardware.display.DisplayManager
 import android.os.Build
+import android.util.DisplayMetrics
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityNodeInfo
 import com.chaomixian.vflow.core.execution.ExecutionContext
 import com.chaomixian.vflow.core.execution.ExecutionServices
@@ -98,13 +101,13 @@ internal fun chatAgentNativeRecoveryHint(helperId: ChatAgentNativeHelperId): Str
         ChatAgentNativeHelperId.READ_PAGE_CONTENT ->
             "if this still looks like a feed/list screen, use `vflow_agent_observe_ui` to choose a visible content target and open it before reading again."
         ChatAgentNativeHelperId.TAP ->
-            "call `vflow_agent_observe_ui` first, then retry with a fresh `artifact://...` ScreenElement handle instead of guessing coordinates or labels."
+            "call `vflow_agent_observe_ui` first, then retry with a fresh `artifact://...` ScreenElement handle instead of guessing coordinates or labels. If you must pass `x`/`y`, they are normalized 0-1000 (0 = left/top edge, 1000 = right/bottom edge), never absolute pixels."
         ChatAgentNativeHelperId.LONG_PRESS ->
-            "call `vflow_agent_observe_ui` first, then retry with a fresh `artifact://...` ScreenElement handle or verified coordinates."
+            "call `vflow_agent_observe_ui` first, then retry with a fresh `artifact://...` ScreenElement handle or verified coordinates. If you must pass `x`/`y`, they are normalized 0-1000 (0 = left/top edge, 1000 = right/bottom edge), never absolute pixels."
         ChatAgentNativeHelperId.INPUT_TEXT ->
             "observe the current UI first, focus the intended field with a fresh handle, then retry the text input."
         ChatAgentNativeHelperId.SWIPE ->
-            "use `vflow_agent_observe_ui` or `vflow_agent_read_page_content` before deciding whether another swipe is still necessary."
+            "use `vflow_agent_observe_ui` or `vflow_agent_read_page_content` before deciding whether another swipe is still necessary. If you pass `start_x`/`start_y`/`end_x`/`end_y`, they are normalized 0-1000 (0 = left/top edge, 1000 = right/bottom edge), never absolute pixels."
         ChatAgentNativeHelperId.PRESS_KEY ->
             "re-observe the current UI and choose the smallest safe navigation action, or use an on-screen control when available."
         ChatAgentNativeHelperId.WAIT ->
@@ -375,17 +378,18 @@ internal class ChatAgentNativeToolExecutor(
         artifactStore: ChatAgentArtifactStore,
     ): ChatAgentNativeRequest.Tap {
         val element = resolveElement(arguments, artifactStore)
-        val x = intArg(arguments, "x")
-        val y = intArg(arguments, "y")
+        val displayId = intArg(arguments, "display_id")?.coerceAtLeast(0) ?: 0
+        val rawX = intArg(arguments, "x")
+        val rawY = intArg(arguments, "y")
         val textQuery = stringArg(arguments, "text_query")
-        if (element == null && (x == null || y == null) && textQuery.isNullOrBlank()) {
+        if (element == null && (rawX == null || rawY == null) && textQuery.isNullOrBlank()) {
             throw IllegalArgumentException("Tap requires `element`, `x`+`y`, or `text_query`.")
         }
         return ChatAgentNativeRequest.Tap(
-            displayId = intArg(arguments, "display_id")?.coerceAtLeast(0) ?: 0,
+            displayId = displayId,
             element = element,
-            x = x,
-            y = y,
+            x = normalizedPixel(rawX, displayId, "x"),
+            y = normalizedPixel(rawY, displayId, "y"),
             textQuery = textQuery,
         )
     }
@@ -412,34 +416,81 @@ internal class ChatAgentNativeToolExecutor(
         val text = stringArg(arguments, "text")
             ?: throw IllegalArgumentException("Input text requires a non-empty `text`.")
         val element = resolveElement(arguments, artifactStore)
+        val displayId = intArg(arguments, "display_id")?.coerceAtLeast(0) ?: 0
         return ChatAgentNativeRequest.InputText(
-            displayId = intArg(arguments, "display_id")?.coerceAtLeast(0) ?: 0,
+            displayId = displayId,
             text = text,
             element = element,
-            x = intArg(arguments, "x"),
-            y = intArg(arguments, "y"),
+            x = normalizedPixel(intArg(arguments, "x"), displayId, "x"),
+            y = normalizedPixel(intArg(arguments, "y"), displayId, "y"),
             textQuery = stringArg(arguments, "text_query"),
         )
     }
 
     private fun prepareSwipe(arguments: JsonObject): ChatAgentNativeRequest.Swipe {
         val direction = stringArg(arguments, "direction")?.normalizeToken()
-        val startX = intArg(arguments, "start_x")
-        val startY = intArg(arguments, "start_y")
-        val endX = intArg(arguments, "end_x")
-        val endY = intArg(arguments, "end_y")
-        if (direction == null && listOf(startX, startY, endX, endY).any { it == null }) {
+        val displayId = intArg(arguments, "display_id")?.coerceAtLeast(0) ?: 0
+        val rawStartX = intArg(arguments, "start_x")
+        val rawStartY = intArg(arguments, "start_y")
+        val rawEndX = intArg(arguments, "end_x")
+        val rawEndY = intArg(arguments, "end_y")
+        if (direction == null && listOf(rawStartX, rawStartY, rawEndX, rawEndY).any { it == null }) {
             throw IllegalArgumentException("Swipe requires `direction` or all of `start_x`, `start_y`, `end_x`, and `end_y`.")
         }
         return ChatAgentNativeRequest.Swipe(
-            displayId = intArg(arguments, "display_id")?.coerceAtLeast(0) ?: 0,
+            displayId = displayId,
             direction = direction,
-            startX = startX,
-            startY = startY,
-            endX = endX,
-            endY = endY,
+            startX = normalizedPixel(rawStartX, displayId, "start_x"),
+            startY = normalizedPixel(rawStartY, displayId, "start_y"),
+            endX = normalizedPixel(rawEndX, displayId, "end_x"),
+            endY = normalizedPixel(rawEndY, displayId, "end_y"),
             durationMs = (intArg(arguments, "duration_ms") ?: 300).toLong().coerceIn(100L, 4_000L),
         )
+    }
+
+    /**
+     * **归一化 0–1000 → 像素**（fork：AI 能力统一 §3.8 / D20）。
+     *
+     * 越界**不钳制**：`chatAgentNormalizedToPixels` 抛出的异常会被 [prepare] 的 catch
+     * 转成一条 ERROR 工具结果 + [chatAgentNativeRecoveryHint]，模型可自愈；而静默钳制
+     * 表现为「不报错、只点错」—— 设计稿点名的**最坏失败形态**。
+     *
+     * `raw == null` 时**不做任何屏幕查询**（`direction` 形式的 swipe 走不到这里）。
+     */
+    private fun normalizedPixel(raw: Int?, displayId: Int, axis: String): Int? {
+        if (raw == null) return null
+        val (width, height) = screenExtent(displayId)
+        // 轴名有 `x` / `start_x` / `end_x` 三种写法，统一按末字符判（`y` 系列同理）。
+        val extent = if (axis.endsWith("x")) width else height
+        return chatAgentNormalizedToPixels(raw, extent, axis)
+    }
+
+    /**
+     * 目标屏幕的真实像素尺寸（`width to height`）。
+     *
+     * 优先取 `DisplayManager.getDisplay(displayId)` 的 real metrics；取不到
+     * （display id 无效 / 服务不可用 / 尺寸为 0）⇒ 退到主屏
+     * `windowManager.defaultDisplay` 的 real metrics（与 `AgentModule` 的取值方式一致）。
+     *
+     * ⚠️ 虚拟屏（`display_id > 0`）下 `AgentUtils.captureScreen` 走的是
+     * `VirtualDisplayManager` 的**会话尺寸**，与本方法取到的 real metrics 是否一致
+     * **尚未真机验证**（见交付说明的「未验证」清单）。
+     */
+    private fun screenExtent(displayId: Int): Pair<Int, Int> {
+        val metrics = DisplayMetrics()
+        val displayManager = appContext.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
+        val display = displayManager?.getDisplay(displayId)
+        if (display != null) {
+            @Suppress("DEPRECATION")
+            display.getRealMetrics(metrics)
+            if (metrics.widthPixels > 0 && metrics.heightPixels > 0) {
+                return metrics.widthPixels to metrics.heightPixels
+            }
+        }
+        val windowManager = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        @Suppress("DEPRECATION")
+        windowManager.defaultDisplay.getRealMetrics(metrics)
+        return metrics.widthPixels to metrics.heightPixels
     }
 
     private fun preparePressKey(arguments: JsonObject): ChatAgentNativeRequest.PressKey {
@@ -1841,6 +1892,12 @@ internal class ChatAgentNativeToolExecutor(
             screenshotReference?.let {
                 append("\nScreenshot handle: ")
                 append(it.handle)
+                append("\nThis screenshot is attached to the request, so you can see it directly.")
+                append(" To show it to the user, write an inline image reference in your reply body:")
+                append(" ![short caption](")
+                append(it.handle)
+                append(")")
+                append(" — the user-facing app renders it as an image.")
             }
             if (request.includeHierarchy && observation.snapshot.hierarchy.isNotBlank()) {
                 append("\n\nHierarchy:\n")
@@ -2311,7 +2368,7 @@ internal class ChatAgentNativeToolExecutor(
                 ChatAgentToolDefinition(
                     name = CHAT_AGENT_TAP_TOOL_NAME,
                     title = "点击屏幕",
-                    description = "Agent-native helper: tap a specific ScreenElement handle or coordinates. Prefer ScreenElement handles returned by observe_ui over guessed labels.",
+                    description = "Agent-native helper: tap a specific ScreenElement handle or coordinates. Coordinates are normalized 0-1000 (0 = left/top edge, 1000 = right/bottom edge), not absolute pixels, so they stay correct even if the screenshot is scaled. Prefer ScreenElement handles returned by observe_ui over guessed labels.",
                     moduleId = "vflow.agent.tap_screen",
                     moduleDisplayName = "点击屏幕",
                     routingHints = setOf("点击", "tap", "click", "press button"),
@@ -2325,7 +2382,7 @@ internal class ChatAgentNativeToolExecutor(
                 ChatAgentToolDefinition(
                     name = CHAT_AGENT_LONG_PRESS_TOOL_NAME,
                     title = "长按屏幕",
-                    description = "Agent-native helper: long press a specific ScreenElement handle or coordinates.",
+                    description = "Agent-native helper: long press a specific ScreenElement handle or coordinates. Coordinates are normalized 0-1000 (0 = left/top edge, 1000 = right/bottom edge), not absolute pixels.",
                     moduleId = "vflow.agent.long_press_screen",
                     moduleDisplayName = "长按屏幕",
                     routingHints = setOf("长按", "long press", "press and hold"),
@@ -2339,7 +2396,7 @@ internal class ChatAgentNativeToolExecutor(
                 ChatAgentToolDefinition(
                     name = CHAT_AGENT_INPUT_TEXT_TOOL_NAME,
                     title = "输入文本",
-                    description = "Agent-native helper: focus a field and input text. Prefer a ScreenElement handle from observe_ui when possible.",
+                    description = "Agent-native helper: focus a field and input text. Prefer a ScreenElement handle from observe_ui when possible. Optional focus coordinates are normalized 0-1000 (0 = left/top edge, 1000 = right/bottom edge), not absolute pixels.",
                     moduleId = "vflow.agent.input_text",
                     moduleDisplayName = "输入文本",
                     routingHints = setOf("输入", "打字", "input text", "type text"),
@@ -2353,7 +2410,7 @@ internal class ChatAgentNativeToolExecutor(
                 ChatAgentToolDefinition(
                     name = CHAT_AGENT_SWIPE_TOOL_NAME,
                     title = "滑动屏幕",
-                    description = "Agent-native helper: scroll by direction or perform a precise swipe gesture by coordinates.",
+                    description = "Agent-native helper: scroll by direction or perform a precise swipe gesture by coordinates. Coordinates are normalized 0-1000 (0 = left/top edge, 1000 = right/bottom edge), not absolute pixels.",
                     moduleId = "vflow.agent.swipe_screen",
                     moduleDisplayName = "滑动屏幕",
                     routingHints = setOf("滑动", "scroll", "swipe"),
@@ -2436,7 +2493,14 @@ internal class ChatAgentNativeToolExecutor(
                         put("scrollable", booleanProperty("Optional scrollable filter."))
                         put("enabled", booleanProperty("Optional enabled filter."))
                         put("limit", integerProperty("Maximum number of ScreenElement handles to expose individually. Default 8, max 12.", 1, 12))
-                        put("include_screenshot", booleanProperty("Optional screenshot artifact for future multimodal/visual fallback flows. Leave false for node-tree-first operation."))
+                        put(
+                            "include_screenshot",
+                            booleanProperty(
+                                "When true, capture a screenshot of the current screen and attach it to this request so you can actually see it. " +
+                                    "Use it when the node tree is not enough (images, canvas, custom-drawn UI, or ambiguous layout). " +
+                                    "Leave false for node-tree-first operation."
+                            )
+                        )
                         put("include_hierarchy", booleanProperty("When true, include a trimmed accessibility hierarchy dump in the result text."))
                         put("display_id", integerProperty("Optional Android display id. Omit for the main display.", 0, 8))
                     }
@@ -2470,8 +2534,8 @@ internal class ChatAgentNativeToolExecutor(
                     "properties",
                     buildJsonObject {
                         put("element", stringProperty("Preferred: artifact handle for a ScreenElement returned by observe_ui."))
-                        put("x", numberProperty("Tap x coordinate in absolute screen pixels."))
-                        put("y", numberProperty("Tap y coordinate in absolute screen pixels."))
+                        put("x", numberProperty(normalizedCoordinateProperty("Tap", "x", horizontal = true)))
+                        put("y", numberProperty(normalizedCoordinateProperty("Tap", "y", horizontal = false)))
                         put("text_query", stringProperty("Fallback label/id query when you must locate the target on the fly."))
                         put("display_id", integerProperty("Optional Android display id. Omit for the main display.", 0, 8))
                     }
@@ -2487,8 +2551,8 @@ internal class ChatAgentNativeToolExecutor(
                     "properties",
                     buildJsonObject {
                         put("element", stringProperty("Preferred: artifact handle for a ScreenElement returned by observe_ui."))
-                        put("x", numberProperty("Long-press x coordinate in absolute screen pixels."))
-                        put("y", numberProperty("Long-press y coordinate in absolute screen pixels."))
+                        put("x", numberProperty(normalizedCoordinateProperty("Long-press", "x", horizontal = true)))
+                        put("y", numberProperty(normalizedCoordinateProperty("Long-press", "y", horizontal = false)))
                         put("text_query", stringProperty("Fallback label/id query when you must locate the target on the fly."))
                         put("duration_ms", integerProperty("Long-press duration in milliseconds.", 300, 5_000))
                         put("display_id", integerProperty("Optional Android display id. Omit for the main display.", 0, 8))
@@ -2506,8 +2570,8 @@ internal class ChatAgentNativeToolExecutor(
                     buildJsonObject {
                         put("text", stringProperty("Text to input into the focused field."))
                         put("element", stringProperty("Preferred: ScreenElement handle for the target input field."))
-                        put("x", numberProperty("Optional x coordinate to focus before typing."))
-                        put("y", numberProperty("Optional y coordinate to focus before typing."))
+                        put("x", numberProperty(normalizedCoordinateProperty("Optional focus", "x", horizontal = true)))
+                        put("y", numberProperty(normalizedCoordinateProperty("Optional focus", "y", horizontal = false)))
                         put("text_query", stringProperty("Fallback label/id query to focus before typing."))
                         put("display_id", integerProperty("Optional Android display id. Omit for the main display.", 0, 8))
                     }
@@ -2529,10 +2593,10 @@ internal class ChatAgentNativeToolExecutor(
                     "properties",
                     buildJsonObject {
                         put("direction", enumProperty("Use `up`, `down`, `left`, or `right` for a generic scroll.", listOf("up", "down", "left", "right")))
-                        put("start_x", numberProperty("Optional swipe start x coordinate in absolute screen pixels."))
-                        put("start_y", numberProperty("Optional swipe start y coordinate in absolute screen pixels."))
-                        put("end_x", numberProperty("Optional swipe end x coordinate in absolute screen pixels."))
-                        put("end_y", numberProperty("Optional swipe end y coordinate in absolute screen pixels."))
+                        put("start_x", numberProperty(normalizedCoordinateProperty("Optional swipe start", "x", horizontal = true)))
+                        put("start_y", numberProperty(normalizedCoordinateProperty("Optional swipe start", "y", horizontal = false)))
+                        put("end_x", numberProperty(normalizedCoordinateProperty("Optional swipe end", "x", horizontal = true)))
+                        put("end_y", numberProperty(normalizedCoordinateProperty("Optional swipe end", "y", horizontal = false)))
                         put("duration_ms", integerProperty("Swipe duration in milliseconds.", 100, 4_000))
                         put("display_id", integerProperty("Optional Android display id. Omit for the main display.", 0, 8))
                     }
@@ -2661,6 +2725,28 @@ internal class ChatAgentNativeToolExecutor(
                 put("type", "number")
                 put("description", description)
             }
+        }
+
+        /**
+         * 坐标参数的**统一描述**（fork：AI 能力统一 §3.8 / D20 —— 已发布 schema 的行为变更）。
+         *
+         * 三件事缺一不可，且都是被实测踩出来的：
+         * 1. **取值域与方向**（`0-1000`、哪端是哪个方向）—— 只说「归一化」模型不知道往哪数；
+         * 2. **为什么与图有关**（`stay correct even if the screenshot is scaled`）——
+         *    直击 D20 的动机：模型看到的是被缩放过的截图，数出来的像素与真实屏幕对不上；
+         * 3. **首选路径仍是句柄**（`Prefer a ScreenElement handle`）——
+         *    保持既有「节点树优先」策略不变，坐标只是兜底。
+         */
+        private fun normalizedCoordinateProperty(
+            action: String,
+            axis: String,
+            horizontal: Boolean,
+        ): String {
+            val leading = if (horizontal) "left" else "top"
+            val trailing = if (horizontal) "right" else "bottom"
+            return "$action $axis coordinate, normalized 0-1000 (0 = $leading edge, 1000 = $trailing edge), " +
+                "NOT absolute pixels. Coordinates are normalized so they stay correct even if the screenshot is scaled. " +
+                "Prefer a ScreenElement handle from observe_ui; use coordinates only as a fallback."
         }
 
         private fun enumProperty(

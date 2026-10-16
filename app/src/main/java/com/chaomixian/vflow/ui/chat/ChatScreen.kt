@@ -140,6 +140,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.chaomixian.vflow.R
 import com.chaomixian.vflow.permissions.PermissionActivity
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -339,7 +340,9 @@ fun ChatScreen(
         hasPendingToolApproval ||
         chatUiState.pendingPermissionRequest != null
     val shouldShowStopButton = isAgentActive && prompt.isBlank()
-    val canUseComposerAction = shouldShowStopButton || prompt.isNotBlank()
+    // fork: AI 能力统一 §3.2 —— **有图无字也能发**（只发一张图是合法输入）。
+    val hasPendingAttachments = selectedPhotoUris.isNotEmpty() || capturedPreview != null
+    val canUseComposerAction = shouldShowStopButton || prompt.isNotBlank() || hasPendingAttachments
     val welcomeSuggestions = remember {
         listOf(
             ChatSuggestion(
@@ -387,6 +390,48 @@ fun ChatScreen(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         chatViewModel.onToolPermissionResult(result.resultCode == Activity.RESULT_OK)
+    }
+
+    /**
+     * 把输入框里的附件选择变成 [ChatImageAttachment]（fork：AI 能力统一 §3.2 / 批 2 的 ③）。
+     *
+     * ⚠️ 两条来源形态不同：
+     * - 相册选择器（`PickMultipleVisualMedia`）给的是 `content://` uri，mime 先问
+     *   `ContentResolver.getType`、拿不到再按扩展名推断（**必须显式给 mime**，
+     *   `ChatImageAttachment.mimeType` 的默认值是 `image/jpeg`，照默认会把 PNG 标成 JPEG）；
+     * - 相机（`TakePicturePreview`）给的是 `Bitmap?`、**没有 uri** ⇒ 先落一个 JPEG 到
+     *   `cacheDir/chat-camera/`，再当普通文件走后续路径。
+     *
+     * 真正的落盘（内容寻址 + 写回消息）在 `ChatViewModel.persistUserAttachments` 里做，
+     * 这里只负责给出「从哪读」。
+     */
+    val buildPendingAttachments: suspend () -> List<ChatImageAttachment> = {
+        // 先在调用线程（Main）取快照，再切到 IO —— 不在后台线程读 Compose 快照状态。
+        val photoUris = selectedPhotoUris.toList()
+        val preview = capturedPreview
+        withContext(Dispatchers.IO) {
+            val attachments = mutableListOf<ChatImageAttachment>()
+            photoUris.forEach { uri ->
+                attachments += ChatImageAttachment(
+                    uri = uri.toString(),
+                    source = ChatImageSource.USER,
+                    mimeType = context.contentResolver.getType(uri)
+                        ?: chatImageMimeTypeForUri(uri.toString()),
+                    label = uri.lastPathSegment.orEmpty(),
+                )
+            }
+            preview?.let { bitmap ->
+                writeCameraPreviewToCache(context, bitmap)?.let { file ->
+                    attachments += ChatImageAttachment(
+                        uri = file.absolutePath,
+                        source = ChatImageSource.USER,
+                        mimeType = "image/jpeg",
+                        label = file.name,
+                    )
+                }
+            }
+            attachments
+        }
     }
 
     LaunchedEffect(chatViewModel) {
@@ -618,6 +663,13 @@ fun ChatScreen(
                         availableToolsByName = availableToolsByName,
                         maxWidths = messageMaxWidths,
                         modifier = Modifier.fillMaxWidth(),
+                        // fork: AI 能力统一 §3.9 —— 正文里的 `![图注](artifact://…)`
+                        // 要解析成真实文件才能画出来（磁盘索引优先，退回会话内存的 artifact store）。
+                        resolveImageHandle = { handle ->
+                            activeConversation?.id?.let { conversationId ->
+                                chatViewModel.resolveChatAttachment(conversationId, handle)
+                            }
+                        },
                         onApproveToolCalls = chatViewModel::approveToolCalls,
                         onRejectToolCalls = chatViewModel::rejectToolCalls,
                         onRerunToolCalls = chatViewModel::rerunToolCalls,
@@ -703,18 +755,16 @@ fun ChatScreen(
                                 chatViewModel.stopAgent()
                                 return@FilledIconButton
                             }
-                            if (selectedPhotoUris.isNotEmpty() || capturedPreview != null) {
-                                scope.launch {
-                                    snackbarHostState.showSnackbar(
-                                        context.getString(R.string.chat_attachment_not_supported)
-                                    )
+                            // 附件**真的发出去**：先构造附件，再连同正文交给 VM。
+                            // （旧行为是弹一条「附件暂不支持」然后照样清空选择 —— 图从未进消息。）
+                            scope.launch {
+                                val attachments = buildPendingAttachments()
+                                if (chatViewModel.sendMessage(prompt, attachments)) {
+                                    prompt = ""
+                                    selectedPhotoUris.clear()
+                                    capturedPreview = null
+                                    webSearchSelected = false
                                 }
-                            }
-                            if (chatViewModel.sendMessage(prompt)) {
-                                prompt = ""
-                                selectedPhotoUris.clear()
-                                capturedPreview = null
-                                webSearchSelected = false
                             }
                         },
                         enabled = canUseComposerAction,
@@ -749,11 +799,15 @@ fun ChatScreen(
                             chatViewModel.stopAgent()
                             return@KeyboardActions
                         }
-                        if (chatViewModel.sendMessage(prompt)) {
-                            prompt = ""
-                            selectedPhotoUris.clear()
-                            capturedPreview = null
-                            webSearchSelected = false
+                        // 与按钮走同一条路径（附件必须一起发出去）。
+                        scope.launch {
+                            val attachments = buildPendingAttachments()
+                            if (chatViewModel.sendMessage(prompt, attachments)) {
+                                prompt = ""
+                                selectedPhotoUris.clear()
+                                capturedPreview = null
+                                webSearchSelected = false
+                            }
                         }
                     }
                 ),
@@ -1208,6 +1262,8 @@ private fun ChatMessageBubble(
     availableToolsByName: Map<String, ChatAgentToolDefinition>,
     maxWidths: ChatMessageMaxWidths,
     modifier: Modifier = Modifier,
+    /** `artifact://…` 句柄 → 可直接加载的路径；解析不到返回 null（渲染占位）。 */
+    resolveImageHandle: (String) -> String? = { null },
     onApproveToolCalls: (String) -> Unit,
     onRejectToolCalls: (String) -> Unit,
     onRerunToolCalls: (String) -> Unit,
@@ -1229,6 +1285,7 @@ private fun ChatMessageBubble(
             availableToolsByName = availableToolsByName,
             maxWidth = maxWidths.assistant,
             modifier = modifier,
+            resolveImageHandle = resolveImageHandle,
             onApproveToolCalls = onApproveToolCalls,
             onRejectToolCalls = onRejectToolCalls,
             onRerunToolCalls = onRerunToolCalls,
@@ -1262,6 +1319,21 @@ private fun UserMessageBubble(
     modifier: Modifier = Modifier,
     onCopyMessage: () -> Unit,
 ) {
+    // fork: AI 能力统一 §3.1 —— Agent 截图同样挂在 `role = USER` 的消息上（这是三协议
+    // 都成立的承载方式），但它**不是用户发的**：全部附件都是 AGENT 档时改画左对齐的
+    // 中性卡片，否则会伪装成「你」发的蓝气泡（用户会以为那是自己上传的图）。
+    if (message.attachments.isNotEmpty() && message.attachments.all { it.source == ChatImageSource.AGENT }) {
+        // ⚠️ `modifier` 里已有 `fillMaxWidth()`（调用点给的），它会把 min/max 都钉在可用宽度上，
+        // 之后再 `widthIn(max = …)` 是**无效**的（会被 coerce 回可用宽度）。
+        // 故外面套一层 Box 承载「占满一行」，卡片自身才做宽度上限。
+        Box(modifier = modifier, contentAlignment = Alignment.CenterStart) {
+            ChatAgentScreenshotCard(
+                attachments = message.attachments,
+                modifier = Modifier.widthIn(max = maxWidth),
+            )
+        }
+        return
+    }
     val contentColor = MaterialTheme.colorScheme.onPrimaryContainer
     Box(
         modifier = modifier,
@@ -1294,12 +1366,18 @@ private fun UserMessageBubble(
                     // 用户消息是纯 `Text`（不走 markdown 渲染），
                     // 所以这里的 SelectionContainer 要单独包一层 ——
                     // `ChatMarkdownContent` 那层覆盖不到它。
-                    SelectionContainer {
-                        Text(
-                            text = message.content,
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = contentColor,
-                        )
+                    if (message.attachments.isNotEmpty()) {
+                        ChatAttachmentThumbnails(attachments = message.attachments)
+                    }
+                    // ⚠️ 有图无字时 `content` 是空串 ⇒ 必须跳过 Text，否则会多出一行空白。
+                    if (message.content.isNotBlank()) {
+                        SelectionContainer {
+                            Text(
+                                text = message.content,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = contentColor,
+                            )
+                        }
                     }
                     MessageFooterRow(
                         timestampMillis = message.timestampMillis,
@@ -1321,6 +1399,7 @@ private fun AssistantMessageCard(
     availableToolsByName: Map<String, ChatAgentToolDefinition>,
     maxWidth: Dp,
     modifier: Modifier = Modifier,
+    resolveImageHandle: (String) -> String? = { null },
     onApproveToolCalls: (String) -> Unit,
     onRejectToolCalls: (String) -> Unit,
     onRerunToolCalls: (String) -> Unit,
@@ -1461,8 +1540,12 @@ private fun AssistantMessageCard(
                     }
 
                     if (message.content.isNotBlank()) {
-                        ChatMarkdownContent(
+                        // fork: AI 能力统一 §3.9 —— 正文里的 `![图注](artifact://…)`
+                        // 渲染成真实图片（**正文内联引用**，不是 pin）。
+                        // 没有引用时本组件内部直接走 `ChatMarkdownContent`，版式一字不变。
+                        ChatMarkdownWithImages(
                             markdown = message.content,
+                            resolveHandle = resolveImageHandle,
                             contentColor = MaterialTheme.colorScheme.onSurface,
                         )
                     }
@@ -2449,6 +2532,25 @@ private fun photoPermissionName(): String {
     } else {
         Manifest.permission.READ_EXTERNAL_STORAGE
     }
+}
+
+/**
+ * 相机预览是 `Bitmap`（`TakePicturePreview` 的返回值，**没有 uri**）⇒ 先落一个 JPEG 到
+ * `cacheDir/chat-camera/`，之后它就和相册来的文件一样走同一条附件路径。
+ *
+ * ⚠️ 刻意落在 **cacheDir** 而不是 filesDir：这只是**中间产物**，真正的落地由
+ * `ChatViewModel.persistUserAttachments` 写进 `filesDir/chat/attachments/`（内容寻址 + 去重）。
+ * 压缩失败 / 无权限 ⇒ 返回 null（附件少一张，但**不崩、不阻断发送**）。
+ */
+private fun writeCameraPreviewToCache(context: Context, bitmap: Bitmap): File? {
+    return runCatching {
+        val dir = File(context.cacheDir, "chat-camera").apply { mkdirs() }
+        val file = File(dir, "capture_${System.currentTimeMillis()}.jpg")
+        file.outputStream().use { output ->
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 90, output)
+        }
+        file
+    }.getOrNull()
 }
 
 private fun queryRecentPhotos(context: Context): List<RecentPhotoItem> {

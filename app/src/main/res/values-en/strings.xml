@@ -1795,4 +1795,6 @@ Then come back; the current state will be shown above.</string>
     <string name="agent_monitor_confirm">Tap again to confirm</string>
     <string name="agent_monitor_no_preview">Main-screen mode (no preview)</string>
     <string name="agent_monitor_stopping">Stopping…</string>
+    <string name="chat_agent_screenshot_label">Agent screenshot</string>
+    <string name="chat_image_unavailable">Image unavailable</string>
 </resources>
