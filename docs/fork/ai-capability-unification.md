@@ -1,13 +1,14 @@
 # AI 能力统一：多模态 · 多协议 · 配置引用（设计与任务拆分）
 
-> 版本：v0.14（**讨论稿 · 结构性决策已定**）
+> 版本：v0.15（**已开工 · 批 1 已合入 `dev`**）
 > 状态：现状已走查（代码位置逐条核对）。**结构性阻塞点已全部定案**（**D4 共享层落点 = 甲**、**D11 `AgentHost` 边界**）⇒ **T4 / T9 可拆**。已定 / 已修订：**D1** 共享边界 = 动作层 + 传输层 + **引擎**；**D4** = 甲（`ui/chat/`，不搬上游文件）；D5「渲染图片」= 支持；**D6** 引用 = 活引用 + 值拷贝；D7 值拷贝 systemPrompt；**D11** `AgentHost`（§3.11）；D12 白名单 + 自动放行、不设替代提示；**D13** 分段；D14 观察输入可配置（方向）；D16 规则段抽公共段 + 宿主专属段；**D17** 循环上限四项；**D19** 图片预算；**D20** 坐标改归一化；**D21** 图片展示 = 正文内联引用（pin 已否决）。详见 §3.1 / §3.4–§3.11
-> 对应分支：`dev`（走查日期 2026-10-15）
+> 对应分支：`dev`（走查日期 2026-10-15；**批 1 落地 2026-10-16**，提交 `3f5f97cc`）
 > 目录归属：fork 独有（上游无此文件，冲突归我方）
 > 用途：把「让工作流内的 AI 模块复用 ChatAgent 的请求能力、并支持引用模型配置」这件事的**现状、设计空间、任务拆分**固定成文，供后续详细讨论与拆分任务。
 > 相关文档：[`surveys/ai-system-overview.md`](surveys/ai-system-overview.md)（AI 体系现状；其 §7「优化方向」的 **P2「统一密钥/Provider 配置」** 与 **P2「收敛链路 C 的双视觉 Agent」** 与本文件同源，本文件是这两条的具体化）；[`chat-agent-rearchitecture.md`](chat-agent-rearchitecture.md)（ChatAgent 工具架构重构）。
 >
 > **修订记录**
+> - v0.15（2026-10-16）：**批 1 落地回填** —— §1 现状按已交付部分订正（§1.2 传输能力已含图片 + 中性 schema；§1.4 六层状态表更新；§1.7 会话持久化已改）；§3.2 / §3.3 / §3.7 标「已实现」；§4 台账 **D2 / D3 已定（均取 B）并已实现**、D19 已实现；**§5 新增 §5.1 交付状态与分批结论**（⚠️ 原「T2 ∥ T4 可并行」被推翻 ⇒ 改 4 批；**D20 归属订正到批 2**）；新增 **§3.7.8**（`generateReply` 丢失 `withContext(IO)` 的真回归与教训）。代码见 `dev` 提交 `3f5f97cc`，分歧登记见 `FORK.md`「AI 能力统一 · 批 1」。
 > - v0.14（2026-10-15）：**D4 / D11 定案** —— 新增 **§3.11 `AgentHost` 接口草案**（8 成员 / 取消不入接口 / artifact 必需 / 两宿主差异表 / 不拆 ISP 的理由）；§3.4 改写为 **D4 已定「甲」**（含搬运成本实测：`ui/chat` 33 文件 20,359 行、上游 17 个；**只 import 不搬**的合并代价对照）。⚠️ **结构性阻塞点清空** ⇒ T4 / T9 可拆。另修正 §3.10.3：**监视器与轨迹不能合并**（用户明确）。
 > - v0.13（2026-10-15）：新增 **§3.9「图片的展示与保存」**（**pin 方案被否决** ⇒ 改用**正文内联引用**；规则 = **引用即保存**；判据从主观变客观 ⇒ **消掉「零 pin / 全 pin」两种失败形态**；现状「**现在没接图片加载**」；四项待补工作；**句柄长度**问题）与 **§3.10「轨迹视图」**（dsh 的 `ui-trajectory` 逐文件走查；与运行监视器的分工；瘦身版/完整版规模评估）。新增 **D21（已定）/ D22 / D23**。
 > - v0.12（2026-10-15）：**D19 / D20 定案** —— D19：默认不缩 + base64 ≤5MB 兜底 + Agent 截图 1–3 / 用户图 5（不设合计上限）；D20：ChatAgent 的 `tap_screen` / `long_press_screen` 改为**归一化（0–1000）**，列为 T1 验收项（⚠️ 属已发布 schema 的行为变更）。
@@ -64,7 +65,16 @@
 | usage / 缓存 token 提取、超时口径统一 | `ChatStreamTimeouts`、`extractTotalTokens` 等 |
 | 端点规整（各 provider 的 base_url 归一） | `ChatEndpointResolver.resolve` |
 
-**但它当前只支持纯文本**：`buildChatCompletionHistoryMessages`（`:425`）只产 `{role, content: <string>}`；三条协议都不拼图片 content parts。
+**⚠️ 已订正（v0.15 / 2026-10-16）**：批 1（①）已让**三条协议都支持图片 content parts**，并把工具装配泛化为中性的 `ChatToolSchema`（任意 JSON Schema 原样透传）+ 每请求图片预算 / 单图 base64 ≤5MB 兜底，会话侧数据模型也加了 `ChatMessage.attachments`。**「只支持纯文本」是批 1 之前的结论，保留在 git 历史里**；当前实况：
+
+| 新增能力（批 1） | 位置 |
+|---|---|
+| 三条协议（chat/completions · Responses · Anthropic）的**图片 content parts** | `ui/chat/ChatImageParts.kt`（6 个纯函数）+ `ChatCompletionClient` 三处 USER 分支 |
+| **中性工具 schema**：`ChatToolSchema` 承载任意 JSON Schema，`tools` 形参**取代** `skillSelection` 工具集 | `ui/chat/ChatToolSchema.kt` + `ChatCompletionClient.buildRequest` |
+| **每请求图片预算**（默认不缩 / Agent 截图 1 / 用户图 5 / 不设合计上限；超限换文本占位） | `ui/chat/ChatImagePlan.kt`（纯逻辑、无 IO） |
+| **单图 base64 ≤5MB 兜底**（超限或 mime 不在白名单才重编码，**有损**） | `ui/chat/ChatImageResolver.kt`（全链路唯一文件 IO 处） |
+| 会话数据模型：`ChatMessage.attachments`（只存路径、只装配 USER） | `ui/chat/ChatModels.kt` |
+| 线程契约：非流式入口的阻塞 HTTP 仍在 `Dispatchers.IO`（见 §3.7.8 的回归） | `ChatCompletionClient.generateReply` |
 
 ### 1.3 三个 AI 模块的重复实现（同源代码三份）
 
@@ -99,14 +109,14 @@
 | 层 | 状态 | 证据 |
 |---|---|---|
 | UI 附件面板（相册 / 拍照 / 权限 / 多选 / 预览） | ✅ **已实现** | `ChatScreen.kt:686`（入口 `IconButton`）、`:802`（`ChatAttachmentSheet`）、`:364` / `:378`（两个 `rememberLauncherForActivityResult`） |
-| 发送路径 | ❌ 只收文本 | `ChatViewModel.sendMessage(prompt: String)`（`ChatViewModel.kt:379`）；附件被丢弃并弹提示 `chat_attachment_not_supported`（`ChatScreen.kt:706-711`；文案 `values/strings.xml:76`「当前版本先支持文本对话，附件暂时不会发送给模型。」） |
-| 消息数据模型 | ❌ **无字段** | `ChatMessage`（`ChatModels.kt:193`）只有 `content: String`（`:196`），无 attachment / content-parts |
-| 请求构造 | ❌ 只拼文本 | `ChatCompletionClient.buildChatCompletionHistoryMessages`（`:425`） |
-| 消息渲染 | ❌ 只画文字 | `UserMessageBubble`（`ChatScreen.kt:1259`）只渲染 `message.content` |
-| 持久化 / 备份 | ❌ 无 | `ChatSessionState` 无图片位；备份 `ChatScope`（`core/backup/scopes/ChatScope.kt`）未考虑 |
+| 发送路径 | ⬜ **仍缺（批 2）** | `ChatViewModel.sendMessage(prompt: String)`（`ChatViewModel.kt:379`）；附件仍被丢弃并弹提示 `chat_attachment_not_supported`（`ChatScreen.kt:706-711`）—— 批 1 只做了**传输层**，**生产代码里还没有任何调用方构造 `attachments`** |
+| 消息数据模型 | ✅ **已加（批 1）** | `ChatMessage.attachments`（`ChatModels.kt`；带默认值、只存**路径**、只装配 USER 角色）+ `ChatImageSource` / `ChatImageAttachment` |
+| 请求构造 | ✅ **已支持（批 1）** | 三条协议的 USER 分支都拼图片 part（`ChatImageParts.kt` + `ChatCompletionClient`）；装配入口 `buildRequest`（内部 `withContext(Dispatchers.IO)`） |
+| 消息渲染 | ⬜ **仍缺（批 2）** | `UserMessageBubble`（`ChatScreen.kt:1259`）仍只渲染 `message.content` |
+| 持久化 / 备份 | 🔶 **部分（批 1）** | `attachments` 随会话 JSON 落盘（每会话一文件，见 §1.7）；`ChatScope` 已改**混合 scope** 覆盖会话文件；**图片文件本体（`filesDir/chat/attachments/`）与「引用即保存」属批 2** |
 
 > `selectedPhotoUris` / `capturedPreview` 是**纯 Compose 局部状态**（`ChatScreen.kt:327-328`），发送后即 `clear()`。
-> **结论**：加多模态的真实工作量在**下面四层**，UI 反而是现成可用的。
+> **结论（v0.15 订正）**：批 1 已补齐**数据模型 + 请求构造**两层；剩余工作量集中在**发送路径 + 渲染 + 附件落盘**（批 2 的 T2）。
 
 ### 1.5 ChatAgent 截图后到底看到什么（回答「调试时截图会怎样」）
 
@@ -291,6 +301,7 @@ flowchart TB
 - **要成为「唯一实现」**：共享层不能是「新包一层 + 旧实现还在」——那会让「一次改动处处生效」落空。这是本改造的硬约束。
 
 ### 3.2 多模态的数据模型（选项）
+> ✅ **已实现（批 1 / 2026-10-16，D2 取 B）**：`ChatMessage.attachments`（只存**路径**、只装配 USER 角色）+ `ChatImageSource` / `ChatImageAttachment`；工具产出的图走**正文内联引用**（§3.9），**不经** `attachments`。⚠️ 已知限制：表达不了「文字与图的交错顺序」。下方选项表保留作决策记录。
 
 > ⚠️ **本节只讨论「图片输入」的承载**（vision：把图喂给模型），**不是「文生图」**。后者是**独立能力**——走不同的 API 面（OpenAI `/v1/images/generations`、或 Responses 的 `image_generation` 工具；Anthropic 无；各家支持不一），不经过 chat 消息的 content parts，与本文件的三个目标无交集，更可能是一条新模块或 ChatAgent 的新工具，**不在本文件范围**。
 >
@@ -317,9 +328,10 @@ flowchart TB
 > ⚠️ **对数据模型的硬约束（来自已定项，2026-10-15）**：
 > - **方向 ② 已定** ⇒ 数据模型必须能表达「**工具产出的图**」（`VImage` → 会话里的一条图片消息），不只是「用户发的图」；
 > - **D9 实际只剩「存路径」**（见 §4 D9）⇒ 模型里存的是**附件引用**，不是 base64；
-> - 且它**依赖会话持久化改造** —— 现在**全部会话挤在 `chat_session_prefs` 的一个 JSON key 里**（`ChatPresetRepository.kt:13/17`），见 §5 的 **T10**。
+> - 且它**依赖会话持久化改造** —— 当时**全部会话挤在 `chat_session_prefs` 的一个 JSON key 里**（`ChatPresetRepository.kt:13/17`），见 §5 的 **T10**。**✅ 已于批 1 落地**（每会话一文件 + 轻量索引 + 一次性迁移，并修掉「解析失败静默清空」）。
 
 ### 3.3 通用工具 schema 通道（选项）
+> ✅ **已实现（批 1 / 2026-10-16，D3 取 B）**：新增中性 `ChatToolSchema(inputSchema: JsonObject)` + **唯一适配器** `toChatToolSchema()`；`tools` 形参**取代** `skillSelection` 工具集（非空时优先）；既有 `toolDefinitions` 形参**一字未动**（既有 `ChatAgentToolingTest` 不受影响）。下方选项表保留作决策记录。
 
 现状：`ChatCompletionClient` 的工具装配只认 `ChatAgentToolDefinition`（`ChatAgentToolRegistry.kt:21`，含 `moduleId` / `riskLevel` / `usageScopes` 等 Agent 专有字段；装配见 `ChatCompletionClient.kt:1040` / `:1079`）。
 
@@ -568,6 +580,7 @@ contentParts = [ text(节点树 ≤16000 字符) , image_url(截图 base64) ]
 ⚠️ **顺带发现一处既有问题（记为 D18，待议）**：两个 agent 模块到顶后返回 **`Success` + `success=false`** ⇒ **不触发工作流的错误策略**（`STOP` / `SKIP` / `RETRY` 全不生效），只在输出里给个 false —— 属「**静默的部分失败**」，与 §3.6.2 的「运行期兜底不静默」精神冲突。三个选项：(a) 改成 `Failure`（触发错误策略，**推荐**）；(b) 保持 `Success` 但让错误策略能读到；(c) 新增「部分完成」状态。
 
 ### 3.7 每请求图片预算（D19）
+> ✅ **已实现（批 1 / 2026-10-16，D19 全量落地）**：`ChatImageBudget(maxUserImages = 5, maxAgentImages = 1)`（取值可配）+ `CHAT_MAX_IMAGE_BASE64_CHARS = 5×1024×1024`（**base64 字符串长度**口径）+ 超限换**文本占位**（`[image omitted …]`，不静默丢弃）+ 正常路径**不缩**。⚠️ 落地后**尚无生产调用方**构造 `attachments` ⇒ 图片真正进会话要等批 2。
 
 > 来源：2026-10-15 讨论。起因是「图片进会话后，每轮重发会不会拖垮上下文」。**参考实现逐家读源码**（`D:/develop/references/`，四家浅克隆；引用行号会随上游漂移）。
 
@@ -653,6 +666,19 @@ return `[${identity} No local normalized image path is available; ask the user t
 - **图片预算** = 别让图吃光上下文；
 - **压缩** = 上下文真满了怎么办（ccb 在压缩时把图换成 `[image]` 占位）。
 
+#### 3.7.8 ⚠️ 实现期发现：一次真实的「不变量回归」（2026-10-16 回填）
+
+批 1 的 ① 在实现 `streamReply` 的懒装配时，把 `generateReply` 的**外层 `withContext(Dispatchers.IO)` 误删了**
+（改前 `ChatCompletionClient.kt:138` 包住整个函数体；改后只剩 `buildRequest` 内部那一处），于是**非流式路径的同步阻塞 HTTP
+回到调用方线程** —— 生产可达路径 `ChatScreen.kt:855 → ChatViewModel.kt:218 viewModelScope.launch`（Main）→ `ChatBenchmarkRunner.kt:352`。
+
+- **发现方式**：**独立验收者**注入探针实测复现（OkHttp `Interceptor` 记录执行 `execute()` 的线程名 + 单线程 dispatcher 调 `generateReply`）；
+  **实现者的自检完全没覆盖这一条** —— 交付说明当时还写着「既有行为逐条未回退」，4 个新测试类也没一条覆盖线程契约。
+- **修法**：`generateReply` 的 adapter 调用重新包回 `withContext(Dispatchers.IO)`（最小 diff，只动 1 处）。
+- **锁死**：新增 `ChatCompletionThreadAffinityTest`（单线程 dispatcher + interceptor 记录线程名；含**前提校验**防假绿；
+  断言用 `startsWith` 而非 `equals`，因 kotlinx 会给线程名追加 `@coroutine#N`）；反证：去掉该 `withContext` ⇒ 用例变红。
+- **教训（已写进后续批次的验收要求）**：「**行为不变量**」类的验收项**必须由独立验收者跑探针**，不能靠实现者自述 ——
+  **纯逻辑单测全绿 ≠ 线程契约没丢**。
 ### 3.8 视觉的坐标语义（给 ChatAgent 加视觉的**硬约束**）
 
 > ⚠️ **这条是 T1 的验收项，不是可选项。** 不写下来，多模态上线后出现「AI 点错地方」会很难归因（第一反应会是「模型不行」，而不是「坐标系不对」）。
@@ -904,14 +930,14 @@ data class AgentOutcome(
 | # | 决策点 | 选项（见上） | 影响面 | 状态 |
 |---|---|---|---|---|
 | D1 | 共享边界 | §3.1 / §3.6 | 全局架构 | 🔄 **已修订（2026-10-15）**：原「一次 LLM 往返」→「动作层（已共享）+ 传输层 + **引擎（循环 + 工具调度 + 提示词组装）**」；宿主特定项见 §3.6 |
-| D2 | 多模态数据模型 | §3.2 A/B/C | 数据模型 / 渲染 / 持久化 / 备份 | ⬜ 待议（**已加约束**：方向 ② 已定 ⇒ 必须能表达**工具产出的图**；存路径；依赖 **T10**） |
-| D3 | 通用工具 schema 通道 | §3.3 A/B/C | 视觉 Agent 的共用程度 | ⬜ 待议（**范围收窄**：**AutoGLM 不参与** ⇒ 只剩 `AgentModule`） |
+| D2 | 多模态数据模型 | §3.2 A/B/C | 数据模型 / 渲染 / 持久化 / 备份 | ✅ **已定（2026-10-16）：B** —— `ChatMessage.attachments`（只存**路径**、只装配 USER 角色）；**已实现（批 1）**；⚠️ 已知限制：表达不了「文字与图的交错顺序」 |
+| D3 | 通用工具 schema 通道 | §3.3 A/B/C | 视觉 Agent 的共用程度 | ✅ **已定（2026-10-16）：B** —— 中性 `ChatToolSchema` + 唯一适配器 + `tools` **取代**语义；**已实现（批 1）** |
 | D4 | 共享层落点 | §3.4 | diff 面积 vs 收敛度 | ✅ **已定（2026-10-15）：甲** —— 引擎 + `AgentHost` 放 `ui/chat/`；**不搬任何上游文件**；`ChatCompletionClient` 只做功能改动（多模态），**不搬** |
 | D5 | 多模态数据模型的**覆盖面** | §3.2 | `ChatMessage` 模型设计 / 渲染 | 🔶 部分已定：① 必做、② **已定支持**（2026-10-15）；③ 待议 |
 | D6 | 配置引用粒度（preset vs provider） | §3.5 | 参数设计 | ⬜ 待议（**已加约束**：引用 = **活引用**（provider/model/key/base_url）+ **值拷贝**（systemPrompt/temperature）⇒ 粒度需能同时给出这两组） |
 | D7 | systemPrompt / temperature 是否跟随引用 | §3.5 / §3.6.3 C | 视觉 Agent 行为正确性 | ✅ **已定（2026-10-15）：跟随，但用「值引用（快照）」** —— 拷贝进步骤、可编辑、之后改配置不影响本步骤 |
 | D8 | 被引用配置**删除 / 修改**时的行为 | §3.5 | 健壮性 | ⬜ 待议（**范围收窄**：值拷贝那半**不受影响**；只剩**活引用**那半（连接配置）） |
-| D9 | 图片的持久化与备份策略 | §3.2 | 会话体积 / 备份体积 | ⬜ 待议（**但已被约束**：base64 塞进「全部会话一个 JSON」不可行 ⇒ 实际只剩「**存路径**」；**依赖 T10**） |
+| D9 | 图片的持久化与备份策略 | §3.2 | 会话体积 / 备份体积 | ⬜ 待议（**但已被约束**：base64 塞进「全部会话一个 JSON」不可行 ⇒ 实际只剩「**存路径**」；**依赖 T10**）；**2026-10-16：T10 已落地 + D2 取 B ⇒「存路径」事实上已定**；附件文件目录属批 2 |
 | D10 | 是否顺带对齐 `AIModule` 的过时默认模型 `gpt-3.5-turbo` | §1.3 | 兼容性 | ⬜ 待议 |
 | D11 | 宿主抽象的形式（`AgentHost` 接口的边界） | §3.11 | 架构 | ✅ **已定（2026-10-15）**：见 §3.11 —— **一个接口（8 成员）**；**取消不入接口**（协程承载）；**artifact 必需**（工作流新写执行级 store） |
 | D12 | 工作流步骤的工具白名单 + 权限声明 + 审批 | §3.6.1 / §3.6.2 | 能力与安全 | 🔶 部分已定（2026-10-15）：**白名单采纳**、判据取「**已授予权限**」、运行期兜底；工作流宿主**自动放行无审批** |
@@ -921,31 +947,63 @@ data class AgentOutcome(
 | D16 | 内置规则段两宿主不同（chat 33 条 vs `AgentModule` 19 条）⇒ 怎么组织 | §3.6.3 D | 提示词质量 | ✅ **已定（2026-10-15）：(b) 抽公共段 + 宿主专属段** |
 | D17 | **循环上限（步数）策略**：单位 / 到顶后的收场 / 与超时的关系 / 默认值 | §3.6.4 | 成本与安全 | ✅ **已定（2026-10-15）**：① 单位 = **轮次**（可选叠工具调用数上限）；② 到顶 = **给一次收尾总结机会**（非硬中断）；③ 与超时**两者都要**；④ 工作流**硬上限**（保留参数 15/30）、chat **加可配上限**（默认放宽/不限） |
 | D18 | **到顶后的结果语义**：`Success` + `success=false` ⇒ 不触发错误策略 | §3.6.4 | 错误处理一致性 | ⬜ 待议（(a) 改 `Failure` **推荐** / (b) 保持但让策略可读 / (c) 新增「部分完成」状态） |
-| D19 | **每请求图片预算**：缩放策略 / 字节兜底 / 每请求张数 | §3.7 | 成本（token + payload） | ✅ **已定（2026-10-15）**：**默认不缩** + **base64 ≤5MB 兜底**（新增）+ **Agent 截图 1–3 张 / 用户图 5 张**（**不设合计上限**，天然 ≤8） |
-| D20 | **ChatAgent 的视觉坐标语义**：绝对像素 vs 归一化 | §3.8 | 正确性（**点偏**） | ✅ **已定（2026-10-15）：改为归一化（0–1000）** —— 列为 **T1 验收项**；⚠️ 属已发布工具 schema 的行为变更 |
+| D19 | **每请求图片预算**：缩放策略 / 字节兜底 / 每请求张数 | §3.7 | 成本（token + payload） | ✅ **已定（2026-10-15）**：**默认不缩** + **base64 ≤5MB 兜底**（新增）+ **Agent 截图 1–3 张 / 用户图 5 张**（**不设合计上限**，天然 ≤8）；**已实现（批 1）** |
+| D20 | **ChatAgent 的视觉坐标语义**：绝对像素 vs 归一化 | §3.8 | 正确性（**点偏**） | ✅ **已定（2026-10-15）：改为归一化（0–1000）** —— 列为 **T1 验收项**；⚠️ 属已发布工具 schema 的行为变更；⚠️ **2026-10-16 订正：未随批 1 落地**（批 1 只做传输层）⇒ **改归批 2 的 T2**（见 §5.1） |
 | D21 | **图片的展示与保存机制** | §3.9 | 数据模型 / UI / 存储 | ✅ **已定（2026-10-15）**：**正文内联引用**（`![图注](artifact://…)`）；**pin 方案已否决**；规则 = **引用即保存**；未引用的过程帧只留 cache + 轨迹页 |
 | D22 | **存储档位**（省空间 / 标准 / 完整）的默认档与具体数值 | §3.9 | 存储体积 | ⬜ 待议 |
 | D23 | **轨迹视图**：做不做、瘦身版还是完整版、是否与运行监视器合并 | §3.10 | 新功能（中大） | 🔶 建议：先做**瘦身版**；建议与运行监视器**合并成一个页面（两个 Tab）**；待确认 |
 
 ---
 
-## 5. 任务拆分（**草案**，供后续细化）
+## 5. 任务拆分（**草案 → 已分批执行**；交付状态与分批结论见 §5.1）
 
-> 依赖关系（判断）：`T1 → T2`；`T1 → T3`；`T1 + T3 → T4`；`T4 → T5/T6/T7`；`T4 → T9`；`T8` / `T10` 与 `T1` 正交，可并行；⚠️ **`T11` 必须与 `T1` 同期落地**（否则图片一进会话就让每轮请求平方级膨胀）。
+> 依赖关系（判断）：`T1 → T2`；`T1 → T3`；`T1 + T3 → T4`；`T4 → T5/T6/T7`；`T4 → T9`；`T8` / `T10` 与 `T1` 正交，可并行；⚠️ **`T11` 必须与 `T1` 同期落地**（否则图片一进会话就让每轮请求平方级膨胀）。⚠️ **2026-10-16 订正：本图只表达「依赖」，不表达「文件交叠」** —— 实测 T2 与 T4 都必改 `ChatViewModel.kt` ⇒ 不能并行，见 §5.1。
 
 | 任务 | 内容 | 依赖 | 备注 |
 |---|---|---|---|
-| **T1** | 多模态数据模型 + 传输：`ChatMessage` 升级（按 D2）、`ChatCompletionClient` 三条协议支持图片 content parts | — | **共用传输层的前置条件** |
+| **T1** ✅ | 多模态数据模型 + 传输：`ChatMessage` 升级（按 D2）、`ChatCompletionClient` 三条协议支持图片 content parts | — | **共用传输层的前置条件** |
 | **T2** | 多模态 UI 接线：发送路径传附件、**渲染**（用户所发图片 + **工具产出的图**，见 §3.2 方向 ②）、持久化、备份影响评估 | T1 | 用户直接可见的部分 |
-| **T3** | 通用工具 schema 通道（按 D3） | T1 | 决定两个视觉 Agent 能否共用 |
+| **T3** ✅ | 通用工具 schema 通道（按 D3） | T1 | 决定两个视觉 Agent 能否共用 |
 | **T4** | 抽共享「一次 LLM 往返」入口（按 D4）；ChatAgent 行为保持不变（回归） | T1, T3 | 本改造的枢纽 |
 | **T5** | `AIModule` 改走共享入口（纯文本一次问答，保留 `system_prompt`） | T4 | **难度最低、收益最大**，建议先做 |
 | **T6** | `AgentModule` 改走共享入口（多模态 + 原生 tools，保留自己的循环）。**顺带修 §1.8.5 的 D-a / D-b**：补 `long_press` / `double_tap` / `swipe` 三个工具并让提示词与工具表对齐 | T4 | 需回归 `tool_choice` 等 fork 既有改动；协议适配「从同一份定义派生」在此落地 |
 | **T7** | `AutoGLMModule` 改走共享入口（多模态 + 文本动作协议，**不走 tools 路径**） | T4 | ⚠️ **硬边界**：**只做「传输层 + 配置」，绝不碰它的协议与提示词**（§1.8.4 / §1.8.6）——那是模型契约。保留自己的动作解析与图片清理 |
 | **T8** | 配置引用：新增参数 + resolver + UI 选择器 + 三个模块接入 + 备份/密钥影响 | 独立 | 与 T1 并行；落地后 `api_key` 不再进工作流 |
 | **T9** | **引擎/宿主收敛**（§3.6 / D11–D15）：抽 `AgentHost` 接口 + 工作流宿主实现 + 工具白名单 + 提示词默认值。T6 是它的第一个落地实例 | T4 | 本方向的主要工作量；D12 的两项（白名单判据 / 自动放行）已定 |
-| **T10** | **会话持久化改造**：每会话一文件 + 轻量索引 + 附件独立文件（替掉「全部会话挤在一个 SharedPreferences key 的一个 JSON」） | 独立 | **D9 / 方向 ② 的前置**；上游冲突面 ≈ `ChatPresetRepository` 的 2 个方法 |
-| **T11** | **每请求图片预算 + 5MB 字节兜底**（§3.7 / D19）；含 **D20**（坐标语义改归一化） | 独立，但**必须与 T1 同期落地** | ⚠️ **T1 上线前必须完成** —— 没有它，图片一进会话就会让每轮请求平方级膨胀 |
+| **T10** ✅ | **会话持久化改造**：每会话一文件 + 轻量索引 + 附件独立文件（替掉「全部会话挤在一个 SharedPreferences key 的一个 JSON」） | 独立 | **D9 / 方向 ② 的前置**；上游冲突面 ≈ `ChatPresetRepository` 的 2 个方法 |
+| **T11** ✅ | **每请求图片预算 + 5MB 字节兜底**（§3.7 / D19）；含 **D20**（坐标语义改归一化） | 独立，但**必须与 T1 同期落地** | ⚠️ **T1 上线前必须完成** —— 没有它，图片一进会话就会让每轮请求平方级膨胀 |
+#### 5.1 交付状态与分批结论（**2026-10-16 回填**）
+
+| 任务 | 状态 | 对应交付 |
+|---|---|---|
+| **T1** 多模态数据模型 + 传输 | ✅ **已交付** | 批 1 的 ①：`ChatMessage.attachments`（D2 = B）+ 三条协议图片 content parts |
+| **T3** 通用工具 schema 通道 | ✅ **已交付** | 批 1 的 ①：中性 `ChatToolSchema` + 唯一适配器（D3 = B） |
+| **T11** 每请求图片预算 + 5MB 兜底 | ✅ **已交付** | 批 1 的 ①（D19 全量落地）—— ⚠️ **D20 未随批 1 落地**，见下 |
+| **T10** 会话持久化改造 | ✅ **已交付** | 批 1 的 ②：每会话一文件 + 轻量索引 + 一次性迁移 + 修掉「解析失败静默清空」 |
+| **T2** 多模态 UI 接线 + 渲染 | ⬜ 未开始 | 批 2 |
+| **T4** 抽共享入口 / **T9** 引擎宿主收敛 | ⬜ 未开始 | 批 3（④） |
+| **T8** 配置引用 | ⬜ 未开始 | 批 3（⑤，只做存储 + resolver + 设置页选择器） |
+| **T5 / T6 / T7** 三模块接入 | ⬜ 未开始 | 批 4（⑥，含 §1.8.5 补 `long_press` / `double_tap` / `swipe`） |
+
+**⚠️ 原「同批并行」的判断被实测推翻两处（2026-10-16）**：
+
+1. **T2 与 T4 不能并行** —— 两者都必须改 `ui/chat/ChatViewModel.kt`（T2 挂附件 / 渲染；T4 把 agent 循环抽出去）。
+   原判断「彼此文件不交」只看了**依赖关系**，没看**文件交叠**（本文 §5 顶部那张依赖图同样只表达依赖）。⇒ **必须串行**。
+2. **T2 与「图片渲染 / 展示」不能拆成两个任务** —— 它们本属 T2 一件事（「发送路径传附件 + **渲染**」），
+   拆开会在 `ChatScreen.kt` / `ChatViewModel.kt` 上打架。⇒ **合并为一个任务**。
+
+**据此调整后的分批（仍是 6 个任务，共 4 批）**：
+
+| 批 | 任务 | 为什么这样切 |
+|---|---|---|
+| 1 ✅ | ① T1+T3+T11 ∥ ② T10 | 已完成并合入 `dev`（提交 `3f5f97cc`） |
+| 2 | ③ **T2 全量**（用户附图发送 + 截图进模型 + 渲染用户图与工具产出的图 + 「引用即保存」附件落盘 + **D20 坐标归一化**） | 它必须**独占** `ChatViewModel` / `ChatScreen` / `ChatAgentNativeTooling`，任何并行都会撞车 |
+| 3 | ④ T4 + T9（**只动 `ui/chat` 与新文件，不改三个 AI 模块**）∥ ⑤ T8 的「存储 + resolver + 设置页选择器」部分 | ⑤ 只动配置层与设置页 ⇒ 与 ④ **文件不交**，可并行 |
+| 4 | ⑥ T5 + T6 + T7 + T8 的「三模块接入」部分 | 依赖 ④（引擎）与 ⑤（配置引用） |
+
+> **D20 的归属订正**：v0.12–v0.14 把 D20（坐标改归一化）列为 **T1 的验收项**；批 1 实际只做传输层，**D20 未落地**
+> （`ChatAgentNativeTooling.kt` 仍是绝对像素）。⇒ 自 v0.15 起 **D20 归批 2 的 T2**。
+> ⚠️ 含义：**批 1 合入后、批 2 合入前，ChatAgent 的坐标语义与改造前完全一致** —— 没有引入「点偏」，只是还没修。
 
 ---
 
@@ -968,11 +1026,11 @@ data class AgentOutcome(
 
 ## 7. 下一步
 
-**结构性决策已全部定案**（D4 / D11，2026-10-15）⇒ **可以拆任务了**。
+**批 1 已交付并合入 `dev`**（2026-10-16，提交 `3f5f97cc`）⇒ 下方原「下一步」计划**已执行一半，保留作历史**；当前待办见 **§5.1**。
 
 1. **立刻可拆**：**T4**（抽共享入口 —— 按 D4 落在 `ui/chat/`）+ **T9**（引擎/宿主收敛 —— 按 §3.11 的 `AgentHost` 草案）。
 2. **建议的起步顺序**（判断）：**T1（多模态）→ T5（AIModule 接入）** —— 先打通一条端到端链路，验证「一次改动处处生效」是否成立，再推 T6 / T7。
-3. ⚠️ **T11（图片预算 + 坐标归一化）必须与 T1 同期落地** —— 否则图片一进会话就让每轮请求**平方级膨胀**（§3.7），且 ChatAgent 会**点偏**（D20 / §3.8）。
+3. ✅ **T11 已随批 1 落地**（图片预算 + 5MB 兜底，与 T1 同期）。⚠️ 但 **D20（坐标归一化）未随批 1 落地** —— 它已改归批 2 的 T2（见 §5.1 的归属订正）。
 4. **不阻塞的待议项**（实施期再定即可）：D2（多模态数据模型细节）· D10（默认模型）· D15（`vflow.ai.agent` 兼容方式）· D18（到顶后结果语义）· D22（存储档位）· D23（轨迹视图做不做）。
 
 ---
@@ -994,6 +1052,8 @@ data class AgentOutcome(
 | 实体选择器先例 | `core/workflow/module/logic/CallWorkflowModuleUIProvider.kt` |
 | 工作流密钥清洗 | `core/backup/SecretFieldScrubber.kt` |
 | 备份范围（聊天 / 密钥） | `core/backup/scopes/ChatScope.kt`、`core/backup/scopes/SecretsScope.kt` |
+| 图片数据模型 / 预算 / 字节兜底（**批 1 新增**） | `ui/chat/ChatToolSchema.kt`、`ui/chat/ChatImagePlan.kt`、`ui/chat/ChatImageResolver.kt`、`ui/chat/ChatImageParts.kt` |
+| 会话文件存储（**批 1 新增**） | `ui/chat/ChatConversationStore.kt`、`ui/chat/ChatSessionLoadIssue.kt`、`core/chat/store/ChatConversationLayout.kt`、`core/chat/store/ChatConversationFiles.kt` |
 
 ## 附录 B：与既有文档的关系
 

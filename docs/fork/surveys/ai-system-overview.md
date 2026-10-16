@@ -817,7 +817,7 @@ else → Ready(..., missingPermissions = module.getRequiredPermissions(step)
 4. **生产无轮数上限**（§2.8）：基准有 24 上限，生产聊天路径零限制，安全默认反了。
 5. ~~**能力视图碎片化**：链路 A 用 `aiMetadata` + `getDynamicInputs`，链路 B 用 `metadata.description` + `getInputs`，同一批模块两套描述~~ **→ ✅ 2026-10-14：链路 B 已删除，两套描述收敛为一套**；残留的是 `aiMetadata` 本身只覆盖 188 个模块中的 103 个。
 6. ~~**配置割裂**：链路 A 用 `ChatProviderConfig`，链路 B 用 SharedPreferences `ai_config`，同一 API key 要填两遍~~ **→ ✅ 2026-10-14：链路 B 及其 `ai_config` 已删除，此割裂消失**（链路 C 的硬编码模型仍在，见 §7 的 P2）。
-7. **无多模态、无流式**：不能给模型发图片（截图只能转文本）；`stream=false`，长回复整段等待。
+7. **~~无多模态~~ / ~~无流式~~**（**2026-10-16 订正**）：**流式早已支持**（v5 流式改造，见 `FORK.md`）；**多模态传输层已于批 1 支持**（三协议图片 content parts + 每请求图片预算 + 单图 base64 ≤5MB 兜底），但**生产代码里还没有任何调用方构造 `attachments`** ⇒ 现状仍是「截图只能转文本」，缺的是**接线**（属批 2 的 T2）。
 8. ~~**模块目录截断且与 enum 错配**~~（2026-09-11 补充，§2.4.6）：保存工作流 139 个步骤模块只解释前 48 个，高频的 `device` 类被切在最后；模型"知道 id 合法、不知道它是什么"，于是臆造 id 被拒。**→ ✅ 已于 2026-09-12 修复（去除截断）**，代价是 catalog 增至 ~5,779 token。
 9. **无未启用 Prompt 缓存**（2026-09-11 补充，§2.10.4）：全仓库无 `cache_control`/`prompt_cache`，Anthropic 链路 100% 冷启动；技能切换又会让 OpenAI 系前缀从 `tools` 处断裂。
 10. **动态输入在 AI 链路全面退化**（2026-09-13 补充，§2.4.8）：catalog 生成（`ChatAgentToolRegistry.kt:733-734`）与执行校验（`ChatAgentModuleExecutor.kt:1266`）**都传空白 step** 调 `getDynamicInputs`，而后者的返回值依赖 step 参数。后果：`If`/`While` 等的 `value1`/`value2` **不进清单**，模型填的键被 `?: return@forEach`（`:1270`）**静默丢弃**，编辑器表现为"参数空白"。**与短板 2 同源，但这是可定位到具体字段的成因。** 另有反直觉对比：远程 API（`ModuleHandler.kt:172`）用静态全量的 `getInputs()`，**字段反而比 AI 完整**。
